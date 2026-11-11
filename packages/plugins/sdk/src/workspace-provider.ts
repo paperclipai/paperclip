@@ -18,6 +18,14 @@ export const freshWorkspaceSchema = z.object({
 export type PluginFreshWorkspace = z.infer<typeof freshWorkspaceSchema>;
 
 const sha = z.string().regex(/^[a-f0-9]{40,64}$/);
+export const workspaceRecoveryPullRequestSchema = z.object({
+  number: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  headSha: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+}).strict();
+export type PluginWorkspaceRecoveryPullRequest = z.infer<typeof workspaceRecoveryPullRequestSchema>;
+const destinationRef = z.string().max(266).regex(/^refs\/heads\/[^\x00-\x20\x7f~^:?*\[\]\\]+$/)
+  .refine(ref => !ref.includes("..") && !ref.includes("@{") && !ref.endsWith(".") && !ref.endsWith("/")
+    && ref.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock")));
 export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -42,6 +50,7 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
       baseRef: z.string().nullable(),
       existing: workspaceProviderBindingSchema.nullable(),
       fresh: freshWorkspaceSchema.optional(),
+      verifyExisting: z.literal(true).optional(),
     })
     .strict(),
   // Verify the retained workspace and flush run writes. This does not certify
@@ -51,13 +60,15 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("inspect"),
       binding: workspaceProviderBindingSchema,
+      recoveryPullRequest: workspaceRecoveryPullRequestSchema.optional(),
     })
     .strict(),
   z
     .object({
       kind: z.literal("remove"),
-      binding: workspaceProviderBindingSchema,
+      binding: workspaceProviderBindingSchema.nullable(),
       expectedHeadSha: sha.nullable(),
+      recoveryPullRequest: workspaceRecoveryPullRequestSchema.optional(),
     })
     .strict(),
 ]);
@@ -68,6 +79,7 @@ export const workspaceProviderResultSchema = z.discriminatedUnion("kind", [
       binding: workspaceProviderBindingSchema,
       branchName: z.string().min(1).max(256).nullable(),
       baseSha: sha.nullable(),
+      destinationRef: destinationRef.nullable().optional(),
       created: z.boolean(),
       branchCreatedByRuntime: z.boolean(),
     })
@@ -112,6 +124,34 @@ export const pluginWorkspaceParamsSchema = z
   .strict();
 /** Finalization receives the originating run/agent context; maintenance remains agent-independent. */
 export type PluginWorkspaceParams = z.infer<typeof pluginWorkspaceParamsSchema>;
+
+export const pluginWorkspacePrepareParamsSchema = pluginWorkspaceParamsSchema.extend({
+  phase: z.enum(["submit", "poll"]),
+}).refine((input) => input.operation.kind === "prepare");
+export type PluginWorkspacePrepareParams = z.infer<typeof pluginWorkspacePrepareParamsSchema>;
+
+export type PluginWorkspacePrepareResult =
+  | { kind: "unsupported" }
+  | { kind: "pending"; deadline: string }
+  | Extract<PluginWorkspaceResult, { kind: "prepared" }>;
+
+export function parseWorkspacePrepareResult(
+  params: PluginWorkspacePrepareParams,
+  value: unknown,
+): PluginWorkspacePrepareResult {
+  const result = z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("unsupported") }).strict(),
+    z.object({ kind: z.literal("pending"), deadline: z.string().datetime() }).strict(),
+  ]).safeParse(value);
+  if (result.success) {
+    if (result.data.kind === "unsupported" && params.phase !== "submit")
+      throw new Error("Workspace provider withdrew asynchronous preparation");
+    return result.data;
+  }
+  const prepared = parseWorkspaceProviderResult(params, value);
+  if (prepared.kind !== "prepared") throw new Error("Workspace provider returned the wrong preparation result");
+  return prepared;
+}
 
 export function parseWorkspaceProviderResult(
   params: PluginWorkspaceParams,

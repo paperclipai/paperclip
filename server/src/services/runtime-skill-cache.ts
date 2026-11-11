@@ -3,6 +3,11 @@ import { constants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { CompanySkill } from "@paperclipai/shared";
+import { currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
+import { proveOwnerGone, type LocalOwnerStamp, type OwnerProof } from "./owner-proof.js";
+
+/** Bounds one lock-holder proof, which can read the database across process spaces. */
+const LOCK_PROOF_TIMEOUT_MS = 5_000;
 
 const FORMAT = 1;
 const inFlight = new Map<string, Promise<string>>();
@@ -112,34 +117,156 @@ async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
   } catch { return false; }
 }
 
+/**
+ * True only when the shared owner prover shows that a lock holder's recorded
+ * server process is gone. Lock age is never proof. In this PID space the PID
+ * decides. A holder in another process space (for example before a redeploy)
+ * is gone only when the platform replaced its deployment on the same exclusive
+ * volume, or when its server boot stopped or was fenced. A lock written before
+ * holders recorded their process identity stays held.
+ */
+export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer, options: {
+  /** This wait gives up (the lock stays held) after this long. A stalled read keeps running; later waits on the same holder join it. */
+  timeoutMs?: number;
+  prove?: (stamp: LocalOwnerStamp) => Promise<OwnerProof>;
+} = {}): Promise<boolean> {
+  let holder: unknown;
+  try { holder = JSON.parse(lockContent.toString("utf8")); } catch { return false; }
+  const controller = readControllerProcess((holder as { controller?: unknown } | null)?.controller);
+  if (!controller) return false;
+  const stamp: LocalOwnerStamp = {
+    kind: "local", scope: "runtime_skill_cache_lock", generation: null, host: null, processSpace: controller.hostHash,
+    bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt, processGroupId: null,
+    ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
+      volumeId: controller.deployment.volumeId } : {}),
+  };
+  // A proof that outlives its timeout keeps running (its database read cannot
+  // be cancelled), so later waits on the same holder join it instead of adding
+  // another read to the shared pool.
+  const key = JSON.stringify(stamp);
+  let proved = pendingLockProofs.get(key);
+  if (!proved) {
+    proved = (options.prove ?? (value => proveOwnerGone(value)))(stamp)
+      .then(proof => proof.verdict === "gone", () => false)
+      .finally(() => { if (pendingLockProofs.get(key) === proved) pendingLockProofs.delete(key); });
+    pendingLockProofs.set(key, proved);
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), options.timeoutMs ?? LOCK_PROOF_TIMEOUT_MS); });
+  try {
+    return await Promise.race([proved, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Lock-holder proofs still running, by holder stamp; at most one per holder. */
+const pendingLockProofs = new Map<string, Promise<boolean>>();
+
+const OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function lockHolderToken(lockContent: Buffer): string | null {
+  try {
+    const token = (JSON.parse(lockContent.toString("utf8")) as { token?: unknown } | null)?.token;
+    return typeof token === "string" && OWNER_TOKEN.test(token) ? token : null;
+  } catch { return null; }
+}
+
+/**
+ * Removes a lock whose holder exited. Every waiter that read the same stale
+ * lock races for one exclusive claim named by the holder's unique token, so
+ * only one of them ever unlinks it. While the stale lock exists no one else
+ * can acquire or remove it (its holder is gone), so the inode check before the
+ * unlink only confirms the claim is still about that lock. Every lock and
+ * claim inode is pinned by a kept owner file, so it is never reused while a
+ * delayed waiter may compare against it, and a waiter that read the stale
+ * lock late finds the claim and does nothing. A claim is itself a lock with a token and controller: when its
+ * claimer provably exited before finishing, the same rule releases the claim
+ * and the next poll claims the stale lock again.
+ */
+export async function releaseExitedRuntimeSkillCacheLock(root: string, lock: string,
+  stale: { inode: number; token: string }, depth = 0): Promise<void> {
+  const claim = `${lock}.released-${stale.token}`;
+  // Publish the claim the way a lock is published: write a complete owner
+  // file, then hard-link it into place, so a claim name never exists without
+  // its body. The owner file is kept: it pins the claim's inode, so a deleted
+  // claim's inode is never reused by a newer claim that a delayed waiter
+  // might then compare against.
+  const claimToken = randomUUID();
+  const claimOwner = path.join(root, `.owner-${claimToken}`);
+  await fs.writeFile(claimOwner, JSON.stringify({ token: claimToken, controller: currentControllerProcessStamp() }), { flag: "wx" });
+  try {
+    await fs.link(claimOwner, claim);
+  } catch (error) {
+    await fs.unlink(claimOwner).catch(() => {});
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    // Bounded: a claimer crash inside this two-syscall window is already rare.
+    if (depth >= 2) return;
+    const handle = await fs.open(claim, constants.O_RDONLY | constants.O_NOFOLLOW).catch((openError: NodeJS.ErrnoException) => {
+      if (openError.code === "ENOENT") return null;
+      throw openError;
+    });
+    if (!handle) return;
+    let held: { content: Buffer; inode: number };
+    try { held = { content: await handle.readFile(), inode: (await handle.stat()).ino }; }
+    finally { await handle.close(); }
+    const heldToken = lockHolderToken(held.content);
+    if (heldToken && await runtimeSkillCacheLockHolderExited(held.content)) {
+      await releaseExitedRuntimeSkillCacheLock(root, claim, { inode: held.inode, token: heldToken }, depth + 1);
+    }
+    return;
+  }
+  const current = await fs.lstat(lock).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (current?.ino === stale.inode) await fs.unlink(lock);
+}
+
 // Serialize builds and cleanup for one skill across processes as well as callers.
-// A hard link publishes complete lock ownership atomically; crashed owners are reported without stealing another publisher’s lock.
+// A hard link publishes complete lock ownership atomically. A lock whose holder
+// provably exited is released at once; any other holder is waited for.
 async function publishLocked<T>(root: string, fingerprint: string, action: () => Promise<T>): Promise<T> {
   const lock = path.join(root, `${fingerprint}.lock`);
-  const owner = path.join(root, `.owner-${randomUUID()}`);
-  await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname() }), { flag: "wx" });
+  const token = randomUUID();
+  const owner = path.join(root, `.owner-${token}`);
+  // `pid` and `host` stay for older readers; `controller` is the proof input.
+  // The stamp does no I/O, so preparation adds no wait before the turn.
+  await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname(), token,
+    controller: currentControllerProcessStamp() }), { flag: "wx" });
   let acquired = false;
+  // A live holder is re-proved at most once a second, not on every 20 ms poll.
+  let judged: { inode: number; at: number } | null = null;
   try {
     const deadline = Date.now() + 60_000;
     while (!acquired) {
       try { await fs.link(owner, lock); acquired = true; }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const lockContent = await readRegularFile(lock).catch((readError: NodeJS.ErrnoException) => {
-          if (readError.code === "ENOENT") return null;
-          throw readError;
+        const handle = await fs.open(lock, constants.O_RDONLY | constants.O_NOFOLLOW).catch((openError: NodeJS.ErrnoException) => {
+          if (openError.code === "ENOENT") return null;
+          throw openError;
         });
-        if (!lockContent) continue;
-        const holder = JSON.parse(lockContent.toString("utf8"));
-        if (holder.host === os.hostname() && Number.isSafeInteger(holder.pid) && holder.pid > 0) {
-          try { process.kill(holder.pid, 0); }
-          catch (probeError) {
-            if ((probeError as NodeJS.ErrnoException).code === "ESRCH") {
-              throw new Error("Runtime skill cache publisher exited; remove its stale publication lock before retrying");
-            }
+        if (!handle) continue;
+        let held: { content: Buffer; inode: number };
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile()) throw new Error("Unsafe runtime skill cache file");
+          held = { content: await handle.readFile(), inode: stat.ino };
+        } finally { await handle.close(); }
+        const holderToken = lockHolderToken(held.content);
+        const due = judged === null || judged.inode !== held.inode || Date.now() - judged.at >= 1_000;
+        if (holderToken && due) {
+          judged = { inode: held.inode, at: Date.now() };
+          if (await runtimeSkillCacheLockHolderExited(held.content,
+            { timeoutMs: Math.max(1, Math.min(LOCK_PROOF_TIMEOUT_MS, deadline - Date.now())) })) {
+            await releaseExitedRuntimeSkillCacheLock(root, lock, { inode: held.inode, token: holderToken });
+            continue;
           }
         }
-        if (Date.now() >= deadline) throw new Error("Runtime skill cache publisher is busy; retry preparation");
+        if (Date.now() >= deadline) {
+          throw new Error(`Runtime skill cache publisher is busy; retry preparation. If no server process holds ${lock}, remove it.`);
+        }
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
     }

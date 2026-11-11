@@ -269,10 +269,17 @@ async function prepareCodexRemoteManagedHome(
 const CODEX_MODEL_CAPACITY_RE =
   /\b(?:selected model is at capacity|model is at capacity|at capacity for this model|serverOverloaded|server overloaded)\b/i;
 
+const CODEX_PROVIDER_AUTH_RE =
+  /\b(?:401 unauthorized|invalid_api_key|(?:incorrect|invalid) api key)\b/i;
+
 export function classifyCodexTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   now: Date,
 ): AcpxTerminalFailureClassification | null {
+  if (failure.category === "access") {
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    return CODEX_PROVIDER_AUTH_RE.test(text) ? { errorCode: "acpx_auth_required" } : null;
+  }
   if (failure.category === "service") {
     const text = [failure.title, failure.details].filter(Boolean).join("\n");
     return CODEX_MODEL_CAPACITY_RE.test(text)

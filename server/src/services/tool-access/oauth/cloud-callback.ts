@@ -1,3 +1,8 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
+import type { createGitHubGrantContinuity } from "../github-grant-continuity.js";
+import { randomUUID } from "node:crypto";
+import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
+import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { managedConnectorProfile } from "./client-settings.js";
 import type { ActorInfo } from "../types.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
@@ -30,6 +35,7 @@ type Dependencies = {
   finishOAuthCatalogWithRecommendedDefaults: OAuthCatalogCompletion;
   store: Pick<OAuthCredentialStore, "createOrRotateOAuthSecret" | "syncCredentialBindings">;
   currentCloudConnector: () => PaperclipCloudConnector | null;
+  syncGitHubGrantBindings: ReturnType<typeof createGitHubGrantContinuity>["syncGitHubGrantBindings"];
 };
 
 export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
@@ -299,6 +305,8 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
         accessRef,
         ...(refreshRef ? [refreshRef] : []),
       ];
+      await notifyGitHubCredentialChange(tx, connection);
+      await notifyToolConnectionHealth(tx, connection);
       const grantValues = {
         providerTenant: {
           name: githubMetadata?.login ?? providerName,
@@ -308,6 +316,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
             accessTokenExpiresAt: credentials.accessTokenExpiresAt,
             scopes: credentials.scopes,
             requestedScopes: stateRow.requestedScopes ?? undefined,
+            consentedAt: now().toISOString(),
             tokenType: credentials.tokenType,
             ...(credentials.refreshTokenExpiresAt
               ? { refreshTokenExpiresAt: credentials.refreshTokenExpiresAt }
@@ -316,7 +325,12 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
               ? { refreshedAt: now().toISOString() }
               : {}),
           },
-          ...(githubMetadata ? { github: githubMetadata } : {}),
+          ...(githubMetadata ? { github: { ...githubMetadata, bindingSync: {
+            id: randomUUID(), removeInstallationIds: [...new Set([
+              ...(existingCredentialGrant?.providerTenant?.github?.bindingSync?.removeInstallationIds ?? []),
+              ...(existingCredentialGrant?.providerTenant?.github?.installationIds ?? []),
+            ])].filter(id => !githubMetadata.installationIds.includes(id)),
+          } } } : {}),
         },
         credentialSecretRefs,
         status: "active" as const,
@@ -405,18 +419,19 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
         personalCredential || agentCredential ? credentialSecretRefs : [],
         tx,
       );
-      const linkedInteractionKind = stateRow.interactionId
+      const linkedInteraction = stateRow.interactionId
         ? await tx
-            .select({ kind: issueThreadInteractions.kind })
+            .select({ kind: issueThreadInteractions.kind, issueId: issueThreadInteractions.issueId })
             .from(issueThreadInteractions)
             .where(eq(issueThreadInteractions.id, stateRow.interactionId))
             .limit(1)
-            .then((rows) => rows[0]?.kind ?? null)
+            .then((rows) => rows[0] ?? null)
         : null;
       if (
         stateRow.interactionId &&
-        linkedInteractionKind === "request_confirmation"
+        linkedInteraction?.kind === "request_confirmation"
       ) {
+        await notifyIssueReviewState(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
         await tx
           .update(issueThreadInteractions)
           .set({
@@ -433,42 +448,8 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
     // Paperclip Cloud connector callback is the managed variant of an OAuth
     // callback completion.
     emitConnectionUpdated(connection, preCloudCallbackLifecycle, "oauth_callback");
-    if (githubMetadata) {
-      const [githubGrant] = await db
-        .select({ id: connectionGrants.id })
-        .from(connectionGrants)
-        .where(
-          and(
-            eq(connectionGrants.companyId, connection.companyId),
-            eq(connectionGrants.connectionId, connection.id),
-            subjectAgentId
-              ? and(
-                  eq(connectionGrants.kind, "agent"),
-                  eq(connectionGrants.subjectAgentId, subjectAgentId),
-                )
-              : and(
-                  eq(connectionGrants.kind, "user"),
-                  eq(connectionGrants.subjectUserId, subjectUserId!),
-                ),
-          ),
-        )
-        .limit(1);
-      if (!githubGrant) throw new Error("GitHub grant was not persisted");
-      await Promise.all(
-        githubMetadata.installationIds.map((installationId) =>
-          cloudConnector.setWebhookBinding({
-            subject: connectorSubject,
-            companyId: connection.companyId,
-            id: `${githubGrant.id}_${installationId}`,
-            installationId,
-            connectionId: connection.id,
-            grantId: githubGrant.id,
-            active: true,
-            accessToken: credentials.accessToken,
-          }),
-        ),
-      );
-    }
+    // Binding registration is saved above before Cloud I/O. The continuity
+    // worker drains it after activation, including after a callback/server crash.
     const refresh = await refreshCatalog(connection.id, input.actor, {
       enableAllByDefault: false,
       quarantineManagedOAuthDraft: shouldFinalizeManagedDefaults,
@@ -489,6 +470,15 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
           actor: input.actor,
         })
       : null;
+    if (githubMetadata) {
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id),
+        subjectAgentId ? and(eq(connectionGrants.kind, "agent"), eq(connectionGrants.subjectAgentId, subjectAgentId))
+          : and(eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, subjectUserId!)),
+      )).limit(1);
+      if (!grant) throw new Error("GitHub grant was not persisted");
+      await dependencies.syncGitHubGrantBindings(await getConnectionRow(connection.id, connection.companyId), grant, input.actor, credentials.accessToken);
+    }
     const activatedCatalogEntryIds = new Set(
       shouldFinalizeManagedDefaults
         ? refresh.catalog

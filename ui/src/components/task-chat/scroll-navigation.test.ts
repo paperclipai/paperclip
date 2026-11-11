@@ -13,3 +13,10 @@ describe("document scroll navigation", () => {
     expect(taskChatScrollEntry({ key: "entry", hash: "#document-plan", pathname: "/PAP/issues/PAP-1", state })).toEqual({ key: "entry", hash: "#document-plan", pathname: "/PAP/issues/PAP-1" });
   });
 });
+
+describe("decision-context navigation", () => {
+  it("opens the decision anchor even when an earlier document preserved a reading position", () => {
+    const location = { key: "decision-entry", hash: "#document-copy&revision=v3&interaction=review-1", pathname: "/PAP/issues/PAP-1", state: { taskDocumentScrollEntry: { key: "old", hash: "#comment-2", pathname: "/PAP/issues/PAP-1" } } };
+    expect(taskChatScrollEntry(location)).toEqual({ key: "decision-entry", hash: location.hash, pathname: location.pathname });
+  });
+});

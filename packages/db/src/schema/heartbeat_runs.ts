@@ -1,3 +1,4 @@
+import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -18,6 +19,14 @@ import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
 import { issues } from "./issues.js";
+
+// Literal allowlist shared by bounded projections and the matching partial index.
+// Constants are quoted here so PostgreSQL can prove the index predicate even
+// when callers use prepared statements.
+export const workspaceRestoreFailureCodesSql = sql.join(
+  WORKSPACE_RESTORE_FAILURE_CODES.map(code => sql.raw(`'${code.replaceAll("'", "''")}'`)),
+  sql`, `,
+);
 
 export const heartbeatRuns = pgTable(
   "heartbeat_runs",
@@ -83,10 +92,19 @@ export const heartbeatRuns = pgTable(
     // Legacy controller lease. A PID alone is not an identity across containers.
     controllerBootId: uuid("controller_boot_id"),
     controllerLeaseExpiresAt: timestamp("controller_lease_expires_at", { withTimezone: true }),
+    // Server process that claimed the legacy controller lease ({bootId, pid,
+    // hostHash, processStartedAt}). It names the controller only while its
+    // bootId equals controller_boot_id; revocation swaps the boot id, so a
+    // revoked lease never keeps it. Null on rows saved before it existed.
+    controllerProcess: jsonb("controller_process").$type<Record<string, unknown>>(),
     executionStage: text("execution_stage"),
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    // PID space of processPid (controller-process-identity hostHash), or
+    // "remote" for a sandbox PID. Null on rows saved before it existed.
+    processHostHash: text("process_host_hash"),
+    legacyProcessSettlement: jsonb("legacy_process_settlement").$type<Record<string, unknown>>(),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
     lastOutputStream: text("last_output_stream"),
@@ -94,6 +112,9 @@ export const heartbeatRuns = pgTable(
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    // Legacy: no writer since process loss moved onto the durable failure
+    // retry budget (contextSnapshot.executionRetryAccounting). Kept so rows and
+    // readers from earlier releases stay valid; never gate retries on it.
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
     scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),
@@ -111,6 +132,15 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    nativeUnpresentedResponseIdx: index("heartbeat_runs_native_unpresented_response_idx")
+      .on(table.companyId, table.nativeIssueId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} in ('succeeded', 'failed', 'timed_out') AND ${table.finishedAt} is not null AND jsonb_typeof(${table.resultJson} #> '{presentationDecision,commentId}') is distinct from 'string'`),
+    cancelledWorkspacePreservationIdx: index("heartbeat_runs_cancelled_workspace_preservation_idx").on(table.id, table.companyId)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} = 'cancelled'
+        AND ${table.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+        AND ${table.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
+        AND (${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+          AND ${table.resultJson}->>'workspaceRestoreFailure' IN (${workspaceRestoreFailureCodesSql})) IS NOT TRUE`),
     retainedRecoveryAdoptionIdx: index("heartbeat_runs_retained_recovery_adoption_idx")
       .on(table.id).where(sql`${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
         and not (coalesce(${table.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')
@@ -120,6 +150,32 @@ export const heartbeatRuns = pgTable(
       sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
         OR ${table.scopeKind} = 'issue'`,
     ),
+    scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
+      .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
+    // Committed budget Stops that are not delivered yet. The predicate must stay
+    // identical to `pendingBudgetRunCancellationPredicate` in the server, so the
+    // budget worker, run control, and the idle check read only these few rows
+    // instead of every run's result JSON.
+    pendingBudgetCancellationIdx: index("heartbeat_runs_pending_budget_cancellation_idx")
+      .on(table.companyId)
+      .where(sql`jsonb_typeof(${table.resultJson}->'startupCancellation'->'budgetEnforcement') = 'object'
+        and ${table.resultJson}->'startupCancellation'->'budgetEnforcement'->>'deliveredAt' is null`)
+      .concurrently(),
+    // Runs a dispatch gate refused for a pause; that hold's release resumes them.
+    treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
+      .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
+      .where(sql`${table.status} = 'cancelled' and ${table.resultJson} ? 'treeHoldSuppression'`),
+    // The `legacy_controller_lease` ownership kind (reconciler listing and
+    // settle watch): outstanding legacy controller leases of running runs.
+    legacyControllerLeaseIdx: index("heartbeat_runs_legacy_controller_lease_idx")
+      .on(table.controllerLeaseExpiresAt)
+      .where(sql`${table.runtimeMode} = 'legacy' AND ${table.status} = 'running' AND ${table.controllerBootId} is not null`),
+    // Runs woken by one chat comment. Not partial: the planner ignores the
+    // expression statistics of a partial index and would then walk the run
+    // history by creation time to satisfy `order by created_at limit 1`.
+    companyWakeCommentIdx: index("heartbeat_runs_company_wake_comment_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot}->>'wakeCommentId')`)
+      .concurrently(),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)
@@ -149,6 +205,15 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    companyNativeWorkspaceIdx: index("heartbeat_runs_company_native_workspace_idx")
+      .on(table.companyId, sql`(${table.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId')`)
+      .concurrently(),
+    // Runs of one native session. Retention, recovery and resume reads filter
+    // by company and session; without this they walk the agent's run history.
+    companyNativeSessionIdx: index("heartbeat_runs_company_native_session_idx")
+      .on(table.companyId, table.nativeSessionId)
+      .where(sql`${table.nativeSessionId} is not null`)
+      .concurrently(),
     companyIssueCreatedIdx: index("heartbeat_runs_company_issue_created_idx").on(
       table.companyId,
       table.issueId,
@@ -193,6 +258,14 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // Runs that recorded an execution workspace in their legacy context. Workspace
+    // activity and cleanup checks probe it instead of decoding every run context.
+    // Partial, so it serves only queries that repeat the predicate and never
+    // competes with other company-scoped indexes.
+    companyCtxExecutionWorkspaceIdx: index("heartbeat_runs_company_ctx_execution_workspace_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'executionWorkspaceId')`)
+      .where(sql`${table.contextSnapshot} ? 'executionWorkspaceId'`)
+      .concurrently(),
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
       .concurrently(),

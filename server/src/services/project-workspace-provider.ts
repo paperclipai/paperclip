@@ -1,7 +1,9 @@
 import { and, eq, notInArray } from "drizzle-orm";
 import { pluginCompanySettings, plugins, type Db } from "@paperclipai/db";
-import type { PaperclipPluginManifestV1, ProjectWorkspaceProviderConfiguration } from "@paperclipai/shared";
+import type { Environment, PaperclipPluginManifestV1, ProjectExecutionWorkspacePolicy, ProjectWorkspaceProviderConfiguration } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { workspaceWorkerRefusal } from "./workspace-provider-failure.js";
 import { conflict } from "../errors.js";
 
 export function isWorkspaceProvider(manifest: PaperclipPluginManifestV1) {
@@ -10,6 +12,45 @@ export function isWorkspaceProvider(manifest: PaperclipPluginManifestV1) {
 }
 
 type ProviderDb = Pick<Db, "select">;
+export type WorkspaceWorkers = Pick<PluginWorkerManager, "call" | "getWorker">;
+
+export async function requireWorkspaceProviderWorker(
+  db: ProviderDb,
+  workers: WorkspaceWorkers | undefined,
+  companyId: string,
+  pluginId: string,
+  /** Before a call, a ready provider whose worker is not running is a retryable refusal: no request is sent. */
+  beforeCall = false,
+) {
+  const [plugin] = await db
+    .select()
+    .from(plugins)
+    .where(eq(plugins.id, pluginId));
+  const [settings] = await db
+    .select()
+    .from(pluginCompanySettings)
+    .where(
+      and(
+        eq(pluginCompanySettings.pluginId, pluginId),
+        eq(pluginCompanySettings.companyId, companyId),
+      ),
+    );
+  const worker = workers?.getWorker(pluginId);
+  const refusal = beforeCall && workers && plugin?.status === "ready" && settings?.enabled !== false &&
+    isWorkspaceProvider(plugin.manifestJson) ? workspaceWorkerRefusal(pluginId, worker) : null;
+  if (refusal) throw refusal;
+  if (
+    !workers ||
+    !plugin ||
+    plugin.status !== "ready" ||
+    settings?.enabled === false ||
+    !isWorkspaceProvider(plugin.manifestJson) ||
+    !worker?.supportedMethods?.includes("workspaceOperation")
+  ) {
+    throw conflict("The workspace storage plugin is unavailable");
+  }
+  return plugin;
+}
 
 export async function listProjectWorkspaceProviders(db: ProviderDb, companyId: string) {
   const rows = await db.select({ plugin: plugins, enabled: pluginCompanySettings.enabled })
@@ -30,13 +71,9 @@ export function resolveProjectWorkspaceProvider(
 ): ProjectWorkspaceProviderConfiguration {
   const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
   const explicit = policy?.storageProviderPluginId !== undefined;
-  const defaults = providers.filter(plugin => plugin.manifestJson.workspaceProvider?.defaultForProjects);
-  const selected = explicit ? providers.find(plugin => plugin.id === policy?.storageProviderPluginId)
-    : defaults.length === 1 ? defaults[0] : undefined;
-  const pluginId = explicit ? policy?.storageProviderPluginId ?? null : selected?.id ?? null;
-  let error = !explicit && defaults.length > 1
-    ? `Multiple workspace storage plugins claim the project default: ${defaults.map(plugin => plugin.manifestJson.displayName).sort().join(", ")}. Select a storage provider in project configuration or disable a conflicting default.`
-    : null;
+  const pluginId = policy?.storageProviderPluginId ?? null;
+  const selected = pluginId ? providers.find(plugin => plugin.id === pluginId) : undefined;
+  let error: string | null = null;
   const declaration = selected?.manifestJson.workspaceProvider;
   const supplied = hasGitSource ? declaration?.defaultForProjects : undefined;
   const effectivePolicy = pluginId ? parseProjectExecutionWorkspacePolicy({
@@ -55,7 +92,7 @@ export function resolveProjectWorkspaceProvider(
     error = "The storage plugin does not support the explicit project workspace settings. Change the workspace mode or strategy, or select another storage provider in project configuration.";
   }
   return {
-    source: explicit ? "project" : selected || error ? "default" : "core",
+    source: explicit ? "project" : "core",
     pluginId,
     displayName: selected?.manifestJson.displayName ?? (pluginId ? "Unavailable provider" : "Core / local"),
     providers: providers.map(plugin => ({ id: plugin.id, displayName: plugin.manifestJson.displayName,
@@ -65,8 +102,40 @@ export function resolveProjectWorkspaceProvider(
   };
 }
 
+export function sourcelessProjectWorkspacePolicy(rawPolicy: unknown): ProjectExecutionWorkspacePolicy | null {
+  const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
+  if (policy?.storageProviderPluginId === undefined) return policy;
+  const { storageProviderPluginId: _storage, ...settings } = policy;
+  return Object.keys(settings).some(key => key !== "enabled") ? settings : null;
+}
+
 export async function effectiveProjectWorkspacePolicy(db: ProviderDb, companyId: string, rawPolicy: unknown, hasGitSource: boolean) {
   const configuration = resolveProjectWorkspaceProvider(rawPolicy, await listProjectWorkspaceProviders(db, companyId), hasGitSource);
   if (configuration.error) throw conflict(configuration.error);
   return configuration.effectivePolicy;
+}
+
+export function projectStorageForEnvironment(
+  environment: Pick<Environment, "driver" | "config">,
+  providers: Array<Pick<Provider, "id" | "pluginKey" | "manifestJson">>,
+): { pluginId: string | null } | null {
+  if (["local", "ssh", "sandbox"].includes(environment.driver)) {
+    return environment.driver === "sandbox" && environment.config.provider === "fake" ? null : { pluginId: null };
+  }
+  if (environment.driver !== "plugin") return null;
+  const plugin = providers.find(value => value.pluginKey === environment.config.pluginKey);
+  const driver = plugin?.manifestJson.environmentDrivers?.find(value => value.driverKey === environment.config.driverKey
+    && value.kind !== "sandbox_provider" && value.supportsTasks === true);
+  return plugin && driver && plugin.manifestJson.capabilities.includes("environment.drivers.register")
+    ? { pluginId: plugin.id } : null;
+}
+
+export function assertProjectStorageEnvironment(
+  provider: Pick<Provider, "id" | "pluginKey" | "manifestJson">,
+  environment: Pick<Environment, "driver" | "config" | "name">,
+) {
+  if (projectStorageForEnvironment(environment, [provider])?.pluginId !== provider.id) {
+    throw conflict(`This project's workspace storage (${provider.manifestJson.displayName}) does not support the environment "${environment.name}". Use an agent in a compatible environment, or create a project for this environment.`,
+      { code: "project_environment_incompatible", retryable: false });
+  }
 }

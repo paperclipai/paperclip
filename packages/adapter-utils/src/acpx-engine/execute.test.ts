@@ -36,6 +36,7 @@ import {
   referencedSourceContentSignature,
   resolveStalledToolTimeoutMs,
   rewriteGeminiAcpFlagForVersion,
+  summarizeAcpProcessTerminal,
   summarizeAcpStopActivity,
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
@@ -58,6 +59,7 @@ import {
   runWithRuntimeParent,
   SANDBOX_STARTUP_SPAN_ATTRS,
 } from "./startup-timing.js";
+import type { AcpxAgentSpawnHooks } from "./stock-runtime-options.js";
 
 
 const tempRoots: string[] = [];
@@ -414,8 +416,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(turnInputs[0]).toMatchObject({
       handle: { backendSessionId: "backend-session", agentSessionId: "agent-session", runtimeSessionName: "runtime-session" },
       text: meta[0]?.prompt, mode: "prompt", requestId: "run-1", timeoutMs: 120_000,
-      onTerminalSessionFailure: expect.any(Function),
     });
+    // Typed failures arrive on the turn result `_meta`, not through an ACPX callback.
+    expect(turnInputs[0]).not.toHaveProperty("onTerminalSessionFailure");
     expect(meta[0]?.prompt).toBeTypeOf("string");
     expect(turnInputs[0]?.text).toBeTypeOf("string");
     expect((meta[0]?.prompt as string).length).toBeGreaterThan(0);
@@ -970,7 +973,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(String(reset.meta[0]?.prompt)).toContain(custom ? "Custom agent instructions." : "You are agent agent-1");
     const ordinary = await runExecutor({ ...config, promptTemplate: "" }, { context: { ...context, conversationMode: false } });
     expect(String(ordinary.meta[0]?.prompt)).not.toContain("Execution contract:");
-    expect(String(ordinary.meta[0]?.prompt)).toContain("Create child issues from the approved plan");
+    expect(String(ordinary.meta[0]?.prompt)).toContain("Implement the accepted plan on this issue.");
   });
 
   it("uses only the guarded external-chat contract for a default ACPX prompt", async () => {
@@ -2537,6 +2540,91 @@ describe("shared ACPX engine runtime behavior", () => {
     ).toBe("second");
   });
 
+  it.each(["create_runtime", "ensure_session", "configure_session", "turn"])(
+    "preserves sanitized JSON-RPC diagnostics when %s fails",
+    async (phase) => {
+      for (const shape of ["string", "details", "message"]) {
+        const root = await makeTempRoot();
+        const detail = "Invalid session configuration: model_context_window must be a number; private-setting-value";
+        const data = shape === "string" ? detail : { [shape]: detail };
+        const err = Object.assign(new Error("Internal error"), { code: -32603, data });
+        const fail = () => { throw err; };
+        const logs: string[] = [];
+        const execute = createAcpxEngineExecutor({
+          createRuntime: () => {
+            if (phase === "create_runtime") fail();
+            return {
+              ...buildRuntime(),
+              ...(phase === "ensure_session" ? { ensureSession: fail } : {}),
+              ...(phase === "configure_session" ? { setConfigOption: fail } : {}),
+              ...(phase === "turn" ? { startTurn: () => ({
+                events: (async function* () { fail(); })(),
+                result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+                cancel: async () => {},
+              }) } : {}),
+            } as never;
+          },
+        });
+        const result = await execute({
+          runId: "run-1",
+          agent: { id: "agent-1", companyId: "company-1" },
+          runtime: {},
+          config: {
+            agent: "custom",
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+            thinkingEffort: "high",
+            env: { PRIVATE_SETTING: "private-setting-value" },
+          },
+          context: {},
+          onLog: async (_stream: string, text: string) => { logs.push(text); },
+          onMeta: async () => {},
+        } as never);
+        expect(result.exitCode).toBe(1);
+        expect(result.errorMessage).toContain("Internal error\nInvalid session configuration: model_context_window must be a number;");
+        expect(result.errorMessage).not.toContain("private-setting-value");
+        expect(result.summary).toBe(result.errorMessage);
+        expect(result.errorMeta).toMatchObject({ phase, rpcCode: -32603 });
+        const payload = JSON.parse(logs.find((text) => text.includes('"type":"acpx.error"'))!.trim());
+        expect(payload.message).toBe(result.errorMessage);
+        expect(payload.rpcCode).toBe(-32603);
+      }
+    },
+  );
+
+  it("does not repeat JSON-RPC details already in the message and leaves plain errors unchanged", async () => {
+    const run = async (err: Error) => {
+      const root = await makeTempRoot();
+      const execute = createAcpxEngineExecutor({
+        createRuntime: () => ({
+          ...buildRuntime(),
+          ensureSession: async () => { throw err; },
+        }) as never,
+      });
+      return execute({
+        runId: "run-1",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+    };
+
+    const repeated = await run(Object.assign(
+      new Error("Internal error: Invalid session configuration"),
+      { code: -32603, data: { details: "Invalid session configuration" } },
+    ));
+    expect(repeated.errorMessage).toBe("Internal error: Invalid session configuration");
+    expect(repeated.errorMeta).toMatchObject({ rpcCode: -32603 });
+
+    const plain = await run(new Error("session/new failed"));
+    expect(plain.errorMessage).toBe("session/new failed");
+    expect(plain.summary).toBe("session/new failed");
+    expect(plain.errorMeta?.rpcCode).toBeUndefined();
+  });
+
   it("enriches acpx.error diagnostics and child stderr when ensureSession rejects", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -2732,10 +2820,35 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(second)).toBe(fp(first));
   });
 
+  it("launches the agent with exactly this run's prepared environment and blocks the host Grok key", async () => {
+    const root = await makeTempRoot();
+    let runtimeOptions: (AcpRuntimeOptions & AcpxAgentSpawnHooks) | undefined;
+    let sessionEnvironment: Record<string, string> | undefined;
+    const execute = createAcpxEngineExecutor({
+      createRuntime: (options) => {
+        runtimeOptions = options;
+        const runtime = buildRuntime() as { ensureSession: (input: { sessionOptions?: { env?: Record<string, string> } }) => Promise<unknown> };
+        const ensure = runtime.ensureSession;
+        runtime.ensureSession = async (input) => { sessionEnvironment = input.sessionOptions?.env; return await ensure(input); };
+        return runtime as never;
+      },
+    });
+    const result = await execute({
+      runId: "run-environment", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd: root },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+    expect(runtimeOptions).not.toHaveProperty("spawnEnvironment");
+    expect(runtimeOptions?.agentProcessEnvBlock).toEqual(["XAI_API_KEY"]);
+    expect(sessionEnvironment).toBeDefined();
+    expect(runtimeOptions?.agentEnvironment?.()).toEqual(sessionEnvironment);
+  });
+
   it("routes child stderr in-process while keeping the unfiltered run log", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let runtimeOptions: (AcpRuntimeOptions & AcpxAgentSpawnHooks) | undefined;
     const execute = createAcpxEngineExecutor({
       createRuntime: (options) => {
         runtimeOptions = options;
@@ -2776,7 +2889,7 @@ describe("shared ACPX engine runtime behavior", () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const warmHandles = new Map();
-    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let runtimeOptions: (AcpRuntimeOptions & AcpxAgentSpawnHooks) | undefined;
     const execute = createAcpxEngineExecutor({
       warmHandles,
       createRuntime: (options) => {
@@ -3444,10 +3557,14 @@ describe("ACP activity diagnostics", () => {
     await fs.mkdir(cwd, { recursive: true });
     const execute = createAcpxEngineExecutor({
       classifyTerminalSessionFailure: () => ({ errorCode: "claude_transient_upstream", errorFamily: "transient_upstream" }),
-      createRuntime: () => ({ ...buildRuntime(), startTurn: (options: { onTerminalSessionFailure: (failure: unknown) => void }) => {
-        options.onTerminalSessionFailure({ category: "service", details: "API Error: 400 tools.17.custom.name: String should have at most 128 characters" });
-        return { events: (async function* () {})(), result: Promise.resolve({ status: "failed", error: new Error("turn failed") }), cancel: async () => {} };
-      } }) as never,
+      createRuntime: (options: { clientCapabilities?: unknown }) => {
+        expect(options.clientCapabilities).toEqual({ _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } });
+        // The agent reports the failure on its prompt response; ACP's stop reason stays normal.
+        return { ...buildRuntime(), startTurn: () => ({ events: (async function* () {})(), cancel: async () => {},
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn", _meta: { jetbrains: { air: { version: 1, sessionFailure: {
+            severity: "error", category: "service", details: "API Error: 400 tools.17.custom.name: String should have at most 128 characters",
+          } } } } }) }) } as never;
+      },
     });
     const result = await execute({ runId: "invalid-definition", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
       config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd, env: { SECRET: "128" } },
@@ -3946,6 +4063,39 @@ describe("summarizeAcpStopActivity", () => {
 
   it("omits the event age when no event preceded the stop", () => {
     expect(summarizeAcpStopActivity(10_000, null, [])).toEqual({});
+  });
+});
+
+describe("summarizeAcpProcessTerminal", () => {
+  it("reports nothing before the process session records terminal evidence", () => {
+    expect(summarizeAcpProcessTerminal(null)).toEqual({});
+    expect(summarizeAcpProcessTerminal(undefined)).toEqual({});
+  });
+
+  it("reports a signal-killed remote process", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "remote_event", outcome: "exit", exitCode: "unknown", signal: "SIGKILL",
+    })).toEqual({
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalSignal: "SIGKILL",
+    });
+  });
+
+  it("reports an exit code and omits an unknown signal", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "remote_event", outcome: "exit", exitCode: 137, signal: "unknown",
+    })).toEqual({
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137,
+    });
+  });
+
+  it("reports a host proxy close with no exit details", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "proxy_close", outcome: "error", exitCode: "unknown", signal: "unknown",
+    })).toEqual({ acpProcessTerminalSource: "proxy_close", acpProcessTerminalOutcome: "error" });
   });
 });
 
@@ -6620,7 +6770,7 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     const root = await makeTempRoot();
     const warmHandles = new Map();
     const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
-    let runtimeOptions: AcpRuntimeOptions;
+    let runtimeOptions: AcpRuntimeOptions & AcpxAgentSpawnHooks;
     const runtime = buildRuntime(undefined, () => {
       // Exercise the real engine spawn observer, including a second launch in
       // the same ensure call. A session ID cannot hide either startup cost.
@@ -8045,12 +8195,13 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     runtime: unknown,
     sandbox: Awaited<ReturnType<typeof setupRemoteSandbox>>,
     deps: Partial<AcpxEngineExecutorOptions> = {},
+    processSessionBridge: Record<string, unknown> = {},
   ) {
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
       async () => handle as never,
     );
     vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
-      async () => ({ agentCommand: null, stop: async () => {} }) as never,
+      async () => ({ agentCommand: null, stop: async () => {}, ...processSessionBridge }) as never,
     );
     const execute = createAcpxEngineExecutor({
       createRuntime: () => runtime as never,
@@ -8263,6 +8414,36 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // Distinct from a session-identity failure and from the deadline code.
     expect(result.errorCode).not.toBe("acpx_session_init_failed");
     expect(result.errorCode).not.toBe("acpx_handshake_timeout");
+  }, 10000);
+
+  it("reports how the agent process session ended when the process exits during the handshake", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    const runtime = {
+      ensureSession: async () => {
+        throw new Error("agent process exited during initialize");
+      },
+      startTurn: () => {
+        throw new Error("startTurn must not run after a failed handshake");
+      },
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox, {}, {
+      readTerminalEvidence: () => ({
+        source: "remote_event", outcome: "exit", exitCode: 137, signal: "SIGKILL",
+      }),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.resultJson).toMatchObject({
+      phase: "ensure_session",
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137,
+      acpProcessTerminalSignal: "SIGKILL",
+    });
   }, 10000);
 
   it("aborts an in-flight turn and fails the run when the duplex channel latches a loss mid-turn", async () => {

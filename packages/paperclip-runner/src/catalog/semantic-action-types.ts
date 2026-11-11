@@ -2,6 +2,7 @@ export type PaperclipSemanticActionId =
   | "search_api"
   | "call_api"
   | "set_task_title"
+  | "send_chat_message"
   | "set_task_monitor"
   | "get_task_context"
   | "get_task_history"

@@ -25,6 +25,13 @@ describe("controller-owned completion continuation", () => {
       .toEqual({ ...yielded, continuation: preparation });
   });
 
+  it.each([undefined, null])("fills a server-owned published response wait (%s)", async absent => {
+    const responseWait = { kind: "response_wake", summary: "Wait for the author.", idempotencyKey: "published-review:run:receipt" };
+    expect(await resolveCompletionContinuation({ ...yielded, continuation: absent }, "run", async () => ({
+      ...context, completionContinuation: responseWait,
+    }))).toEqual({ ...yielded, continuation: responseWait });
+  });
+
   it("rechecks a sidecar-resolved workspace continuation against current server authority", async () => {
     const preparation = { kind: "same_agent", summary: "Continue with the prepared repository.", idempotencyKey: "repository:task:receipt:run" };
     const report = { ...yielded, continuation: preparation };

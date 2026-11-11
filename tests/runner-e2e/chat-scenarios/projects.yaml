@@ -1,0 +1,111 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: projects
+status: planned
+scenarios:
+  - id: projects.create-project
+    capabilities:
+      - projects/lifecycle
+    context: >-
+      No Launch project exists; the CEO can create projects in the active company.
+    query: >-
+      Create a project called Launch for the new website.
+    expected_outcome: >-
+      One company-scoped project is saved with the requested identity and a usable link. The
+      agent checks for an existing intended project before duplicating it on retry. Creation
+      alone is not described as a ready repository, running task or deployed website.
+  - id: projects.archive-project
+    capabilities:
+      - projects/lifecycle
+    context: >-
+      Launch is complete and the actor may change its project lifecycle through the supported
+      API.
+    query: >-
+      Archive the Launch project but keep its history.
+    expected_outcome: >-
+      The project receives the supported archived state and remains reachable through its
+      historical context. Existing tasks, files and audit attribution remain intact. The
+      response reports the actual saved state and does not delete resources or confuse hiding a
+      project with cancelling unfinished execution.
+  - id: projects.project-work
+    capabilities:
+      - projects/task-context
+      - tasks/create
+    context: >-
+      Launch exists alongside another project with similarly named tasks.
+    query: >-
+      What is left in Launch, and create a task for Morgan to fix the mobile layout there.
+    expected_outcome: >-
+      The agent summarizes Launch's visible unfinished tasks and creates the requested
+      mobile-layout task in that exact project. It checks for an already matching request to
+      avoid accidental duplication and links both the relevant work and new task. Other projects
+      remain unchanged.
+  - id: projects.add-repository
+    capabilities:
+      - projects/repositories
+      - workspaces/provisioning
+    context: >-
+      A new project is requested with an authorized synthetic Git repository; initial repository
+      selection is supported.
+    query: >-
+      Create Launch using the acorn/site repository.
+    expected_outcome: >-
+      The project records the intended repository through the supported creation path and any
+      checkout preparation reports its real state. The agent distinguishes repository metadata
+      from a usable checkout, uses the current authorized connection and does not insert
+      operator filesystem paths or credentials into project settings.
+  - id: projects.replace-repository
+    capabilities:
+      - projects/repositories
+    context: >-
+      Launch already has a repository; replacing its repository selection requires board
+      authority.
+    query: >-
+      Switch Launch from acorn/site-old to acorn/site-new.
+    expected_outcome: >-
+      The agent identifies the existing and requested repositories and directs the authorized
+      human to the replacement control. It explains the effect on future work without claiming
+      existing active workspaces have already moved. No ordinary agent mutation bypasses the
+      board-only replacement path.
+  - id: projects.project-defaults
+    capabilities:
+      - projects/defaults
+      - goals/alignment
+    context: >-
+      The CEO may edit project instructions and goal associations; budget and environment fields
+      retain their separate permission rules.
+    query: >-
+      Make new Launch work follow our accessibility checklist and tie it to the growth goal.
+    expected_outcome: >-
+      The permitted project defaults and goal association persist, and new task context reflects
+      them. Chat distinguishes defaults for future work from changes to active tasks. If another
+      requested setting has a separate human gate, that field remains unchanged and the required
+      step is stated.
+  - id: projects.private-project
+    capabilities:
+      - projects/privacy
+      - tasks/privacy
+    context: >-
+      The person has a responsible-user identity; the CEO may create a private project but
+      cannot broaden an existing project's audience.
+    query: >-
+      Create a private project for the acquisition research.
+    expected_outcome: >-
+      The new project is private with ownership derived from the authorized person and correct
+      access for the acting agent. Its tasks inherit the appropriate restrictions. Company-wide
+      search and unrelated agents cannot discover its protected contents, and chat returns only
+      authorized links.
+  - id: projects.share-project
+    capabilities:
+      - projects/privacy
+    context: >-
+      Acquisition research is private; audience changes require its authorized human owner or
+      administrator.
+    query: >-
+      Let Riley see the acquisition project.
+    expected_outcome: >-
+      The agent identifies Riley and the supported project sharing step for the human owner. It
+      does not change the project to public to approximate a one-person grant. After the real
+      action, project access changes as intended while separately protected tasks retain their
+      own privacy rules.

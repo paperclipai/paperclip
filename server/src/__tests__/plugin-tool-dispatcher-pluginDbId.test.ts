@@ -152,9 +152,8 @@ describe("dispatcher.registerPluginTools — activation path", () => {
     // fall back to pluginKey, masking missed plumbing as a runtime "worker
     // not running" error. The registry now guards the contract explicitly.
     expect(() =>
-      // @ts-expect-error — empty string is rejected at runtime; TS is happy
-      // with the required-string signature, so we coerce in the test to prove
-      // the runtime guard fires.
+      // An empty string satisfies the required-string signature, so only the
+      // runtime guard rejects it.
       dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, ""),
     ).toThrow(/pluginDbId is required/);
   });
@@ -183,7 +182,7 @@ describe("dispatcher — lifecycle path (plugin.enabled → registerFromDb)", ()
     // bypass registerFromDb's DB lookup by reaching for the registry through
     // the public dispatcher surface — the lifecycle handler ends in the
     // exact same registry call shape, so coverage is equivalent.
-    dispatcher.getRegistry().registerPlugin(MANIFEST.pluginKey ?? PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
+    dispatcher.getRegistry().registerPlugin(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
 
     // Tools registered with UUID.
     const tool = dispatcher.getTool(`${PLUGIN_KEY}:ping`);

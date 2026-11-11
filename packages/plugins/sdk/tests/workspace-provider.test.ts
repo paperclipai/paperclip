@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   workspaceProviderOperationSchema,
   parseWorkspaceProviderResult,
+  parseWorkspacePrepareResult,
+  pluginWorkspacePrepareParamsSchema,
   type PluginWorkspaceParams,
 } from "../src/workspace-provider.js";
 import { createWorkspaceProviderHarness } from "../src/testing.js";
@@ -50,6 +52,51 @@ const result = {
   branchCreatedByRuntime: true,
 };
 describe("workspace provider SDK", () => {
+  it("validates asynchronous preparation receipts and preserves result scope", () => {
+    const submit = pluginWorkspacePrepareParamsSchema.parse({ ...params, phase: "submit" });
+    const poll = { ...submit, phase: "poll" as const };
+    const pending = { kind: "pending", deadline: "2099-01-01T00:01:00Z" };
+    expect(parseWorkspacePrepareResult(submit, pending)).toEqual(pending);
+    expect(parseWorkspacePrepareResult(poll, result)).toEqual(result);
+    expect(() => parseWorkspacePrepareResult(poll, { kind: "unsupported" })).toThrow();
+    expect(() => parseWorkspacePrepareResult(poll, { ...pending, deadline: "whenever" })).toThrow();
+    expect(() => parseWorkspacePrepareResult(poll, { ...result, binding: { ...result.binding, projectId: id(20) } })).toThrow();
+  });
+
+  it("bounds recovery hints to an exact PR number and commit", () => {
+    for (const kind of ["inspect", "remove"] as const) {
+      const operation = { kind, binding: result.binding, ...(kind === "remove" ? { expectedHeadSha: "a".repeat(40) } : {}) };
+      const recoveryPullRequest = { number: 42, headSha: "a".repeat(40) };
+      expect(workspaceProviderOperationSchema.parse({ ...operation, recoveryPullRequest })).toMatchObject({ recoveryPullRequest });
+      for (const bad of [{ ...recoveryPullRequest, number: 0 }, { ...recoveryPullRequest, number: 1.5 },
+        { ...recoveryPullRequest, headSha: "a".repeat(41) }, { ...recoveryPullRequest, ref: "refs/heads/main" }]) {
+        expect(() => workspaceProviderOperationSchema.parse({ ...operation, recoveryPullRequest: bad })).toThrow();
+      }
+    }
+  });
+  it("accepts an unbound reservation removal but requires a binding elsewhere", () => {
+    expect(workspaceProviderOperationSchema.parse({ kind: "remove", binding: null, expectedHeadSha: null }))
+      .toEqual({ kind: "remove", binding: null, expectedHeadSha: null });
+    expect(() => workspaceProviderOperationSchema.parse({ kind: "inspect", binding: null })).toThrow();
+  });
+  it("accepts only canonical optional preparation destinations", () => {
+    for (const destinationRef of [undefined, null, "refs/heads/main", "refs/heads/release/one"]) {
+      expect(parseWorkspaceProviderResult(params, { ...result, ...(destinationRef !== undefined ? { destinationRef } : {}) }))
+        .toMatchObject(result);
+    }
+    for (const destinationRef of ["main", "refs/tags/main", "refs/heads/main..other", "refs/heads/main/", "refs/heads/.hidden", "refs/heads/main.lock"]) {
+      expect(() => parseWorkspaceProviderResult(params, { ...result, destinationRef })).toThrow();
+    }
+  });
+  it("preserves a 255-character destination branch through preparation and restoration", () => {
+    const destinationRef = `refs/heads/release/${"a".repeat(247)}`;
+    expect(destinationRef).toHaveLength(266);
+    for (const input of [params, { ...params, operation: { ...params.operation, branchMode: "existing" as const, existing: result.binding } }]) {
+      expect(parseWorkspaceProviderResult(input as PluginWorkspaceParams, { ...result, destinationRef }))
+        .toMatchObject({ destinationRef });
+      expect(() => parseWorkspaceProviderResult(input as PluginWorkspaceParams, { ...result, destinationRef: `${destinationRef}a` })).toThrow();
+    }
+  });
   it("separates completion acknowledgement from removal safety", () => {
     const input: PluginWorkspaceParams = { ...params, agentId: id(6), runId: id(7),
       operation: { kind: "finalize", binding: result.binding } };
@@ -122,6 +169,10 @@ describe("workspace provider SDK", () => {
       resourceLifecycle: ["project"],
     };
     expect(pluginManifestV1Schema.safeParse(manifest).success).toBe(true);
+    expect(pluginManifestV1Schema.parse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
+      recoveryPullRequestVersion: 1 } }).workspaceProvider?.recoveryPullRequestVersion).toBe(1);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
+      recoveryPullRequestVersion: 2 } }).success).toBe(false);
     const withDefault = { ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
       defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" } } };
     expect(pluginManifestV1Schema.parse(withDefault).workspaceProvider?.defaultForProjects).toEqual({

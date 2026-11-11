@@ -6,13 +6,17 @@ async function json<T = Record<string, any>>(response: APIResponse): Promise<T> 
   return response.json();
 }
 
-let cleanup: { companyId: string; enableClassicTaskInterface: boolean } | undefined;
+let cleanup: { companyId: string; enableClassicTaskInterface: boolean; coordinatorWorkspaceEnabled: boolean } | undefined;
 
 test.afterEach(async ({ request }, testInfo) => {
   const state = cleanup;
   cleanup = undefined;
   if (!state) return;
   testInfo.setTimeout(15_000);
+  const workspaceResult = await request.put(`/api/companies/${state.companyId}/workspace-preferences/me`, {
+    data: { coordinatorWorkspaceEnabled: state.coordinatorWorkspaceEnabled }, timeout: 5_000,
+  });
+  expect(workspaceResult.ok()).toBe(true);
   const results = await Promise.allSettled([
     request.patch("/api/instance/settings/experimental", {
       data: { enableClassicTaskInterface: state.enableClassicTaskInterface }, timeout: 5_000,
@@ -36,7 +40,12 @@ for (const classic of [false, true]) {
     const company = await json(await request.post("/api/companies", {
       data: { name: `Completed task status ${randomUUID()}` },
     }));
-    cleanup = { companyId: company.id, enableClassicTaskInterface: settings.enableClassicTaskInterface };
+    const workspace = await json(await request.get("/api/workspace-preferences/me"));
+    cleanup = { companyId: company.id, enableClassicTaskInterface: settings.enableClassicTaskInterface,
+      coordinatorWorkspaceEnabled: workspace.coordinatorWorkspaceEnabled };
+    await json(await request.put(`/api/companies/${company.id}/workspace-preferences/me`, {
+      data: { coordinatorWorkspaceEnabled: !classic },
+    }));
     await json(await request.patch("/api/instance/settings/experimental", {
       data: { enableClassicTaskInterface: classic },
     }));
@@ -73,6 +82,8 @@ for (const classic of [false, true]) {
     };
     const observe = async (status: string, warningVisible: boolean) => {
       await expect(page.getByText(task.title, { exact: true }).first()).toBeVisible();
+      const showProperties = page.getByRole("button", { name: "Show properties", exact: true });
+      if (await showProperties.isVisible()) await showProperties.click();
       const statusLabel = status[0].toUpperCase() + status.slice(1);
       await expect(page.getByTestId("issue-detail-header").getByRole("button", {
         name: status === "blocked"
@@ -82,7 +93,7 @@ for (const classic of [false, true]) {
       }).first()).toBeVisible();
       // Wait for the actual agent-backed controls and thread to render before
       // asserting absence; a title alone can appear before the agent map loads.
-      await expect(page.getByRole("button", { name: /Receipt implementation/ }).first()).toBeVisible();
+      await expect(page.getByRole("button", { name: classic ? /Receipt implementation/ : "Select assignee" }).first()).toBeVisible();
       await expect(page.getByRole("textbox", { name: "editable markdown" })).toBeVisible();
       if (warningVisible) {
         await expect(notice).toBeVisible();

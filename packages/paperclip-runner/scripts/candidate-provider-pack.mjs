@@ -1,19 +1,22 @@
 import { materializePiDistribution } from "./materialize-pi-distribution.mjs";
 import profiles from "../acpx-profiles.json" with { type: "json" };
 import { materializePinnedCursorDistribution } from "./materialize-cursor-distribution.mjs";
-const CANDIDATES = new Set(["cursor", "copilot", "pi"]);
+const CANDIDATES = new Set(["cursor", "copilot", "pi", "kimi"]);
+const releasedKimi = () => profiles.profiles.kimi.qualificationStatus !== "pending";
+const ordinaryProviders = () => ["pi", "cursor", "copilot", ...(releasedKimi() ? ["kimi"] : [])];
 
 /** Only materialized providers enter the serialized manifest and its digest. */
 export function providerPackManifestFields(providers, candidates) {
   return {
-    ...(["pi", "cursor", "copilot"].some(provider => providers[provider]) ? { providers: Object.fromEntries(["pi", "cursor", "copilot"].filter(provider => providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
-    ...(["pi", ...candidates].some(provider => provider !== "copilot" && providers[provider]) ? { candidateProviders: Object.fromEntries([...new Set(["pi", ...candidates])].filter(provider => provider !== "copilot" && providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
+    ...(ordinaryProviders().some(provider => providers[provider]) ? { providers: Object.fromEntries(ordinaryProviders().filter(provider => providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
+    ...(["pi", ...candidates].some(provider => provider !== "copilot" && !(provider === "kimi" && releasedKimi()) && providers[provider]) ? { candidateProviders: Object.fromEntries([...new Set(["pi", ...candidates])].filter(provider => provider !== "copilot" && !(provider === "kimi" && releasedKimi()) && providers[provider]).map(provider => [provider, providers[provider]])) } : {}),
   };
 }
 
 export function providerPackProviders(platform, architecture, candidates) {
   const nativeSupported = ["darwin-arm64", "darwin-x64", "linux-x64"].includes(`${platform}-${architecture}`);
-  return [...new Set([...(nativeSupported ? ["pi", "cursor", "copilot"] : []), ...candidates])];
+  const kimiSupported = ["darwin-arm64", "linux-x64"].includes(`${platform}-${architecture}`);
+  return [...new Set([...(nativeSupported ? ["pi", "cursor", "copilot"] : []), ...(releasedKimi() && kimiSupported ? ["kimi"] : []), ...candidates])];
 }
 
 export function parseProviderPackArguments(args) {
@@ -34,6 +37,11 @@ export function parseProviderPackArguments(args) {
 /** Closed source-owned builder registry; provider branches add their exact pins. */
 export async function materializeCandidateProviderPack({ provider, outputRoot }) {
   if (!CANDIDATES.has(provider)) throw new Error("Unknown candidate provider");
+  if (provider === "kimi") {
+    const { materializeKimiDistribution } = await import("./materialize-kimi-distribution.mjs");
+    const result = await materializeKimiDistribution({ outputRoot });
+    return { version: result.version, profileDigest: profiles.profiles.kimi.commandDigest, closureDigest: result.closureDigest };
+  }
   if (provider === "pi") return materializePiDistribution({ outputRoot });
   if (provider === "copilot") {
     const { buildPinnedCopilotDistribution } = await import("./build-copilot-distribution.mjs");

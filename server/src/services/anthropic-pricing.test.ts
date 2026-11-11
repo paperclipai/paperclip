@@ -21,6 +21,11 @@ describe("complete Anthropic receipt pricing", () => {
     expect(priced.usage).toBe(receipt.usage);
     expect(receipt.costStatus).toBe("unpriced");
   });
+  it("keeps a producer's lower-bound note in the rate-card provenance", () => {
+    const priced = priceAnthropicReceipt({ ...receipt, pricingProvenance: { source: "unknown", evidence: "observed usage is a lower bound" } });
+    expect(priced.pricingProvenance).toMatchObject({ source: "rate_card" });
+    expect(priced.pricingProvenance?.evidence).toMatch(/one-hour upper rate used; not an invoice; observed usage is a lower bound$/);
+  });
   it.each([
     { complete: false }, { billingType: "unknown" }, { billingType: "subscription_included" },
     { provider: "unknown" }, { biller: "aws_bedrock" }, { model: "claude-sonnet-latest" }, { model: "constructor" }, { model: "toString" }, { model: "__proto__" },

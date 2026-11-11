@@ -1,3 +1,5 @@
+import { projectEnvironmentOptions } from "../services/project-environments.js";
+import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -52,8 +54,6 @@ import {
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
-import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
@@ -85,7 +85,6 @@ export function projectRoutes(db: Db) {
     enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
   });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
-  const environmentsSvc = environmentService(db);
 
   /**
    * Managed-sandbox-only policy (`enableManagedSandboxOnly`): a project
@@ -110,21 +109,6 @@ export function projectRoutes(db: Db) {
     throw unprocessable(
       "This instance runs agents only in the platform-managed environment; local folders are not configurable.",
     );
-  }
-
-  async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
-    if (environmentId === undefined || environmentId === null) return;
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ["local", "ssh", "sandbox"],
-    });
-  }
-
-  function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
-    if (!policy || typeof policy !== "object" || !("environmentId" in policy)) {
-      return undefined;
-    }
-    const environmentId = (policy as { environmentId?: unknown }).environmentId;
-    return typeof environmentId === "string" || environmentId === null ? environmentId : undefined;
   }
 
   async function resolveCompanyIdForProjectReference(req: Request) {
@@ -296,6 +280,22 @@ export function projectRoutes(db: Db) {
     res.json(await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted));
   });
 
+  router.get("/projects/:id/git-authorization", async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    if (!req.actor.userId) throw forbidden("A signed-in user is required");
+    res.json(await projectGitAuthorizationService(db).read(project.companyId, project.id, req.actor.userId));
+  });
+
+  router.put("/projects/:id/git-authorization", validate(z.object({ grantId: z.string().uuid().nullable() }).strict()), async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project)) || !(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
+    if (!req.actor.userId) throw forbidden("A signed-in user is required");
+    res.json(await projectGitAuthorizationService(db).set(project.companyId, project.id, req.actor.userId, req.body.grantId));
+  });
+
   router.put("/projects/:id/repositories", validate(z.object({ repositoryIds: z.array(z.string().regex(/^\d+$/)) })), async (req, res) => {
     assertBoard(req);
     const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
@@ -358,22 +358,31 @@ export function projectRoutes(db: Db) {
     res.json(summary);
   });
 
+  router.get("/companies/:companyId/project-environments", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await projectEnvironmentOptions(db, companyId, {
+      userId: req.actor.type === "board" ? req.actor.userId : req.actor.onBehalfOfUserId,
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+    }));
+  });
+
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
       repositoryIds?: string[];
+      environmentId?: string;
+      expectedStorageProviderPluginId?: string | null;
     };
 
-    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, environmentId, expectedStorageProviderPluginId, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
+    if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
-    await assertProjectEnvironmentSelection(
-      companyId,
-      readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
-    );
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       [
@@ -393,7 +402,7 @@ export function projectRoutes(db: Db) {
     const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
     const actor = getActorInfo(req);
-    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls })).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls, environmentId, expectedStorageProviderPluginId })).digest("hex");
     const receiptKey = idempotencyKey ? `project:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}` : null;
     const result = await db.transaction(async (tx) => {
       if (receiptKey) {
@@ -406,7 +415,7 @@ export function projectRoutes(db: Db) {
         // The receipt lock can wait too. Keep current authority behind every
         // admission wait and ahead of both receipt replay and project creation.
         await withExternalExecutionAdmission(tx, actorCompanyId, agentId, runId, async () => {
-          const current = await projectToolContext(tx as unknown as Db, museActor, true);
+          const current = await projectToolContext(tx as unknown as Db, museActor, true, "Project", { includeExecutionInput: true });
           try {
             const execution = parseNativeExecutionInput(current.run.runnerProfileJson?.nativeExecutionInput);
             const broker = museExternalAgents(db);
@@ -422,6 +431,7 @@ export function projectRoutes(db: Db) {
           }
         });
       }
+      if (receiptOnly && runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       if (receiptKey) {
         const [prior] = await tx.select().from(activityLog).where(and(
           eq(activityLog.companyId, companyId), eq(activityLog.action, "project.created"),
@@ -434,9 +444,16 @@ export function projectRoutes(db: Db) {
           return { project, publication: null, duplicate: true };
         }
       }
+      if (receiptOnly) return null;
       if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
-      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
+      const environment = {
+        environmentId,
+        expectedStorageProviderPluginId,
+        userId: req.actor.type === "board" ? req.actor.userId : req.actor.onBehalfOfUserId,
+        agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      };
+      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories, environment) : await service.create(companyId, projectData, environment);
       if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
       const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
       const registeredUrls: typeof urlRepositories = [];
@@ -466,6 +483,7 @@ export function projectRoutes(db: Db) {
       });
       return { project: hydrated ?? project, publication: activity.publication, duplicate: false };
     });
+    if (!result) { res.status(204).end(); return; }
     if (result.publication) publishActivity(result.publication);
     if (result.project.env) await secretsSvc.syncEnvBindingsForTarget?.(companyId, { targetType: "project", targetId: result.project.id }, result.project.env);
     if (result.duplicate) { res.status(200).json(result.project); return; }
@@ -489,10 +507,6 @@ export function projectRoutes(db: Db) {
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
-    );
-    await assertProjectEnvironmentSelection(
-      existing.companyId,
-      readProjectPolicyEnvironmentId(body.executionWorkspacePolicy),
     );
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);

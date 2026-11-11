@@ -6,6 +6,12 @@ import type {
 } from "./workspace-runtime.js";
 import type { AgentEnvConfig } from "./secrets.js";
 
+export interface ProjectGitAuthorization {
+  grantId: string | null;
+  authorizedByUserId: string | null;
+  options: Array<{ grantId: string; connectionName: string; login: string }>;
+}
+
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
 export type ProjectVisibility = "open" | "private";
@@ -101,8 +107,17 @@ export interface ProjectDiscoveryPage {
   nextCursor: string | null;
 }
 
+export interface ProjectEnvironmentOptions {
+  groups: Array<{
+    storageProviderPluginId: string | null;
+    environments: Array<{ id: string; name: string }>;
+  }>;
+  defaultEnvironmentId: string | null;
+  error: string | null;
+}
+
 export interface ProjectWorkspaceProviderConfiguration {
-  source: "project" | "default" | "core";
+  source: "project" | "core";
   pluginId: string | null;
   displayName: string;
   providers: Array<{ id: string; displayName: string; isDefault: boolean }>;

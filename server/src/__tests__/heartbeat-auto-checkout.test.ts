@@ -10,6 +10,7 @@ describe("shouldAutoCheckoutIssueForWake", () => {
     { contextSnapshot: {} }, { contextSnapshot: { wakeReason: "issue_comment_mentioned" } },
     { contextSnapshot: { wakeReason: "source_scoped_recovery_action" } },
     { contextSnapshot: { wakeReason: "execution_resumed" } },
+    { contextSnapshot: { wakeReason: "context_compaction", contextCompactionRequestId: "req-1" } },
   ])("does not grant an automatic checkout outside the eligible assigned wake: %j", override => {
     expect(shouldAutoCheckoutIssueForWake({
       contextSnapshot: { wakeReason: "issue_assigned" }, issueStatus: "todo",

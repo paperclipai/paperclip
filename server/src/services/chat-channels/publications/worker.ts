@@ -1,3 +1,6 @@
+import type { ChatPublicationPreparationWait } from "./preparation.js";
+import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
+import { notifyVoicePublication } from "../../voice/voice-reply-notifications.js";
 import { createGitHubPublicationPolicy } from "../github/publication-policy.js";
 
 import { createTeamsFileDelivery } from "../microsoft-teams/file-delivery.js";
@@ -88,6 +91,7 @@ import type { createChatPublicationPreparation } from "./preparation.js";
 import type { createChatPublicationTransport } from "./transport.js";
 type PublicationWorkerOptions = Pick<ReturnType<typeof createChatPublicationReplacement>, "runOwnershipMilestoneSupersessionReason" | "runPublicationToReplace" | "receiptReactionCompletionRunId" | "inboundWakePublicationToReplace" | "interactionResolutionPublicationToReplace" | "interactionPromptPublicationToReplace" | "progressSupersededByFastResponse" | "runProgressSupersededByPublishedInteraction" | "taskStatusPublicationToReplace" | "closeProgressToReplace"> & {
   CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities>;
+  prepareSlackFormPublication?: ReturnType<typeof import("../slack/form-publication.js").createSlackFormPublicationStage>;
   authorizeRetainedChatSourcePublication: (tx: DbOrTransaction, publication: typeof chatPublications.$inferSelect) => Promise<boolean>;
   claimPublicationTransportAuthorization: ReturnType<typeof createChatPublicationAuthorization>["claimPublicationTransportAuthorization"];
   commitTaskControlCompletion: ReturnType<typeof createChatPublicationTaskControl>["commitTaskControlCompletion"];
@@ -153,7 +157,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         ? classified.retryAfterMs
         : Math.min(60_000, 2 ** Math.max(0, attempts) * 1_000);
     const result = await db.transaction(async (tx) => {
-      await notifyChatPublicationWork(tx);
+      await notifyChatPublicationWork(tx, terminal ? publication : undefined);
+      if (!terminal) await notifyChatResponseAvailability(tx, publication);
       const [settled] = await tx
         .update(chatPublications)
         .set({
@@ -379,7 +384,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
     }
     if (explicitSlackDelivery === "delivered") {
       await db.transaction(async (tx) => {
-        await notifyChatPublicationWork(tx);
+        await notifyChatPublicationWork(tx, publication);
         return tx.update(chatPublications).set({ state: "cancelled", redactedError: "Identical response already delivered by Slack tool", updatedAt: new Date() }).where(and(eq(chatPublications.id, publication.id), inArray(chatPublications.state, ["pending", "retry"])))
 ;
       });
@@ -421,6 +426,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
       const settlePublicationFailure = async (
         error: unknown,
         credentialLease?: CredentialMutationLeaseGuard,
+        providerInvocation: "possible" | "not_started" = "possible",
+        preparationWait?: ChatPublicationPreparationWait,
       ) => {
         try {
           await finalizePublicationFailure(
@@ -429,6 +436,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
             providerAccepted,
             publicationRuntimeContext,
             credentialLease ?? publicationLease,
+            providerInvocation,
+            preparationWait,
           );
         } catch (finalizationError) {
           // If the provider accepted the message, a failed receipt write
@@ -474,6 +483,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
             await notifyChatPublicationWork(tx);
+            await notifyChatResponseAvailability(tx, publication);
             return tx
               .update(chatPublications)
               .set({
@@ -506,7 +516,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         ) {
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
-            await notifyChatPublicationWork(tx);
+            await notifyChatPublicationWork(tx, publication);
             return tx
               .update(chatPublications)
               .set({
@@ -530,7 +540,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           if (!endpoint.allowDirectMessages) {
             await publicationLease.assertOwned();
             await db.transaction(async (tx) => {
-              await notifyChatPublicationWork(tx);
+              await notifyChatPublicationWork(tx, publication);
               return tx
                 .update(chatPublications)
                 .set({
@@ -565,7 +575,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           if (!nonDirectDestinationAllowed(endpoint, resource)) {
             await publicationLease.assertOwned();
             await db.transaction(async (tx) => {
-              await notifyChatPublicationWork(tx);
+              await notifyChatPublicationWork(tx, publication);
               return tx
                 .update(chatPublications)
                 .set({
@@ -604,7 +614,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           if (!currentInteraction || currentInteraction.status !== "pending") {
             await publicationLease.assertOwned();
             await db.transaction(async (tx) => {
-              await notifyChatPublicationWork(tx);
+              await notifyChatPublicationWork(tx, publication);
               return tx
                 .update(chatPublications)
                 .set({
@@ -637,7 +647,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         if (progressSupersessionReason) {
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
-            await notifyChatPublicationWork(tx);
+            await notifyChatPublicationWork(tx, publication);
             return tx
               .update(chatPublications)
               .set({
@@ -709,7 +719,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
               if (!authorizationClaim) {
                 await db.transaction(async (tx) => {
                   await credentialLease.assertOwned(tx);
-                  await notifyChatPublicationWork(tx);
+                  await notifyChatPublicationWork(tx, publication);
                   await tx
                     .update(chatPublications)
                     .set({
@@ -778,6 +788,19 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                       runtimeContext: currentPublicationRuntimeContext,
                     })
                   : null;
+              let stageSlackForm: Exclude<Awaited<ReturnType<NonNullable<PublicationWorkerOptions["prepareSlackFormPublication"]>>>, ChatPublicationPreparationWait> | undefined;
+              try {
+                const preparation = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
+                if (preparation == null || typeof preparation === "function") {
+                  stageSlackForm = preparation;
+                } else {
+                  await settlePublicationFailure(new Error(preparation.reason), credentialLease, "not_started", preparation);
+                  return;
+                }
+              } catch (error) {
+                await settlePublicationFailure(error, credentialLease, "not_started");
+                return;
+              }
               const sent = await postSafePublication({
                 endpoint: authorizationClaim.endpoint,
                 conversation: authorizationClaim.conversation,
@@ -857,7 +880,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
               await db.transaction(async (tx) => {
                 await credentialLease.assertOwned(tx);
                 const committedAt = new Date();
-                await notifyChatPublicationWork(tx);
+                await notifyChatPublicationWork(tx, publication);
+                await notifyVoicePublication(tx, authorizationClaim.endpoint, publication.conversationId);
                 const [completedPublication] = await tx
                   .update(chatPublications)
                   .set({
@@ -881,6 +905,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                     "Chat publication ownership changed before commit",
                   );
                 }
+                await stageSlackForm?.(tx);
                 if (telegramDraft) {
                   const completedDraft = await tx
                     .update(chatActions)

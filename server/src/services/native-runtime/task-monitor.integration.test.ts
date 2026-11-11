@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, agentWakeupRequests, authUsers, companyMemberships, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions } from "@paperclipai/db";
-import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { buildIssueMonitorTriggeredPatch, normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
@@ -42,6 +42,29 @@ describeEmbeddedPostgres("native task monitors", () => {
     const read = async () => (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
     return { ...binding, binding, authority, monitor, call, read };
   }
+
+  it("advertises the enforced notes limit and rejects oversized notes without writes", async () => {
+    const value = await fixture();
+    const tool = value.authority.definitions().find(tool => tool.name === "set_task_monitor")!;
+    const schema = tool.inputSchema as { properties: { monitor: { properties: { notes: { maxLength: number; description: string } } } } };
+    const notesSchema = schema.properties.monitor.properties.notes;
+    const limit = notesSchema.maxLength;
+    expect(limit).toBe(500);
+    expect(notesSchema.description).toContain(String(limit));
+    const notes = "x".repeat(limit);
+    expect(issueExecutionMonitorPolicySchema.parse({ ...value.monitor, notes }).notes).toBe(notes);
+    expect(issueExecutionMonitorPolicySchema.safeParse({ ...value.monitor, notes: notes + "x" }).success).toBe(false);
+    const before = await value.read();
+    await expect(value.call({ idempotencyKey: "too-long", monitor: { ...value.monitor, notes: notes + "x" } }))
+      .rejects.toThrow(/500/);
+    expect(await value.read()).toEqual(before);
+    await value.call({ idempotencyKey: "maximum", monitor: { ...value.monitor, notes } });
+    const saved = await value.read();
+    expect(saved.monitorNotes).toBe(notes);
+    await expect(value.call({ idempotencyKey: "too-long-replacement", monitor: { ...value.monitor, notes: notes + "x" } }))
+      .rejects.toThrow(/monitor[\s\S]*notes[\s\S]*500/);
+    expect(await value.read()).toEqual(saved);
+  });
 
   it("notifies committed monitor changes for another owned task without replay or authorization wakeups", async () => {
     const value = await fixture(), targetId = randomUUID();

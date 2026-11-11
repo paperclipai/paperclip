@@ -4,6 +4,23 @@ Core can run `paperclip_runner` tasks in a plugin environment.
 The plugin owns the execution host and its files.
 Core owns run identity, selected policy, assigned tools, and the PRP journal.
 
+## Managed AI connection required
+
+A task-capable environment runs only agents with a managed AI connection.
+Core does not use an account installed on the plugin's execution host.
+Before it acquires a lease or calls the plugin, Core fails a new run that has
+no managed AI connection. A `homeMode: "preconfigured"` Runner home does not use
+the agent's AI connection, so Core refuses it in the same way. The run fails as
+`configuration_incomplete` with reason `ai_connection_required`. The task is
+blocked with a notice that names the fix: choose an AI connection, or switch to
+an isolated Runner home. Agent verification applies the same rule before it
+resolves the probe target, so it acquires no lease. The agent Test route also
+checks before it resolves secrets or allocates a test target. A setup probe without a
+managed AI connection, or with a preconfigured home, fails the
+`ai_connection_required` check and calls no task operation. Verification then
+waits for the configuration to change.
+A resumed native run keeps the contract it was admitted under.
+
 ## Required hooks
 
 Set `supportsTasks: true` on the environment driver.
@@ -23,9 +40,11 @@ bounded `read_file` operation for attachments and deliverables.
 
 Core supports per-turn workspace sessions with Codex, OpenCode, and ACPX.
 OpenCode and ACPX require the existing qualified provider profiles.
-Workspace-free providers and warm process retention are not supported here.
+Workspace-free providers are not supported here. Drivers opt into warm retention through `warmTaskVersion: 1`. Core prefers warm execution for new task runs on capable drivers, including ACPX; existing provider admission still determines which harnesses the driver supports.
 The plugin owns project workspace preparation. Core does not prepare or reuse
 a Core Git worktree for a task-only environment.
+Selecting a plain task directory does not add redundant default configuration.
+Retaining that directory does not itself change the run configuration.
 For plugin-backed project storage, Core uses the workspace provider contract.
 The storage plugin must also provide the selected execution environment.
 Its declared workspace modes and strategies remain in effect.
@@ -116,9 +135,18 @@ These operations do not accept paths. Core checks the active lease and retained
 source task before it calls the plugin. The existing Runner transport validates
 state identity and suspension before it rotates authority.
 
+For controller replacement, Core restores its encrypted PRP journal from Postgres
+and reuses the original active task lease. The task owner checks running status
+and exact Runner identity, then reacquires the connection. It does not call
+`prepare`, `submit`, or `stop`. The running artifact remains pinned even if
+`describe` reports a newer installed version. Launch preparation files on the
+old controller are not required to adopt an already running task.
+The five-minute outage contract and its prerequisites are described in the
+[continuity recipe](../testing-native-remote-continuity.md#replacing-the-main-server).
+
 Core checks company, agent, environment, workspace, driver, and termination
-receipts before it supplies `resumeFrom`. For same-run controller recovery, Core
-first stops and releases the old task. A failed stop prevents replacement.
+receipts before it supplies `resumeFrom`. Historical controller recovery without
+the durable journal first stops and releases the old task. A failed stop prevents replacement.
 A new run prepares its current assignments. Provider compatibility checks remain
 in the existing backends. Missing or incompatible retained state fails closed.
 
@@ -144,6 +172,18 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
+Before creating a fresh workspace for an admitted Retry, Core may send the
+original task-owned workspace's `prepare` request with `verifyExisting: true`.
+Core sends verification through `workspaceOperation` with a 10-second
+deadline and a 12-second RPC timeout.
+The provider must verify a completed checkout without creating or fetching
+one and return `prepared` with `created: false`. Core checks prior writer
+settlement and continues normal preparation on the retained workspace after
+verification. A missing or unconfirmed checkout leaves the fresh retry
+fallback in place. Local workspaces use the same ownership and writer
+checks with Core's existing local Git verification.
+
 A storage provider can declare `workspaceProvider.finalizationVersion: 1`.
 Core then sends `workspaceOperation` with `operation.kind: "finalize"`, the retained
 binding, lifecycle generation, and originating `runId` and `agentId`. The operation
@@ -161,3 +201,301 @@ Recovery receives the original run and agent context.
 The existing agent-independent `inspect` and `remove` operations continue to
 protect storage maintenance. Providers that do not declare finalization version 1
 retain the inspection-based completion path. No stored binding migration is required.
+
+A provider whose inspection cannot prove merge ancestry may declare
+`workspaceProvider.supportsMergeAncestry: false`. Omission preserves the existing
+ancestry inspection behavior. For an opted-out provider, automatic cleanup uses
+its latest successful finalization HEAD as a hint for destination-aware GitHub
+checks. It discovers associated PRs without requiring a recorded work product.
+A direct ancestry proof or a merged PR with the exact final HEAD, intended base
+repository/branch, and reachable integration commit must precede storage
+inspection. A fresh matching HEAD and branch, remote recoverability, no local
+data, terminal tasks, and the existing lifecycle fences still govern deletion.
+Open or unknown delivery for a known commit retains a bounded remote-only retry.
+Missing candidate identity parks until a relevant write or startup recovery.
+Explicit close-readiness and pending lifecycle recovery retain their checks.
+
+A provider may declare `workspaceProvider.recoveryPullRequestVersion: 1`. Core
+can then include `recoveryPullRequest: { number, headSha }` in `inspect` and
+`remove`. This is a narrow recovery hint, not permission to delete. The provider
+must use its trusted source repository, validate that the specific PR recovery
+reference still identifies `headSha`, and independently check the actual workspace
+and all owned data. Arbitrary remote URLs and reference names are not accepted.
+Absent capability means Core does not send the extra field. Before dispatch,
+Core persists the negotiated removal payload and its operation ID. Retries replay
+both unchanged, even if capabilities change, while still enforcing company,
+provider enablement, binding and generation checks. A downgraded provider can
+reject an unsupported payload; Core does not silently change its identity.
+Legacy intents without a recovery hint retain their deterministic ID. A hinted
+intent without a recorded ID is ambiguous and fails closed. None of these
+receipts replaces the provider's checks.
+
+A reservation is a workspace whose `prepare` never returned a binding. When its
+source task is done or cancelled, no task points at it, and no run for the task
+is queued or running, Core archives it and sends `remove` with `binding: null`
+and `expectedHeadSha: null` instead of reconciling it with an agent-free
+`prepare`. The provider must resolve its own record for that execution
+workspace, discard anything the unfinished preparation created, and return
+`{ kind: "removed" }`, including when nothing was created. The removal is
+persisted and replayed with the same operation ID like any other removal. A
+provider that refuses it fails the removal, which backs off like any other
+cleanup failure. A reservation that a task still points at, or whose task is
+open, keeps the `prepare` reconciliation.
+
+When terminal cleanup inspection or removal fails, Core records
+`metadata.terminalCleanupRetry` on the workspace with the failure count, the
+next attempt time, and the failure `kind`, `reason`, and Core's message. Retries
+back off from 5 minutes, doubling up to 4 hours. A successful inspection or
+removal clears the record, and a reopen, which raises the lifecycle generation,
+discards it. Other wakes, including provider upgrades, wait for the next attempt
+time. Core keeps the record through workspace metadata updates.
+
+The optional `prepared.destinationRef` records the resolved delivery branch as
+`refs/heads/<branch>`, up to 266 characters including the prefix. Providers should
+return null when preparation cannot establish an unambiguous branch destination
+or its canonical ref exceeds this receipt limit; an optional receipt must not
+fail an otherwise successful preparation. Core stores this alongside the source
+snapshot; callers cannot overwrite it through workspace metadata updates. Older
+providers omit it. Core only falls back to their captured explicit source refs,
+not a mutable project configuration or a newly chosen default branch. A source
+SHA or tag may support direct ancestry, but does not imply a PR base branch.
+Provider upgrades, activation, company re-enablement, and finalization settlement
+wake cleanup transactionally. No table, independent timer, or background scan of
+all remote PR refs is required.
+
+### Asynchronous workspace preparation
+
+A provider can implement `onWorkspacePrepare` alongside `onWorkspaceOperation`.
+Core calls the optional method with `phase: "submit"` and a short submission
+deadline. A provider that cannot prepare asynchronously returns
+`{ kind: "unsupported" }` before starting work, so Core can use the original
+operation. Otherwise the provider returns the completed result or a
+`{ kind: "pending", deadline }` receipt. The provider sets and enforces that
+operation deadline. Core holds the workspace lifecycle lock during preparation
+and rejects offers beyond the previous synchronous RPC budget before polling.
+It honors accepted deadlines as supplied. Replayed submission must not duplicate
+an active prepare.
+
+Core sends `phase: "poll"` with the same operation identity and the deadline
+from the receipt. The provider returns the same receipt while work is pending
+and the usual scoped `prepared` result after success. Core rejects late results
+and stops polling when the deadline expires. Each submission and poll has a
+short transport bound independent of the operation deadline. A provider can
+keep reporting pending while it restores recovery snapshots, under the same
+deadline.
+
+Each invocation has its own scoped host access. Complete scoped host calls
+inside the submit or poll that owns them. Detached work can use a remote
+operation already authorized by that invocation. It cannot reuse the
+invocation to call host services after the reply.
+
+### Workspace operation failures
+
+Core separates a failed `workspaceOperation` call by what it knows about the
+outcome:
+
+| Failure | Run error | Core behavior |
+| --- | --- | --- |
+| The worker was not running, so no request was sent | `Workspace storage provider is not running; retry the same workspace` | A run that has not started provider work is retried as `plugin_worker_unavailable`. |
+| The call timed out, or the worker exited with the call pending | A fixed timeout or stopped-provider message that says to retry the same workspace | The operation may have run, so the same workspace and operation identity must be retried. |
+| The provider threw an error with a known reason | The fixed message Core keeps for that reason | Only transient reasons tell the user to retry. |
+| The provider threw any other error | `Workspace storage provider reported a failure; retry the same workspace` | Unchanged setup failure. |
+
+To report a reason, throw `PluginWorkspaceOperationError` from
+`onWorkspaceOperation` or `onWorkspacePrepare`, or any error with an own `workspaceFailureReason`
+property. The reason must come from `WORKSPACE_OPERATION_FAILURE_REASONS`:
+
+| Reason | Retrying the same workspace can help |
+| --- | --- |
+| `unsupported_operation`, `configuration_unavailable`, `credential_unavailable`, `storage_grant_unavailable`, `binding_mismatch`, `runtime_connection_invalid` | No |
+| `storage_pending`, `runtime_unavailable`, `remote_incomplete`, `context_changed`, `deadline_exceeded` | Yes |
+
+```ts
+import { PluginWorkspaceOperationError } from "@paperclipai/plugin-sdk";
+
+throw new PluginWorkspaceOperationError("storage_grant_unavailable", "Project mount grants unavailable");
+```
+
+The SDK sends only the reason. Core never reads the provider's message, so a
+message cannot reach the run, the API, or Core logs. The run keeps its
+`setup_failed` error code and records `resultJson.workspaceProviderFailure` with
+the failure `kind`, `reason`, and `retryable` flag. The
+`heartbeat execution setup failed` log carries the same fields. A provider may
+also record a `plugin.workspace.failure` span whose `plugin.failure_reason` is a
+reason from this set or `unknown`.
+
+## Warm task retention
+
+A driver declares `warmTaskVersion: 1`, implements `onEnvironmentResumeLease`,
+and returns `warmTaskVersion: 1` from `describe` only when its execution host
+supports authorized run attachment. Newly hired agents targeting such a driver
+are configured for warm execution. Existing agents keep their explicit policy;
+plugin runs without an explicit policy prefer warm execution. There is no
+provider-specific warm gate or additional setting. Existing runs retain their
+admitted lifecycle policy during restart recovery. The existing
+`runnerIdleTimeoutMs` controls bounded retention. Fresh warm admission requires
+a Core-managed credential identity before lease acquisition. The saved warm
+preference does not bypass account ownership checks. Drivers without warm
+capability and setup probes remain ephemeral.
+
+Plugin task execution uses the public, run-scoped GitHub credential broker
+when the provider advertises its versioned contract. Warm preparation updates
+the command capability before admitting the new run. Restart recovery retains
+the original run binding; new work must not reactivate an older capability.
+Project authorization is still checked for each new run.
+
+A Launcher task owns one Runner process, independently of Core heartbeat runs.
+Successful warm run completion retains the task and its mounts. The reuse
+policy is saved with the selected native runtime, independently of workspace
+copy-back records. Recovery uses that policy when no workspace-sync record exists,
+so it does not stop a Runner that foreground completion retains. Failed and
+cancelled runs still stop instead of staying warm. The reuse
+fingerprint includes the authorized project set; changing it retires the previous
+task before checkpoint recovery. Adoption and each warm handoff require a current,
+configuration-bound project-auth check against the exact retained mount scope. Core atomically
+hands its retained provider identity to one new run lease, revalidates current
+project authentication, prepares the new run's resources, and uses PRP
+`run.attach`. Preparation includes the exact `priorIdentity` and stable
+`accountIdentity`. The provider journals that transition idempotently before
+allowing the new authority. The original ingress address remains unchanged.
+Runner accepts `connection: { mode: "external" }` on warm attachment to preserve
+the process owner's listener and TLS settings while rotating the run identity.
+
+Core permits connection refresh for the saved successful run while its warm task
+lease is retained, unexpired, and not retiring or stopped. PRP authentication
+still applies. A superseded lease cannot acquire a connection. Retention does
+not authorize preparation or submission of new work through the completed lease.
+
+Idle retirement suspends and stops Runner, saves its exact checkpoint, writes
+credentials through the durable lease handoff, then completes the provider task.
+Core permits read-only suspension proof for the exact saved identity of a
+successful warm run after its reuse lease is retained or superseded. This does
+not authorize new work or file access through that lease.
+Temporary credential homes are not needed after the originating run ends.
+An explicit reset to a different normalized session can retire a warm owner
+whose close failed only because it could not prove checkpoint suspension. Core
+requires the exact lease-bound task's `executionStopped: true` receipt and a
+successful `complete` handoff first. When the close left them unproven, the new
+run requests them itself: one confirmed `stop` (not resent once confirmed),
+the credential snapshot, then `complete`. A warm owner without a task needs its
+Runner's own durable suspension instead. Unsettled Core tool results do not
+block this reset: a governed-wait park leaves one by design, its run is already
+terminal, its provider is stopped, and the new session never replays it. Core
+then collects stopped instruction files before it releases the in-memory owner.
+With that task receipt, any close error qualifies, including a controller
+journal drain that outlived the close grace: the old journal lives in the
+discarded session's own state root. The old checkpoint remains evidence; it is
+not reused by the new session. A handoff that still fails, failed file
+collection, another close error from an owner without a task, or continuation
+of the same session still blocks replacement.
+A controller restart is not required for this stopped-owner reset path.
+
+When retiring the previous owner stays unproven anyway (any close failure,
+on any of the paths a new run uses to retire it: instruction preparation,
+configuration change, session reset, or a prior-owner fence on a resumed
+sandbox), the new run has done no provider work. It fails with the typed
+pre-provider error `native_predecessor_retirement_unproven` instead of a
+provider failure. The owner stays registered for its own sandbox, so no run
+on that sandbox launches over it. The heartbeat then:
+
+- marks this run's reusable lease on that sandbox `replaceBeforeReuse`, so the
+  next acquisition creates a fresh sandbox and hands the old one to the
+  cleanup sweep. That replacement uses the same rule as a failed resume: a
+  clean, committed workspace save and a verified harness backup. Without them
+  the next acquisition resumes the sandbox as before;
+- after the run ends, hands its prepared workspace on at the saved version
+  only through the shared unchanged-files proof (no runner command, workspace
+  operation such as a provisioning command, execution event or result).
+  Without that proof the workspace stays dirty and is preserved as today, and
+  the run rests with Retry;
+- re-queues the run in the uncharged `interrupted_preparation` lane instead of
+  a native reconciliation hold. A run that answered a task interaction keeps
+  its own wake in that lane, so the retry still carries the answer.
+
+A run on a different sandbox forgets the unretired owner instead of replaying
+its rejected close. A previous run parked on a durable governed interaction
+leaves its question's tool input unanswered by design. Once its Runner's
+sandbox lease has ended elsewhere, that committed park settles the input for
+retirement.
+
+Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
+that sequence confirms the stop and completes the same task, Core does not also
+call `onEnvironmentReleaseLease`. Core still calls it when the release did not
+complete a dispatched task, and the cleanup retry calls it after any failure.
+When `onEnvironmentResumeLease` returns no provider lease, Core sends `status`
+first. It sends `stop` only when that `status` does not report
+`executionStopped: true` and any required `preparationStopped: true` proof.
+An old warm-start preparation marker does not force a repeated stop when both
+proofs are present. A driver must release task-scoped resources in its
+`status` or `complete` handling, not only in `onEnvironmentReleaseLease`.
+
+Termination receipts cover all run leases that owned the retired physical task.
+A stopped task gets a new provider task ID for checkpoint resumption. Inspection
+precedes in-memory session selection so a replacement cannot inherit the stopped
+session. Core saves the fresh provider expiry and forwards and enforces any
+caller-imposed deadline. A missing
+or unreachable computer never authorizes a replacement. Controller recovery can
+adopt a verified surviving idle process through its authenticated PRP connection;
+ambiguous transitions remain fenced by the existing durable recovery checks.
+
+Changes to account, credential generation, workspace, runtime or process policy
+retire the old owner before recovery. A new authority epoch archives the stopped
+checkpoint under its stable archive key and preserves provider session files.
+Warm status monitoring relies on PRP after startup and does not poll an idle
+Launcher. ACPX uses this task-provider contract; other execution transports retain
+their provider-specific lifecycle policies.
+
+### Operation-time GitHub credentials
+
+A task provider can advertise `githubCredentialBrokerVersion: 1` in its
+`describe` result. Core then supplies an optional `githubBroker: { url, token }`
+in each `prepare` operation. This is a runtime capability, not a GitHub token.
+No controller path, executable, script, or command implementation is part of
+this contract. Plugin authors own how their command environment uses it.
+
+At the start of each authenticated operation, send `POST` with body `{}` to
+`<url without trailing /api>/runtime-tools/github/credentials`, with
+`Authorization: Bearer <token>`. The response is either
+`{ status: "available", env: { ... } }` or
+`{ status: "unavailable", reason: "..." }`. Core rechecks the live run, accepted
+instruction identity, grants, and trust policy on each request. Use the returned
+environment only in the command and its descendants. Never retain raw GitHub
+credentials in plugin state, launch descriptors, logs, or files.
+
+A warm task must replace its broker capability before admitting the next run's
+commands. An absent broker clears the old capability and allows anonymous/local
+operations only. Isolate ambient host credentials and Git/GitHub configuration;
+an unavailable broker must never select a host account. Capture once per
+operation so steering does not split a command's Git descendants across people.
+The runtime capability may be staged privately for command-time access; it must
+not enter the returned launch descriptor or entity records. Core's managed
+launchers are an optional reference implementation. Compatible native helpers,
+credential helpers, or command proxies can implement the same semantics.
+
+Deploy the updated Core and plugin together. A configured
+GitHub connection on an older task provider returns an explicit upgrade error.
+Unconfigured providers continue ordinary work without authenticated GitHub access.
+
+Managed GitHub command providers must retain the qualified provider executable
+and arguments. Supply helper discovery through the task environment instead of
+wrapping that executable. Claude ACPX preserves explicit `BASH_ENV`, `ZDOTDIR`,
+`GH_CONFIG_DIR`, and `PAPERCLIP_GITHUB_LAUNCHER_DIR` selectors across the sidecar
+boundary. It does not forward GitHub tokens or broker capabilities to the provider.
+The helper reads the current task capability at invocation, including after warm
+reuse. These selectors must come from the trusted environment owner.
+Reference helpers mark only their child operation and reject re-entry before resolving
+another executable or capturing credentials. A PATH shim that calls a helper's
+absolute path fails with `launcher_recursion_rejected` (exit 126), preventing
+recursive process growth. Offline Git fixtures must resolve the native binary
+outside managed helper paths and exclude runtime shell startup hooks.
+
+
+The pure launch factory exports `RUNNER_GITHUB_LAUNCHER_VERSION = 1` for this
+contract. A provider must check it as well as the host broker schema and its
+Launcher capability before advertising managed GitHub commands. The installed
+Runner must match the factory's source revision.
+
+The helper projection is marked by the controller-owned
+`PAPERCLIP_GITHUB_LAUNCHER_DIR`. Task overrides cannot supply that marker or the
+shell selectors. Run preparation strips stored bindings before secret resolution,
+and configured task-environment projections reject the shell selectors too.

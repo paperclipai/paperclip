@@ -1,18 +1,19 @@
 import type { CSSProperties } from "react";
 import { ArtifactFront } from "./ArtifactFront";
-import { fitPrint, useImageAspect } from "./ArtifactPrint";
+import { fitPrint, useImageAspect, usePreviewFailure } from "./ArtifactPrint";
 import backingShort from "./assets/backing-short.svg";
 import backingTallA from "./assets/backing-tall-a.svg";
 import backingTallB from "./assets/backing-tall-b.svg";
 import { LANDSCAPE_SHEET, MEDIA_ANCHOR, MEDIA_BACKING, MEDIA_COMPOSITION, SHEET, SHEET_BACKING, SHEET_COMPOSITION, SHEET_FRONT, STACK_BOX, type BackingPlacement } from "./geometry";
-import { isMedia, isPortrait, treatmentOf, type ArtifactSubject } from "./kinds";
+import { isMedia, isPortrait, previewSourceOf, treatmentOf, type ArtifactSubject } from "./kinds";
 
 /**
  * A stack: the task's newest artifact as the first page, in front of one of
  * the mock's two backings. Text and documents share the sheet backing;
  * pictures, video and audio share the media backing. Both compositions are
  * 240–241px tall and stand on the frame's bottom edge, so the tops of every
- * stack in a row line up; a leading picture is fitted inside that height.
+ * stack in a row line up; a leading picture is fitted inside that height. A
+ * leading picture that cannot be loaded stands as a sheet, where audio does.
  *
  * The backings are the mock's own sheet shapes (each file is 30px larger than
  * its sheet on every side, room the mock's shadow needed; the shadow itself
@@ -49,8 +50,9 @@ function Backing({ file, width, height, sheet, centre, rotate, spread }: Backing
 
 export function ArtifactStack({ front }: { front: ArtifactSubject }) {
   const [aspect, onMediaLoad] = useImageAspect(front.aspect);
+  const [failed, onMediaError] = usePreviewFailure(previewSourceOf(front));
   if (isMedia(front)) {
-    const print = treatmentOf(front) === "media" ? fitPrint(aspect, STACK_BOX) : null;
+    const print = !failed && treatmentOf(front) === "media" ? fitPrint(aspect, STACK_BOX) : null;
     const size = print ?? { width: SHEET.width, height: SHEET.height };
     const anchor = print && !isPortrait(aspect) ? MEDIA_ANCHOR.landscape : MEDIA_ANCHOR.portrait;
     const left = anchor.x - size.width / 2;
@@ -60,7 +62,7 @@ export function ArtifactStack({ front }: { front: ArtifactSubject }) {
         {MEDIA_BACKING.map((sheet) => (
           <Backing key={sheet.file} {...sheet} />
         ))}
-        <ArtifactFront subject={front} print={print ?? undefined} onMediaLoad={onMediaLoad} style={{ position: "absolute", left, top }} />
+        <ArtifactFront subject={front} print={print ?? undefined} onMediaLoad={onMediaLoad} onMediaError={onMediaError} style={{ position: "absolute", left, top }} />
       </div>
     );
   }

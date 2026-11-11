@@ -10,14 +10,19 @@ import {
 import { errorHandler } from "../middleware/error-handler.js";
 import { assertCompanyAccess } from "../routes/authz.js";
 
-function createSelectChain(rows: unknown[]) {
+function queryResult<T>(rows: T) {
+  return Object.assign(Promise.resolve(rows), {
+    for: () => Promise.resolve(rows),
+    orderBy: () => ({ limit: () => Promise.resolve(rows) }),
+  });
+}
+
+function createSelectChain(rows: unknown[] | ((table: unknown) => unknown[])) {
   return {
-    from() {
-      return {
-        where() {
-          return Promise.resolve(rows);
-        },
-      };
+    from(table: unknown) {
+      const selected = typeof rows === "function" ? rows(table) : rows;
+      const where = () => queryResult(selected);
+      return { where, innerJoin: () => ({ where }) };
     },
   };
 }
@@ -78,9 +83,11 @@ describe("actorMiddleware authenticated session profile", () => {
     const inserts: Array<{ values: Record<string, unknown> }> = [];
     const db = {
       insert: vi.fn(() => {
+        let own: { values: Record<string, unknown> } | undefined;
         const chain = {
           values(values: Record<string, unknown>) {
-            inserts.push({ values });
+            own = { values };
+            inserts.push(own);
             return chain;
           },
           onConflictDoUpdate() {
@@ -91,9 +98,9 @@ describe("actorMiddleware authenticated session profile", () => {
           },
           returning() {
             return Promise.resolve([{
-              companyId: inserts.at(-1)?.values.companyId,
-              membershipRole: inserts.at(-1)?.values.membershipRole,
-              status: inserts.at(-1)?.values.status,
+              companyId: own?.values.companyId,
+              membershipRole: own?.values.membershipRole,
+              status: own?.values.status,
             }]);
           },
         };
@@ -102,6 +109,7 @@ describe("actorMiddleware authenticated session profile", () => {
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
       select: vi.fn(() => createSelectChain([])),
     } as any;
+    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<unknown>) => run(db));
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -137,15 +145,18 @@ describe("actorMiddleware authenticated session profile", () => {
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
     // authUsers, companies, companyMemberships, the role-default
     // principalPermissionGrants, and the lazily initialized instance setting.
+    // The instance setting is read concurrently with the tenant sync, so
+    // match inserts by content rather than position.
     expect(inserts).toHaveLength(5);
-    expect(inserts[0]?.values).toMatchObject({
-      id: "global-user-1",
-      email: "owner@example.com",
-      emailVerified: true,
-    });
-    expect(inserts[1]?.values).toMatchObject({
-      name: "Purple Rain",
-    });
+    expect(inserts.map((insert) => insert.values)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "global-user-1",
+        email: "owner@example.com",
+        emailVerified: true,
+      }),
+      expect.objectContaining({ name: "Purple Rain" }),
+      expect.objectContaining({ singletonKey: "default" }),
+    ]));
   });
 
   it("lets the cloud tenant actor through assertCompanyAccess for a company it holds a membership row in", async () => {
@@ -176,7 +187,7 @@ describe("actorMiddleware authenticated session profile", () => {
       select: vi.fn(() => ({
         from: (table: unknown) => ({
           where: () =>
-            Promise.resolve(
+            queryResult(
               table === companyMemberships
                 ? [{ companyId: importedCompanyId, membershipRole: "member", status: "active" }]
                 : [],
@@ -186,6 +197,7 @@ describe("actorMiddleware authenticated session profile", () => {
       insert: vi.fn(() => insertChain),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
     } as any;
+    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<unknown>) => run(db));
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -249,16 +261,8 @@ describe("actorMiddleware authenticated session profile", () => {
       },
     };
     const db = {
-      select: vi.fn(() => ({
-        from: (table: unknown) => ({
-          where: () =>
-            Promise.resolve(
-              table === companies
-                ? [{ name: "paperclip-stack-purple-rain" }]
-                : [],
-            ),
-        }),
-      })),
+      select: vi.fn(() => createSelectChain(table => table === companies
+        ? [{ name: "paperclip-stack-purple-rain" }] : [])),
       insert: vi.fn((table: unknown) => {
         if (table !== activityLog) return insertChain;
         return {
@@ -280,7 +284,7 @@ describe("actorMiddleware authenticated session profile", () => {
       })),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
     } as any;
-    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<void>) => run(db));
+    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<unknown>) => run(db));
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -346,14 +350,8 @@ describe("actorMiddleware authenticated session profile", () => {
       },
     };
     const db = {
-      select: vi.fn(() => ({
-        from: (table: unknown) => ({
-          where: () =>
-            Promise.resolve(
-              table === instanceUserRoles && state.staleInstanceAdminRow ? [{ id: "stale-role-row" }] : [],
-            ),
-        }),
-      })),
+      select: vi.fn(() => createSelectChain(table =>
+        table === instanceUserRoles && state.staleInstanceAdminRow ? [{ id: "stale-role-row" }] : [])),
       insert: vi.fn(() => insertChain),
       delete: vi.fn((table: unknown) => ({
         where: () => {
@@ -362,6 +360,7 @@ describe("actorMiddleware authenticated session profile", () => {
         },
       })),
     } as any;
+    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<unknown>) => run(db));
     const app = express();
     app.use(
       actorMiddleware(db, {

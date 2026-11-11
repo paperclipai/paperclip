@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, environments, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { requestTaskRetry } from "../services/task-retry.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import * as environmentOrchestrator from "../services/environment-run-orchestrator.js";
+import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -28,7 +36,7 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
         captured.set(input.runId, input);
         // Settle the fixture's work so no automatic unfinished-task retry
         // competes with the next explicit session-continuation wake.
-        await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, String(input.context.issueId)));
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, String(input.context.issueId)));
         return { exitCode: 0, signal: null, timedOut: false, sessionId: "saved-session", sessionParams: { sessionId: "saved-session", adapterState: "preserved" }, resultJson: {} };
       },
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
@@ -49,10 +57,11 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Session reader", adapterType, status: "idle", adapterConfig: { model: "model-a" }, runtimeConfig });
     await db.insert(issues).values({ id: issueId, companyId, title: "Session fixture", status: "todo", assigneeAgentId: agentId, responsibleUserId: userId, issueNumber: 1 });
-    return { companyId, agentId, issueId };
+    return { companyId, agentId, issueId, userId };
   }
 
   async function execute(f: Awaited<ReturnType<typeof seed>>, context: Record<string, unknown> = {}) {
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
     const run = await heartbeat.wakeup(f.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "manual",
       payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId, ...context },
@@ -79,6 +88,132 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     expect(resumed.input.context.paperclipSessionRotationReason).toBeUndefined();
     expect(resumed.input.context.paperclipPreviousSessionId).toBeUndefined();
     expect(resumed.finished.sessionIdBefore).toBe("saved-session");
+  });
+
+  it("keeps a default-attached project policy stable after binding a repository-free workspace", async () => {
+    const f = await seed();
+    const storage = await createPluginWorkspaceFixture(db, f.companyId);
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
+    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, workspaceProvider: {
+      ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
+    } } }).where(eq(plugins.id, storage.pluginId));
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Directory project", executionWorkspacePolicy: { enabled: true, storageProviderPluginId: storage.pluginId } }).returning();
+    await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issueId));
+    try {
+      const first = await execute(f);
+      const [bound] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(bound.executionWorkspaceId).toEqual(expect.any(String));
+      const next = await execute(f);
+      expect(next.input.runtime.sessionId).toBe("saved-session");
+      expect(next.input.config.workspaceStrategy).toEqual(first.input.config.workspaceStrategy);
+      expect(next.finished.resultJson).toMatchObject({ configFreshness: {
+        session: { reset: false, taskSessionReused: true, changedCategories: [] },
+        workspace: { action: "reuse", workspaceReused: true, changedCategories: [], activeWorkspaceId: bound.executionWorkspaceId },
+      } });
+    } finally { await db.delete(plugins).where(eq(plugins.id, storage.pluginId)); }
+  });
+
+  it.each([
+    { settings: null, retry: false },
+    { settings: { mode: "isolated_workspace" }, retry: false },
+    { settings: { workspaceStrategy: { type: "git_worktree", branchTemplate: "work" } }, retry: false },
+    { settings: null, retry: true },
+  ])("keeps a default-attached repository policy stable through binding ($settings, Retry: $retry)", async ({ settings, retry }) => {
+    const f = await seed();
+    const storage = await createPluginWorkspaceFixture(db, f.companyId);
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
+    const [environment] = await db.insert(environments).values({ name: `Storage tasks ${storage.pluginId}`, driver: "plugin", status: "active",
+      config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+      capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+      environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }],
+      workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
+        ...(retry ? { workspaceVerificationVersion: 1 as const } : {}) },
+    } }).where(eq(plugins.id, storage.pluginId));
+    await db.update(agents).set({ defaultEnvironmentId: environment.id }).where(eq(agents.id, f.agentId));
+    await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: storage.pluginId } }).where(eq(projects.id, storage.input.projectId));
+    await db.update(issues).set({ projectId: storage.input.projectId, projectWorkspaceId: storage.input.projectWorkspaceId,
+      executionWorkspaceSettings: settings,
+    }).where(eq(issues.id, f.issueId));
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true, enableIsolatedWorkspacesByDefault: true });
+    const cwd = await mkdtemp(join(tmpdir(), "session-provider-fixture-"));
+    const realizedBase = new Map<string, string | null | undefined>();
+    const createOrchestrator = environmentOrchestrator.environmentRunOrchestrator;
+    const realization = vi.spyOn(environmentOrchestrator, "environmentRunOrchestrator").mockImplementation((...args) => ({
+      ...createOrchestrator(...args),
+      // These tests dispatch a synthetic adapter; substitute only the provider
+      // transport while preserving the configured storage/task-driver identity.
+      acquireForRun: async input => createOrchestrator(...args).acquireForRun({ ...input, selectedEnvironmentId: input.localEnvironmentId }),
+      realizeForRun: async input => {
+        realizedBase.set(input.heartbeatRunId, input.executionWorkspace.baseRefSha);
+        input.executionWorkspace.cwd = cwd;
+        return { lease: input.lease, persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+          workspaceRealization: {}, executionTarget: null, remoteExecution: null };
+      },
+    }));
+    const originalHeartbeat = heartbeat;
+    const storageWorkers = {
+      ...storage.workers,
+      call: async (...args: Parameters<typeof storage.workers.call>) => {
+        const result = await storage.workers.call(...args) as Record<string, unknown>;
+        return storage.calls.at(-1)?.operation.verifyExisting ? { ...result, created: false } : result;
+      },
+    };
+    heartbeat = heartbeatService(db, { pluginWorkerManager: storageWorkers as PluginWorkerManager });
+    try {
+      const first = await execute(f);
+      const [bound] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(bound.executionWorkspaceId).toEqual(expect.any(String));
+      expect(bound.executionWorkspacePreference).toBe("reuse_existing");
+      expect(bound.executionWorkspaceSettings).toEqual({ ...settings, mode: "isolated_workspace" });
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, bound.executionWorkspaceId!));
+      expect([...captured.values()].filter(input => input.context.issueId === f.issueId)).toHaveLength(1);
+      expect(workspace).toMatchObject({ providerType: "plugin", strategyType: "git_worktree" });
+      if (retry) {
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: "setup_failed" })
+          .where(eq(heartbeatRuns.id, first.finished.id));
+        await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+        const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+          actorId: f.userId, actorSource: "local_implicit", observedRunId: first.finished.id, idempotencyKey: randomUUID() });
+        expect(receipt.accepted).toBe(true);
+        await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
+        await heartbeat.drainActiveRunExecutions();
+        const [resumed] = [...captured.values()].filter(input => input.context.issueId === f.issueId && input.runId !== first.finished.id);
+        expect(resumed?.context.paperclipWorkspace).toMatchObject({ branchName: workspace.branchName });
+        expect(realizedBase.get(first.finished.id)).toBe("a".repeat(40));
+        expect(realizedBase.get(resumed.runId)).toBe(realizedBase.get(first.finished.id));
+        const preparations = storage.calls.filter(call => call.runId === resumed.runId && call.operation.kind === "prepare");
+        expect(preparations).toHaveLength(2);
+        expect(preparations[0]).toMatchObject({ executionWorkspaceId: workspace.id, operation: { verifyExisting: true } });
+        expect(preparations[1]).toMatchObject({ executionWorkspaceId: workspace.id });
+        expect(preparations[1].operation.verifyExisting).toBeUndefined();
+        const [afterRetry] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+        expect(afterRetry.executionWorkspaceId).toBe(workspace.id);
+        return;
+      }
+      for (let turn = 0; turn < 2; turn++) {
+        const next = await execute(f);
+        expect(next.input.runtime.sessionId).toBe("saved-session");
+        expect(next.input.config.workspaceStrategy).toEqual(first.input.config.workspaceStrategy);
+        expect(next.finished.resultJson).toMatchObject({ configFreshness: {
+          session: { reset: false, taskSessionReused: true, changedCategories: [] },
+          workspace: { action: "reuse", workspaceReused: true, changedCategories: [], activeWorkspaceId: bound.executionWorkspaceId },
+        } });
+      }
+      await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, allowIssueOverride: false, storageProviderPluginId: storage.pluginId } }).where(eq(projects.id, storage.input.projectId));
+      const changed = await execute(f);
+      expect(changed.input.runtime.sessionId).toBeNull();
+      expect(changed.finished.resultJson).toMatchObject({ configFreshness: { session: { reset: true, changedCategories: ["workspaceConfig"] } } });
+      const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, bound.executionWorkspaceId!));
+      expect(retained.metadata?.workspaceProviderOwner).toBe(storage.pluginId);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      heartbeat = originalHeartbeat;
+      realization.mockRestore();
+      await rm(cwd, { recursive: true, force: true });
+      await db.delete(plugins).where(eq(plugins.id, storage.pluginId));
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false, enableIsolatedWorkspacesByDefault: false });
+    }
   });
 
   it("starts fresh when effective model configuration changes and persists the reason", async () => {

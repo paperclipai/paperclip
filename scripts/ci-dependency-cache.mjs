@@ -7,11 +7,19 @@ import { readPluginsUnder } from "./link-plugin-dev-sdk.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+const postinstallHooks = new Map([
+  [".", "node scripts/link-plugin-dev-sdk.mjs"],
+  ["server", "node scripts/install-copilot-assets.mjs"],
+  ["packages/paperclip-runner", "node scripts/install-copilot-assets.mjs"],
+]);
+
 export function cachePlan({ files, read, scope, packageDirs }) {
   const dependencyInputs = files.filter((file) =>
     /(^|\/)package\.json$/.test(file)
     || ["pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs", "pnpmfile.cjs"].includes(file)
     || file.startsWith("scripts/")
+    || file.startsWith("server/scripts/")
+    || file.startsWith("packages/paperclip-runner/scripts/")
     || file.startsWith("patches/"));
   const digest = (inputs, salt) => {
     const hash = createHash("sha256").update(JSON.stringify(salt));
@@ -28,8 +36,8 @@ export function cachePlan({ files, read, scope, packageDirs }) {
     if (manifest === null) return false;
     const scripts = JSON.parse(manifest).scripts ?? {};
     return ['preinstall', 'install', 'postinstall', 'prepare'].every((hook) =>
-      scripts[hook] === undefined || (directory === '.' && hook === 'postinstall'
-        && scripts[hook] === 'node scripts/link-plugin-dev-sdk.mjs'));
+      scripts[hook] === undefined || (hook === 'postinstall'
+        && scripts[hook] === postinstallHooks.get(directory)));
   });
   const buildInputs = files.filter((file) =>
     file.startsWith("packages/shared/") || file.startsWith("packages/plugins/sdk/")

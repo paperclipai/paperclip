@@ -191,9 +191,16 @@ export interface SandboxProviderCapabilities {
 }
 
 export interface PluginEnvironmentDriverDeclaration {
+  /** Plugin-managed skill keys automatically included when this environment is selected. */
+  skillKeys?: string[];
+  /** Leases require a saved agent and its lifecycle preparation, including during setup. */
+  requiresAgent?: boolean;
   /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
   supportsTasks?: boolean;
   freshWorkspaceVersion?: 1;
+  creationOperationVersion?: 1;
+  /** Codex task retention and authorized run attachment, version 1. */
+  warmTaskVersion?: 1;
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**
@@ -493,6 +500,21 @@ export interface PluginUiSlotDeclaration {
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
    */
   entityTypes?: PluginUiSlotEntityType[];
+  /** Only show this agent detail tab when the agent uses this plugin environment driver key. */
+  agentEnvironmentDriver?: string;
+  /** Also offer this agent detail tab for manual selection beside a task.
+   * It uses the running agent, or the assigned agent while idle.
+   * Matching run activity and readiness also open the panel automatically.
+   * GET this plugin-relative path with :entityId replaced by the agent ID,
+   * and runId/issueId query parameters for the active task.
+   * The board-only, agent-scoped route returns { available: boolean }.
+   */
+  taskSidePanel?: {
+    availabilityPath: string;
+    /** Runtime activity that requests automatic opening; manual selection needs no mapping. */
+    activation?: { namespace: string; activityKey: string };
+  };
+
   /**
    * Optional company-scoped route segment for page, routeSidebar, and
    * companySettingsPage slots.
@@ -699,6 +721,9 @@ export interface PaperclipPluginManifestV1 {
   workspaceProvider?: {
     /** Supports bounded run completion separately from removal-safety inspection. */
     finalizationVersion?: 1;
+    workspaceVerificationVersion?: 1;
+    supportsMergeAncestry?: boolean;
+    recoveryPullRequestVersion?: 1;
     freshWorkspaceVersion?: 1;
     modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
     strategies: Array<"project_primary" | "git_worktree">;
@@ -899,6 +924,8 @@ export interface PluginCompanySettings {
  * Query filter for `ctx.entities.list`.
  */
 export interface PluginEntityQuery {
+  scopeKind?: PluginStateScopeKind;
+  scopeId?: string;
   /** Optional filter by entity type (e.g. 'project', 'issue'). */
   entityType?: string;
   /** Optional filter by external system identifier. */

@@ -214,7 +214,7 @@ const support = await getEmbeddedPostgresTestSupport();
     if (methodKey.endsWith("oauth")) await f.signIn(connected.connectionId);
     else await f.service.reconnectGalleryApp(connected.connectionId, f.company.id, { credentialValues: { "credentials.authorization": f.accessToken } }, actor);
     const afterReconnect = await f.service.refreshCatalog(connected.connectionId, actor, { enableAllByDefault: true });
-    expect(afterReconnect.connection.config.quarantineNewEntries).toBe(true);
+    expect(afterReconnect.connection.config?.quarantineNewEntries).toBe(true);
     expect(afterReconnect.connection.transportConfig.quarantineNewEntries).toBe(true);
     expect(afterReconnect.catalog.filter(entry => ["sql_query", "provider_added_tool"].includes(entry.toolName)).every(entry => entry.status === "quarantined")).toBe(true);
     f.request.mockClear();

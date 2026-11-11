@@ -108,7 +108,7 @@ describe("unclaimed Cloud background work", () => {
     const isEnabled = vi.fn().mockResolvedValue(false);
     const db = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() }) as unknown as Db;
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !standby, onError: vi.fn() });
-    const events = createPublicMcpEvents(db, { isEnabled } as PublicMcpOAuth, vi.fn(), {
+    const events = createPublicMcpEvents(db, { isEnabled } as unknown as PublicMcpOAuth, vi.fn(), {
       isBackgroundWorkEnabled: () => !standby,
     });
     try {
@@ -140,16 +140,18 @@ describe("unclaimed Cloud background work", () => {
       tickIntervalMs: 1000,
       isBackgroundWorkEnabled: () => enabled,
     });
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => enabled, onError: () => {} });
     try {
       email.start();
-      scheduler.start();
+      await scheduler.start(coordinator);
       await vi.advanceTimersByTimeAsync(10 * 60_000);
       expect(select).not.toHaveBeenCalled();
       enabled = true;
       await vi.advanceTimersByTimeAsync(1000);
       expect(select.mock.calls.length).toBeGreaterThanOrEqual(2);
     } finally {
-      scheduler.stop();
+      await scheduler.stop();
+      await coordinator.stop();
       await email.shutdown();
     }
   });

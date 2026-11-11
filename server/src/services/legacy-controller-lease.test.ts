@@ -1,30 +1,78 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, closeLivenessDb, companies, createDb, heartbeatRuns, livenessDb } from "@paperclipai/db";
+import { agents, closeLivenessDb, companies, createDb, heartbeatRuns, livenessDb, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { heartbeatService } from "./heartbeat.js";
-import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_RENEW_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
-  renewLegacyControllerLease, revokeExpiredLegacyController, revokeExpiredLegacyControllerWithState,
-  watchLegacyControllerLease } from "./legacy-controller-lease.js";
+import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_RENEW_MS,
+  LEGACY_CONTROLLER_RENEWAL_RETRY_DELAY_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
+  legacyControllerOwnerStamp, renewLegacyControllerLease, revokeExpiredLegacyController,
+  revokeExpiredLegacyControllerWithState, watchLegacyControllerLease } from "./legacy-controller-lease.js";
+import { currentProcessSpaceHash, currentProcessStartedAtMs } from "./controller-process-identity.js";
+import { proveOwnerGone } from "./owner-proof.js";
+import * as legacyControllerLease from "./legacy-controller-lease.js";
+
+/** Runs just before recovery's revocation, to model a controller that saved
+ * its child's PID after recovery's scan and then died. Null in other cases. */
+const beforeRevocation: { hook: null | ((runId: string) => Promise<void>) } = { hook: null };
+vi.mock("./legacy-controller-lease.js", async importOriginal => {
+  const actual = await importOriginal<typeof legacyControllerLease>();
+  return { ...actual, revokeExpiredLegacyControllerWithState: async (...args: Parameters<typeof actual.revokeExpiredLegacyControllerWithState>) => {
+    if (beforeRevocation.hook) await beforeRevocation.hook(args[1].id);
+    return actual.revokeExpiredLegacyControllerWithState(...args);
+  } };
+});
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
+import { OWNABLE_KINDS } from "./recovery/ownership-registry.js";
 
 type WatchArgs = Parameters<typeof watchLegacyControllerLease>;
+const dialect = new PgDialect();
 // A renewal test double: each attempt runs in a transaction on the liveness pool.
 function fakeRenewalDb(returning: () => Promise<unknown>) {
-  const fake = { update: () => ({ set: () => ({ where: () => ({ returning }) }) }),
-    execute: async () => [], transaction: (action: (tx: unknown) => Promise<unknown>) => action(fake) };
+  const execute = async (query: SQL) => {
+    const { sql: text, params } = dialect.sqlToQuery(query);
+    if (/set_config/.test(text)) return [];
+    const rows = await returning();
+    const renewed = Array.isArray(rows) && rows.length > 0;
+    return params.filter(param => typeof param === "string").map(id => ({ id, renewed, examined: true }));
+  };
+  const fake = { execute, transaction: (action: (tx: unknown) => Promise<unknown>) => action(fake) };
   return fake as unknown as WatchArgs[0];
 }
 
-const support = await getEmbeddedPostgresTestSupport();
+function slowPoolDb(runIds: string[], { connections, transactionMs }: { connections: number; transactionMs: number }) {
+  let active = 0, transactions = 0;
+  const waiting: Array<() => void> = [];
+  const tx = {
+    execute: async () => runIds.map(id => ({ id, renewed: true, examined: true })),
+    update: () => ({ set: () => ({ where: () => ({ returning: async () => [{ id: runIds[0] }] }) }) }),
+  };
+  const fake = {
+    transaction: async (action: (tx: unknown) => Promise<unknown>) => {
+      while (active >= connections) await new Promise<void>(resolve => waiting.push(resolve));
+      active += 1; transactions += 1;
+      try {
+        await new Promise(resolve => setTimeout(resolve, transactionMs));
+        return await action(tx);
+      } finally { active -= 1; waiting.shift()?.(); }
+    },
+  };
+  return { db: fake as unknown as WatchArgs[0], transactions: () => transactions };
+}
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LEGACY_CONTROLLER_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable legacy controller ownership", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("legacy-controller-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("legacy-controller-");
+    db = createDb(external ?? database.connectionString, { maxConnections: 6 });
   }, 30000);
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await closeLivenessDb(db, 1); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Controller test", issuePrefix: `C${companyId.slice(0, 7)}` });
@@ -67,6 +115,26 @@ const support = await getEmbeddedPostgresTestSupport();
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
     expect(saved.executionStage).toBe("dispatching");
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
+  });
+  it("renews through one private statement without waking live-run recovery", async () => {
+    const run = await seed(), settled: string[] = [], queries: string[] = [];
+    const queues = [DELIVERY_QUEUES.nativeProcessSessions, DELIVERY_QUEUES.nativeQuestionCancellations,
+      DELIVERY_QUEUES.activeExecutionRecovery, DELIVERY_QUEUES.settledNativeProcesses,
+      DELIVERY_QUEUES.strandedAgentStatus, DELIVERY_QUEUES.activeRunSilence];
+    const stops = queues.map(queue => subscribeDatabaseWork(db, queue, event => { if (event === "settled") settled.push(queue); }));
+    const pool = livenessDb(db), prior = pool.$client.options.debug;
+    await pool.execute(sql`select 1`);
+    pool.$client.options.debug = (_connection, query) => { queries.push(query); };
+    const watch = watchLegacyControllerLease(db, run, new AbortController());
+    try {
+      await watch.assertOwned();
+      expect(settled).toEqual([]);
+      expect(queries.filter(query => /savepoint/i.test(query))).toEqual([]);
+      expect(queries.filter(query => /pg_current_xact_id|pg_notify/.test(query))).toEqual([]);
+      expect(queries.filter(query => /set_config.*statement_timeout/.test(query))).toHaveLength(1);
+      expect(queries.filter(query => /update "heartbeat_runs"/i.test(query))).toHaveLength(1);
+      expect(queries).toHaveLength(4);
+    } finally { watch.stop(); pool.$client.options.debug = prior; stops.forEach(stop => stop()); }
   });
   it("an expired controller cannot renew or dispatch even before a reaper claims it", async () => {
     const run = await seed();
@@ -139,7 +207,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("renews without queueing behind a slow statement on a saturated shared pool", async () => {
     const run = await seed();
     // postgres.js pipelines onto a busy connection when none is idle.
-    const shared = createDb(database.connectionString, { maxConnections: 1 });
+    const shared = createDb(external ?? database.connectionString, { maxConnections: 1 });
     const slow = shared.execute(sql`select pg_sleep(5)`).then(() => undefined); // drizzle sends on then()
     const controller = new AbortController();
     const watch = watchLegacyControllerLease(shared, run, controller);
@@ -155,7 +223,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("renews on one private pool per client that shutdown can end", async () => {
     const run = await seed();
-    const owner = createDb(database.connectionString);
+    const owner = createDb(external ?? database.connectionString, { maxConnections: 6 });
     const pool = livenessDb(owner);
     expect(pool).not.toBe(owner);
     expect(livenessDb(owner)).toBe(pool);
@@ -190,25 +258,271 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { releaseLock(); watch.stop(); await holder; }
   }, 15_000);
 
+  it("retries a renewal whose connection was terminated instead of losing the lease", async () => {
+    const run = await seed();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, run, controller);
+    try {
+      await watch.assertOwned();
+      const terminated = await db.execute<{ pid: number }>(sql`select pg_terminate_backend(pid) as pid from pg_stat_activity
+        where application_name = 'paperclip-controller-lease' and pid <> pg_backend_pid()`);
+      expect(terminated.length).toBeGreaterThan(0);
+      await expect(watch.assertOwned("dispatching")).resolves.toBeUndefined();
+      expect(controller.signal.aborted).toBe(false);
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(saved).toMatchObject({ controllerBootId: legacyControllerBootId, executionStage: "dispatching" });
+    } finally { watch.stop(); }
+  }, 15_000);
+
+  it("renews fifteen concurrent controllers in one statement", async () => {
+    const runs = await Promise.all(Array.from({ length: 15 }, () => seed()));
+    const queries: string[] = [];
+    const pool = livenessDb(db), prior = pool.$client.options.debug;
+    await pool.execute(sql`select 1`);
+    pool.$client.options.debug = (_connection, query) => { queries.push(query); };
+    const controllers = runs.map(() => new AbortController());
+    const watches = runs.map((run, index) => watchLegacyControllerLease(db, run, controllers[index]!));
+    try {
+      await Promise.all(watches.map(watch => watch.assertOwned()));
+      expect(queries.filter(query => /update "heartbeat_runs"/i.test(query))).toHaveLength(1);
+      expect(controllers.filter(controller => controller.signal.aborted)).toEqual([]);
+      for (const run of runs) {
+        const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+        expect(saved.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(run.controllerLeaseExpiresAt!.getTime());
+      }
+    } finally { watches.forEach(watch => watch.stop()); pool.$client.options.debug = prior; }
+  });
+
+  it("does not stall other controllers behind a run row another transaction holds", async () => {
+    const [held, free] = [await seed(), await seed()];
+    let lockTaken!: () => void, releaseLock!: () => void;
+    const taken = new Promise<void>((resolve) => { lockTaken = resolve; });
+    const released = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, held.id)).for("update");
+      lockTaken();
+      await released;
+    });
+    await taken;
+    const heldWatch = watchLegacyControllerLease(db, held, new AbortController());
+    const freeWatch = watchLegacyControllerLease(db, free, new AbortController());
+    try {
+      const startedAt = Date.now();
+      const heldRenewal = heldWatch.assertOwned();
+      await freeWatch.assertOwned();
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      setTimeout(releaseLock, 500);
+      await expect(heldRenewal).resolves.toBeUndefined();
+    } finally { releaseLock(); heldWatch.stop(); freeWatch.stop(); await holder; }
+  }, 15_000);
+
+  it("leaves a lease held by the previous release untouched while renewing its own in the same batch", async () => {
+    const [own, previous] = [await seed(), await seed()];
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID(), controllerProcess: null })
+      .where(eq(heartbeatRuns.id, previous.id));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, previous.id));
+    const ownController = new AbortController(), previousController = new AbortController();
+    const ownWatch = watchLegacyControllerLease(db, own, ownController);
+    const previousWatch = watchLegacyControllerLease(db, previous, previousController);
+    try {
+      const [ownResult, previousResult] = await Promise.allSettled([ownWatch.assertOwned(), previousWatch.assertOwned("dispatching")]);
+      expect(ownResult.status).toBe("fulfilled");
+      expect(previousResult.status).toBe("rejected");
+      expect(ownController.signal.aborted).toBe(false);
+      expect(previousController.signal.reason.leaseLossCause).toBe("renewal_rejected");
+      const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, previous.id));
+      expect(after).toMatchObject({ controllerBootId: before.controllerBootId, executionStage: before.executionStage,
+        controllerLeaseExpiresAt: before.controllerLeaseExpiresAt });
+    } finally { ownWatch.stop(); previousWatch.stop(); }
+  });
+
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
+  });
+
+  // Phase 2: the claim records its controller process, and a controller of
+  // another boot proven gone by the shared prover holds no lease and needs no
+  // age guard. Proof is by identity, never by lease age.
+  it("stamps the claiming process, bound to the lease's boot id", async () => {
+    const run = await seed();
+    expect(run.controllerProcess).toMatchObject({ bootId: legacyControllerBootId, pid: process.pid,
+      hostHash: currentProcessSpaceHash() });
+    expect(legacyControllerOwnerStamp(run)).toMatchObject({ bootId: legacyControllerBootId, pid: process.pid });
+    // Revocation swaps the boot id, so the revoked lease names nobody.
+    expect(legacyControllerOwnerStamp({ ...run, controllerBootId: randomUUID() })).toBeNull();
+  });
+
+  type Controller = { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
+  const deadController = (hostHash = currentProcessSpaceHash()): Controller => ({ bootId: randomUUID(),
+    pid: 2_000_000_001, hostHash, processStartedAt: new Date(Date.now() - 60_000).toISOString() });
+  /** A run whose adapter was dispatched by `controller`, with its lease still live. */
+  async function dispatchedBy(controller: Controller | null) {
+    const run = await seed();
+    await db.update(heartbeatRuns).set({ controllerBootId: controller?.bootId ?? randomUUID(),
+      controllerProcess: controller, executionStage: "dispatching" }).where(eq(heartbeatRuns.id, run.id));
+    return run.id;
+  }
+  const saved = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+  /** The startup reaper with the default age guard, over this case's run only:
+   * earlier cases leave running rows in the shared database. */
+  async function reapOnly(id: string) {
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+      .where(and(eq(heartbeatRuns.status, "running"), ne(heartbeatRuns.id, id)));
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 5 * 60_000 });
+  }
+
+  it("settles a hard-killed controller's run at once, before its lease expires and without the age guard", async () => {
+    // Crash point: the controller claimed the run, dispatched the adapter, and
+    // was killed. The next boot proves it gone and does not wait 60 s plus 5 min.
+    const id = await dispatchedBy(deadController());
+    await reapOnly(id);
+    expect(await saved(id)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+  });
+
+  it("never fails a run whose dead controller saved a live child after recovery's scan", async () => {
+    // Race: the scan read the run before the old controller saved its child's
+    // PID and died. The controller is proven gone, but its child still runs.
+    const id = await dispatchedBy(deadController());
+    beforeRevocation.hook = async runId => {
+      await db.update(heartbeatRuns).set({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+        processStartedAt: new Date((await currentProcessStartedAtMs()) ?? Date.now()) }).where(eq(heartbeatRuns.id, runId));
+    };
+    try {
+      await reapOnly(id);
+    } finally { beforeRevocation.hook = null; }
+    expect((await saved(id)).status).not.toBe("failed");
+  });
+
+  it("settles a dead controller's expired lease without waiting out the age guard", async () => {
+    const id = await dispatchedBy(deadController());
+    await expire(id);
+    await reapOnly(id);
+    expect(await saved(id)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+  });
+
+  it.each([
+    { label: "a live earlier-boot controller", controller: async (): Promise<Controller> => ({ bootId: randomUUID(),
+      pid: process.pid, hostHash: currentProcessSpaceHash(),
+      processStartedAt: new Date((await currentProcessStartedAtMs())!).toISOString() }) },
+    { label: "a dead PID in another PID space", controller: async () => deadController("another-pid-space") },
+    { label: "a lease saved by the previous release", controller: async () => null },
+  ])("keeps the run and lease of $label", async ({ controller }) => {
+    const id = await dispatchedBy(await controller());
+    const before = await saved(id);
+    await reapOnly(id);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    const after = await saved(id);
+    expect({ status: after.status, errorCode: after.errorCode, expiresAt: after.controllerLeaseExpiresAt })
+      .toEqual({ status: "running", errorCode: null, expiresAt: before.controllerLeaseExpiresAt });
+  });
+
+  it("keeps an expired lease of a live earlier-boot controller behind the age guard", async () => {
+    const id = await dispatchedBy({ bootId: randomUUID(), pid: process.pid, hostHash: currentProcessSpaceHash(),
+      processStartedAt: new Date((await currentProcessStartedAtMs())!).toISOString() });
+    await expire(id);
+    await reapOnly(id);
+    expect(await saved(id)).toMatchObject({ status: "running", errorCode: null });
+  });
+
+  it("settles a dead controller's lease in the reconciler pass, never in a read-only pass", async () => {
+    const id = await dispatchedBy(deadController());
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "legacy_controller_lease")!;
+    const [record] = await kind.listForRuns!(db, [id]);
+    expect(record!.owner.kind === "process" && await proveOwnerGone(record!.owner.stamp))
+      .toEqual({ verdict: "gone", reason: "pid_dead" });
+    const before = await saved(id);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect((await saved(id)).controllerLeaseExpiresAt).toEqual(before.controllerLeaseExpiresAt);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    const after = await saved(id);
+    expect(after.controllerLeaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    // Ownership only: live-run recovery, woken by the settle, settles the run.
+    expect(after.status).toBe("running");
+    expect(await kind.listForRuns!(db, [id])).toEqual([]);
+  });
+
+  it("settles only the exact controller it proved", async () => {
+    const id = await dispatchedBy(deadController());
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "legacy_controller_lease")!;
+    const [record] = await kind.listForRuns!(db, [id]);
+    const before = await saved(id);
+    await db.update(heartbeatRuns).set({ controllerProcess: { ...before.controllerProcess, pid: 2_000_000_002 } })
+      .where(eq(heartbeatRuns.id, id));
+    expect(await kind.settle!(db, record!, { now: new Date(), proof: { verdict: "gone", reason: "pid_dead" } }))
+      .toEqual({ settled: false, reason: "owner_changed_since_proof" });
+    expect((await saved(id)).controllerLeaseExpiresAt).toEqual(before.controllerLeaseExpiresAt);
   });
 });
 
 describe("legacy controller lease loss attribution", () => {
-  it("attributes a failing renewal query to renewal_error", async () => {
-    const failingDb = fakeRenewalDb(() => Promise.reject(new Error("connection reset")));
+  it("attributes a renewal that keeps failing until the deadline to renewal_error", async () => {
+    let calls = 0;
+    const failingDb = fakeRenewalDb(() => { calls += 1; return Promise.reject(new Error("connection reset")); });
     vi.useFakeTimers();
     const controller = new AbortController();
     const run = { id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy", controllerBootId: legacyControllerBootId,
-      controllerLeaseExpiresAt: new Date(Date.now() + 60_000) } as WatchArgs[1];
+      controllerLeaseExpiresAt: new Date(Date.now() + LEGACY_CONTROLLER_LEASE_MS) } as WatchArgs[1];
     const watch = watchLegacyControllerLease(failingDb, run, controller);
     try {
       await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_RENEW_MS + 1);
+      expect(controller.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_LEASE_MS - LEGACY_CONTROLLER_RENEW_MS);
+      expect(calls).toBeGreaterThan(1);
       expect(controller.signal.reason).toBeInstanceOf(LegacyControllerLeaseLostError);
       expect(controller.signal.reason.leaseLossCause).toBe("renewal_error");
-      expect(controller.signal.reason.leaseLossTiming).toMatchObject({ renewalPendingMs: null, deadlineLateMs: null, renewalCount: 0 });
+      expect(controller.signal.reason.leaseLossTiming).toMatchObject({ sinceRenewalMs: LEGACY_CONTROLLER_LEASE_MS,
+        renewalPendingMs: LEGACY_CONTROLLER_LEASE_MS - LEGACY_CONTROLLER_RENEW_MS, deadlineLateMs: 0, renewalCount: 0 });
     } finally { watch.stop(); vi.useRealTimers(); }
+  });
+
+  it("retries a renewal that fails once instead of losing the lease", async () => {
+    let calls = 0;
+    const flakyDb = fakeRenewalDb(() => {
+      calls += 1;
+      return calls === 1 ? Promise.reject(new Error("write CONNECTION_CLOSED")) : Promise.resolve([{ id: "run" }]);
+    });
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(flakyDb, watchedRun(LEGACY_CONTROLLER_LEASE_MS), controller);
+    try {
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_RENEW_MS + LEGACY_CONTROLLER_RENEWAL_RETRY_DELAY_MS);
+      expect(calls).toBe(2);
+      expect(controller.signal.aborted).toBe(false);
+      // Renewals keep succeeding well past the first lease deadline.
+      await vi.advanceTimersByTimeAsync(2 * LEGACY_CONTROLLER_LEASE_MS);
+      expect(controller.signal.aborted).toBe(false);
+    } finally { watch.stop(); vi.useRealTimers(); }
+  });
+
+  it("attributes a stall after a recovered error to renewal_deadline", async () => {
+    let calls = 0;
+    const recoveringDb = fakeRenewalDb(() => {
+      calls += 1;
+      if (calls === 1) return Promise.reject(new Error("connection reset"));
+      return calls === 2 ? Promise.resolve([{ id: "run" }]) : new Promise(() => {});
+    });
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(recoveringDb, watchedRun(LEGACY_CONTROLLER_LEASE_MS), controller);
+    try {
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_RENEW_MS + LEGACY_CONTROLLER_RENEWAL_RETRY_DELAY_MS + LEGACY_CONTROLLER_LEASE_MS);
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_deadline");
+      expect(controller.signal.reason.leaseLossTiming).toMatchObject({ renewalCount: 1, deadlineLateMs: 0 });
+    } finally { watch.stop(); vi.useRealTimers(); }
+  });
+
+  it("keeps thirty preparing controllers owned when every renewal takes four seconds on a two-connection pool", async () => {
+    vi.useFakeTimers();
+    const runs = Array.from({ length: 30 }, () => watchedRun(LEGACY_CONTROLLER_LEASE_MS));
+    const pool = slowPoolDb(runs.map(run => run.id), { connections: 2, transactionMs: 4_000 });
+    const controllers = runs.map(() => new AbortController());
+    const watches = runs.map((run, index) => watchLegacyControllerLease(pool.db, run, controllers[index]!));
+    try {
+      await vi.advanceTimersByTimeAsync(3 * LEGACY_CONTROLLER_LEASE_MS);
+      expect(controllers.filter(controller => controller.signal.aborted).map(controller => controller.signal.reason?.leaseLossCause))
+        .toEqual([]);
+      expect(pool.transactions()).toBeLessThanOrEqual(2 * (3 * LEGACY_CONTROLLER_LEASE_MS / LEGACY_CONTROLLER_RENEW_MS));
+    } finally { watches.forEach(watch => watch.stop()); vi.useRealTimers(); }
   });
 
   const watchedRun = (leaseMs: number) => ({ id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy",

@@ -452,3 +452,25 @@ describe("project instance secrets", () => {
     expect(getInstanceSecrets).toHaveBeenCalledWith(params);
   });
 });
+
+describe("project Git credentials", () => {
+  it("requires capability, company, project and repository scope before calling credential services", async () => {
+    const resolveGitCredential = vi.fn(async () => "transient-token");
+    const services = { projects: { resolveGitCredential } } as unknown as HostServices;
+    const params = { companyId: "company-a", projectId: "project-a", workspaceId: "workspace-a" };
+    const context = { invocationScope: { companyId: "company-a", projectGit: { projectId: "project-a", workspaceId: "workspace-a", runId: "run-a", agentId: "agent-a" } } };
+    const denied = createHostClientHandlers({ pluginId: "fixture", capabilities: [], services });
+    await expect(denied["projects.resolveGitCredential"](params, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    const allowed = createHostClientHandlers({ pluginId: "fixture", capabilities: ["projects.git-credentials"], services });
+    for (const invalid of [undefined, { invocationScope: { companyId: "other" } },
+      { invocationScope: { companyId: "company-a" } },
+      { invocationScope: { companyId: "company-a", projectGit: { projectId: "other" } } },
+      { invocationScope: { companyId: "company-a", projectGit: { projectId: "project-a", workspaceId: "other" } } },
+      { ...context, invalidInvocationScope: true }]) {
+      await expect(allowed["projects.resolveGitCredential"](params, invalid)).rejects.toThrow();
+    }
+    expect(resolveGitCredential).not.toHaveBeenCalled();
+    await expect(allowed["projects.resolveGitCredential"](params, context)).resolves.toBe("transient-token");
+    expect(resolveGitCredential).toHaveBeenCalledWith(params, context);
+  });
+});

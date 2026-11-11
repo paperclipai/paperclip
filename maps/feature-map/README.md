@@ -3,11 +3,16 @@
 Start here when reproducing a user-facing bug, verifying a change, or deciding
 which surfaces a fix must cover. Each recipe describes what a person can do,
 where they can do it, the expected result, and the evidence needed to verify it.
-Product behavior is still governed by [the implementation spec](../../doc/SPEC-implementation.md).
+Product behavior is still governed by the code and its tests.
 
 The sibling [agent access map](../agent-access-map/README.md) records APIs,
 agent entry points and permission boundaries for the same capability IDs.
 Follow the [shared map contract](../README.md) when maintaining either map.
+
+The [chat scenario catalog](../../tests/runner-e2e/chat-scenarios/README.md)
+describes how people might request these capabilities in conversation, including
+setup and permission branches. These are planned Product E2E journeys, not live
+coverage results.
 
 ## IDs and references
 

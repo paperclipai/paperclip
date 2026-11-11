@@ -1,7 +1,17 @@
 diff --git a/cjs/src/connection.js b/cjs/src/connection.js
-index 07f6716702ac888215c86ad6e0071aaf55ae519c..dc24963ce2dd0a219f366f80ba9847548ba23a52 100644
+index 07f6716702ac888215c86ad6e0071aaf55ae519c..85700681ccc7bf98f1fe987978db47e0097227f3 100644
 --- a/cjs/src/connection.js
 +++ b/cjs/src/connection.js
+@@ -173,8 +173,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+       return write(toBuffer(q))
+         && !q.describeFirst
+         && !q.cursorFn
+-        && sent.length < max_pipeline
+         && (!q.options.onexecute || q.options.onexecute(connection))
++        && sent.length < max_pipeline
+     } catch (error) {
+       sent.length === 0 && write(Sync)
+       errored(error)
 @@ -438,6 +438,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      remaining = 0
      incomings = null
@@ -84,9 +94,19 @@ index f09c61c7e998f411560b95c9a8e1ed6a97972c11..04dded5c7e2cdc34ac01b29a87cc9324
            ? queries.push(q)
            : c.execute(q) || move(c, full)
 diff --git a/src/connection.js b/src/connection.js
-index 1b1cccde43b4570d5d071d6ffaab2669b3c2065a..c95c326a2747c680c2c22b04b1c5f2e27a4e8c90 100644
+index 1b1cccde43b4570d5d071d6ffaab2669b3c2065a..81541f9cea75925256d7b02b2079c60802b2f92f 100644
 --- a/src/connection.js
 +++ b/src/connection.js
+@@ -173,8 +173,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+       return write(toBuffer(q))
+         && !q.describeFirst
+         && !q.cursorFn
+-        && sent.length < max_pipeline
+         && (!q.options.onexecute || q.options.onexecute(connection))
++        && sent.length < max_pipeline
+     } catch (error) {
+       sent.length === 0 && write(Sync)
+       errored(error)
 @@ -438,6 +438,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      remaining = 0
      incomings = null

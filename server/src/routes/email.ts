@@ -1,3 +1,4 @@
+import { connectionManagementGuard, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
 import { Router, type ErrorRequestHandler, type Request } from "express";
 import { z } from "zod";
 import {
@@ -22,7 +23,8 @@ import type {
 
 function actor(req: Request): EmailActor {
   return req.actor.type === "agent"
-    ? { agentId: req.actor.agentId, runId: req.actor.runId ?? undefined }
+    ? { agentId: req.actor.agentId, runId: req.actor.runId ?? undefined,
+        ...(connectionRequestContext(req) ? { userId: connectionRequestUserId(req) ?? undefined, managementContext: connectionRequestContext(req) } : {}) }
     : {
         userId: req.actor.userId ?? "board",
         localImplicit: req.actor.source === "local_implicit",
@@ -86,7 +88,9 @@ const agentmailErrorHandler: ErrorRequestHandler = (error, _req, res, next) => {
 
 export function emailRoutes(db: Db, service: EmailChannelService) {
   const router = Router();
+  const managementGuard = connectionManagementGuard(db, "chat");
   async function manager(req: Request, companyId: string) {
+    if (req.actor.type === "agent" && connectionRequestContext(req)) return;
     assertBoard(req);
     if (!hasCompanyAccess(req, companyId))
       throw notFound("Email inbox not found");
@@ -104,7 +108,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     )
       throw forbidden("Missing permission: tools:manage_connections");
   }
-  router.get("/companies/:companyId/email/connections", async (req, res) => {
+  router.get("/companies/:companyId/email/connections", managementGuard("connections:read", "GET /companies/:companyId/email/connections", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     await manager(req, companyId);
     res.set("Cache-Control", "no-store").json(
@@ -112,7 +116,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     );
   });
   router.post(
-    "/companies/:companyId/email/connections",
+    "/companies/:companyId/email/connections", managementGuard("connections:configure", "POST /companies/:companyId/email/connections", { personal: true }),
     validate(emailConnectionSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
@@ -129,7 +133,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     },
   );
   router.post(
-    "/companies/:companyId/email/connections/:connectionId/inspect",
+    "/companies/:companyId/email/connections/:connectionId/inspect", managementGuard("connections:configure", "POST /companies/:companyId/email/connections/:connectionId/inspect", { personal: true }),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await manager(req, companyId);
@@ -144,7 +148,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     },
   );
   router.post(
-    "/companies/:companyId/email/connections/:connectionId/check-address",
+    "/companies/:companyId/email/connections/:connectionId/check-address", managementGuard("connections:configure", "POST /companies/:companyId/email/connections/:connectionId/check-address", { personal: true }),
     validate(emailAddressCheckSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
@@ -167,7 +171,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     );
   });
   router.post(
-    "/companies/:companyId/email/inspect",
+    "/companies/:companyId/email/inspect", managementGuard("connections:configure", "POST /companies/:companyId/email/inspect", { personal: true }),
     validate(z.object({ apiKey: z.string().min(1).max(4096) }).strict()),
     async (req, res) => {
       await manager(req, req.params.companyId as string);
@@ -176,7 +180,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     },
   );
   router.post(
-    "/companies/:companyId/email/inboxes",
+    "/companies/:companyId/email/inboxes", managementGuard("connections:configure", "POST /companies/:companyId/email/inboxes", { personal: true }),
     validate(emailEndpointSetupSchema),
     async (req, res) => {
       await manager(req, req.params.companyId as string);
@@ -192,7 +196,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     },
   );
   router.post(
-    "/email/inboxes/:endpointId/control",
+    "/email/inboxes/:endpointId/control", managementGuard("connections:configure", "POST /email/inboxes/:endpointId/control", { personal: true }),
     validate(
       z.object({ action: z.enum(["pause", "resume", "remove"]) }).strict(),
     ),
@@ -205,7 +209,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     },
   );
   router.post(
-    "/email/inboxes/:endpointId/reconnect",
+    "/email/inboxes/:endpointId/reconnect", managementGuard("connections:configure", "POST /email/inboxes/:endpointId/reconnect", { personal: true }),
     validate(
       z
         .object({
