@@ -17,7 +17,7 @@ import {
 export type GraphHistoryEntry = HistoryEntry<AgentGraphLayout>;
 
 export function useAgentGraphDocument(companyId: string) {
-  const { stored, isLoaded, save, stage, saveState, loadError, blocked, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, stage, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad } = useUiLayout({
     companyId,
     surface: "agent_graph",
     resolve: resolveAgentGraphLayout,
@@ -27,6 +27,7 @@ export function useAgentGraphDocument(companyId: string) {
   const layoutRef = useRef<AgentGraphLayout | null>(null);
   const historyRef = useRef(history);
   const hadStoredLayout = useRef(false);
+  const [restoreCount, setRestoreCount] = useState(0);
 
   const wasBlocked = useRef(false);
 
@@ -40,6 +41,7 @@ export function useAgentGraphDocument(companyId: string) {
     layoutRef.current = initial;
     setLayout(initial);
     if (recovered) {
+      setRestoreCount((count) => count + 1);
       historyRef.current = emptyHistory();
       setHistory(historyRef.current);
     }
@@ -153,6 +155,9 @@ export function useAgentGraphDocument(companyId: string) {
     canUndo: history.past.length > 0,
     canRedo: history.future.length > 0,
     saveState,
+    saveError,
+    retrySave,
+    restoreCount,
     loadError,
     blocked,
     allowOverwrite,

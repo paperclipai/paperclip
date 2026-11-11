@@ -11,7 +11,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
-import { Agents, filterAgents, filterOrgTree } from "./Agents";
+import { Agents, filterAgents, filterOrgTree, orgTreeAgentIds } from "./Agents";
 import { Agents as ProductionAgents } from "./Agents.production";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
@@ -42,7 +42,9 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   get: vi.fn(),
+  getExperimental: vi.fn(),
 }));
+const mockAgentGraphProps = vi.hoisted(() => ({ visibleAgentIdsKey: null as string | null }));
 
 const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
@@ -97,6 +99,13 @@ vi.mock("../api/heartbeats", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../features/agent-graph/AgentGraph", () => ({
+  AgentGraph: ({ visibleAgentIdsKey }: { visibleAgentIdsKey?: string }) => {
+    mockAgentGraphProps.visibleAgentIdsKey = visibleAgentIdsKey ?? null;
+    return <div data-testid="agent-graph-stub" />;
+  },
 }));
 
 vi.mock("../api/resourceMemberships", () => ({
@@ -319,6 +328,14 @@ describe("agent search", () => {
     expect(filterOrgTree([root], "all", new Set(), new Set())).toEqual([]);
     expect(filterOrgTree([{ ...root, status: "terminated" }], "all", new Set(), new Set([child.id]))).toEqual([child]);
   });
+
+  it("lists every agent of a filtered tree, managers included", () => {
+    const child = { id: "child", name: "Designer", role: "designer", status: "paused", reports: [] };
+    const other = { id: "other", name: "Engineer", role: "engineer", status: "active", reports: [] };
+    const root = { id: "root", name: "CEO", role: "ceo", status: "active", reports: [child, other] };
+    expect(orgTreeAgentIds(filterOrgTree([root], "all", new Set(), new Set([child.id])))).toEqual(["root", "child"]);
+    expect(orgTreeAgentIds([])).toEqual([]);
+  });
 });
 function renderAgentsView(root: ReturnType<typeof createRoot> | null, queryClient: QueryClient) {
   root!.render(
@@ -476,6 +493,43 @@ describe("Agents", () => {
     await act(() => clear.click());
     expect(container.textContent).toContain("Beta");
     expect(container.querySelector('[aria-label="Filter agents"]')?.textContent).toBe("");
+  });
+
+  it("keeps the managers of a matching report in the agent graph while searching", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableAgentGraph: true });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "manager", name: "Manager", role: "ceo" }),
+      makeAgent({ id: "alpha", name: "Alpha", role: "engineer", reportsTo: "manager" }),
+      makeAgent({ id: "beta", name: "Beta", role: "designer", reportsTo: "manager" }),
+    ]);
+    mockAgentsApi.org.mockResolvedValue([
+      { id: "manager", name: "Manager", role: "ceo", status: "active", reports: [
+        { id: "alpha", name: "Alpha", role: "engineer", status: "active", reports: [] },
+        { id: "beta", name: "Beta", role: "designer", status: "active", reports: [] },
+      ] },
+    ]);
+    root = createRoot(container);
+    try {
+      await act(async () => renderAgentsView(root, queryClient));
+      await flushReact();
+      await flushReact();
+      await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Org chart view"]')!.click());
+      await vi.waitFor(async () => {
+        await flushReact();
+        expect(container.querySelector('[data-testid="agent-graph-stub"]')).not.toBeNull();
+      });
+      expect(mockAgentGraphProps.visibleAgentIdsKey?.split(",").sort()).toEqual(["alpha", "beta", "manager"]);
+
+      const input = container.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+      await act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "alpha");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flushReact();
+      expect(mockAgentGraphProps.visibleAgentIdsKey?.split(",").sort()).toEqual(["alpha", "manager"]);
+    } finally {
+      mockInstanceSettingsApi.getExperimental.mockReset();
+    }
   });
 
   it("intersects metadata filters with search and keeps search when filters are cleared", async () => {

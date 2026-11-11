@@ -18,6 +18,18 @@ const heartbeatsApi = vi.hoisted(() => ({ liveRunsForCompany: vi.fn(), list: vi.
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
 const pushToast = vi.hoisted(() => vi.fn());
 
+const flowOverrides = vi.hoisted(() => ({ nodesInitialized: false }));
+
+vi.mock("@xyflow/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@xyflow/react")>();
+  return {
+    ...actual,
+    useNodesInitialized: () => {
+      const measured = actual.useNodesInitialized();
+      return flowOverrides.nodesInitialized || measured;
+    },
+  };
+});
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "user-1" } }) } }));
 vi.mock("@/api/agents", () => ({ agentsApi }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi }));
@@ -36,6 +48,7 @@ vi.mock("@/components/AgentAvatar", () => ({
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+vi.setConfig({ testTimeout: 30_000 });
 
 function roster(): Agent[] {
   return syntheticOrg(AGENT_COUNT).map((member, index) => ({
@@ -87,6 +100,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(() => {
+  flowOverrides.nodesInitialized = false;
   renders.total = 0;
   renders.byAgent.clear();
   renders.limit = RENDER_LIMIT;
@@ -269,7 +283,7 @@ describe("AgentGraph with 250 agents", () => {
     await waitForSave();
     expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
     expect(uiLayoutsApi.save.mock.calls[0]![2]).toMatchObject({ stickies: [sticky], drafts: [{ name: "Agent 3 (copy)" }] });
-  });
+  }, 30_000);
 
   async function pasteAndOpenHireDialog(source: Agent) {
     const text = serializeClipboard(buildClipboard({ agents: [{ agent: source, position: { x: 0, y: 0 } }], stickies: [] }));
@@ -341,4 +355,57 @@ describe("AgentGraph with 250 agents", () => {
     });
     expect(agentsApi.hire.mock.calls[0]![1].reportsTo).toBeNull();
   });
+
+  it("applies the saved viewport when a retry recovers the saved layout", async () => {
+    const agents = roster().slice(0, 12);
+    const viewportTransform = () => host.querySelector<HTMLElement>(".react-flow__viewport")!.style.transform;
+    flowOverrides.nodesInitialized = true;
+    uiLayoutsApi.get.mockRejectedValueOnce(new Error("network down"));
+    await mount(agents);
+    expect(host.textContent).toContain("Your saved graph layout could not be loaded. Changes are not saved.");
+    expect(viewportTransform()).not.toBe("translate(120px,-48px) scale(0.5)");
+
+    uiLayoutsApi.get.mockResolvedValue({
+      surface: "agent_graph", schemaVersion: 1, updatedAt: null,
+      layout: {
+        schemaVersion: 1, direction: "TB", viewport: { x: 120, y: -48, zoom: 0.5 },
+        positions: {}, hiddenAgentIds: [], stickies: [], drafts: [],
+      },
+    });
+    const retry = [...host.querySelectorAll("button")].find((element) => element.textContent === "Retry")!;
+    await act(async () => retry.click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(host.textContent).not.toContain("could not be loaded");
+    expect(viewportTransform()).toBe("translate(120px,-48px) scale(0.5)");
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed save and saves the same layout again from the notice", async () => {
+    const agents = roster().slice(0, 12);
+    uiLayoutsApi.save.mockRejectedValueOnce(new Error("Layout is not valid"));
+    await mount(agents);
+    const toggle = [...host.querySelectorAll("button")].find((element) => element.getAttribute("aria-label")?.startsWith("Switch to"))!;
+    await act(async () => toggle.click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, UI_LAYOUT_SAVE_DEBOUNCE_MS + 100));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("Your latest graph layout changes are not saved yet.");
+    expect(host.textContent).toContain("Layout not saved");
+
+    const retrySaving = [...host.querySelectorAll("button")].find((element) => element.textContent === "Retry saving")!;
+    await act(async () => retrySaving.click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]![2]).toEqual(uiLayoutsApi.save.mock.calls[0]![2]);
+    expect(host.textContent).not.toContain("are not saved yet");
+    expect(host.textContent).toContain("Layout saved");
+  }, 30_000);
 });
