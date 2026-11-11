@@ -861,7 +861,7 @@ async function hasNativeRunnerOriginatedEvidence(
 /** A settled earlier run of the same native session saved this exact provider
  * session. Admission rebinds that checkpoint to a follow-up run, so the
  * follow-up's copy of the provider session is carried, not its own work. */
-async function carriesSettledPredecessorSession(
+export async function carriesSettledPredecessorSession(
   tx: Pick<Db, "select">,
   run: { companyId: string; id: string; nativeSessionId: string | null; createdAt: Date },
   providerSessionId: unknown,

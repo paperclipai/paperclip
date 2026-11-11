@@ -28,8 +28,9 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
  * Q1: a saved question (question-handoff.ts). Q2, Q3: journeys.ts.
  * L1: high-output, high-accounting run for database contention (contention.ts).
  * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
+ * T1: a 100-second shell tool in the agent's workspace, so a fault lands while the remote Runner runs a tool (staging class R).
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "F1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "F1", "T1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -68,6 +69,10 @@ export interface WaveOptions {
   daytonaInherit?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
+  /** `--k15-hold-seconds`: the seeded K15 outage range (redeploy.ts); absent restarts at once. */
+  k15HoldMs?: [number, number];
+  /** `--tm1-hold-seconds`: the seeded TM1 stall range (time-faults-config.ts); absent uses 95–150 s. */
+  tm1HoldMs?: [number, number];
   faultAfterMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the

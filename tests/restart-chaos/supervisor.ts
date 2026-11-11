@@ -157,6 +157,11 @@ export class ChaosSupervisor {
   private extraEnvironment: Record<string, string> = {};
   /** K15 waves: the wave id the emulated deploy identities derive from, and the generation serving now. */
   private redeploy: { waveId: string; identity: RedeployIdentity } | null = null;
+  /**
+   * K15 evidence hook (main.ts sets it on Daytona waves): runs right after the server stopped and again just
+   * before the next deploy starts, while the server is down. It must not throw.
+   */
+  redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
   /** Wave secrets, kept across a K14 switch as an in-place upgrade keeps its configuration. */
   private readonly secrets = { PAPERCLIP_AGENT_JWT_SECRET: secret(), PAPERCLIP_DECISION_SIGNING_SECRET: secret(),
     PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: secret(), BETTER_AUTH_SECRET: secret() };
@@ -485,6 +490,8 @@ export class ChaosSupervisor {
         waitForUnhealthy: async () => { await this.waitForHealthToStop(); receipt.stoppedAt = Date.now(); this.timeline.add("fault_server_down", { faultId: receipt.faultId }); },
         // K1/K2/K4 keep the controller runtime cache; K11 will discard it.
         discardCache: async () => {},
+        // K15: capture the sandbox side as soon as the controller is gone (redeployEvidence).
+        ...(kind === "K15" && this.redeployEvidence ? { afterStopped: async () => { await this.redeployEvidence?.(receipt.faultId, "stopped"); } } : {}),
         // TM3: the server is down; every database timestamp moves back by the age before the replacement starts.
         ...(kind === "TM3" ? { afterStopped: async () => {
           const timeFault: TimeFaultRecord = { kind };
@@ -496,7 +503,11 @@ export class ChaosSupervisor {
           // K14: the replacement is the current build, on the same database and instance directory.
           if (kind === "K14") receipt.upgrade = await this.switchToCurrentBuild(receipt.faultId);
           // K15: the replacement is the next deploy: a new process space and deployment id on the same volume.
-          if (kind === "K15") receipt.redeploy = this.advanceDeploy(receipt.faultId);
+          if (kind === "K15") {
+            // After the hold, before the next deploy starts: what its recovery will find in the sandboxes.
+            await this.redeployEvidence?.(receipt.faultId, "before_start");
+            receipt.redeploy = this.advanceDeploy(receipt.faultId);
+          }
           this.timeline.add("fault_restarting", { faultId: receipt.faultId });
           return this.spawnServer();
         },

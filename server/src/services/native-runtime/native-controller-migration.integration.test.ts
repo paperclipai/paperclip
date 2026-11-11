@@ -26,7 +26,7 @@ import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
 describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
-  "active_warm", "source_scan", "active_durable", "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed", "durable_inline_failed",
+  "active_warm", "source_scan", "active_durable", "active_durable_cold", "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed", "durable_inline_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
   "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
   "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable",
@@ -231,7 +231,7 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
       expect(await readFile(f.file, "utf8")).toBe(f.source);
     } finally { checkpointSpy.mockRestore(); spy.mockRestore(); }
   });
-  if (scenario === "active_durable") it("accepts a complete active database authority without terminal metadata and refuses stale or incomplete handoff proof", async () => {
+  if (scenario === "active_durable" || scenario === "active_durable_cold") it("accepts a complete active database authority without terminal metadata and refuses stale or incomplete handoff proof", async () => {
     const f = await fixture(1, false, true), controller = await currentNativeControllerIdentity();
     const binding = { companyId: f.companyId, issueId: f.issueId, runId: f.runId };
     const { nativeWorkspaceSync, ...baseProfile } = f.profile;
@@ -241,25 +241,28 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
     const profile = { ...baseProfile, sessionCheckpoint: null, remoteWorkspace };
     await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null, nativePhase: "observed",
       processPid: process.pid, processStartedAt: new Date(), runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
-    const owner = { controllerBootId: controller.bootId, controllerGeneration: 1, leaseOwner: "live-checkpoint-writer",
+    const owner = { controllerBootId: scenario === "active_durable_cold" ? randomUUID() : controller.bootId,
+      controllerGeneration: 1, leaseOwner: "live-checkpoint-writer",
       leaseExpiresAt: new Date(Date.now() + 60_000), phase: "observed", resultId: null, failureCode: null, recoveryState: null } as const;
     await f.db.update(nativeRunFinalizations).set(owner).where(eq(nativeRunFinalizations.runId, f.runId));
     await f.db.update(issues).set({ executionRunId: f.runId, checkoutRunId: null }).where(eq(issues.id, f.issueId));
     const core = new DurablePrpControlPlane({ stateDirectory: join(f.paths.root, "control-plane"), identity: f.identity,
       expectedRunnerVersion: "migration-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
-    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(f.db, { ...binding, bootId: controller.bootId,
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(f.db, { ...binding, bootId: owner.controllerBootId,
       leaseOwner: owner.leaseOwner, generation: 1, authorityRunId: f.runId }));
     try {
       await core.flushCheckpoint();
       const marker = await readFile(f.file, "utf8");
       const rows = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
       expect(rows.length).toBeGreaterThan(2);
+      if (scenario === "active_durable_cold") await rm(f.file);
       expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
       for (const value of [f.source, JSON.stringify({ schema: "unknown", identity: f.identity }),
         JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: { ...f.identity, runId: randomUUID() } })]) {
         await writeFile(f.file, value); expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
       }
-      await writeFile(f.file, marker);
+      if (scenario === "active_durable_cold") await rm(f.file);
+      else await writeFile(f.file, marker);
       for (const part of ["cursor", "command:1"]) {
         await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.part, part));
         expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
@@ -304,7 +307,8 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
         .where(eq(heartbeatRuns.id, f.runId));
       expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
-      expect(await readFile(f.file, "utf8")).toBe(marker);
+      if (scenario === "active_durable_cold") await expect(readFile(f.file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      else expect(await readFile(f.file, "utf8")).toBe(marker);
       expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual(rows);
     } finally { await core.stop(); }
   });

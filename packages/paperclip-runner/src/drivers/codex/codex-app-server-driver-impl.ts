@@ -20,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, isRunnerResumeStateUnavailable, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -125,6 +125,18 @@ function bootstrapCancellation(
       return result;
     },
   };
+}
+
+
+/** A saved turn or runtime request whose outcome is unknown. A crash can save a
+ * turn's terminal record before clearing its active marker; that turn finished
+ * and is not in flight. */
+function persistedSessionInFlight(snapshot: PersistedHarnessSession): boolean {
+  const activeTurnIsTerminal = (snapshot.terminalTurns ?? []).some(
+    (terminal) => terminal.turnId === snapshot.activeTurnId,
+  );
+  return (Boolean(snapshot.activeTurnId) && !activeTurnIsTerminal)
+    || Boolean(snapshot.pendingRuntimeRequests?.length);
 }
 
 export class CodexAppServerDriver implements HarnessDriver {
@@ -411,14 +423,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       this.#options.workingDirectoryAuthority === "remote_runner" &&
       remoteRunnerWorkingDirectoryMoved(snapshot.workingDirectory, this.#options.environment)
     ) {
-      // A crash can save a turn's terminal record before clearing its active
-      // marker; that turn finished and is not in flight.
-      const activeTurnIsTerminal = (snapshot.terminalTurns ?? []).some(
-        (terminal) => terminal.turnId === snapshot.activeTurnId,
-      );
-      const inFlight = (Boolean(snapshot.activeTurnId) && !activeTurnIsTerminal)
-        || Boolean(snapshot.pendingRuntimeRequests?.length);
-      return inFlight
+      return persistedSessionInFlight(snapshot)
         ? {
             recovered: false,
             reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
@@ -764,7 +769,13 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
-      const failureClass = runnerRecoveryFailureClass(error);
+      // A Runner with no saved control-plane state for this session can never
+      // resume it here. With nothing in flight, the runtime's recovery policy
+      // decides, as for a moved workspace root. An in-flight session keeps the
+      // unclassified failure.
+      const failureClass = runnerRecoveryFailureClass(error)
+        ?? (isRunnerResumeStateUnavailable(error) && !persistedSessionInFlight(snapshot)
+          ? PROVIDER_STATE_INCOMPATIBLE : undefined);
       return {
         recovered: false,
         reason: redactCodexDiagnostic(String(error)),

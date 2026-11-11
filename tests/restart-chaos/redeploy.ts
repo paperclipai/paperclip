@@ -25,6 +25,32 @@ export function redeployWave(plan: Pick<WavePlan, "options" | "tasks" | "storm">
     || plan.tasks.some(task => task.fault === "K15" || (task.replayFaults?.some(fault => fault.kind === "K15") ?? false));
 }
 
+/** `--k15-hold-seconds` upper bound: the controller-outage cap (tests/runner-e2e/controller-outage.ts). */
+export const K15_MAX_HOLD_SECONDS = 600;
+
+/**
+ * `--k15-hold-seconds <n>` or `<min>-<max>` (0–600 s): how long a K15 keeps the server down between its SIGTERM
+ * and the next deploy's start. Staging deploys were down 4–7 minutes, so the remote Runner has to survive the
+ * gap mid-turn. Without it a K15 restarts at once.
+ */
+export function parseK15HoldSeconds(options: { faults: readonly string[] }, raw: string | undefined): { k15HoldMs?: [number, number] } {
+  if (raw === undefined) return {};
+  if (!options.faults.includes("K15")) throw new Error("--k15-hold-seconds sets the K15 outage; add K15 to --faults");
+  const match = /^([0-9]+)(?:-([0-9]+))?$/.exec(raw.trim());
+  if (!match) throw new Error("--k15-hold-seconds takes <seconds> or <min>-<max> seconds");
+  const min = Number(match[1]);
+  const max = match[2] === undefined ? min : Number(match[2]);
+  if (max > K15_MAX_HOLD_SECONDS || max < min) {
+    throw new Error(`--k15-hold-seconds must be between 0 and ${K15_MAX_HOLD_SECONDS} seconds, min not above max`);
+  }
+  return { k15HoldMs: [min * 1000, max * 1000] };
+}
+
+/** The seeded hold of one K15. Draws only when a range is set, so existing seeds keep their plans. */
+export function k15HoldMs(range: readonly [number, number] | undefined, int: (min: number, max: number) => number): number {
+  return range ? int(range[0], range[1]) : 0;
+}
+
 /** The preload that applies the emulated host name before the server loads. */
 export const REDEPLOY_PRELOAD_PATH = fileURLToPath(new URL("./redeploy-preload.mjs", import.meta.url));
 /** Read by the preload: the host name `os.hostname()` returns in the server process. */

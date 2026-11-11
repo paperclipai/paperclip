@@ -440,6 +440,23 @@ describe("plugin native Runner ownership", () => {
     expect(task.mock.calls.find(([op]) => op.kind === "stop")).toBeUndefined();
     await registration.release(); await registration.checkpoint("settled"); await handle.completion;
   });
+  it("surfaces a proven admission rejection without polling or stopping the task", async () => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async op => op.kind === "submit"
+      ? { kind: "admission_rejected", taskId: "task", reason: "session_state_unavailable" } : perform(op));
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex" });
+    await prepare(owner);
+    const registration = await owner.registration({} as never, "run");
+    const process = owner.launcher(launchSpec());
+    registration.activate();
+    await expect(registration.ready()).rejects.toThrow("runner_task_admission_rejected: session_state_unavailable");
+    await expect(registration.failure).rejects.toThrow("runner_task_admission_rejected: session_state_unavailable");
+    await expect(process.completion).resolves.toMatchObject({ code: 1 });
+    await registration.checkpoint("unsettled");
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["prepare", "check_project_auth", "submit"]);
+  });
+
   it("reconciles a lost submit reply without launching another attempt", async () => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;

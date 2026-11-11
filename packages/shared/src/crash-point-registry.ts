@@ -28,6 +28,13 @@ export type CrashPointDefinition = {
 export const CRASH_POINT_NAME_PATTERN = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.(before|after)_[a-z0-9_]+$/;
 
 export const CRASH_POINTS = {
+  "remote_workspace.prepare.after_publish_before_provision": {
+    description: "A run restored its remote workspace's saved version and published the root as its dirty epoch, with the unchanged baseline; no provisioning, runner command or agent process has started. Recovery must hand the workspace on at its saved version and keep the root, not abandon the epoch.",
+    environments: ["daytona"],
+    kinds: ["remote_workspace_unsaved_files"],
+    invariants: ["I2", "I7"],
+    prerequisite: "a previously saved remote workspace: the point counts only a preparation that restores a saved version (a follow-up or continuation run, for example workload S1), never a workspace's first preparation",
+  },
   "sandbox.create.after_intent_before_provider": {
     description: "The sandbox_creation_operations intent is committed; the provider create call has not been made. Recovery must settle the intent without a sandbox to find.",
     environments: ["daytona"],

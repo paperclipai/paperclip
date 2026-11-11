@@ -5,6 +5,7 @@ import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
 import { isMultiServerFault, validateMultiServerOptions } from "./multi-server.js";
+import { parseK15HoldSeconds } from "./redeploy.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
@@ -132,13 +133,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "provider-fault-restart-after-seconds": { type: "string" },
       "rr-gap-seconds": { type: "string" },
       "rr-stop-on": { type: "string" },
+      "k15-hold-seconds": { type: "string" },
+      "tm1-hold-seconds": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "tm1-hold-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -179,7 +182,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q3) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1"
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1"
       && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
@@ -240,8 +243,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (options.faults.includes("K15") && options.faults.some(isMultiServerFault)) {
     throw new Error("K15 (redeploy) does not combine with MS1-MS3: the second server would not share the emulated deploy identity");
   }
-  Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
+  Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"], values["tm1-hold-seconds"]));
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
+  Object.assign(options, parseK15HoldSeconds(options, values["k15-hold-seconds"]));
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");

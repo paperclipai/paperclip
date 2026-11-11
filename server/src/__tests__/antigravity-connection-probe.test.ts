@@ -12,7 +12,10 @@ vi.mock("../services/native-runtime/acpx-qualification.js", () => ({ resolveAnti
 vi.mock("../services/native-runtime/antigravity-runner-credentials.js", () => ({
   prepareAntigravityRunnerCredentials: mocks.credentials, antigravityCredentialTurn: mocks.turn,
 }));
-vi.mock("../services/native-runtime/native-codex-runner.js", () => ({ resolvePaperclipRunnerBinary: () => "/owned/runnerd" }));
+vi.mock("../services/native-runtime/native-codex-runner.js", () => ({
+  resolvePaperclipRunnerBinary: () => "/owned/runnerd",
+  resolvePaperclipRunnerBinaryAsync: async () => "/owned/runnerd",
+}));
 import { antigravityConnectionProbeFailure, testAntigravityConnection } from "../services/antigravity-connection-probe.js";
 import { NativeEnvironmentProbeCleanupError, resolveAcpxRuntimeRoot } from "../vendor/paperclip-runner/index.js";
 

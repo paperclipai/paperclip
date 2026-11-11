@@ -43,6 +43,47 @@ const continueMarker = (nonce: string) => `CONTINUE-${nonce}`;
 const notesFile = (nonce: string) => `NOTES-${nonce}.md`;
 /** F1: the absolute symlink the agent creates and keeps in the repository root. */
 export const f1LinkName = (nonce: string) => `hosts-link-${nonce}`;
+/** T1: ticks of the long tool (2 s each) and the line the agent reports after it finished. */
+export const T1_TICKS = 50;
+export const t1Marker = (nonce: string) => `TICKS-${nonce}`;
+/** Prints `<ticks> start=<epoch s> end=<epoch s>`: the loop's own clock window, so the harness can check a fault crossed it. */
+export const t1Command = (nonce: string) =>
+  `s=$(date +%s); i=0; while [ $i -lt ${T1_TICKS} ]; do i=$((i+1)); echo tick-$i; sleep 2; done > ticks-${nonce}.txt;`
+  + ` echo "$(wc -l < ticks-${nonce}.txt | tr -d ' ') start=$s end=$(date +%s)"`;
+
+/** The brief's first line, `TICKS-<nonce>=<ticks> start=<s> end=<s>`, parsed; null when it does not match. */
+export function parseT1Report(nonce: string, brief: string | null | undefined): { ticks: number; startMs: number; endMs: number } | null {
+  const first = (brief ?? "").split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? "";
+  const match = new RegExp(`^${t1Marker(nonce)}=([0-9]+) start=([0-9]{9,11}) end=([0-9]{9,11})$`).exec(first);
+  if (!match) return null;
+  const [ticks, start, end] = [Number(match[1]), Number(match[2]) * 1000, Number(match[3]) * 1000];
+  return end >= start ? { ticks, startMs: start, endMs: end } : null;
+}
+
+/** Sandbox and host clocks are not the same clock: a fault this close to the loop's edges still counts as crossing it. */
+export const T1_CLOCK_SLACK_MS = 5_000;
+
+/**
+ * T1 tested a mid-tool fault only if one of the task's own faults started while the loop ran. A fault that landed
+ * during preparation, with the loop run afterwards, tested nothing mid-tool: the task fails `fault_crossed_tool`,
+ * as a provider-fault task whose fault never applied does.
+ */
+export function withT1CrossingCheck(oracle: OracleResult, plan: { taskId: string; workload: WorkloadId; nonce: string; fault: string },
+  brief: string | null | undefined, faults: ReadonlyArray<{ requestedBy: string; startedAt: number; faultId: string }>): OracleResult {
+  // A matrix baseline (K0) expects no fault, and a provider message fault (PV*) restarts nothing of its own.
+  if (plan.workload !== "T1" || plan.fault === "K0" || plan.fault.startsWith("PV")) return oracle;
+  const report = parseT1Report(plan.nonce, brief);
+  // A storm task (K13) has no fault of its own: the storm's faults (requested by "storm") are the ones that cross it.
+  const own = faults.filter(fault => fault.requestedBy === plan.taskId || (plan.fault === "K13" && fault.requestedBy === "storm"));
+  const crossing = report ? own.filter(fault => fault.startedAt >= report.startMs - T1_CLOCK_SLACK_MS
+    && fault.startedAt <= report.endMs + T1_CLOCK_SLACK_MS) : [];
+  const check = { name: "fault_crossed_tool", ok: crossing.length > 0,
+    detail: report ? `loop ${new Date(report.startMs).toISOString()}..${new Date(report.endMs).toISOString()}; `
+      + `faults ${own.map(fault => `${fault.faultId}@${new Date(fault.startedAt).toISOString()}`).join(",") || "none"}`
+      : "no loop window reported" };
+  const checks = [...oracle.checks, check];
+  return { ...oracle, checks, verdict: checks.every(entry => entry.ok) ? "pass" : "fail" };
+}
 /** F1: an `ls -l` line for that link: a symlink (`l` mode) naming the link and its absolute target. */
 export const f1LinkListing = (nonce: string) => new RegExp(`^l\\S*\\s.*\\s${f1LinkName(nonce)} -> /etc/hosts$`);
 const benchFile = (nonce: string) => `bench-result-${nonce}.txt`;
@@ -351,6 +392,32 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         // Proof the absolute link was in the workspace before the save-back: the agent's own `ls -l` output, saved
         // with the notes file. Best-effort against an agent that invents it; how the link itself is saved is not graded.
         { name: "link_listed", ok: f1LinkListing(nonce).test(lines[1] ?? ""), detail: JSON.stringify((lines[1] ?? "").slice(0, 160)) },
+      ]);
+    },
+  },
+  T1: {
+    // Staging class R (`runner_remote_process_identity_unavailable`): the controller went away mid-turn while a
+    // tool ran in the sandbox, and recovery 4–7 minutes later found the remote Runner gone. T1 keeps one shell
+    // tool running for about 100 s (short of provider shell-tool timeouts), so a fault in its window lands mid-tool.
+    id: "T1",
+    label: "Long shell tool in the agent's workspace",
+    usesRepository: false,
+    fireWindowMs: [35_000, 80_000],
+    budgetMs: 15 * 60_000,
+    title: nonce => `Chaos T1 long tool ${nonce}`,
+    description: nonce => [
+      "Run this exact shell command in your working directory as one tool call, in the foreground, and wait for it to finish",
+      `(about 100 seconds; do not run it in the background): \`${t1Command(nonce)}\``,
+      `Then save this issue's document with key \`brief\` (title "Brief"). Its first line is \`${t1Marker(nonce)}=<the exact line the command printed>\`.`,
+      "Do not create other files or tasks. When the document is saved, mark this task done.",
+    ].join("\n"),
+    collect: { documents: ["brief"], files: () => [], commands: [] },
+    grade(nonce, artifacts) {
+      const report = parseT1Report(nonce, artifacts.documents.brief);
+      const first = (artifacts.documents.brief ?? "").split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? "";
+      return result([
+        statusCheck(artifacts),
+        { name: "tool_finished", ok: report?.ticks === T1_TICKS, detail: JSON.stringify(first.slice(0, 120)) },
       ]);
     },
   },

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { createCapabilityRunnerdCodexTransport } from "./runnerd-codex-transport.js";
+import { isRunnerResumeStateUnavailable, NativeRunnerResumeStateUnavailableError } from "../contracts/harness-driver.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
 it.each(["restore", "refuse", "foreign-state"] as const)(
@@ -105,3 +106,34 @@ it.each(["restore", "refuse", "foreign-state"] as const)(
   },
   30_000,
 );
+
+// Staging class P: a follow-up's new sandbox holds no Runner control-plane
+// state and no archived authority epoch for the saved session. The refusal is
+// typed so the driver can tell the runtime the saved state cannot resume here.
+it.each(["local", "external"] as const)("names a resume that finds no saved %s Runner state", async (placement) => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-resume-state-absent-"));
+  const prepare = vi.fn(async () => {});
+  try {
+    const resumed = createCapabilityRunnerdCodexTransport({
+      runnerBinary: defaultCapabilityRunnerdBinary(),
+      codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(root),
+      stateDirectory: root,
+      prpIdentity: { runnerInstanceId: "absent-runner", environmentLeaseId: "absent-lease", runId: "follow-up-run",
+        normalizedSessionId: "absent-session", turnId: "follow-up-turn", itemId: "follow-up-item" },
+      resumeProviderSession: { driverSessionId: "thread-saved", providerSessionId: "provider-saved" },
+      ...(placement === "external" ? {
+        readRunnerState: vi.fn(async () => { throw new Error("no runner state"); }),
+        prepareExternalRunnerState: prepare,
+        archiveExternalRunnerState: vi.fn(async () => { throw new Error("nothing to archive"); }),
+      } : {}),
+    });
+    const failure = await resumed.transport.request("thread/read", {}).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(NativeRunnerResumeStateUnavailableError);
+    expect(isRunnerResumeStateUnavailable(failure)).toBe(true);
+    expect((failure as Error).message).toBe("PRP provider resume state is unavailable");
+    await resumed.transport.close().catch(() => {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

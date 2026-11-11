@@ -121,6 +121,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
 
 export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("accepted"), taskId: providerId }).strict(),
+  z.object({ kind: z.literal("admission_rejected"), taskId: providerId,
+    reason: z.enum(["session_state_unavailable", "account_binding_mismatch"]) }).strict(),
   z.object({ kind: z.literal("released"), taskId: providerId }).strict(),
   z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]) }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
@@ -210,6 +212,7 @@ export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDrive
 export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOperation, taskId: string, value: unknown): PluginEnvironmentTaskResult {
   const result = environmentTaskResultSchema.parse(value);
   const expected = operation.kind === "release" ? "released" : operation.kind === "resume" ? "resume" : operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
-  if (result.taskId !== taskId || result.kind !== expected) throw new Error("Invalid plugin-provided Runner execution response");
+  const rejectedSubmit = operation.kind === "submit" && result.kind === "admission_rejected";
+  if (result.taskId !== taskId || (result.kind !== expected && !rejectedSubmit)) throw new Error("Invalid plugin-provided Runner execution response");
   return result;
 }

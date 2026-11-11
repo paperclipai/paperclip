@@ -112,7 +112,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For lossless helper input, use saveResponse:true on a non-sensitive GET to save nonempty responses as artifacts. Empty responses return empty:true without an artifact. Use download_artifact for artifacts up to 10 MiB; larger text artifacts require paged content reads. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -218,6 +218,10 @@
             }
           },
           "type": "object"
+        },
+        "saveResponse": {
+          "description": "GET only: save complete nonempty authorized, non-sensitive response bytes as an immutable artifact even below the inline threshold. Returns artifactId, byteSize and sha256 without inline body transcription. Zero-byte success returns empty:true and no artifact. download_artifact accepts at most 10 MiB; use paged content reads for larger text artifacts. Uses existing capture limits and budgets. Cannot combine with responseText. Denied, sensitive and partial responses are not exported. Never repeats the source request.",
+          "type": "boolean"
         }
       },
       "required": [

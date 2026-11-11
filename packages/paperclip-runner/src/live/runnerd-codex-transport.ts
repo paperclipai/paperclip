@@ -70,7 +70,7 @@ import type {
   HarnessRuntimeRequestResolution,
   PersistedHarnessProviderIdentity,
 } from "../contracts/harness-driver.js";
-import { NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
+import { NativeRunnerResumeStateUnavailableError, NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
   inspectStagedRunAttachment,
@@ -103,7 +103,7 @@ import {
   prepareIsolatedCodexRecoveryHome,
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
-import { resolvePackagedRunnerBinary } from "./runner-binary.js";
+import { resolvePackagedRunnerBinary, resolvePackagedRunnerBinaryAsync } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
 import { isTerminalOperation, settleEarlierToolCalls, staleTerminalCallResult } from "./terminal-call-freshness.js";
@@ -6498,7 +6498,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let rotationSource: Record<string, unknown> | null = null;
     if (controlPlaneState === null) {
       if (!supportsColdRotation) {
-        throw new Error("PRP provider resume state is unavailable");
+        throw new NativeRunnerResumeStateUnavailableError();
       }
       // An interrupted rotation leaves only its archive marker.
       rotationSource = committedRotationSource ?? latestArchivedControlPlaneState(
@@ -6506,7 +6506,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         desiredIdentity,
       );
       if (!rotationSource) {
-        throw new Error("PRP provider resume state is unavailable");
+        throw new NativeRunnerResumeStateUnavailableError();
       }
     } else if (!exactAuthority && warmRecovery === null) {
       if (!supportsColdRotation) {
@@ -6540,7 +6540,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     // A missing control plane either rotated from its archive above or threw.
     if (controlPlaneState === null) {
-      throw new Error("PRP provider resume state is unavailable");
+      throw new NativeRunnerResumeStateUnavailableError();
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
@@ -8834,7 +8834,18 @@ export function defaultCapabilityRunnerdBinary(platform = process.platform, arch
   const outputRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
   const staged = resolvePackagedRunnerBinary(outputRoot, platform, architecture)
     ?? resolvePackagedRunnerBinary(resolve(packageRoot, "dist"), platform, architecture);
-  if (staged) return staged;
+  return staged ?? unstagedCapabilityRunnerdBinary(platform, architecture);
+}
+
+/** `defaultCapabilityRunnerdBinary` without blocking the event loop. */
+export async function defaultCapabilityRunnerdBinaryAsync(platform = process.platform, architecture = process.arch): Promise<string> {
+  const outputRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
+  const staged = await resolvePackagedRunnerBinaryAsync(outputRoot, platform, architecture)
+    ?? await resolvePackagedRunnerBinaryAsync(resolve(packageRoot, "dist"), platform, architecture);
+  return staged ?? unstagedCapabilityRunnerdBinary(platform, architecture);
+}
+
+function unstagedCapabilityRunnerdBinary(platform: string, architecture: string): string {
   if (platform !== process.platform || architecture !== process.arch) {
     throw new Error(`runner_remote_artifact_unavailable: install the Paperclip release containing the ${platform}-${architecture} daemon or configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH`);
   }

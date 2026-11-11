@@ -95,6 +95,7 @@ export {
   NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
+  defaultCapabilityRunnerdBinaryAsync,
   readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
   coldAdmissionTimeoutMs,
@@ -124,7 +125,7 @@ export * from "./compatibility.js";
 
 export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } from "./drivers/acpx/installation-integrity.js";
 export { probeAcpxPiInstallation, probeAcpxKimiInstallation } from "./drivers/acpx/profile-installation.js";
-export { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./live/bundled-remote-provider-pack.js";
+export { BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH, PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, bundledRemoteRunnerRelease } from "./live/bundled-remote-provider-pack.js";
 
 export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";

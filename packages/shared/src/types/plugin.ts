@@ -923,6 +923,8 @@ export interface PluginCompanySettings {
  * Query filter for `ctx.entities.list`.
  */
 export interface PluginEntityQuery {
+  scopeKind?: PluginStateScopeKind;
+  scopeId?: string;
   /** Optional filter by entity type (e.g. 'project', 'issue'). */
   entityType?: string;
   /** Optional filter by external system identifier. */
