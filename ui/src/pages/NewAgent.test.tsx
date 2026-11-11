@@ -153,6 +153,18 @@ describe("New agent setup", () => {
     expect(api.create).not.toHaveBeenCalled();
   });
 
+  it("opens the new-agent dialog on plain HTTP when randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
+      state.params = new URLSearchParams();
+      await renderCurrentParams();
+      expect(document.body.textContent).toContain("Meet your next agent");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("creates an inactive record before connecting and finishes that same agent", async () => {
     await render("codex_local");
     expect(api.create).toHaveBeenCalledTimes(1);

@@ -16,6 +16,7 @@ import {
   setupProviderKeys,
 } from "@/lib/agent-setup-fields";
 import { testAgentSetup } from "@/lib/test-agent-setup";
+import { createUuid } from "@/lib/uuid";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "@/lib/qualify-claude-setup";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
@@ -197,7 +198,7 @@ function Setup({
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("");
   const [createdInSession, setCreated] = useState<Agent | null>(null);
-  const setupId = useRef(setupAgentId ?? crypto.randomUUID());
+  const setupId = useRef(setupAgentId ?? createUuid());
   if (setupAgentId) setupId.current = setupAgentId;
   const creating = useRef(false);
   const restored = useRef<string | null>(null);
