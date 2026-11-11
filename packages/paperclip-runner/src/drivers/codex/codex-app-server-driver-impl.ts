@@ -38,6 +38,7 @@ import {
 import {
   boundedCodexValue,
   codexThreadWorkingDirectory,
+  remoteRunnerWorkingDirectoryMoved,
   validateCodexWorkingDirectory as validateWorkingDirectory,
 } from "./codex-boundaries.js";
 import {
@@ -393,6 +394,25 @@ export class CodexAppServerDriver implements HarnessDriver {
       return {
         recovered: false,
         reason: "persisted session identity is incomplete",
+      };
+    }
+    // A session saved under an abandoned remote workspace root cannot resume
+    // in the newly assigned root. When it holds no in-flight turn or runtime
+    // request (a follow-up's inherited checkpoint, for example), decline
+    // before any Runner or provider process starts, so the runtime's recovery
+    // policy decides: a replacement in the assigned workspace, or a named
+    // refusal. In-flight provider work keeps the stricter admission refusal,
+    // because nothing here can prove its side effects settled.
+    if (
+      snapshot.workingDirectory &&
+      !snapshot.activeTurnId &&
+      !(snapshot.pendingRuntimeRequests?.length) &&
+      this.#options.workingDirectoryAuthority === "remote_runner" &&
+      remoteRunnerWorkingDirectoryMoved(snapshot.workingDirectory, this.#options.environment)
+    ) {
+      return {
+        recovered: false,
+        reason: "persisted session working directory is not the assigned remote workspace",
       };
     }
     const transport = this.#transport({
