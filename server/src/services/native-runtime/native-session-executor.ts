@@ -10779,7 +10779,7 @@ async function executePaperclipNativeSessionAttempt(
           );
           if (nextAttempt > 3)
             throw new Error("native_session_retry_exhausted");
-          scheduledResumeContinuation = (await scheduledResumeContinuationAllowed(tx as unknown as Db, {
+          const scheduledResumeDecision = await scheduledResumeContinuationAllowed(tx as unknown as Db, {
             companyId: input.execution.binding.companyId,
             runId: input.execution.binding.runId,
             restartRecovery: Boolean(recovering),
@@ -10790,7 +10790,12 @@ async function executePaperclipNativeSessionAttempt(
               ? (coordinator.recoveryHistory.at(-1) as Record<string, unknown> | undefined) ?? null : null,
             controllerBootId: controller.bootId,
             admittedAttempt: nextAttempt,
-          })).allowed;
+          });
+          scheduledResumeContinuation = scheduledResumeDecision.allowed;
+          if (!scheduledResumeDecision.allowed && coordinator.phase === "retryable_failure"
+              && record(coordinator.failureDetail).recoveryMode === "exact_checkpoint_resume")
+            logger.warn({ runId: input.execution.binding.runId, attempt: nextAttempt, reason: scheduledResumeDecision.reason },
+              "scheduled same-run resume will not continue the interrupted provider turn");
           const nextControllerGeneration = recovering
             ? recovering.controllerGeneration
             : coordinator.controllerBootId === controller.bootId
