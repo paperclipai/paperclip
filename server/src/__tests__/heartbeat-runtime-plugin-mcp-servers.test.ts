@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
   activityLog,
@@ -39,6 +40,7 @@ import { createToolGatewayService } from "../services/tool-gateway.js";
 import { registerAssignedMcpGateway } from "../services/native-runtime/assigned-mcp-tools.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
+import { logger } from "../middleware/logger.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -78,6 +80,7 @@ describeEmbeddedPostgres("heartbeat runtime plugin MCP servers", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = originalApiUrl;
     await db.delete(toolMcpGatewayTokens);
@@ -135,6 +138,76 @@ describeEmbeddedPostgres("heartbeat runtime plugin MCP servers", () => {
     }
     return actions;
   }
+
+  it.each([true, false])("preserves the original assignment when plugin discovery fails with a remote connection: %s", async withConnection => {
+    const f = await pluginRun();
+    let connectionId: string | undefined;
+    if (withConnection) {
+      const [application] = await db.insert(toolApplications).values({
+        companyId: f.company.id, applicationKey: "remote", name: "Remote MCP", type: "mcp_http", status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: f.company.id, applicationId: application!.id, name: "Remote MCP", uid: "test/remote",
+        transport: "mcp_remote", status: "active", enabled: true, config: { url: "https://remote.example.test/mcp" },
+      }).returning();
+      connectionId = connection!.id;
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: f.company.id, profileKey: "remote", name: "Remote MCP", defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: f.company.id, profileId: profile!.id, selectorType: "connection", effect: "include",
+        applicationId: application!.id, connectionId,
+      });
+      await db.insert(toolProfileBindings).values({
+        companyId: f.company.id, profileId: profile!.id, targetType: "agent", targetId: f.agent.id,
+      });
+      await db.insert(toolConnectionInstalls).values({
+        companyId: f.company.id, connectionId, targetType: "agent", targetId: f.agent.id,
+      });
+    }
+    const listPluginTools = vi.spyOn(f.gateway, "listPluginToolsForAgent").mockResolvedValue([]);
+    const original = await resolveNativeRuntimeMcpSnapshot({ db, agent: f.agent, runId: f.run.id });
+    const originalServers = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id });
+    const digest = createHash("sha256").update(JSON.stringify({
+      version: 1, agentId: f.agent.id, connections: connectionId ? [connectionId] : [], tools: [],
+    })).digest("hex");
+    expect(original).toEqual({
+      assignmentSetId: `sha256:${digest}`, digest, bindingId: withConnection ? `native-mcp:${f.run.id}` : null,
+    });
+    const error = new Error("Plugin discovery unavailable");
+    listPluginTools.mockRejectedValue(error);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    expect(await resolveNativeRuntimeMcpSnapshot({ db, agent: f.agent, runId: f.run.id })).toEqual(original);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      { err: error, companyId: f.company.id, agentId: f.agent.id, runId: f.run.id },
+      "Could not discover plugin tools for runtime MCP assignment",
+    );
+    warn.mockClear();
+    const diagnostic = vi.spyOn(f.gateway, "recordRuntimeMcpDeliveryDiagnostic");
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id, expectedAssignmentDigest: digest });
+    if (withConnection) {
+      expect(servers).toHaveLength(1);
+      expect(servers[0]).toMatchObject({
+        name: "paperclip-assigned", connectionId: `assignment:${digest}`, url: originalServers[0]!.url,
+      });
+      expect(diagnostic).not.toHaveBeenCalled();
+      expect(await db.select().from(toolProfileEntries)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ selectorType: "connection", connectionId }),
+      ]));
+      expect((await db.select().from(toolProfileEntries)).some(entry => entry.selectorType === "tool_name")).toBe(false);
+    } else {
+      expect(servers).toEqual(originalServers);
+      expect(servers).toEqual([]);
+      expect(diagnostic).toHaveBeenCalledExactlyOnceWith({
+        companyId: f.company.id, agentId: f.agent.id, runId: f.run.id, permittedNotInstalledConnections: [],
+      });
+      expect(await db.select().from(toolMcpGateways)).toEqual([]);
+    }
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      { err: error, companyId: f.company.id, agentId: f.agent.id, runId: f.run.id },
+      "Could not discover plugin tools for runtime MCP assignment",
+    );
+  });
 
   it.each(["planning", "ask", "skill_test"] as const)("withholds plugin tools and rejects HTTP calls when the task changes to %s", async workMode => {
     const f = await pluginRun();

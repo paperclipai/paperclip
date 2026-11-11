@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 import type { ToolGatewayService } from "./tool-gateway.js";
 
 const gateways = new WeakMap<Db, ToolGatewayService>();
@@ -15,6 +16,11 @@ export async function listRegisteredPluginToolNames(
   db: Db,
   input: { companyId: string; agentId: string; runId: string },
 ): Promise<string[]> {
-  const tools = await gateways.get(db)?.listPluginToolsForAgent(input) ?? [];
-  return tools.map((tool) => tool.name).sort();
+  try {
+    const tools = await gateways.get(db)?.listPluginToolsForAgent(input) ?? [];
+    return tools.map((tool) => tool.name).sort();
+  } catch (err) {
+    logger.warn({ err, ...input }, "Could not discover plugin tools for runtime MCP assignment");
+    return [];
+  }
 }
