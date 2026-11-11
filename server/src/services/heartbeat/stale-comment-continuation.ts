@@ -17,7 +17,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * and the release drain reopens the done task for the user's message and
  * delivers it once. Only a task that an agent run completed without reading
  * the message qualifies: that run started before the comment and succeeded
- * after it. A task a person marked done ends the message's intent.
+ * after it. A task a person marked done ends the message's intent. Another
+ * agent's comment qualifies only when its wake carried an explicit resume
+ * intent (`resume: true`).
  * Returns the saved receipt id, or null when nothing is owed.
  */
 export async function deferUndeliveredCommentsOfStaleRun(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<string | null> {
@@ -40,7 +42,14 @@ export async function deferUndeliveredCommentsOfStaleRun(db: Db, run: typeof hea
   if (closed?.byAgent !== true) return null;
   const [wake] = run.wakeupRequestId ? await db.select().from(agentWakeupRequests)
     .where(and(eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.id, run.wakeupRequestId))) : [];
+  // Another agent's comment posted with `resume: true` reopens finished work
+  // like a person's message (staging run 8c71398f dropped one). Without that
+  // explicit intent an agent's comment stays communicative.
+  const payload = wake?.payload && typeof wake.payload === "object" ? wake.payload as Record<string, unknown> : {};
+  const explicitResumeAgentId = wake?.requestedByActorType === "agent" && wake.requestedByActorId
+    && wake.requestedByActorId !== run.agentId && (payload.resumeIntent === true || context.resumeIntent === true)
+    ? wake.requestedByActorId : null;
   return saveUndeliveredUserComments(db, { companyId: run.companyId, issueId, agentId: run.agentId, commentIds: owed,
     allowedStatuses: ["done"], requestedByActorId: wake?.requestedByActorType === "user" ? wake.requestedByActorId : null,
-    source: wake?.source, triggerDetail: wake?.triggerDetail });
+    source: wake?.source, triggerDetail: wake?.triggerDetail, explicitResumeAgentId });
 }

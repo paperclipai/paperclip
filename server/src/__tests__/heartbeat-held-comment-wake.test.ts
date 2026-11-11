@@ -488,6 +488,74 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
 
+  // Staging run 8c71398f: a parent agent posted a comment with `resume: true`
+  // ("a changed requirement for your NEXT turn") 90 s after the child's turn
+  // ended but before its run settled. The comment queued its own run; the
+  // settling run then closed the task, the queued run was cancelled as a stale
+  // continuation, and the explicit resume request was never delivered.
+  it("reopens a finished task for another agent's explicit resume comment whose queued run turned stale", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    const [parent] = await db.select().from(agents).where(and(eq(agents.companyId, f.companyId), eq(agents.name, "Earlier worker")));
+    const [parentRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: parent!.id, invocationSource: "automation",
+      triggerDetail: "system", status: "succeeded", startedAt: new Date(Date.now() - 20_000), finishedAt: new Date(),
+      contextSnapshot: {} }).returning();
+    const [resume] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: parent!.id,
+      createdByRunId: parentRun!.id, body: "Changed requirement for your next turn: revalidate the verdict." }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "agent", requestedByActorId: parent!.id,
+      payload: { issueId: f.issueId, commentId: resume!.id, mutation: "comment", resumeIntent: true, followUpRequested: true } }).returning();
+    const [stale] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "queued", wakeupRequestId: wake!.id,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: resume!.id, wakeCommentId: resume!.id,
+        wakeCommentIds: [resume!.id], wakeReason: "issue_commented", source: "issue.comment",
+        resumeIntent: true, followUpRequested: true } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: stale!.id }).where(eq(agentWakeupRequests.id, wake!.id));
+    // The child's run, which started before the comment, closed the task after it.
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+    await settle(f); await settle(f);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stale!.id)))[0]).toMatchObject({
+      status: "cancelled", errorCode: "continuation_task_ownership_changed" });
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    await settle(f); await settle(f);
+    expect(deliveries(resume!.id)).toHaveLength(1);
+    await settle(f);
+    expect(deliveries(resume!.id)).toHaveLength(1);
+  }, 180_000);
+
+  // Without `resume: true` an agent's comment stays communicative: the closed
+  // task is not reopened for it (issues route: only human comments reopen
+  // finished work implicitly).
+  it("does not reopen a finished task for another agent's comment without resume intent", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    const [parent] = await db.select().from(agents).where(and(eq(agents.companyId, f.companyId), eq(agents.name, "Earlier worker")));
+    const [note] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: parent!.id,
+      body: "FYI: the parent review finished." }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "agent", requestedByActorId: parent!.id,
+      payload: { issueId: f.issueId, commentId: note!.id, mutation: "comment" } }).returning();
+    const [stale] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "queued", wakeupRequestId: wake!.id,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: note!.id, wakeCommentId: note!.id,
+        wakeCommentIds: [note!.id], wakeReason: "issue_commented", source: "issue.comment" } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: stale!.id }).where(eq(agentWakeupRequests.id, wake!.id));
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+    await settle(f); await settle(f);
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    await settle(f);
+    expect(deliveries(note!.id)).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]?.status).toBe("done");
+  }, 180_000);
+
   // The durable half: the stale check ran before the closing run settled (or
   // its save failed), so only the cancelled stale wake carries the message.
   // Once the closing run settles, the reconciler saves it and the drain
