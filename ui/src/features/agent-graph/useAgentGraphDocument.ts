@@ -32,23 +32,33 @@ export function useAgentGraphDocument(companyId: string) {
 
   const wasBlocked = useRef(false);
   const loadedOwner = useRef<string | null>(null);
+  const ownerReload = useRef(false);
+  const [layoutOwner, setLayoutOwner] = useState<string | null>(null);
 
   useEffect(() => {
+    if (loadedOwner.current !== owner) {
+      if (loadedOwner.current !== null) {
+        layoutRef.current = null;
+        setLayout(null);
+        ownerReload.current = true;
+      }
+      loadedOwner.current = owner;
+    }
     if (!isLoaded) return;
     const recovered = wasBlocked.current && blocked === null && stored !== null;
     wasBlocked.current = blocked !== null;
-    const ownerChanged = loadedOwner.current !== null && loadedOwner.current !== owner;
-    loadedOwner.current = owner;
-    if (layoutRef.current && !recovered && !ownerChanged) return;
+    if (layoutRef.current && !recovered) return;
     hadStoredLayout.current = stored !== null;
     const initial = stored ?? defaultAgentGraphLayout();
     layoutRef.current = initial;
     setLayout(initial);
-    if (recovered || ownerChanged) {
+    setLayoutOwner(owner);
+    if (recovered || ownerReload.current) {
       setRestoreCount((count) => count + 1);
       historyRef.current = emptyHistory();
       setHistory(historyRef.current);
     }
+    ownerReload.current = false;
   }, [isLoaded, stored, blocked, owner]);
 
   const write = useCallback(
@@ -160,7 +170,7 @@ export function useAgentGraphDocument(companyId: string) {
   );
 
   return {
-    layout,
+    layout: layoutOwner === owner ? layout : null,
     apply,
     closeGroup,
     flush,
