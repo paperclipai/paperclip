@@ -149,6 +149,29 @@ async function observePlanReview(ctx: ChatCatalogContext, state: Record<string, 
     state.noPublishedWorkProduct = !published; return o;
 }
 
+/** When Morgan's delegated task finishes inside the attempt, the product wakes the CEO on this chat with a
+ * completion follow-up. Let that admitted follow-up (graded by planDecisionSourceComplete) settle instead of
+ * leaving it running at final run custody. A worker still running at the deadline stays bounded active work. */
+async function settleDelegatedCompletion(ctx: ChatCatalogContext, state: Record<string, unknown>, originalDeadline: number) {
+  const deadlineAt = Math.min(originalDeadline - 60_000, Date.now() + 300_000), worker = state.worker as Entity;
+  let quietSince: number | undefined;
+  try {
+    await pollUntil({ label: "Delegated work and its completion follow-up settled", deadlineAt, intervalMs: 1000,
+      load: async () => ({ observation: await observePlanReview(ctx, state), source: ctx.issue() }),
+      accept: ({ observation: o, source }) => {
+        const workerRuns = o.runs.filter(run => run.agentId === worker.id), ceos = o.runs.filter(run => run.agentId === o.leadId);
+        const settled = source?.conversationState === "waiting" && o.runs.every(run => run.status === "succeeded") && workerRuns.length === 1;
+        if (!settled) { quietSince = undefined; return false; }
+        if (ceos.length === 2) return planDecisionSourceComplete(o);
+        quietSince ??= Date.now();
+        return Date.now() - quietSince >= 30_000;
+      },
+      reject: ({ observation: o }) => o.runs.length > 3 || o.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Delegated plan work failed or admitted excess native work" : undefined });
+  } catch (error) {
+    if (error instanceof Error && /failed or admitted excess/.test(error.message)) throw error;
+  }
+}
+
 const sources = ["chat-catalog-domains/identity-plan-review.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"];
 export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-and-approvals.review-plan", "questions-and-approvals.reject-and-revise"].map(scenarioId => identityDefinition(scenarioId, async ctx => {
   const source = await openStandingChat(ctx); const worker = await identityWorker(ctx); const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
@@ -161,7 +184,7 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
       supersedeOnUserComment: false, target: { type: "issue_document", issueId: source.id, documentId: plan.id, key: "plan", revisionId: plan.latestRevisionId, revisionNumber: plan.latestRevisionNumber } } }));
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); return { sourceId: source.id, personId: session.user.id, worker, plan, original, scopeMarker };
 }, gradePlanReview, {
-  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts", "chat-catalog-domains/turn-response-card.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v6", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
+  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts", "chat-catalog-domains/turn-response-card.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v7", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
   runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
   async act(ctx, state) {
     const originalDeadline = ctx.observationDeadlineAt;
@@ -199,6 +222,7 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
     await expect(ctx.input.page.getByText("Newer review: local draft only, do not publish.", { exact: false }).first()).toBeVisible(); state.newerRevisionVisible = true;
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     await ctx.input.evidence("identity-stale-plan-review.json", { oldRevisionId: old.latestRevisionId, newRevisionId: current.latestRevisionId, staleAttemptStatus: state.staleAttemptStatus, staleErrorCode: state.staleErrorCode, newerRevisionVisible: true });
+    await settleDelegatedCompletion(ctx, state, originalDeadline!);
   },
   observe: observePlanReview,
   async verifyResult(ctx, state, value) {

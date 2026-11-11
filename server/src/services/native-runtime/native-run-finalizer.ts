@@ -29,6 +29,7 @@ import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.j
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
@@ -1655,6 +1656,10 @@ export async function finalizeNativeRun(input: {
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
       providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
       failureRetryCount: executionFailureRetryCount(run),
+      // Only the task's current owner may turn its own failed continuation
+      // into a blocker; the committer rechecks that under the issue lock.
+      failedTurnContinuationUsed: terminalState === "failed" && ownsProviderFailureDecision && !reviewContext
+        && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -1799,6 +1804,7 @@ export async function finalizeNativeRun(input: {
           ? { agentId: run.agentId, reviewContext }
           : undefined,
         requireProviderFailureOwner: decision.reasonCode?.startsWith("native_provider_overloaded")
+          || decision.reasonCode === "native_run_failed_continuation_exhausted"
           ? { agentId: run.agentId, reviewContext } : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait

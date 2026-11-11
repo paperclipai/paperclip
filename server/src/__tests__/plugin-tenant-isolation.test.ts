@@ -372,6 +372,14 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(fromInstance?.companyId).toBeNull();
     expect(fromInstance?.title).toBe("instance");
 
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+    await expect(services.entities.list({
+      entityType: "issue", scopeKind: "company", scopeId: companyB, externalId: "ext-shared", limit: 1,
+    })).resolves.toEqual([expect.objectContaining({ title: "B" })]);
+    await expect(services.entities.list({
+      entityType: "issue", scopeKind: "company", scopeId: randomUUID(), externalId: "ext-shared", limit: 1,
+    })).resolves.toEqual([]);
+
     // Unknown tenant returns null, not another tenant's row.
     const unknown = await registry.getEntityByExternalId(
       pluginId,

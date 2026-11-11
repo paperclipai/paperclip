@@ -1696,7 +1696,8 @@ export async function commitNativeStatusDecision(input: {
   if (reasonCode === "native_provider_model_rejected" && !input.requireModelRejectionOwner) {
     throw new Error("native_model_rejection_owner_required");
   }
-  if (reasonCode.startsWith("native_provider_overloaded") && !input.requireProviderFailureOwner) {
+  if ((reasonCode.startsWith("native_provider_overloaded") || reasonCode === "native_run_failed_continuation_exhausted")
+      && !input.requireProviderFailureOwner) {
     throw new Error("native_provider_failure_owner_required");
   }
   const publications: ActivityPublication[] = [];
