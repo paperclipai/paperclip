@@ -1,4 +1,5 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
+import type { DiskFullFaultKind, DiskFullRecord } from "./disk-full-faults.js";
 import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage, ProviderRestartKind } from "./provider-faults.js";
 import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
 import type { RepeatedRestartRecord, RestartStep } from "./repeated-restarts.js";
@@ -20,8 +21,9 @@ export const K4_MIN_HOLD_MS = 120_000;
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
  * PV1–PV3 (provider message faults, provider-faults.ts) restart nothing: the task's rule is armed in the Codex shim.
  * "K0" is a `--matrix` baseline cell: the same journey with no fault.
+ * DF1 (disk-full-faults.ts) restarts nothing either: the task's final workspace saves find the sandbox disk full.
  */
-export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
+export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskFullFaultKind;
 
 /**
  * G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave).
@@ -30,7 +32,7 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
  * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
  * T1: a 100-second shell tool in the agent's workspace, so a fault lands while the remote Runner runs a tool (staging class R).
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "F1", "T1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -117,6 +119,8 @@ export interface WaveOptions {
   workspaceGitUrl?: string;
   /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
   providerFaults?: ProviderFaultKind[];
+  /** Sandbox disk-full faults from `--faults` (DF1); see disk-full-faults.ts. */
+  diskFullFaults?: DiskFullFaultKind[];
   providerFaultMessage?: ProviderMessage;
   /** `--provider-fault-message S1=interrupt_ack,...`: a workload's own message, over `providerFaultMessage`. */
   providerFaultMessageByWorkload?: Partial<Record<WorkloadId, ProviderMessage>>;
@@ -321,7 +325,7 @@ export interface OracleArtifacts {
   approvals?: Array<{ id: string; status: string; title: string | null }>;
   /** G1 and H1: the board's actions and what the observer saw around them. */
   governance?: GovernanceRecord;
-  /** Q1: the saved question and the task's runs. */
+  /** Q1, Q4: the saved questions and the task's runs. */
   question?: QuestionArtifacts;
   /** PV1–PV3: the shim's log lines for this task. */
   providerFaultEvents?: ProviderFaultEvent[];
@@ -413,12 +417,14 @@ export interface TaskRecord {
   governance?: GovernanceRecord;
   /** K14 waves: the build serving when the task launched. */
   serverBuildAtLaunch?: "upgrade_from" | "current";
-  /** Q1: the saved question and the board's answer. */
+  /** Q1, Q4: the saved questions and the board's answers. */
   question?: QuestionRecord;
   /** Q2, Q3: the board's journey actions (journey-driver.ts). */
   journey?: import("./journeys.js").JourneyRecord;
   /** PV with `--provider-fault-restart`: when the shim logged the task's fault (arms the `provider` trigger). */
   providerFaultAppliedAt?: number;
+  /** DF1: when the fault was armed and cleared, and what the board showed at the disk-full rest. */
+  diskFull?: DiskFullRecord;
 }
 
 export interface TaskGrade {

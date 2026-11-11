@@ -33,6 +33,41 @@ const ACP_AUTH_REQUIRED = -32000;
 /** The typed AIR session failure ACPX reports beside its generic terminal error. */
 export type AcpxTerminalSessionFailure = { category: string; title?: string; details?: string };
 
+const TYPED_SESSION_FAILURE_CATEGORIES = new Set(["connection", "access", "limit", "service", "request", "unknown"]);
+
+/** Advertised on initialize so ACP agents report terminal failures as typed JetBrains AIR metadata. */
+export function acpxTypedSessionFailureClientCapabilities(
+  extra?: Record<string, unknown>,
+): Record<string, unknown> {
+  const meta = extra?._meta !== null && typeof extra?._meta === "object" && !Array.isArray(extra._meta)
+    ? extra._meta as Record<string, unknown>
+    : {};
+  return {
+    ...structuredClone(extra ?? {}),
+    _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } }, ...structuredClone(meta) },
+  };
+}
+
+/**
+ * Read a typed terminal failure from the prompt response `_meta`, which ACPX
+ * returns on the turn result. The agent still answers with a normal stop
+ * reason, so the caller must fail the turn itself.
+ */
+export function acpxTypedTerminalSessionFailure(meta: unknown): AcpxTerminalSessionFailure | null {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const air = object(object(object(meta)?.jetbrains)?.air);
+  if (!air || !Number.isInteger(air.version) || Number(air.version) < 1) return null;
+  const failure = object(air.sessionFailure);
+  if (!failure || failure.severity !== "error") return null;
+  // Keep complete provider text; consumers redact before bounding it.
+  return {
+    category: typeof failure.category === "string" && TYPED_SESSION_FAILURE_CATEGORIES.has(failure.category) ? failure.category : "unknown",
+    ...(typeof failure.title === "string" ? { title: failure.title } : {}),
+    ...(typeof failure.details === "string" ? { details: failure.details } : {}),
+  };
+}
+
 /**
  * AIR's `limit` category also covers context, turn and configured budget
  * limits. Only an exhausted account allowance is a provider limit; the

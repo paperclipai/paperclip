@@ -8,7 +8,7 @@ it runs explicitly on the execution host and is never an npm installation hook.
 
 This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
-OpenCode 1.18.34, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
+OpenCode 1.18.34, the compiled OpenCode proxy, ACPX 0.22.0 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
 and records the runner source revision as provenance. Its interface declaration
 allows compatible app releases to reuse it without uploading or installing a pack.
