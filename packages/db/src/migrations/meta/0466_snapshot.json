@@ -1,5 +1,5 @@
 {
-  "id": "eb383bf4-76c1-438f-b36f-b0b40c6d60be",
+  "id": "593f81c4-2b4d-4fb4-a3e3-848b19bc9b0f",
   "prevId": "38dbf2b9-da26-4c3a-b813-f37d0c19cba2",
   "version": "7",
   "dialect": "postgresql",
@@ -21738,127 +21738,6 @@
         "company_user_sidebar_preferences_company_id_companies_id_fk": {
           "name": "company_user_sidebar_preferences_company_id_companies_id_fk",
           "tableFrom": "company_user_sidebar_preferences",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.company_user_ui_layouts": {
-      "name": "company_user_ui_layouts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "surface": {
-          "name": "surface",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "schema_version": {
-          "name": "schema_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "layout": {
-          "name": "layout",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "company_user_ui_layouts_company_idx": {
-          "name": "company_user_ui_layouts_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "company_user_ui_layouts_company_user_surface_uq": {
-          "name": "company_user_ui_layouts_company_user_surface_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "surface",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "company_user_ui_layouts_company_id_companies_id_fk": {
-          "name": "company_user_ui_layouts_company_id_companies_id_fk",
-          "tableFrom": "company_user_ui_layouts",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
@@ -51179,12 +51058,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "git_authorization_grant_id": {
           "name": "git_authorization_grant_id",
           "type": "uuid",
@@ -51334,19 +51207,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "projects_environment_id_environments_id_fk": {
-          "name": "projects_environment_id_environments_id_fk",
-          "tableFrom": "projects",
-          "tableTo": "environments",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "projects_git_authorization_grant_id_connection_grants_id_fk": {
