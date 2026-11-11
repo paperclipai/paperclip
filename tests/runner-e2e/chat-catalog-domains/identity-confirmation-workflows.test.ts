@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { answerContinuationCompleted, confirmationWorkflowIdentityCases, gradeConfirmationWorkflow, waitForAnswerContinuation } from "./identity-confirmation-workflows.js";
+import { answerContinuationCompleted, confirmationWorkflowIdentityCases, gradeConfirmationWorkflow, repeatedProposalAcceptance, waitForAnswerContinuation } from "./identity-confirmation-workflows.js";
 import * as api from "../api.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { IdentityObservation, Interaction } from "./identity-support.js";
@@ -12,7 +12,7 @@ function valid(id: string): IdentityObservation {
   if (id === "questions-and-approvals.accept-one-proposal") {
     Object.assign(o.state, { firstTask: { ...task }, taskTitle: task.title, canonicalCommentId: "human-first", afterReloadTaskId: "draft", afterRepeatResolvedCommentId: "human-first" });
     o.interactions = [{ ...original, status: "accepted", resolvedByAgentId: "ceo", result: { outcome: "accepted", commentId: "human-first" } }];
-    o.humanQueries = ["Yes, go ahead with that.", "Yes, go ahead with that."];
+    o.humanQueries = ["Yes, go ahead with that.", repeatedProposalAcceptance];
     o.activity = [{ id: "decision", action: "issue.thread_interaction_accepted", agentId: "ceo", details: { interactionId: "request", source: "conversation_reply", responseCommentId: "human-first" } },
       { id: "created", action: "issue.created", entityId: "draft", agentId: "ceo" }];
   } else {
@@ -44,6 +44,20 @@ describe("conversational proposal and simultaneous human answer oracles", () => 
       const o = valid("questions-and-approvals.accept-one-proposal"); o.tasks[0]!.status = status;
       expect(gradeConfirmationWorkflow(o).passed).toBe(false);
     }
+  });
+  it("the repeat names the already accepted proposal, never a bare yes that could answer a newer offer", () => {
+    expect(repeatedProposalAcceptance).toContain("Create Acorn launch checklist");
+    for (const second of ["Yes, go ahead with that.", "Yes, move it into todo and execute it."]) {
+      const o = valid("questions-and-approvals.accept-one-proposal"); o.humanQueries[1] = second;
+      expect(gradeConfirmationWorkflow(o).passed).toBe(false);
+    }
+    const missing = valid("questions-and-approvals.accept-one-proposal"); missing.humanQueries.pop();
+    expect(gradeConfirmationWorkflow(missing).passed).toBe(false);
+  });
+  it("acting on the repeat by moving the accepted backlog task into execution fails", () => {
+    const o = valid("questions-and-approvals.accept-one-proposal"); o.tasks[0]!.status = "todo";
+    o.activity.push({ id: "moved", action: "issue.updated", entityId: "draft", agentId: "ceo", details: { status: "todo" } });
+    expect(gradeConfirmationWorkflow(o).passed).toBe(false);
   });
   it("accepting the proposal twice cannot produce two durable tasks", () => {
     const o = valid("questions-and-approvals.accept-one-proposal"); o.tasks.push({ ...o.tasks[0]!, id: "duplicate" }); expect(gradeConfirmationWorkflow(o).passed).toBe(false);
