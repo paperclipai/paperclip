@@ -1096,6 +1096,8 @@ async function startServerWithDatabaseTeardown(
   const eventLoopStallMonitor = startEventLoopStallMonitor({
     log: (stall) => logger.warn({ eventLoopStall: stall }, `event loop blocked for ${stall.stallMs} ms (likely ${stall.likelyCause})`),
   });
+  // A failed startup closes the listener without the ordered shutdown path.
+  server.once("close", () => eventLoopStallMonitor.stop());
   // The factory publishes the verified numeric endpoint on listening. Native
   // recovery must never fall back to a configured/public URL if it is absent.
   resolveLocalRuntimeApiUrl();

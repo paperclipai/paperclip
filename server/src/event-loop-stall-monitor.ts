@@ -81,7 +81,7 @@ export type EventLoopStallMonitorOptions = {
   gcEntries?: () => readonly Pick<PerformanceEntry, "startTime" | "duration">[];
 };
 
-export const EVENT_LOOP_STALL_INTERVAL_MS = 1_000;
+export const EVENT_LOOP_STALL_INTERVAL_MS = 1_500;
 export const EVENT_LOOP_STALL_THRESHOLD_MS = 2_000;
 const CGROUP_SAMPLE_INTERVAL_MS = 10_000;
 const MAX_GC_ENTRIES = 512;
@@ -188,7 +188,16 @@ export function startEventLoopStallMonitor(options: EventLoopStallMonitorOptions
       }
       const cpuUserMs = (cpu.user - lastCpu.user) / 1000;
       const cpuSystemMs = (cpu.system - lastCpu.system) / 1000;
-      const majorPageFaults = resources.majorPageFault - lastResources.majorPageFault;
+      // Compute every delta now: the cgroup read below is asynchronous, and
+      // later ticks replace the baselines before it settles.
+      const previous = lastResources;
+      const majorPageFaults = resources.majorPageFault - previous.majorPageFault;
+      const minorPageFaults = resources.minorPageFault - previous.minorPageFault;
+      const fsReads = resources.fsRead - previous.fsRead;
+      const fsWrites = resources.fsWrite - previous.fsWrite;
+      const voluntaryContextSwitches = resources.voluntaryContextSwitches - previous.voluntaryContextSwitches;
+      const involuntaryContextSwitches = resources.involuntaryContextSwitches - previous.involuntaryContextSwitches;
+      const uptimeSec = Math.round(probes.uptimeSec());
       const baseline = cgroupBaseline;
       const stallStartedAt = new Date(lastWall).toISOString();
       const stallEndedAt = new Date(wall).toISOString();
@@ -214,18 +223,18 @@ export function startEventLoopStallMonitor(options: EventLoopStallMonitorOptions
           gcPauseMs: Math.round(gcPauseMs),
           gcCount,
           majorPageFaults,
-          minorPageFaults: resources.minorPageFault - lastResources.minorPageFault,
-          fsReads: resources.fsRead - lastResources.fsRead,
-          fsWrites: resources.fsWrite - lastResources.fsWrite,
-          voluntaryContextSwitches: resources.voluntaryContextSwitches - lastResources.voluntaryContextSwitches,
-          involuntaryContextSwitches: resources.involuntaryContextSwitches - lastResources.involuntaryContextSwitches,
+          minorPageFaults,
+          fsReads,
+          fsWrites,
+          voluntaryContextSwitches,
+          involuntaryContextSwitches,
           cgroupThrottledMs,
           rssBytes: memory.rss,
           heapUsedBytes: memory.heapUsed,
           heapTotalBytes: memory.heapTotal,
           externalBytes: memory.external,
           arrayBuffersBytes: memory.arrayBuffers,
-          processUptimeSec: Math.round(probes.uptimeSec()),
+          processUptimeSec: uptimeSec,
         });
       };
       // Throttled time is read after the stall; the baseline is at most one
@@ -235,7 +244,7 @@ export function startEventLoopStallMonitor(options: EventLoopStallMonitorOptions
         report(null);
       } else {
         void probes.readCgroupThrottledUsec()
-          .then((after) => report(after === null ? null : Math.round((after - baseline) / 1000)))
+          .then((after) => stopped ? undefined : report(after === null ? null : Math.round((after - baseline) / 1000)))
           .catch(() => report(null));
       }
       cgroupSampledAt = Number.NEGATIVE_INFINITY;
@@ -253,15 +262,26 @@ export function startEventLoopStallMonitor(options: EventLoopStallMonitorOptions
     }
   };
 
-  const timer = setInterval(check, intervalMs);
-  timer.unref();
+  // One pending unref'd timeout, re-armed after each check. Server startup
+  // creates no interval timers, and this probe is not a work scan.
+  let timer: NodeJS.Timeout | null = null;
+  const arm = () => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      timer = null;
+      check();
+      arm();
+    }, intervalMs);
+    (timer as Partial<NodeJS.Timeout>).unref?.();
+  };
+  arm();
   sampleCgroup();
   cgroupSampledAt = lastMonotonic;
 
   return {
     stop: () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
       gcObserver?.disconnect();
     },
   };

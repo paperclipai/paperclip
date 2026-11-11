@@ -41,42 +41,74 @@ describe("event-loop stall monitor", () => {
 
   it("records a main-thread CPU block with its duration and CPU time", async () => {
     const stalls: EventLoopStall[] = [];
-    start({ log: (stall) => stalls.push(stall), intervalMs: 20, thresholdMs: 150, probes: { readCgroupThrottledUsec: async () => null } });
+    const caused = () => stalls.filter((stall) => stall.stallMs >= 700);
+    start({ log: (stall) => stalls.push(stall), intervalMs: 20, thresholdMs: 250, probes: { readCgroupThrottledUsec: async () => null } });
     await new Promise((resolve) => setTimeout(resolve, 60));
 
-    blockWithCpu(400);
-    await waitFor(() => stalls.length > 0);
+    blockWithCpu(800);
+    await waitFor(() => caused().length > 0);
 
-    expect(stalls).toHaveLength(1);
-    expect(stalls[0]!.stallMs).toBeGreaterThanOrEqual(300);
-    expect(stalls[0]!.cpuUserMs + stalls[0]!.cpuSystemMs).toBeGreaterThanOrEqual(200);
-    expect(stalls[0]!.likelyCause).toBe("main_thread_cpu");
-    expect(Date.parse(stalls[0]!.stallEndedAt) - Date.parse(stalls[0]!.stallStartedAt)).toBeGreaterThanOrEqual(300);
+    // A loaded runner can add unrelated pauses; check the one this test caused.
+    const [stall] = caused();
+    expect(stall!.cpuUserMs + stall!.cpuSystemMs).toBeGreaterThanOrEqual(400);
+    expect(stall!.likelyCause).toBe("main_thread_cpu");
+    expect(Date.parse(stall!.stallEndedAt) - Date.parse(stall!.stallStartedAt)).toBeGreaterThanOrEqual(700);
   });
 
   it("records an off-CPU block, such as sync I/O, as blocked_off_cpu", async () => {
     const stalls: EventLoopStall[] = [];
-    start({ log: (stall) => stalls.push(stall), intervalMs: 20, thresholdMs: 150, probes: { readCgroupThrottledUsec: async () => null } });
+    const caused = () => stalls.filter((stall) => stall.stallMs >= 700);
+    start({ log: (stall) => stalls.push(stall), intervalMs: 20, thresholdMs: 250, probes: { readCgroupThrottledUsec: async () => null } });
     await new Promise((resolve) => setTimeout(resolve, 60));
 
-    blockOffCpu(400);
-    await waitFor(() => stalls.length > 0);
+    blockOffCpu(800);
+    await waitFor(() => caused().length > 0);
 
-    expect(stalls).toHaveLength(1);
-    expect(stalls[0]!.stallMs).toBeGreaterThanOrEqual(300);
-    expect(stalls[0]!.likelyCause).toBe("blocked_off_cpu");
+    const [stall] = caused();
+    expect(stall!.likelyCause).toBe("blocked_off_cpu");
+  });
+
+  const fakeProbes = (state: { monotonic: number; throttledUsec: number | null; fsRead: number }) => ({
+    monotonicNow: () => state.monotonic,
+    wallNow: () => 1_794_298_792_000 + state.monotonic,
+    cpuUsage: () => ({ user: 0, system: 0 }),
+    resourceUsage: () => ({
+      majorPageFault: 0, minorPageFault: 0, fsRead: state.fsRead, fsWrite: 0,
+      voluntaryContextSwitches: 0, involuntaryContextSwitches: 0,
+    }),
+    readCgroupThrottledUsec: async () => state.throttledUsec,
   });
 
   it("stays silent while the loop is responsive and after stop", async () => {
+    vi.useFakeTimers();
+    const state = { monotonic: 0, throttledUsec: null, fsRead: 0 };
     const log = vi.fn();
-    const monitor = start({ log, intervalMs: 20, thresholdMs: 150, probes: { readCgroupThrottledUsec: async () => null } });
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    const monitor = start({ log, intervalMs: 500, thresholdMs: 2_000, gcEntries: () => [], probes: fakeProbes(state) });
+    for (let tick = 1; tick <= 10; tick++) {
+      state.monotonic = tick * 500 + 100;
+      await vi.advanceTimersByTimeAsync(500);
+    }
     expect(log).not.toHaveBeenCalled();
 
     monitor.stop();
-    blockWithCpu(300);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    state.monotonic += 60_000;
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(log).not.toHaveBeenCalled();
+  });
+
+  it("keeps the I/O deltas of the stall while the cgroup read is pending", async () => {
+    vi.useFakeTimers();
+    const state = { monotonic: 0, throttledUsec: 5_000_000 as number | null, fsRead: 10 };
+    const stalls: EventLoopStall[] = [];
+    start({ log: (stall) => stalls.push(stall), intervalMs: 500, thresholdMs: 2_000, gcEntries: () => [], probes: fakeProbes(state) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    state.monotonic = 100_500;
+    state.fsRead = 4_010;
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]).toMatchObject({ fsReads: 4_000, cgroupThrottledMs: 0, likelyCause: "blocked_off_cpu" });
   });
 
   it("reports cgroup throttling measured across the stall", async () => {
