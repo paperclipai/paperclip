@@ -17,6 +17,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
+import { hostOnlyHookCommandPaths, managedAiGateNotPortableMessage } from "./managed-ai-gate-settings.js";
 import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "./runner-revision-mismatch.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
@@ -563,6 +564,21 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   }
 
   async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>): Promise<AdapterEnvironmentTestResult> {
+    const hostOnlyHooks = context.executionTarget?.kind === "remote" && managed.gate
+      ? hostOnlyHookCommandPaths(managed.gate.hookCommands)
+      : [];
+    if (hostOnlyHooks.length > 0) {
+      return {
+        adapterType,
+        testedAt: new Date().toISOString(),
+        status: "fail",
+        checks: [{
+          code: "ai_connection_gate_not_portable",
+          level: "error",
+          message: managedAiGateNotPortableMessage(hostOnlyHooks, context.environmentName),
+        }],
+      };
+    }
     if (binding.provider === "github") {
       try {
         const token = parseObject(context.config.env).COPILOT_GITHUB_TOKEN;

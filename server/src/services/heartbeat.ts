@@ -307,6 +307,7 @@ import {
   prepareManagedAiRuntime,
   assertManagedAiProjectAuth,
 } from "./ai-connection-runtime.js";
+import { assertManagedAiGateReachesRemoteTarget } from "./managed-ai-gate-settings.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
 import {
@@ -2931,6 +2932,11 @@ export function heartbeatService(
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
         catch (error) { throw classifyManagedProjectAuthFailure(error, agent.id); }
+        if (executionTarget?.kind === "remote" && managedAiRuntime.gate)
+          assertManagedAiGateReachesRemoteTarget({
+            hookCommands: managedAiRuntime.gate.hookCommands,
+            environmentName: selectedEnvironmentForConfig?.name ?? null,
+          });
       }
       const remoteExecution = realizationResult.remoteExecution;
       if (nativeChatWorkspaceScope && materializeNativeChatWorktree) {
