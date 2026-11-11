@@ -117,7 +117,7 @@ No existing route changed. The graph uses `PATCH /agents/:id` for reporting line
 ## 7. Feature A: agent graph
 
 - Entry points: the org view of the Agents page, and `/org` in the classic UI. Both check `enableAgentGraph` and lazy-load the graph chunk.
-- Nodes: agent (name, title or role, adapter, status capsule, budget meter, pulsing ring while a run is live), sticky note (resizable, five colors), hire draft (dashed).
+- Nodes: agent (name, title or role, adapter, status capsule, budget meter, pulsing ring while a run is live), sticky note (resizable; new notes are yellow, and the other four colors of the schema only render for stored data until a color picker is added), hire draft (dashed).
 - Edges: reporting lines. An edge animates while the report has a live run. Dragging from a manager's handle to an agent, or dragging the manager end of an edge to another agent, proposes a reporting-line change.
 - Side panel: status, adapter, manager, report count, budget, the five most recent runs, links, "Duplicate as draft", "Hide from graph".
 - Editing: drag, Shift-drag box selection, Ctrl or Cmd click, group move, snap to a 16 px grid, Tidy up, direction toggle, "Keep manual positions", undo and redo (100 steps), a shortcut list in the toolbar.
