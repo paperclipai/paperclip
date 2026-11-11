@@ -5,10 +5,15 @@ import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true }),
+}));
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { TaskChatThread } from "./TaskChatThread";
+import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
+import { INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS, TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
 import type {
   Agent,
@@ -19,9 +24,12 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
-import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
-import { TaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { genericPendingRequestConfirmationInteraction, pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
+import type { HeartbeatRun } from "@paperclipai/shared";
+import { waitForStoppedRuns } from "@/lib/wait-for-stopped-runs";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -168,6 +176,13 @@ function render(ui: ReactElement) {
   );
 }
 
+async function settleThreadLayout() {
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  });
+}
+
 describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
   const run = (id: string, status: string, minute: number) => ({
     runId: id, status, runtimeMode, agentId: "agent", agentName: "Assistant",
@@ -235,6 +250,37 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
     expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).not.toBeNull();
     expect(pausedAgent.status).toBe("paused");
     expect(props.onResumeAssignee).not.toHaveBeenCalled();
+  });
+
+  it.runIf(runtimeMode === "native")("keeps a failed MCP start on a historical settled run while hiding other notices", () => {
+    const prp = (seq: number, eventType: string, payload: Record<string, unknown>) => ({
+      id: seq, companyId: "company", runId: "mcp", agentId: "agent", seq, eventType, stream: "system", level: "info",
+      color: null, message: null, createdAt: new Date(`2025-01-01T10:00:0${seq}Z`),
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", sourceEventId: `event-${seq}`, sourceSeq: seq,
+        sourceInstanceId: "runner", sourceKind: "runner", runId: "mcp", normalizedSessionId: "session", eventType,
+        schemaVersion: 1, priority: 1, emittedAt: `2025-01-01T10:00:0${seq}.000Z`, payload } },
+    }) as Parameters<typeof nativeRunEventsToTranscript>[0][number];
+    const notice = (seq: number, category: string, summary: string, details: unknown[] = []) => prp(seq, "provider.notice.recorded", {
+      schema: "paperclip.provider.notice.v1", noticeId: `notice-${seq}`, severity: "warning", category, scope: "session",
+      recoverable: true, userActionable: true, summary, details,
+    });
+    nativeTranscriptState.transcriptByRun.set("mcp", [
+      ...nativeRunEventsToTranscript([
+        notice(1, "mcp_server_startup_failed", "github MCP server failed to start: No such file or directory (os error 2)",
+          [{ name: "server", value: "github" }, { name: "reason", value: "No such file or directory (os error 2)" }]),
+        notice(2, "auth", "Sign in again"),
+      ]),
+      { kind: "assistant", channel: "progress", ts: "2025-01-01T10:00:05Z", text: "Inspected the source." },
+      { kind: "assistant", channel: "final", ts: "2025-01-01T10:00:20Z", text: "I couldn't reach the GitHub MCP server." },
+    ]);
+    render(<TaskChatThread comments={[comment("response", "I couldn't reach the GitHub MCP server.", "mcp")]}
+      linkedRuns={[run("mcp", "succeeded", 0)]} onAdd={async () => {}} issueStatus="done" />);
+    const banners = container.querySelectorAll('[data-testid="task-chat-run-health-banner"]');
+    expect([...banners].map((banner) => banner.textContent)).toEqual([
+      "github MCP server failed to start: No such file or directory (os error 2)",
+    ]);
+    expect(container.textContent).not.toContain("Sign in again");
+    expect(container.textContent).toContain("I couldn't reach the GitHub MCP server.");
   });
 
   it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
@@ -353,9 +399,7 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   render(<TaskChatThread {...props} initialHistoryPending={false} />);
   const composer = container.querySelector('[data-testid="mock-editor"]');
   expect(composer).not.toBeNull();
-  await act(async () => {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
   expect(container.querySelector('[data-testid="task-chat-composer-dock"]')?.hasAttribute("inert")).toBe(false);
@@ -368,14 +412,103 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
 });
 
-it.each([true, false])("keeps cold-open messages readable while history is pending (mobile=%s)", (mobile) => {
+it.each([true, false])("coordinates compact cards before first reveal and retains content during refresh (mobile=%s)", async (mobile) => {
   sidebarState.isMobile = mobile;
-  render(<TaskChatThread issueId="cold-issue" compactHistory initialHistoryPending
-    comments={createLongThreadComments()} historyControl={<button>More messages</button>} onAdd={async () => {}} />);
+  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), threadHeader: <h2>Saved task title</h2>, historyControl: <button>More messages</button>, onAdd: async () => {} };
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')?.textContent).not.toContain("Saved task title");
+  render(<TaskChatThread {...props} initialHistoryPending={false} />);
+  await settleThreadLayout();
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.textContent).toContain("Thread message 1");
+  expect(container.textContent).toContain("Saved task title");
   expect(container.textContent).toContain("More messages");
-  expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  expect(editor).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+});
+
+it.each([false, true])("waits for fonts but bounds a stalled request (stalled=%s)", async (stalled) => {
+  const original = Object.getOwnPropertyDescriptor(document, "fonts");
+  const fonts = { status: "loading" };
+  Object.defineProperty(document, "fonts", { configurable: true, value: fonts });
+  vi.useFakeTimers();
+  try {
+    render(<TaskChatThread issueId="font-readiness" comments={createLongThreadComments()} onAdd={async () => {}} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+    if (!stalled) fonts.status = "loaded";
+    await act(async () => { await vi.advanceTimersByTimeAsync(stalled ? 3100 : 100); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  } finally {
+    if (original) Object.defineProperty(document, "fonts", original);
+    else Reflect.deleteProperty(document, "fonts");
+    vi.useRealTimers();
+  }
+});
+
+it("keeps revealed history scrollable while metadata for another page is pending", async () => {
+  function Readiness() { return <span data-testid="history-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "paged-chat", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  render(<TaskChatThread {...props} />);
+  await settleThreadLayout();
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
+});
+
+it("waits for a same-task comment target before applying its scroll position without hiding the thread", async () => {
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "linked-task", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  const show = (hash: string, pending: boolean) => render(
+    <TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+      <TaskChatThread {...props} initialHistoryPending={pending} />
+    </TaskChatScrollNavigation.Provider>,
+  );
+  show("", false);
+  await settleThreadLayout();
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  show("#comment-older", true);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+  show("#comment-older", false);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+});
+
+it("positions an available comment after the reveal deadline even if unrelated metadata is stalled", async () => {
+  vi.useFakeTimers();
+  try {
+    function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+    render(<TaskChatScrollNavigation.Provider value={{ key: "available-target", hash: "#comment-comment-1", restore: false }}>
+      <TaskChatThread issueId="available-target" comments={createLongThreadComments()} onAdd={async () => {}} initialHistoryPending threadHeader={<Readiness />} />
+    </TaskChatScrollNavigation.Provider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
+it("bounds the scroll wait for a same-task target that never arrives", async () => {
+  const props = { issueId: "stalled-target", comments: createLongThreadComments(), onAdd: async () => {} };
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const show = (hash: string, pending: boolean) => render(<TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+    <TaskChatThread {...props} initialHistoryPending={pending} threadHeader={<Readiness />} />
+  </TaskChatScrollNavigation.Provider>);
+  show("", false);
+  await settleThreadLayout();
+  vi.useFakeTimers();
+  try {
+    show("#comment-unavailable", true);
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  } finally { vi.useRealTimers(); }
 });
 
 it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
@@ -413,6 +546,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const onAttachImage = vi.fn().mockReturnValue(new Promise(resolve => { resolveUpload = resolve; }));
   const props = { comments: [], onAdd, onAttachImage, conversationMode: true, draftKey: "agent-chat:company:agent" };
   render(<TaskChatThread {...props} issueId="" />);
+  await settleThreadLayout();
   const composer = container.querySelector('[data-testid="mock-editor"]');
   const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
   const file = new File(["notes"], "chat-notes.txt", { type: "text/plain" });
@@ -428,7 +562,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
   await act(async () => { resolveUpload({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: file.name }); });
   render(<TaskChatThread {...props} issueId="persisted-chat" initialHistoryPending={false} />);
-  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   const chip = container.querySelector('[data-testid="task-chat-composer-attachments"] [data-slot="attachment"]');
   expect(chip?.getAttribute("data-state")).toBe("done");
   const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
@@ -439,7 +573,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
 });
 
-it("shows Queued during admission and clears it when the saved follow-up enters backoff", async () => {
+it("shows activity during admission and clears it when the saved follow-up enters backoff", async () => {
   const pending = { id: "optimistic-recovery", companyId: "company", issueId: "issue", authorType: "user" as const,
     authorAgentId: null, authorUserId: "board", body: "Confirm the existing result.", presentation: null, metadata: null,
     createdAt: new Date(), updatedAt: new Date(), clientStatus: "pending" as const };
@@ -452,7 +586,9 @@ it("shows Queued during admission and clears it when the saved follow-up enters 
     agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
   show(false);
   expect(container.textContent).toContain("Confirm the existing result.");
-  expect(container.textContent).toContain("Queued");
+  expect(container.textContent).toContain("Working");
+  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).not.toContain("Queued");
   show(true);
   expect(container.textContent).not.toContain("Thinking");
   expect(container.textContent).not.toContain("Working");
@@ -482,7 +618,9 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
   try {
     await act(async () => { send!.click(); });
     expect(onAdd).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("Queued");
+    expect(container.textContent).toContain("Working");
+    expect(container.textContent).toContain("Thinking");
+    expect(container.textContent).not.toContain("Queued");
     const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
     render(<Component {...props} composerDisabledReason="Could not load task pause state." />);
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
@@ -498,6 +636,40 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBeNull();
   } finally {
     vi.useRealTimers();
+  }
+});
+
+it.each((["task", "legacy"] as const).flatMap(surface =>
+  ["done", "cancelled", "old-intent"].map(previous => ({ surface, previous })),
+))("keeps $surface follow-up identity while $previous state catches up", async ({ surface, previous }) => {
+  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>().mockResolvedValue(undefined);
+  const interruption = { intentId: "old-intent", responsibility: "system" as const, state: "working" as const,
+    nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: ["old-run"], observedRunId: "old-run" };
+  const props = { issueId: "issue", issueStatus: previous === "old-intent" ? "blocked" : previous,
+    issueAssigneeAgentId: "agent", currentAssigneeValue: "agent:agent", onAdd, comments: [],
+    interruption: previous === "old-intent" ? interruption : null,
+    agentMap: new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]]) };
+  render(<Component {...props} />);
+  await act(async () => { editorCallbacks.change("Please check again."); });
+  const send = surface === "task" ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
+    : [...container.querySelectorAll<HTMLButtonElement>('[data-testid="issue-chat-composer"] button')].find(button => button.textContent === "Send");
+  await act(async () => { send!.click(); });
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+  expect(identity?.textContent).toBe("Worker");
+  const saved = { id: "saved-message", companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorUserId: "board", authorAgentId: null, body: "Please check again.", presentation: null, metadata: null,
+    clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(), updatedAt: new Date() };
+  render(<Component {...props} comments={[saved]}
+    interruption={previous === "old-intent" ? { ...interruption, state: "resolved" } : null} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  render(<Component {...props} comments={[saved]} issueStatus="in_progress" interruption={null} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  if (surface === "task") {
+    const run = { ...nativeRunningRun(), agentId: "agent", agentName: "Worker" };
+    render(<Component {...props} comments={[saved]} issueStatus="in_progress" interruption={null} activeRun={run} />);
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
   }
 });
 
@@ -561,6 +733,46 @@ it.each((["task", "legacy"] as const).flatMap(surface => [
   expect(container.textContent).not.toContain("Taking longer than usual");
 });
 
+it.each([null, "previous-agent"].flatMap(previousAgentId => ["paperclip_runner", "process"].map(adapterType => ({ previousAgentId, adapterType }))))("keeps the selected responder mounted across reassignment, acknowledgement and $adapterType startup (previous=$previousAgentId)", async ({ previousAgentId, adapterType }) => {
+  let acknowledge!: () => void;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const props = {
+    issueId: "issue", issueStatus: "in_review", currentUserId: "board", comments: [], onAdd, enableReassign: true,
+    suggestedAssigneeValue: "agent:next-agent",
+    reassignOptions: [{ id: "agent:next-agent", label: "Next worker" }, { id: "agent:previous-agent", label: "Previous worker" }],
+    agentMap: new Map([
+      ["previous-agent", { id: "previous-agent", name: "Previous worker", adapterType: "paperclip_runner" } as Agent],
+      ["next-agent", { id: "next-agent", name: "Next worker", adapterType } as Agent],
+    ]),
+  };
+  render(<TaskChatThread {...props} issueAssigneeAgentId={previousAgentId} currentAssigneeValue={previousAgentId ? `agent:${previousAgentId}` : "user:board"} />);
+  if (previousAgentId) {
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+    await act(async () => document.querySelector('[data-assignee-identity="agent:next-agent"]')!.closest("button")!.click());
+  }
+  await act(async () => editorCallbacks.change("Please check this."));
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+  expect(onAdd.mock.calls[0]?.[2]).toEqual({ assigneeAgentId: "next-agent", assigneeUserId: null });
+  const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+  expect(identity?.textContent).toBe("Next worker");
+  const saved = { id: "saved-message", companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorAgentId: null, authorUserId: "board", body: "Please check this.", presentation: null, metadata: null,
+    clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(), updatedAt: new Date() };
+  render(<TaskChatThread {...props} comments={[saved]} issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" />);
+  await act(async () => acknowledge());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  expect(container.textContent).toContain("Working");
+  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).not.toContain("Queued");
+  // Choosing a recipient for the next draft does not change the sent request.
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+  await act(async () => document.querySelector('[data-assignee-identity="agent:previous-agent"]')!.closest("button")!.click());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  const live = { ...nativeRunningRun(), runtimeMode: adapterType === "paperclip_runner" ? "native" as const : "legacy" as const, adapterType, agentId: "next-agent", agentName: "Next worker" };
+  render(<TaskChatThread {...props} comments={[saved]} issueStatus="in_progress" issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" activeRun={live} liveRuns={[live]} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+});
+
 it("prepares comment-link history and its composer before reveal", async () => {
   const props = {
     issueId: "linked-issue",
@@ -579,10 +791,35 @@ it("prepares comment-link history and its composer before reveal", async () => {
   expect(row).not.toBeNull();
   expect(row?.closest('[inert]')).not.toBeNull();
   show(false);
-  await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('[data-thread-anchor="comment-1"]')).toBe(row);
+});
+
+it.each(["offline", "reconnecting"] as const)("reveals a cached task header while history waits through %s and keeps it after recovery", async status => {
+  const store = createConnectivityStore({ probe: () => new Promise(() => {}) });
+  store.setBrowserOnline(false);
+  if (status === "reconnecting") store.setBrowserOnline(true);
+  const show = (pending: boolean) => render(<ConnectivityProvider store={store}>
+    <TaskChatThread issueId="cached-task" comments={[]} onAdd={async () => {}} initialHistoryPending={pending}
+      threadHeader={<h2>Cached task title</h2>} emptyMessage="No comments yet" />
+  </ConnectivityProvider>);
+  try {
+    show(true);
+    const header = container.querySelector('[data-testid="task-chat-thread-header"]');
+    expect(header?.textContent).toContain("Cached task title");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.textContent).toContain("Loading task history…");
+    expect(container.textContent).not.toContain("No comments yet");
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    expect(container.querySelector('[data-testid="task-chat-thread-header"]')).toBe(header);
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    show(false);
+    await settleThreadLayout();
+    expect(container.textContent).not.toContain("Loading task history…");
+    expect(container.textContent).toContain("No comments yet");
+  } finally { store.dispose(); }
 });
 
 it.each([true, false])("reveals saved conversation when initial history stalls (mobile=%s)", async (mobile) => {
@@ -642,13 +879,221 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     nativeTranscriptState.hydratedRunIds = new Set();
   });
 
-  it("reveals comments while a scheduled retry has no transcript to hydrate", () => {
+  it("opens saved compact replies without fetching their completed run and loads output on expansion", async () => {
+    const props = {
+      issueId: "saved-compact-task", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: "succeeded", startedAt: retryRun.createdAt }],
+      comments: [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} initialHistoryPending />);
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    render(<TaskChatThread {...props} initialHistoryPending={false} />);
+    await settleThreadLayout();
+    expect(container.textContent).toContain("Saved investigation result");
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    act(() => editorCallbacks.change("Keep this draft"));
+    const output = [...container.querySelectorAll("button")].find(button => button.textContent === "More run output");
+    expect(output).toBeDefined();
+    act(() => output!.click());
+    expect(props.onExpandHistory).toHaveBeenCalledOnce();
+    render(<TaskChatThread {...props} compactHistory={false} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+    expect(editor?.textContent).toBe("Keep this draft");
+  });
+
+  it.each(["running", "failed", "no-reply", "placeholder", "chat", "yielded", "no-presentation", "progress"])("hydrates compact output when it is required (%s)", (scenario) => {
+    const props = {
+      issueId: "required-output", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      conversationMode: scenario === "chat",
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: ["running", "failed"].includes(scenario) ? scenario : "succeeded", startedAt: retryRun.createdAt,
+        resultJson: scenario === "yielded" ? { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded" } }
+          : scenario === "no-presentation" ? { presentationDecision: { schema: "paperclip.run_presentation_decision.v1", commentId: null } }
+          : scenario === "progress" ? { semanticToolReceipts: { progress: { operationId: "report_progress", result: { commentId: "saved-answer" } } } } : {} }],
+      comments: scenario === "no-reply" ? [] : [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: scenario === "placeholder" ? "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log)." : "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+  });
+
+  const transcriptHookCalls = () => runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy;
+  const historyLoading = () => container.querySelector('[data-testid="task-chat-history-loading"]') !== null;
+  // React commits the budget's state update when act() exits; the reveal then
+  // needs a few more (fake) animation frames to confirm stable geometry.
+  const passTranscriptBudget = async () => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    for (let frame = 0; frame < 3; frame++) await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+  };
+
+  it("reveals saved messages after the transcript budget and keeps a slow settled run behind a fixed control", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "slow-failed-run", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [{ ...retryRun, runId: "failed-run", status: "failed", startedAt: retryRun.createdAt }],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} />);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "failed-run" }]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(container.textContent).toContain("Thread message 1");
+      expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("Some task history is still loading.");
+      // The late transcript is no longer requested, so it cannot insert rows
+      // above the reader; the output stays one click away.
+      expect(transcriptHookCalls().at(-1)).toEqual([]);
+      const output = [...container.querySelectorAll("button")].find(button => button.textContent === "More run output");
+      expect(output).toBeDefined();
+      act(() => output!.click());
+      expect(props.onExpandHistory).toHaveBeenCalledOnce();
+      render(<TaskChatThread {...props} compactHistory={false} />);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "failed-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reveals saved messages after the transcript budget while a live run keeps streaming", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "slow-live-run", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(container.textContent).toContain("Thread message 1");
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "live-run" }]);
+      // Finishing after the reveal keeps the visible transcript in place.
+      render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]} />);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "live-run" }]);
+      expect(container.textContent).not.toContain("More run output");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps waiting for a settled transcript that would insert output when no compact control exists", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<TaskChatThread issueId="settled-full-history" onAdd={async () => {}} comments={createLongThreadComments()}
+        linkedRuns={[{ ...retryRun, runId: "failed-run", status: "failed", startedAt: retryRun.createdAt }]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(true);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "failed-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("defers every slow settled run of a large compact task at the budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const linkedRuns = Array.from({ length: 300 }, (_, index) => ({
+        ...retryRun, runId: `failed-run-${index}`, status: "failed",
+        createdAt: new Date(Date.parse(retryRun.createdAt) + index * 60_000).toISOString(),
+        startedAt: new Date(Date.parse(retryRun.createdAt) + index * 60_000).toISOString(),
+      }));
+      render(<TaskChatThread issueId="large-slow-task" compactHistory onAdd={async () => {}} onExpandHistory={vi.fn()}
+        comments={createLongThreadComments()} linkedRuns={linkedRuns} />);
+      expect(transcriptHookCalls().at(-1)?.length).toBeGreaterThan(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(transcriptHookCalls().at(-1)).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps the transcript budget when another transcript hydrates first", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "two-live-runs", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [
+          { ...retryRun, runId: "fast-run", status: "running", startedAt: retryRun.createdAt },
+          { ...retryRun, runId: "slow-run", status: "running", startedAt: retryRun.createdAt },
+        ],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 100); });
+      transcriptState.hydratedRunIds = new Set(["fast-run"]);
+      nativeTranscriptState.hydratedRunIds = new Set(["fast-run"]);
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(99); });
+      expect(historyLoading()).toBe(true);
+      // The budget still ends at its first deadline. It does not restart
+      // because the fast transcript finished.
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "fast-run" }, { id: "slow-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps waiting for a live transcript that splits around a steering message", async () => {
+    vi.useFakeTimers();
+    try {
+      const steering = {
+        ...createLongThreadComments()[0], id: "steering-comment", body: "Change course now.",
+        steeredIntoRunId: "live-run", conversationAnchorAt: new Date("2026-08-25T18:00:02.000Z"),
+        createdAt: new Date("2026-08-25T18:00:02.000Z"), updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+      };
+      render(<TaskChatThread issueId="steered-live-run" compactHistory onAdd={async () => {}} onExpandHistory={vi.fn()}
+        comments={[...createLongThreadComments(), steering]}
+        linkedRuns={[{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      await passTranscriptBudget();
+      // Its pre-steer output enters the main chronology above the steering
+      // message, so revealing before it loads would move visible messages.
+      expect(historyLoading()).toBe(true);
+      expect(transcriptHookCalls().at(-1)).toMatchObject([{ id: "live-run" }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not start the transcript budget while saved history is still loading", async () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        issueId: "saved-history-first", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+        linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }],
+        comments: createLongThreadComments(),
+      };
+      render(<TaskChatThread {...props} initialHistoryPending />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS * 3); });
+      expect(historyLoading()).toBe(true);
+      render(<TaskChatThread {...props} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS - 1); });
+      expect(historyLoading()).toBe(true);
+      await passTranscriptBudget();
+      expect(historyLoading()).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("retains a live transcript after the saved reply arrives", () => {
+    const props = { issueId: "live-to-saved", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }], comments: createLongThreadComments() };
+    render(<TaskChatThread {...props} />);
+    render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]}
+      comments={[...props.comments, { ...props.comments[3], authorType: "agent", authorAgentId: "agent-1", runId: "live-run", body: "Just saved" }]} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "live-run" }]);
+  });
+
+  it("reveals comments while a scheduled retry has no transcript to hydrate", async () => {
     renderThread({
       issueId: "issue-1",
       comments: createLongThreadComments(),
       onAdd: async () => {},
       linkedRuns: [retryRun],
     });
+    await settleThreadLayout();
 
     expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
     expect(
@@ -720,9 +1165,7 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
         ts: "2026-08-25T18:00:01.000Z",
       }]);
       render(<TaskChatThread {...props} />);
-      await act(async () => {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      });
+      await settleThreadLayout();
 
       expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
       expect(
@@ -1001,6 +1444,42 @@ function renderThread(props: ComponentProps<typeof TaskChatThread>) {
 }
 
 describe("TaskChatThread draft pass-through", () => {
+  it.each(["original", "changed"])("groups PAP-2525 native image uploads with %s receipt wording", async (wording) => {
+    const comment = (id: string, body: string, runId?: string) => ({
+      id, body, companyId: "company", issueId: "issue", authorType: "agent" as const, authorAgentId: "agent", authorUserId: null,
+      createdByRunId: runId ?? null, createdAt: new Date("2026-11-06T13:32:00Z"), updatedAt: new Date("2026-11-06T13:32:00Z"),
+      metadata: null, presentation: null,
+    });
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const workProducts = [1, 2].map(n => ({
+      id: `image-${n}`, type: "artifact", provider: "paperclip", title: `Screen ${n}`, status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "images-run", createdAt: new Date(`2026-11-06T13:31:0${n}Z`), updatedAt: new Date(`2026-11-06T13:31:0${n}Z`),
+      metadata: { attachmentId: `00000000-0000-4000-8000-00000000000${n}`, originalFilename: `screen-${n}.png`, contentType: "image/png", byteSize: 2048, contentPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, openPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, downloadPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content?download=1` },
+    })) as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = workProducts.map((w, n) => ({ id: w.metadata!.attachmentId, issueCommentId: `receipt-${n}`, originatingRunId: "images-run", createdByAgentId: "agent",
+      originalFilename: `screen-${n}.png`, contentType: "image/png", contentPath: w.metadata!.contentPath,
+      createdAt: w.createdAt, updatedAt: w.updatedAt, byteSize: 2048,
+    })) as unknown as NonNullable<Props["attachments"]>;
+    const comments = workProducts.map((w, n) => ({ ...comment(`receipt-${n}`, wording === "original" ? `Prepared ${w.title} for this response.` : `Image ready: ${w.title}`, "images-run"),
+      createdAt: new Date(new Date(w.createdAt).getTime() + 100),
+      metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol",
+        ...(wording === "changed" ? { attachmentPreparation: { attachmentId: String(w.metadata!.attachmentId) } } : {}),
+      },
+    }));
+    const props: Props = { comments, workProducts, attachments, onAdd: async () => {}, issueStatus: "done" };
+    render(<TaskChatThread {...props} />);
+    await settleThreadLayout();
+    for (const receipt of comments) expect(container.textContent).not.toContain(receipt.body);
+    expect(container.querySelectorAll('[data-testid="task-chat-image-grid"]')).toHaveLength(1);
+    expect(container.querySelectorAll('button[aria-label^="Open gallery:"]')).toHaveLength(2);
+    // The same words written by a person are conversation and must remain.
+    render(<TaskChatThread {...props} comments={[...comments, { ...comment("human-receipt-words", "Prepared Screen 1 for this response."), authorAgentId: null, authorType: "user", authorUserId: "viewer" }]} />);
+    expect(container.textContent).toContain("Prepared Screen 1 for this response.");
+    // Native progress messages share the protocol marker and can have attachments.
+    render(<TaskChatThread {...props} comments={[{ ...comments[0], body: "Keep this image context", metadata: { ...comments[0].metadata, attachmentPreparation: undefined } }, comments[1]]} />);
+    expect(container.textContent).toContain("Keep this image context");
+  });
+
   it("aligns the desktop thread header with the side-panel tab row", () => {
     renderThread({
       comments: [
@@ -1208,7 +1687,7 @@ describe("TaskChatThread runtime transcript selection", () => {
     const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
     expect(identity?.textContent).toBe("Runner");
     expect(identity?.querySelector("svg, img")).not.toBeNull();
-    expect(activity?.textContent).toBe("Queued");
+    expect(activity?.textContent).toBe("Thinking");
 
     renderThread(props);
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
@@ -1224,7 +1703,9 @@ describe("TaskChatThread runtime transcript selection", () => {
       expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
       expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
-      expect(activity?.textContent).toBe(startup.status === "queued" ? "Queued" : "Thinking");
+      expect(activity?.textContent).toBe("Thinking");
+      expect(header?.textContent).toContain("Working");
+      expect(container.textContent).not.toContain("Queued");
       expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();
       expect(container.textContent).not.toContain("run started");
     }
@@ -1389,7 +1870,8 @@ describe("TaskChatThread runtime transcript selection", () => {
   });
 
 
-  it.each(["matching", "document_only", "absent", "other_revision"] as const)("reports a restore failure with %s saved-plan evidence", (evidence) => {
+  it.each((["matching", "document_only", "absent", "other_revision"] as const).flatMap(evidence =>
+    ["restore_unsafe_archive", "restore_invalid_metadata"].map(code => [evidence, code] as const)))("reports %s saved-plan evidence for %s without offering another provider turn", (evidence, code) => {
     if (evidence !== "absent") planState.data = planDocument();
     renderThread({
       issueId: "issue-1",
@@ -1402,7 +1884,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         runId: "restore-run", runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed",
         agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
         createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
-        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
+        resultJson: { workspaceRestoreFailure: code, workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
           ...(evidence === "document_only" ? { savedPlanRevisionId: "revision-3" } : {}),
         },
       }],
@@ -1492,6 +1974,33 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).toContain("Use the connection card below to continue.");
     expect(container.textContent).not.toContain("The selected AI account is unavailable");
     expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it.each(["timestamp", "resolved-review"].flatMap(owner => [false, true].map(coordinator => ({ owner, coordinator }))))("keeps a saved Plan visible while its completed output is deferred ($owner, Coordinator=$coordinator)", async ({ owner, coordinator }) => {
+    const runId = "saved-plan-run";
+    planState.data = planDocument({ updatedAt: new Date("2026-08-25T18:00:02.000Z") });
+    nativeTranscriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.terminalHydratedRunIds = new Set();
+    const props = {
+      issueId: "issue-1", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      comments: [{ ...createLongThreadComments()[3], id: "saved-plan-reply", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "The saved Plan is ready.", runId }],
+      interactions: owner === "resolved-review" ? [planReviewInteraction("accepted", "revision-3", runId)] : [],
+      linkedRuns: [{ runId, runtimeMode: "native" as const, status: "succeeded", agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:03.000Z" }],
+    };
+    const show = (compactHistory: boolean) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} compactHistory={compactHistory} />
+    </CoordinatorPresentation.Provider>);
+    show(true);
+    await settleThreadLayout();
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.textContent).toContain("Preview the Plan");
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    show(false);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
   });
 
   it("projects the saved Plan inline at its native write_document boundary", () => {
@@ -2164,6 +2673,28 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain("after returning a final response");
   });
 
+  it("names the rejected model id that the task interruption carries", () => {
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      interruption: { intentId: null, responsibility: "user", state: "waiting_for_user", nextRetryAt: null,
+        canRetry: false, userAction: "choose_model", rejectedModel: "chaos-missing-model-1234", sourceRunIds: ["model-missing"], observedRunId: "model-missing" },
+      linkedRuns: [{
+        runId: "model-missing", runtimeMode: "native", status: "failed",
+        errorCode: "native_provider_model_rejected",
+        error: "The selected model is not available through the current AI connection. Choose a supported model or a compatible AI connection.",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+        finishedAt: "2026-08-25T18:00:02.000Z",
+      }],
+    });
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Model unavailable");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    expect(container.textContent).toContain('The provider rejected the model "chaos-missing-model-1234".');
+    expect(container.textContent).toContain("Choose a supported model");
+  });
+
   it("keeps workspace contention out of the conversation's cancellation markers", () => {
     renderThread({
       comments: [],
@@ -2823,6 +3354,243 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
   });
 
+  it("keeps a streamed interview reply visible after its run yields to a question card", () => {
+    // Mirrors a staging onboarding interview: the first-task agent streams a
+    // user-facing reply, posts an interview question card, and settles with
+    // reportedWorkDisposition "yielded". The reply must not vanish on settle.
+    const runId = "interview-run";
+    const reply =
+      "I've posted a question card on this task that asks four things. When you answer, I'll save a written plan.";
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date("2026-08-25T18:00:00Z"),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `interview-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" || eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: `2026-08-25T18:00:${String(seq).padStart(2, "0")}Z`,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "Waiting for user answers on the interview question card.",
+      continuation: {
+        kind: "response_wake",
+        idempotencyKey: "first-task-interview-wait-v1",
+      },
+      completionClaim: { objectiveSatisfied: false, remainingWork: [] },
+      attentionRequests: [],
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const streamed = event(2, "item.delta", {
+      kind: "agentMessage",
+      channel: "final",
+      text: reply,
+      item: { id: "reply", type: "agentMessage", channel: "final" },
+    });
+    const completed = event(3, "item.completed", {
+      kind: "agentMessage",
+      channel: "final",
+      text: reply,
+      item: { id: "reply", type: "agentMessage", channel: "final", text: reply },
+    });
+    const question = {
+      ...questionInteraction(
+        "interview-questions",
+        "What does your organization do?",
+        "2026-08-25T18:00:04.000Z",
+      ),
+      sourceRunId: runId,
+    } as IssueThreadInteraction;
+    const linkedRun = (status: "running" | "succeeded") => ({
+      runId,
+      runtimeMode: "native" as const,
+      status,
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      createdAt: "2026-08-25T18:00:00Z",
+      startedAt: "2026-08-25T18:00:00Z",
+      finishedAt: status === "running" ? null : "2026-08-25T18:00:30Z",
+      resultJson: status === "running" ? null : { nativeResult: result },
+    });
+
+    // 1. Live: the reply streams in and is visible.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([streamed]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [],
+      activeRun: { ...nativeRunningRun(), id: runId },
+      linkedRuns: [linkedRun("running")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+
+    // 2. Still live: the question card the reply describes lands first.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([streamed, completed]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [question],
+      activeRun: { ...nativeRunningRun(), id: runId },
+      linkedRuns: [linkedRun("running")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+
+    // 3. Settled: the run yielded to the question card it posted.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([
+        streamed,
+        completed,
+        event(4, "run.result.proposed", result),
+        event(5, "run.result.accepted", { result }),
+        event(6, "run.terminal", {
+          schema: "paperclip.prp.terminal.v1",
+          turnTerminalState: "completed",
+          runTerminalState: "succeeded",
+          reportedWorkDisposition: "yielded",
+        }),
+      ]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [question],
+      activeRun: undefined,
+      linkedRuns: [linkedRun("succeeded")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+    expect(container.textContent).not.toContain(
+      "Waiting for user answers on the interview question card.",
+    );
+
+    // 4. Answered: the card leaves pending and the turn becomes an accepted
+    // response wake. The authored reply must keep its slot, not be replaced
+    // by the wait summary.
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [
+        {
+          ...question,
+          status: "answered",
+          resolvedAt: new Date("2026-08-25T18:01:00.000Z"),
+          updatedAt: new Date("2026-08-25T18:01:00.000Z"),
+        } as IssueThreadInteraction,
+      ],
+      activeRun: undefined,
+      linkedRuns: [linkedRun("succeeded")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+    expect(container.textContent).not.toContain(
+      "Waiting for user answers on the interview question card.",
+    );
+  });
+
+  it("keeps a steered yielded turn's reply in the segment that wrote it", () => {
+    const runId = "steered-interview";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-08-25T18:00:02.000Z", "Here is the question card I just posted for you.", "final"),
+      assistantEntry("2026-08-25T18:00:10.000Z", "Folding in the steering note.", "progress"),
+    ]);
+    renderThread({
+      comments: [
+        {
+          id: "steer",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "user-1",
+          body: "Steering note from the user.",
+          presentation: null,
+          metadata: null,
+          runId: null,
+          consumedByRunId: runId,
+          steeredIntoRunId: runId,
+          conversationAnchorAt: new Date("2026-08-25T18:00:05.000Z"),
+          createdAt: new Date("2026-08-25T18:00:05.000Z"),
+          updatedAt: new Date("2026-08-25T18:00:05.000Z"),
+        },
+      ],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [
+        {
+          ...questionInteraction("steered-card", "Pick one", "2026-08-25T18:00:03.000Z"),
+          sourceRunId: runId,
+        } as IssueThreadInteraction,
+      ],
+      linkedRuns: [
+        {
+          runId,
+          runtimeMode: "native",
+          status: "succeeded",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:00:00.000Z",
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:20.000Z",
+          resultJson: {
+            nativeResult: {
+              schema: "paperclip.run_result.v1",
+              reportedWorkDisposition: "yielded",
+              summary: "Waiting for Pick one.",
+            },
+          },
+        },
+      ],
+    });
+    const text = container.textContent ?? "";
+    const replyAt = text.indexOf("Here is the question card I just posted");
+    const steerAt = text.indexOf("Steering note from the user.");
+    expect(replyAt).toBeGreaterThanOrEqual(0);
+    expect(steerAt).toBeGreaterThanOrEqual(0);
+    expect(replyAt).toBeLessThan(steerAt);
+    expect(text.split("Here is the question card I just posted")).toHaveLength(2);
+  });
+
   it("keeps a yielded question turn out of the final-response slot", () => {
     nativeTranscriptState.transcriptByRun.set("native-question", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Preparing the verification question.", "progress"),
@@ -3407,6 +4175,64 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
   const props = { conversationMode, issueId: "issue-1", currentUserId: "user-board", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
   const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
   const pendingIndicator = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-pending-input-indicator"]');
+  it.each([false, true])("removes an old plan approval as soon as the newer document arrives (coordinator=%s)", coordinator => {
+    const review = planReviewInteraction();
+    planState.data = planDocument();
+    const show = (interactions = [review]) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} comments={[]} interactions={interactions} onAcceptInteraction={vi.fn()} />
+    </CoordinatorPresentation.Provider>);
+    show();
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    show();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+
+    const replacement = { ...planReviewInteraction("pending", "revision-4"), id: "new-review", createdAt: new Date("2026-08-23T10:04:00Z") };
+    show([review, replacement]);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    expect(review.status).toBe("pending");
+  });
+
+  it("keeps a new approval when its document query is still on an older revision", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-2", latestRevisionNumber: 2 });
+    render(<TaskChatThread {...props} comments={[]} interactions={[planReviewInteraction()]} />);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+  });
+
+  it.each(["id", "number"] as const)("removes an older plan review that has only a revision %s", reference => {
+    const review = {
+      ...planReviewInteraction(),
+      payload: {
+        version: 1,
+        prompt: "Approve this Plan?",
+        target: { type: "issue_document", key: "plan", ...(reference === "id" ? { revisionId: "revision-3" } : { revisionNumber: 3 }) },
+      },
+    } as IssueThreadInteraction;
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+  });
+
+  it("links a review request's own document so the person can open what it asks them to review", () => {
+    const review = { ...planReviewInteraction(), id: "draft-review", title: "Review draft", payload: { version: 1, prompt: "Review the unpublished draft.",
+      target: { type: "issue_document", key: "draft", revisionId: "draft-revision-1" } } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
+    const link = takeover()?.querySelector<HTMLAnchorElement>('a[href="#document-draft"]');
+    expect(link?.textContent).toContain("draft");
+  });
+
+  it("keeps unrelated approvals and accepted plan history when a plan changes", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    const review = { ...planReviewInteraction(), payload: { version: 1, prompt: "Review another task", target: { type: "issue_document", issueId: "other-task", key: "plan", revisionId: "revision-3" } } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[review, { ...planReviewInteraction("accepted"), id: "accepted-plan" }]} />);
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('#interaction-accepted-plan')).not.toBeNull();
+  });
   const dismiss = async () => {
     await act(async () => takeover()!.querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!.click());
   };
@@ -3436,6 +4262,123 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(takeover()).toBeNull();
     expect(pendingIndicator()).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
+  });
+
+  it.each(["request_confirmation", "request_checkbox_confirmation"] as const)("immediately closes %s while a new message is sending and keeps it reopenable", async kind => {
+    const fixtures = await import("@/fixtures/issueThreadInteractionFixtures");
+    const request = kind === "request_confirmation"
+      ? fixtures.genericPendingRequestConfirmationInteraction
+      : fixtures.pendingRequestCheckboxConfirmationInteraction;
+    let finishSend!: () => void;
+    const onAdd = vi.fn(() => new Promise<void>(resolve => { finishSend = resolve; }));
+    const onAcceptInteraction = vi.fn();
+    const onRejectInteraction = vi.fn();
+    const show = () => render(<TaskChatThread {...props} comments={[]} interactions={[request]}
+      onAdd={onAdd} onAcceptInteraction={onAcceptInteraction} onRejectInteraction={onRejectInteraction} />);
+    show();
+    expect(takeover()).not.toBeNull();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(takeover()).toBeNull();
+    await act(async () => finishSend());
+    expect(pendingIndicator()).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show();
+    expect(takeover()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+    expect(request.status).toBe("pending");
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
+    expect(onRejectInteraction).not.toHaveBeenCalled();
+    await act(async () => editorCallbacks.change("Keep the review for later."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).toBeNull();
+    await act(async () => finishSend());
+    expect(takeover()).toBeNull();
+  });
+
+  it("leaves an earlier confirmation in history after a newer user message, including on reload", async () => {
+    const request = { ...genericPendingRequestConfirmationInteraction, createdAt: old.createdAt };
+    const show = (comments = movedOn.slice(0, 0)) => render(<TaskChatThread {...props} comments={comments} interactions={[request]} />);
+    show();
+    expect(takeover()).not.toBeNull();
+    await act(async () => show(movedOn));
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show(movedOn);
+    expect(takeover()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+  });
+
+  it.each([true, false])("keeps a new confirmation open when an earlier message finishes sending (success=%s)", async success => {
+    const request = genericPendingRequestConfirmationInteraction;
+    const next = { ...request, id: "new-review", title: "New review", createdAt: new Date("2026-11-06T12:00:00Z") };
+    let finishSend!: () => void;
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((resolve, reject) => { finishSend = resolve; rejectSend = reject; }));
+    const show = (interactions = [request]) => render(<TaskChatThread {...props} comments={[]} interactions={interactions} onAdd={onAdd} />);
+    show();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).toBeNull();
+    await act(async () => show([request, next]));
+    expect(takeover()?.textContent).toContain("New review");
+    await act(async () => {
+      if (success) finishSend();
+      else rejectSend(new Error("Message not sent"));
+    });
+    expect(takeover()?.textContent).toContain("New review");
+  });
+
+  it("restores the confirmation when sending a separate message fails", async () => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[genericPendingRequestConfirmationInteraction]}
+      onAdd={vi.fn().mockRejectedValue(new Error("Message not sent"))} />);
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('[data-testid="mock-editor"]')?.textContent).toContain("Let's discuss something else first.");
+  });
+
+  it.each([false, true])("restores a reopened historical confirmation after a failed optimistic send (rollback=%s)", async rollback => {
+    const request = { ...genericPendingRequestConfirmationInteraction, createdAt: old.createdAt };
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject; }));
+    const show = (comments = movedOn) => render(<TaskChatThread {...props} comments={comments} interactions={[request]} onAdd={onAdd} />);
+    show();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    const optimistic = { ...movedOn[0]!, id: "optimistic-send", createdAt: new Date("2026-08-15T12:10:00Z") };
+    await act(async () => show([...movedOn, optimistic]));
+    expect(takeover()).toBeNull();
+    await act(async () => {
+      if (rollback) show();
+      rejectSend(new Error("Message not sent"));
+    });
+    expect(takeover()).not.toBeNull();
+    expect(takeover()?.textContent).toContain(request.title);
+    expect(container.querySelector('[data-testid="mock-editor"]')?.textContent).toContain("Let's discuss something else first.");
+  });
+
+  it("does not restore an earlier confirmation after the person opens and dismisses another request during a failed send", async () => {
+    const first = { ...genericPendingRequestConfirmationInteraction, id: "earlier-review", title: "Earlier review", createdAt: old.createdAt };
+    const second = { ...first, id: "later-review", title: "Later review" };
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject; }));
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[first, second]} onAdd={onAdd} />);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Earlier review"]')!.click());
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Later review"]')!.click());
+    await dismiss();
+    await act(async () => rejectSend(new Error("Message not sent")));
+    expect(takeover()).toBeNull();
   });
 
   it.each(["Cancel", "dismiss"])("leaves only the history card after %s on a fresh question", async action => {
@@ -3894,13 +4837,15 @@ describe("TaskChatThread blocker links", () => {
           '[data-testid="task-chat-live-work-step"] a',
         ),
       ].map((link) => link.textContent);
+      // Each step leads with the shared task status glyph (its <title> is
+      // the status label), the same glyph the task list draws (BUG-07).
       expect(orderedLinks).toEqual([
-        "PAP-17424Run the guarded cutover",
-        "PAP-17425Verify the live projection",
-        "PAP-17427Verify the completed projection",
+        "DonePAP-17424Run the guarded cutover",
+        "In ProgressPAP-17425Verify the live projection",
+        "TodoPAP-17427Verify the completed projection",
       ]);
       expect(notice.textContent).toContain(
-        "Now runningPAP-17426Restore live alias projection",
+        "Now runningIn ProgressPAP-17426Restore live alias projection",
       );
       expect(
         notice.querySelector('a[href="/issues/PAP-17426"]'),
@@ -4319,8 +5264,9 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     let rejectDelivery!: (error: Error) => void;
     const delivery = new Promise<void>((_, reject) => { rejectDelivery = reject; });
     const actionQueue = { ...queue, protocol: action === "interrupt" ? "legacy" as const : queue.protocol };
+    // Exercises the explicit Steer button, so automatic steering is off here.
     const props = { comments: [queuedComment], onAdd: async () => {}, queuedCommentQueue: actionQueue,
-      onSteerQueuedComment: () => delivery, onInterruptQueued: () => delivery };
+      onSteerQueuedComment: () => delivery, onInterruptQueued: () => delivery, queuedMessageAutoSteerDelayMs: null };
     render(<TaskChatThread {...props} />);
     await act(async () => {
       container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-queued-prp-1"]`)!.click();
@@ -4337,7 +5283,12 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it.each(["run-1", null])("offers Interrupt for a live legacy queue and Send for a stopped queue (%s)", (targetRunId) => {
+  it.each([
+    { targetRunId: "run-1", protocol: "legacy", steeringDisposition: "unsupported" },
+    { targetRunId: null, protocol: "legacy", steeringDisposition: "unsupported" },
+    { targetRunId: "run-1", protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" },
+    { targetRunId: "run-1", protocol: "paperclip_runner_v1", steeringDisposition: "unsupported" },
+  ] as const)("offers Interrupt for a live $protocol queue with $steeringDisposition steering and Send for a stopped queue ($targetRunId)", ({ targetRunId, protocol, steeringDisposition }) => {
     const onInterruptQueued = vi.fn(async () => {});
     renderThread({
       comments: [
@@ -4352,8 +5303,8 @@ describe("TaskChatThread Paperclip Runner queue", () => {
       queuedCommentQueue: {
         ...queue,
         targetRunId,
-        protocol: "legacy",
-        steeringDisposition: "unsupported",
+        protocol,
+        steeringDisposition,
       },
       onEditQueuedComment: async () => {},
       onReorderQueuedComments: async () => {},
@@ -4443,6 +5394,39 @@ describe("TaskChatThread mobile composer dock", () => {
 });
 
 describe("TaskChatThread live transcript", () => {
+  it("collapses the turn plan to its header while a saved interaction opens in the composer", () => {
+    nativeTranscriptState.transcriptByRun.set("run-plan-approval", [{
+      kind: "provider_activity",
+      ts: "2026-08-24T12:00:01.000Z",
+      family: "plan",
+      eventType: "plan.updated",
+      status: "running",
+      title: "Plan",
+      payload: {
+        planId: "turn-1",
+        steps: [
+          { stepId: "one", body: "Inspect", status: "completed" },
+          { stepId: "two", body: "Build", status: "in_progress" },
+        ],
+      },
+    }]);
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      activeRun: {
+        id: "run-plan-approval", status: "running" as const, invocationSource: "issue" as const, triggerDetail: null,
+        startedAt: "2026-08-24T12:00:00.000Z", finishedAt: null, createdAt: "2026-08-24T12:00:00.000Z",
+        agentId: "agent-1", agentName: "Codex", adapterType: "paperclip_runner", runtimeMode: "native" as const,
+      },
+      interactions: [{ ...genericPendingRequestConfirmationInteraction, sourceRunId: "run-plan-approval" }],
+    });
+    const island = container.querySelector('[data-testid="task-chat-turn-status-island"]')!;
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent).toBe("Build");
+    expect(island.querySelector('[aria-label="Within-turn checklist"]')).toBeNull();
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-header"]')?.tagName).toBe("DIV");
+  });
+
   it("places the turn status island below composer accessories and hides it when the turn is terminal", () => {
     nativeTranscriptState.transcriptByRun.set("run-status", [
       {
@@ -4516,7 +5500,13 @@ describe("TaskChatThread live transcript", () => {
     const stack = container.querySelector(
       '[data-testid="task-chat-composer-stack"]',
     )!;
-    expect(island.textContent).toContain("Step 2 / 2");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent,
+    ).toBe("Build");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-progress"]')?.textContent,
+    ).toContain("1/2");
+    expect(island.querySelector('[aria-current="step"]')?.textContent).toContain("Build");
     expect(island.textContent).toContain("1 file changed");
     expect(accessory.compareDocumentPosition(island)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
@@ -4950,6 +5940,30 @@ describe("TaskChatThread live transcript", () => {
     },
   );
 
+  it("renders one Stopped row when an interrupted native turn settles without a reply", () => {
+    const runId = "native-interrupted";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-11-06T15:14:05Z", "INTERRUPTED-PROGRESS-LINE", "progress"),
+      { kind: "run_terminal", ts: "2026-11-06T15:14:26Z", turnState: "cancelled", runState: "cancelled", disposition: "blocked" },
+    ]);
+    const activeRun = {
+      id: runId, runtimeMode: "native" as const, status: "running", invocationSource: "issue" as const,
+      triggerDetail: null, startedAt: "2026-11-06T15:14:05Z", createdAt: "2026-11-06T15:14:05Z", finishedAt: null,
+      agentId: "agent-1", agentName: "Researcher", adapterType: "paperclip_runner",
+    };
+    renderThread({ comments: [], onAdd: async () => {}, issueStatus: "in_progress", activeRun });
+    // Interrupt cancels the turn. A stopped turn posts no reply comment, so the
+    // settled turn alone owns it; the live tail must not render a second row.
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      linkedRuns: [{ ...activeRun, runId, status: "cancelled", finishedAt: "2026-11-06T15:14:26Z",
+        errorCode: "operator_interrupted", resultJson: { operatorInterrupted: true, cancelledByActorType: "user" } }],
+    });
+    expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBeNull();
+    expect(container.textContent?.split("INTERRUPTED-PROGRESS-LINE")).toHaveLength(2);
+    expect(container.textContent?.match(/Stopped (for|after) /g)).toHaveLength(1);
+  });
+
   it("keeps the transcript mounted through run settle until the settled turn renders (PAP-462 B4)", () => {
     transcriptState.transcriptByRun.set("run-1", [
       {
@@ -5009,6 +6023,36 @@ describe("TaskChatThread live transcript", () => {
 });
 
 describe("TaskChatThread composer execution controls", () => {
+  it("reconciles a timed-out Stop from exact company-bound historical proof after its live action disappears", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = { id: "stopped-run", status: "running", runtimeMode: "native" as const, invocationSource: "issue", triggerDetail: null,
+        startedAt: "2026-11-03T15:00:00Z", finishedAt: null, createdAt: "2026-11-03T15:00:00Z", agentId: "agent-1", agentName: "Alex", adapterType: "paperclip_runner" };
+      const requested: Partial<HeartbeatRun> & { runtimeMode: "native" } = {
+        id: run.id, companyId: "company", status: "cancelled", runtimeMode: "native",
+        resultJson: { executionCancellation: { state: "requested" } },
+      };
+      const onStop = () => waitForStoppedRuns([run.id], { timeoutMs: 1000, getRun: async () => requested as HeartbeatRun });
+      const base = { comments: [], onAdd: async () => {}, issueStatus: "in_progress", companyId: "company" };
+      render(<TaskChatThread {...base} activeRun={run} onCancelRun={onStop} />);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')!.click(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+      const historical = { runId: run.id, agentId: run.agentId, adapterType: run.adapterType, createdAt: run.createdAt,
+        startedAt: run.startedAt, finishedAt: run.startedAt, status: "cancelled", runtimeMode: "native" as const,
+        resultJson: { executionCancellation: { state: "acknowledged" }, nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", runId: run.id, companyId: "company", dispatchState: "acknowledged" } } };
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, runtimeMode: undefined }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, resultJson: { executionCancellation: { state: "acknowledged" } } }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, resultJson: { ...historical.resultJson,
+        nativeCancellation: { ...historical.resultJson.nativeCancellation, companyId: "foreign" } } }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[historical]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
   it.each(["process", "paperclip_runner"])("passes the task's stop action through for %s execution", async (adapterType) => {
     const onStop = vi.fn(async () => {});
     const run = {

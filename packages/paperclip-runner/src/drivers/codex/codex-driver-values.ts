@@ -36,9 +36,13 @@ export function record(value: unknown): Record<string, unknown> {
  * so the compatibility Codex facade must preserve the item as activity
  * without trying to infer a second result from its text.
  */
-export const RUNNERD_CANONICAL_ITEM = Symbol(
+// Registered by name so dependency-free modules (provider-events) can test
+// it without importing the Codex driver graph.
+export const RUNNERD_CANONICAL_ITEM = Symbol.for(
   "paperclip.runnerd.canonical-item",
 );
+
+export const RUNNERD_RUNTIME_ACTIVITY = Symbol("paperclip.runnerd.runtime-activity");
 
 export function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -143,6 +147,14 @@ export function itemFromParams(
 export function itemText(item: Record<string, unknown>): string {
   for (const key of ["text", "aggregatedOutput", "patch", "delta"]) {
     if (typeof item[key] === "string") return item[key];
+  }
+  // Codex reasoning items carry their provider-written summary parts in
+  // `summary[]`; parts are separated the same way as the live stream.
+  if (item.type === "reasoning" && Array.isArray(item.summary)) {
+    return item.summary
+      .map((part) => typeof part === "string" ? part : text(record(part).text))
+      .filter((part) => part.length > 0)
+      .join("\n\n");
   }
   return "";
 }

@@ -4,10 +4,9 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  activityLog,
   agents,
   approvals,
   assets,
@@ -17,11 +16,8 @@ import {
   createDb,
   decisionQueueItems,
   decisionQueues,
-  decisionArchiveNotificationOutbox,
-  decisionRetention,
   decisions,
   decisionTriage,
-  decisionTriageEvents,
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -45,6 +41,8 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { decisionHistoryService } from "../services/decision-history.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
@@ -65,39 +63,16 @@ describeEmbeddedPostgres("attention service", () => {
 
   beforeAll(async () => {
     if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
-    db = createDb(externalUrl ?? tempDb!.connectionString);
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 30_000);
 
   afterEach(async () => {
-    await db.delete(inboxDismissals);
-    await db.delete(decisionArchiveNotificationOutbox);
-    await db.delete(decisionRetention);
-    await db.delete(decisionTriageEvents);
-    await db.delete(decisionTriage);
-    await db.delete(decisionQueueItems);
-    await db.delete(decisionQueues);
-    await db.delete(decisions);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issueApprovals);
-    await db.delete(issueAttachments);
-    await db.delete(issueDocuments);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(budgetIncidents);
-    await db.delete(budgetPolicies);
-    await db.delete(joinRequests);
-    await db.delete(invites);
-    await db.delete(issueRecoveryActions);
-    await db.delete(issueRelations);
-    await db.delete(activityLog);
-    await db.delete(approvals);
-    await db.delete(issues);
-    await db.delete(assets);
-    await db.delete(documents);
-    await db.delete(projectWorkspaces);
-    await db.delete(projects);
-    await db.delete(agents);
-    await db.delete(companies);
+    await db.transaction(async (tx) => {
+      // CASCADE emits a notice for every related table; keep cleanup quiet while
+      // retaining warnings/errors and the same complete database reset.
+      await tx.execute(sql`SET LOCAL client_min_messages = warning`);
+      await tx.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    });
   });
 
   afterAll(async () => {
@@ -269,6 +244,84 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+  it("includes existing pending chat questions and confirmations, then retains answered questions in history", async () => {
+    const { companyId, workerId } = await seedCompany("CHQ");
+    const issueId = randomUUID(), questionId = randomUUID(), confirmationId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, identifier: "CHQ-1", title: "Chat with Worker", status: "in_review",
+      conversationAgentId: workerId, conversationUserId: "board-user", conversationState: "waiting", assigneeAgentId: workerId,
+    });
+    await db.insert(issueThreadInteractions).values([
+      { id: questionId, companyId, issueId, kind: "ask_user_questions", status: "pending", title: "Choose the screen",
+        createdByAgentId: workerId, addresseeUserId: "board-user", effectiveResolverPolicy: "human_only",
+        payload: { version: 1, questions: [{ id: "screen", prompt: "Which screen should we redesign?", options: [], selectionMode: "single", required: true, allowOther: true }] } },
+      { id: confirmationId, companyId, issueId, kind: "request_confirmation", status: "pending", title: "Approve the plan",
+        createdByAgentId: workerId, addresseeUserId: "board-user", payload: { version: 1, prompt: "Approve this plan?" } },
+    ]);
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId] };
+    const options = { userId: actor.userId, actor };
+    const service = attentionService(db);
+    const feed = await service.list(companyId, options);
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id).sort())
+      .toEqual([questionId, confirmationId].sort());
+    expect(feed.items.find((item) => item.subject.id === questionId)).toMatchObject({
+      inlineResolvable: true,
+      relatedIssue: { id: issueId, identifier: "CHQ-1", href: "/CHQ/issues/CHQ-1" },
+      subject: { href: `/CHQ/issues/CHQ-1#interaction-${questionId}`, metadata: { kind: "ask_user_questions", issueId } },
+      detail: { kind: "questions", questionCount: 1, firstQuestionText: "Which screen should we redesign?" },
+      resolverAudience: { effectiveResolverPolicy: "human_only" },
+    });
+    expect(feed.countsBySourceKind.issue_thread_interaction).toBe(2);
+    expect(feed.countsBySourceKind.review).toBe(0);
+
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: new Date(), resolvedByUserId: actor.userId,
+      result: { version: 1, answers: [{ questionId: "screen", optionIds: [], otherText: "Agent detail" }] } }).where(eq(issueThreadInteractions.id, questionId));
+    const after = await service.list(companyId, options);
+    expect(after.items.some((item) => item.subject.id === questionId)).toBe(false);
+    expect(after.countsBySourceKind.issue_thread_interaction).toBe(1);
+    const history = await decisionHistoryService(db).list(companyId, options);
+    expect(history.items).toEqual([expect.objectContaining({ sourceId: questionId, issueId, outcome: "answered", label: "Answers recorded" })]);
+  });
+
+  it("keeps chat attention company, issue visibility, and addressee filters while ignoring idle chats without requests", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("CHA");
+    const other = await seedCompany("CHB");
+    const scenarios = [
+      { user: "board-user", allowed: true },
+      { user: "other-user", addresseeUserId: "other-user" },
+      { user: "private-owner", visibility: "private", createdByUserId: "private-owner" },
+      { user: "hidden-owner", hiddenAt: new Date() },
+      { user: "harness-owner", harnessKind: "skill_test" },
+      { user: "agent-addressee", addresseeAgentId: reviewerId },
+      { user: "idle-owner", idle: true },
+      { user: "other-company", companyId: other.companyId, agentId: other.workerId },
+    ];
+    const expected: string[] = [];
+    for (const [index, scenario] of scenarios.entries()) {
+      const issueId = randomUUID(), interactionId = randomUUID();
+      const scopedCompanyId = scenario.companyId ?? companyId, agentId = scenario.agentId ?? workerId;
+      await db.insert(issues).values({
+        id: issueId, companyId: scopedCompanyId, identifier: `CH-${index}`, title: `Chat ${scenario.user}`, status: "in_review",
+        conversationAgentId: agentId, conversationUserId: scenario.user, conversationState: "waiting", assigneeAgentId: agentId,
+        visibility: scenario.visibility ?? "open", createdByUserId: scenario.createdByUserId,
+        hiddenAt: scenario.hiddenAt, harnessKind: scenario.harnessKind,
+      });
+      if (scenario.idle) continue;
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId: scopedCompanyId, issueId, kind: "ask_user_questions", status: "pending",
+        title: `Question ${scenario.user}`, createdByAgentId: agentId,
+        addresseeUserId: scenario.addresseeUserId ?? (scenario.addresseeAgentId ? null : "board-user"),
+        addresseeAgentId: scenario.addresseeAgentId,
+        payload: { version: 1, questions: [] },
+      });
+      if (scenario.allowed) expected.push(interactionId);
+    }
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId], ignoreInstanceAdmin: true };
+    const feed = await attentionService(db).list(companyId, { actor, userId: actor.userId });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual(expected);
+    expect(feed.countsBySourceKind.review).toBe(0);
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
@@ -987,6 +1040,81 @@ describeEmbeddedPostgres("attention service", () => {
     expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
   });
 
+  it("orders exhausted runs and reads receipts through the partial index", async () => {
+    const { companyId, workerId } = await seedCompany("IDX");
+    const [olderId, tiedLowId, tiedHighId] = Array.from({ length: 3 }, () => randomUUID());
+    const older = new Date("2026-07-09T11:00:00.000Z");
+    const tied = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values([
+      { id: olderId, companyId, agentId: workerId, status: "failed", createdAt: older, updatedAt: older },
+      { id: tiedLowId, companyId, agentId: workerId, status: "timed_out", createdAt: tied, updatedAt: tied },
+      { id: tiedHighId, companyId, agentId: workerId, status: "failed", createdAt: tied, updatedAt: tied },
+    ]);
+    // Insert order sets event ids: a tie on created_at falls back to the newest receipt.
+    const receipts = [
+      [tiedHighId, "Bounded retry exhausted first"],
+      [olderId, "Bounded retry exhausted older"],
+      [tiedLowId, "Bounded retry exhausted tied low"],
+      [tiedHighId, "Bounded retry exhausted tied high"],
+    ] as const;
+    for (const [index, [runId, message]] of receipts.entries()) {
+      await db.insert(heartbeatRunEvents).values({
+        companyId, agentId: workerId, runId, seq: index + 1, eventType: "lifecycle", message,
+      });
+    }
+
+    const rows = await listAttentionExhaustedRuns(db, companyId);
+    expect(rows.map((row) => [row.id, row.exhaustionMessage])).toEqual([
+      [tiedHighId, "Bounded retry exhausted tied high"],
+      [tiedLowId, "Bounded retry exhausted tied low"],
+      [olderId, "Bounded retry exhausted older"],
+    ]);
+
+    // The partial index predicate must stay implied by the query predicate;
+    // otherwise the scan silently falls back to reading all company events.
+    // Check a forced generic plan too: prepared statements reuse it, and only
+    // literal predicates (not bound parameters) let it use a partial index.
+    const query = listAttentionExhaustedRuns(db, companyId).toSQL();
+    const literal = (value: unknown) => `'${String(value).replaceAll("'", "''")}'`;
+    const plans = await db.$client.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL enable_seqscan = off");
+      const fresh = await tx.unsafe(`EXPLAIN (FORMAT JSON) ${query.sql}`, query.params as never[]);
+      await tx.unsafe("SET LOCAL plan_cache_mode = force_generic_plan");
+      await tx.unsafe(`PREPARE attention_exhausted_runs AS ${query.sql}`);
+      const generic = await tx.unsafe(
+        `EXPLAIN (FORMAT JSON) EXECUTE attention_exhausted_runs(${query.params.map(literal).join(", ")})`,
+      );
+      await tx.unsafe("DEALLOCATE attention_exhausted_runs");
+      return { fresh, generic };
+    });
+    expect(JSON.stringify(plans.fresh)).toContain("heartbeat_run_events_retry_exhausted_idx");
+    expect(JSON.stringify(plans.generic)).toContain("heartbeat_run_events_retry_exhausted_idx");
+  });
+
+  it("keeps SQL statement text saved by older failed runs out of the attention inbox", async () => {
+    const { companyId, workerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Failed with a query", status: "in_progress" });
+    const failedRunId = randomUUID();
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId, companyId, agentId: workerId, invocationSource: "automation", status: "failed",
+      errorCode: "adapter_failed",
+      error: 'Usage write failed: Failed query: update "heartbeat_runs" set "usage_json" = $1\nparams: {"apiKey":"sk-secret"}',
+      contextSnapshot: { issueId }, createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId, runId: failedRunId, agentId: workerId, seq: 1, eventType: "lifecycle",
+      message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+      createdAt: new Date("2026-07-09T12:00:01.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const item = feed.items.find((entry) => entry.sourceKind === "failed_run" && entry.subject.id === failedRunId);
+    expect(item?.detail).toMatchObject({ failureReasonExcerpt: "Usage write failed: Database query failed" });
+    expect(item?.subject.metadata?.error).toBe("Usage write failed: Database query failed");
+    expect(JSON.stringify(item)).not.toMatch(/heartbeat_runs|sk-secret|params/);
+  });
+
   it("suppresses failed-run attention after a newer run for the same issue", async () => {
     const { companyId, workerId } = await seedCompany("ATN");
     const issueId = await insertIssue({
@@ -1115,13 +1243,13 @@ describeEmbeddedPostgres("attention service", () => {
       })));
     }
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       const feed = await attentionService(db).list(companyId, { userId: "board-user" });
       expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id)).toEqual([failedId]);
     } finally { capture.flush(); }
-    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
     expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(64);
@@ -1159,8 +1287,11 @@ describeEmbeddedPostgres("attention service", () => {
       contextSnapshot: { wakeReason: "timer" }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
 
+    // Bulk-loaded fixtures need planner statistics before exercising production queries.
+    await db.execute(sql`ANALYZE heartbeat_runs, heartbeat_run_events`);
+
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       const feed = await attentionService(db).list(companyId, {
@@ -1169,7 +1300,7 @@ describeEmbeddedPostgres("attention service", () => {
       expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
         .toEqual([...keptIds].sort());
     } finally { capture.flush(); }
-    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeLessThan(4);
@@ -1201,6 +1332,9 @@ describeEmbeddedPostgres("attention service", () => {
       id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
       contextSnapshot: { issueId }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
+
+    // Do not race autovacuum to collect statistics for the 16,400 new rows.
+    await db.execute(sql`ANALYZE heartbeat_runs, heartbeat_run_events`);
 
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
@@ -1357,6 +1491,22 @@ describeEmbeddedPostgres("attention service", () => {
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const interactionItems = feed.items.filter((item) => item.sourceKind === "issue_thread_interaction");
     const detailsByKind = new Map(interactionItems.map((item) => [item.detail?.kind, item]));
+    const summaryEvents: Array<Record<string, unknown>> = [], captureNow = Date.now();
+    const summaryCapture = createFullDatabaseResponseCapture({ start: captureNow - 100, end: captureNow + 59_000 }, event => summaryEvents.push(event));
+    installDatabaseResponseCapture(db, { documents, assets, issueAttachments }, summaryCapture);
+    try {
+      const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+      expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+      expect(summary.totalCount).toBe(feed.totalCount);
+      const index = await attentionService(db).taskIndex(companyId, { userId: "board-user" });
+      expect(index.taskIds).toEqual([...new Set(feed.items.flatMap(item => item.relatedIssue ? [item.relatedIssue.id] : item.subject.kind === "issue" ? [item.subject.id] : []))]);
+      expect(index.totalCount).toBe(feed.totalCount);
+
+    } finally { summaryCapture.flush(); }
+    const cardReads = summaryEvents.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
+      && ["documents", "assets", "issue_attachments"].includes(String(event.table)));
+    expect(cardReads).toEqual([]);
+
 
     const planItem = detailsByKind.get("plan_approval");
     expect(planItem?.subject.title).toBe("Plan approval - Approve launch plan");
@@ -1464,6 +1614,192 @@ describeEmbeddedPostgres("attention service", () => {
     expect(interactionIds).toContain(newerConfirmationId);
     expect(interactionIds).toContain(checkboxId);
     expect(interactionIds).not.toContain(olderConfirmationId);
+  });
+
+  it.each([
+    ["approved from chat", "accept", "ATR"],
+    ["rejected from chat", "reject", "ATJ"],
+    ["expired", "expire", "ATX"],
+  ] as const)("does not resurface an older confirmation once the newest one is %s", async (_label, outcome, prefix) => {
+    // Same-agent re-asks are expired at creation; a second agent (for example
+    // the chat agent) asking on the same task leaves the older card pending.
+    const { companyId, workerId, reviewerId } = await seedCompany(prefix);
+    const issueId = await insertIssue({
+      companyId,
+      identifier: `${prefix}-1`,
+      title: "Re-asked sign-off",
+      status: "in_review",
+      assigneeAgentId: workerId,
+    });
+    const olderConfirmationId = randomUUID();
+    const newerConfirmationId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: olderConfirmationId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: workerId,
+        title: "Approve the plan",
+        payload: { version: 1, prompt: "Approve the plan?" },
+        createdAt: new Date("2026-11-05T12:00:00.000Z"),
+        updatedAt: new Date("2026-11-05T12:00:00.000Z"),
+      },
+      {
+        id: newerConfirmationId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: reviewerId,
+        title: "Approve the plan (again)",
+        payload: { version: 1, prompt: "Approve the plan?" },
+        createdAt: new Date("2026-11-05T12:05:00.000Z"),
+        updatedAt: new Date("2026-11-05T12:05:00.000Z"),
+      },
+    ]);
+
+    const pendingIds = async () => (await attentionService(db).list(companyId, { userId: "board-user" })).items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => item.subject.id);
+    expect(await pendingIds()).toEqual([newerConfirmationId]);
+
+    if (outcome === "accept") {
+      // The chat card resolves the same canonical record through the same service.
+      await issueThreadInteractionService(db).acceptInteraction(
+        { id: issueId, companyId, projectId: null, goalId: null, status: "in_review" },
+        newerConfirmationId,
+        {},
+        { userId: "board-user" },
+      );
+    } else if (outcome === "reject") {
+      await issueThreadInteractionService(db).rejectInteraction(
+        { id: issueId, companyId, status: "in_review" },
+        newerConfirmationId,
+        { reason: "Not this plan" },
+        { userId: "board-user" },
+      );
+    } else {
+      await db.update(issueThreadInteractions).set({
+        status: "expired",
+        result: { version: 1, outcome: "stale_target" },
+        resolvedAt: new Date("2026-11-05T12:10:00.000Z"),
+        updatedAt: new Date("2026-11-05T12:10:00.000Z"),
+      }).where(eq(issueThreadInteractions.id, newerConfirmationId));
+    }
+
+    expect(await pendingIds()).toEqual([]);
+  });
+
+  it("keeps a pending tool-action approval visible after a newer tool action is settled", async () => {
+    const { companyId, workerId } = await seedCompany("ATT");
+    const issueId = await insertIssue({ companyId, identifier: "ATT-1", title: "Two tool calls", status: "in_progress", assigneeAgentId: workerId });
+    const olderId = randomUUID();
+    const base = { companyId, issueId, kind: "request_confirmation", continuationPolicy: "none", createdByAgentId: workerId, title: "Approve tool action" };
+    await db.insert(issueThreadInteractions).values([
+      { ...base, id: olderId, status: "pending", payload: { version: 1, prompt: "Run A?", toolAction: { actionRequestId: randomUUID() } },
+        createdAt: new Date("2026-11-05T12:00:00.000Z"), updatedAt: new Date("2026-11-05T12:00:00.000Z") },
+      { ...base, id: randomUUID(), status: "accepted", payload: { version: 1, prompt: "Run B?", toolAction: { actionRequestId: randomUUID() } },
+        createdAt: new Date("2026-11-05T12:05:00.000Z"), updatedAt: new Date("2026-11-05T12:06:00.000Z"), resolvedAt: new Date("2026-11-05T12:06:00.000Z") },
+    ] as typeof issueThreadInteractions.$inferInsert[]);
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual([olderId]);
+  });
+
+  it("shows a genuine re-ask created after the newest confirmation was settled", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATN");
+    const issueId = await insertIssue({ companyId, identifier: "ATN-1", title: "Follow-up sign-off", status: "in_review", assigneeAgentId: workerId });
+    const reAskId = randomUUID();
+    const base = { companyId, issueId, kind: "request_confirmation", continuationPolicy: "none", payload: { version: 1, prompt: "Approve?" } };
+    await db.insert(issueThreadInteractions).values([
+      { ...base, id: randomUUID(), status: "accepted", createdByAgentId: reviewerId, title: "First sign-off",
+        createdAt: new Date("2026-11-05T12:00:00.000Z"), updatedAt: new Date("2026-11-05T12:01:00.000Z"), resolvedAt: new Date("2026-11-05T12:01:00.000Z") },
+      { ...base, id: reAskId, status: "pending", createdByAgentId: workerId, title: "Second sign-off",
+        createdAt: new Date("2026-11-05T12:05:00.000Z"), updatedAt: new Date("2026-11-05T12:05:00.000Z") },
+    ] as typeof issueThreadInteractions.$inferInsert[]);
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual([reAskId]);
+  });
+
+  it.each([
+    ["secret proposal", "ATS", { secretProposal: { proposalId: "11111111-1111-4111-8111-111111111111" } }],
+    ["app connection", "ATK", { connectionAuthorization: { connectionId: "22222222-2222-4222-8222-222222222222" } }],
+  ] as const)("does not let a settled %s hide an older ordinary confirmation", async (_label, prefix, governed) => {
+    const { companyId, workerId, reviewerId } = await seedCompany(prefix);
+    const issueId = await insertIssue({ companyId, identifier: `${prefix}-1`, title: "Governed card then sign-off", status: "in_review", assigneeAgentId: workerId });
+    const ordinaryId = randomUUID();
+    const base = { companyId, issueId, kind: "request_confirmation", continuationPolicy: "none" };
+    await db.insert(issueThreadInteractions).values([
+      { ...base, id: ordinaryId, status: "pending", createdByAgentId: workerId, title: "Approve the plan", payload: { version: 1, prompt: "Approve the plan?" },
+        createdAt: new Date("2026-11-05T12:00:00.000Z"), updatedAt: new Date("2026-11-05T12:00:00.000Z") },
+      { ...base, id: randomUUID(), status: "accepted", createdByAgentId: reviewerId, title: "Governed action",
+        payload: { version: 1, prompt: "Allow this?", ...governed },
+        createdAt: new Date("2026-11-05T12:05:00.000Z"), updatedAt: new Date("2026-11-05T12:06:00.000Z"), resolvedAt: new Date("2026-11-05T12:06:00.000Z") },
+    ] as typeof issueThreadInteractions.$inferInsert[]);
+    const service = attentionService(db);
+    const feed = await service.list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual([ordinaryId]);
+    expect((await service.taskIndex(companyId, { userId: "board-user" })).taskIds).toContain(issueId);
+  });
+
+  it("keeps a pending tool-action approval in the summary and task index after a newer ordinary confirmation is settled", async () => {
+    const { companyId, workerId } = await seedCompany("ATU");
+    const issueId = await insertIssue({ companyId, identifier: "ATU-1", title: "Tool call then sign-off", status: "in_progress", assigneeAgentId: workerId });
+    const toolApprovalId = randomUUID();
+    const base = { companyId, issueId, kind: "request_confirmation", continuationPolicy: "none", createdByAgentId: workerId };
+    await db.insert(issueThreadInteractions).values([
+      { ...base, id: toolApprovalId, status: "pending", title: "Approve tool action",
+        payload: { version: 1, prompt: "Run A?", toolAction: { actionRequestId: randomUUID() } },
+        createdAt: new Date("2026-11-05T12:00:00.000Z"), updatedAt: new Date("2026-11-05T12:00:00.000Z") },
+      { ...base, id: randomUUID(), status: "accepted", title: "Approve the plan", payload: { version: 1, prompt: "Approve the plan?" },
+        createdAt: new Date("2026-11-05T12:05:00.000Z"), updatedAt: new Date("2026-11-05T12:06:00.000Z"), resolvedAt: new Date("2026-11-05T12:06:00.000Z") },
+    ] as typeof issueThreadInteractions.$inferInsert[]);
+    const service = attentionService(db);
+    const feed = await service.list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual([toolApprovalId]);
+    const [summary, index] = await Promise.all([service.summary(companyId, { userId: "board-user" }), service.taskIndex(companyId, { userId: "board-user" })]);
+    expect(index.taskIds).toContain(issueId);
+    expect(summary.totalCount).toBe(feed.totalCount);
+  });
+
+  it("does not let another recipient's settled confirmation hide this recipient's pending one", async () => {
+    const { companyId, workerId } = await seedCompany("ATV");
+    const issueId = await insertIssue({ companyId, identifier: "ATV-1", title: "Two reviewers", status: "in_review", assigneeAgentId: workerId });
+    const mineId = randomUUID();
+    const base = { companyId, issueId, kind: "request_confirmation", continuationPolicy: "none", createdByAgentId: workerId, payload: { version: 1, prompt: "Approve?" } };
+    await db.insert(issueThreadInteractions).values([
+      { ...base, id: mineId, status: "pending", title: "Board user sign-off", addresseeUserId: "board-user",
+        createdAt: new Date("2026-11-05T12:00:00.000Z"), updatedAt: new Date("2026-11-05T12:00:00.000Z") },
+      { ...base, id: randomUUID(), status: "accepted", title: "Other user sign-off", addresseeUserId: "other-user",
+        createdAt: new Date("2026-11-05T12:05:00.000Z"), updatedAt: new Date("2026-11-05T12:06:00.000Z"), resolvedAt: new Date("2026-11-05T12:06:00.000Z") },
+    ] as typeof issueThreadInteractions.$inferInsert[]);
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual([mineId]);
+  });
+
+  it("retains every independently bound quality approval alongside the newest ordinary confirmation", async () => {
+    const { companyId, workerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Review copy and visual", status: "in_review", assigneeAgentId: workerId });
+    const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(issueThreadInteractions).values(ids.map((id, index) => ({
+      id, companyId, issueId, kind: "request_confirmation" as const, status: "pending" as const, continuationPolicy: "wake_assignee" as const, createdByAgentId: workerId,
+      payload: { version: 1 as const, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
+      createdAt: new Date(Date.UTC(2026, 6, 9, 12, index)),
+    })));
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const interactions = feed.items.filter(item => item.sourceKind === "issue_thread_interaction");
+    expect(interactions.map(item => item.subject.id).sort()).toEqual([ids[0], ids[1], ids[3]].sort());
+    const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+
+    // Resolving one output removes only that decision, leaving the other output
+    // and the ordinary confirmation independently actionable.
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, ids[0]));
+    const remaining = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(remaining.items.filter(item => item.sourceKind === "issue_thread_interaction").map(item => item.subject.id).sort()).toEqual([ids[1], ids[3]].sort());
   });
 
   it("uses inbox_dismissals with attention-prefixed dedup keys and resurfaces newer activity", async () => {
@@ -1790,6 +2126,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     await expect(attentionService(db).list(companyId, { userId: "board-user" }))
       .resolves.toMatchObject({ totalCount: 1 }); // agent_error_alert from seed
+    await expect(attentionService(db).summary(companyId, { userId: "board-user" })).resolves.toMatchObject({ totalCount: 1 });
     const hiddenFeed = await attentionService(db).list(companyId, { userId: "board-user", includeDismissed: true });
     expect(hiddenFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`)?.dismissal)
       .toMatchObject({ kind: "snooze", isActive: true, snoozedUntil: "2099-01-02T00:00:00.000Z" });
@@ -1803,6 +2140,9 @@ describeEmbeddedPostgres("attention service", () => {
     const visibleApproval = visibleFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`);
     expect(visibleApproval?.dismissal).toMatchObject({ kind: "snooze", isActive: false });
     expect(visibleApproval).toBeTruthy();
+    const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+    expect(summary.totalCount).toBe(visibleFeed.totalCount);
+
   });
 
   it("enriches, filters, paginates, snoozes, and ranks the decide-now feed", async () => {
@@ -2045,6 +2385,13 @@ describeEmbeddedPostgres("attention service", () => {
     expect(approvalRows.every((approval) => internalSnapshotIds.has(approval.id))).toBe(true);
     expect(internalSnapshot.items.length).toBeGreaterThan(100);
     expect(internalSnapshot.nextCursor).toBeNull();
+    const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+    expect(summary).toEqual({
+      companyId, generatedAt: expect.any(String), totalCount: internalSnapshot.totalCount,
+      deskBadgeCount: internalSnapshot.deskBadgeCount, countsBySourceKind: internalSnapshot.countsBySourceKind,
+    });
+    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(internalSnapshot).length / 10);
+
 
     await expect(attentionService(db).list(companyId, { userId: "board-user", all: true }))
       .rejects.toThrow("all requires a queue filter");
@@ -2098,6 +2445,10 @@ describeEmbeddedPostgres("attention service", () => {
       allowUnscopedAll: true,
     });
     expect(complete.items.filter((item) => item.sourceKind === "decision")).toHaveLength(2);
+    const summary = await svc.summary(companyId, { userId: "board-user" });
+    expect(summary.totalCount).toBe(complete.totalCount);
+    expect(summary.countsBySourceKind).toEqual(complete.countsBySourceKind);
+
     expect(complete.nextCursor).toBeNull();
   });
 
@@ -2213,6 +2564,18 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?includeDismissed=true&all=true`)
       .expect(200);
     expect(completeFeed.body.nextCursor).toBeNull();
+    const summary = await request(app(board)).get(`/api/companies/${companyId}/attention/summary`).expect(200);
+    expect(summary.body).not.toHaveProperty("items");
+    expect(summary.body.totalCount).toBe(completeFeed.body.totalCount);
+    const taskIndex = await request(app(board)).get(`/api/companies/${companyId}/attention/tasks`).expect(200);
+    expect(taskIndex.body).not.toHaveProperty("items");
+    expect(taskIndex.body.taskIds).toEqual([]);
+    await request(app(agent)).get(`/api/companies/${companyId}/attention/tasks`).expect(403);
+    await request(app({ ...board, source: "session", companyIds: [] })).get(`/api/companies/${companyId}/attention/tasks`).expect(403);
+
+    await request(app(agent)).get(`/api/companies/${companyId}/attention/summary`).expect(403);
+    await request(app({ ...board, source: "session", companyIds: [] })).get(`/api/companies/${companyId}/attention/summary`).expect(403);
+
     await request(app(board))
       .get(`/api/companies/${companyId}/attention?activitySince=yesterday`)
       .expect(400, { error: "activitySince must be an ISO timestamp" });
@@ -2249,6 +2612,10 @@ describeEmbeddedPostgres("attention service", () => {
 
     expect(feed.items.map((item) => item.subject.title)).not.toContain("Confidential review");
     expect(JSON.stringify(feed)).not.toContain(privateIssueId);
+    const summary = await attentionService(db).summary(companyId, { userId: actor.userId, actor });
+    expect(summary.totalCount).toBe(feed.totalCount);
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+
   });
 
   it("computes the aging shelf uniformly across approval, interaction, and review sources", async () => {

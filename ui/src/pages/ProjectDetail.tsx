@@ -47,6 +47,8 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 /* ── Top-level tab types ── */
 
@@ -215,32 +217,30 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
     enabled: !!companyId,
   });
 
-  const { data: issues, isLoading, error } = useQuery({
+  const issuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listByProject(companyId, projectId), showAgentCreatedTasks],
     queryFn: () => issuesApi.listAll(companyId, { projectId, includeRoutineExecutions: true, includeAgentCreatedTasks: showAgentCreatedTasks }),
     enabled: !!companyId,
   });
+  const { data: issues } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [queryKeys.issues.listByProject(companyId, projectId), queryKeys.issues.list(companyId)],
   });
+
+  if (issuesView.kind === "error") return <QueryErrorState error={issuesView.error} action="load project tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
@@ -270,8 +270,7 @@ function ProjectPluginOperationsList({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
     enabled: !!companyId,
   });
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
@@ -291,28 +290,30 @@ function ProjectPluginOperationsList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const { data: issues, isLoading, error } = useQuery({
+  const issuesQuery = useQuery({
     queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
     queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
     enabled: !!companyId && !!projectId,
   });
+  const { data: issues } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [
+      queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
+      queryKeys.issues.listByProject(companyId, projectId),
+      queryKeys.issues.list(companyId),
+    ],
   });
+
+  if (issuesView.kind === "error") return <QueryErrorState error={issuesView.error} action="load project tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}

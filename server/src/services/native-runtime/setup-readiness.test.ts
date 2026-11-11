@@ -180,7 +180,7 @@ describe("Codex selected native account verification", () => {
         expect(nativeProbe).not.toHaveBeenCalled();
         expect(sshExecute).not.toHaveBeenCalled();
         expect(result.checks[0].message).toContain(source === "configured" ? "env.CODEX_HOME" : "operator CODEX_HOME");
-        expect(result.checks[0].message).toContain("Legacy runner");
+        expect(result.checks[0].message).not.toContain("Advanced");
         expect(result.checks[0].message).toContain("managed Codex Connection");
       } else expect(nativeProbe).toHaveBeenCalledOnce();
       expect(await readFile(stored, "utf8")).toBe(auth);
@@ -444,7 +444,7 @@ describe("Codex selected native account verification", () => {
   it("keeps the generic hint when the backend rejects a model that is not retired", async () => {
     nativeProbe.mockRejectedValue(new Error("The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."));
     const result = await testNativeRunnerAuthentication(context, "codex", "gpt-6.1-sol");
-    expect(result.checks[0].hint).toBe("Check the selected account, model access, and native runtime prerequisites, then retry. Legacy runner is available explicitly in Advanced.");
+    expect(result.checks[0].hint).toBe("Check the selected account, model access, and native runtime prerequisites, then retry.");
   });
   it.each([
     ["authentication required: selected-account", true],

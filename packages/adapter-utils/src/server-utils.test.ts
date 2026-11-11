@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
@@ -44,10 +46,38 @@ import {
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
 
+const execFile = promisify(execFileCallback);
+
 it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
   expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "pi", model: "" })).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
   const saved = { provider: "acpx", acpxAgent: "pi", model: "openrouter/provider/model", piThinkingLevel: "max", acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
   expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toMatchObject(saved);
+});
+
+it("preserves Cursor Cloud settings without injecting Codex permission defaults", () => {
+  const config = { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo",
+    env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "saved-key", version: "latest" } } };
+  const saved = normalizePaperclipRunnerAdapterConfig("paperclip_runner", config);
+  expect(saved).toMatchObject({ ...config, lifecycleMode: "per_turn" });
+  expect(saved).not.toHaveProperty("codexPermissionMode");
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toEqual(saved);
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { ...config, codexPermissionMode: "never" }))
+    .toHaveProperty("codexPermissionMode", "never");
+});
+
+it.each([undefined, "", "kimi-for-coding"])("keeps Kimi draft model selection explicit: %s", model => {
+  const config = { provider: "acpx", acpxAgent: "kimi", ...(model === undefined ? {} : { model }),
+    acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  const normalized = normalizePaperclipRunnerAdapterConfig("paperclip_runner", config);
+  expect(normalized).toMatchObject(config);
+  expect(normalized.model).toBe(model);
+});
+
+it("keeps Claude draft defaults and explicit model selection", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude" }))
+    .toMatchObject({ model: "claude-opus-5-5" });
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }))
+    .toMatchObject({ model: "claude-sonnet-5" });
 });
 
 it("reserves identity credentials even for mixed-case inherited or configured keys", () => {
@@ -627,6 +657,86 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("does not crash when the child closes stdin before a delayed write", async () => {
+    const tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-stdin-epipe-"),
+    );
+    const harnessPath = path.join(tempDir, "stdin-epipe-harness.ts");
+    const stdinClosedMarkerPath = path.join(tempDir, "stdin-closed");
+    const releaseChildMarkerPath = path.join(tempDir, "release-child");
+    const serverUtilsUrl = pathToFileURL(
+      path.join(import.meta.dirname, "server-utils.ts"),
+    ).href;
+    const tsxCli = path.resolve(
+      import.meta.dirname,
+      "../../../cli/node_modules/tsx/dist/cli.mjs",
+    );
+
+    try {
+      await fs.writeFile(
+        harnessPath,
+        [
+          "import fs from 'node:fs/promises';",
+          `import { runChildProcess } from ${JSON.stringify(serverUtilsUrl)};`,
+          `const stdinClosedMarkerPath = ${JSON.stringify(stdinClosedMarkerPath)};`,
+          `const releaseChildMarkerPath = ${JSON.stringify(releaseChildMarkerPath)};`,
+          "void (async () => {",
+          "const result = await runChildProcess(",
+          "  'stdin-epipe-regression',",
+          "  process.execPath,",
+          "  [",
+          "    '-e',",
+          "    \"const fs = require('node:fs'); fs.closeSync(0); fs.writeFileSync(process.argv[1], 'closed'); const deadline = Date.now() + 3000; const timer = setInterval(() => { if (fs.existsSync(process.argv[2])) { clearInterval(timer); process.exit(23); } if (Date.now() >= deadline) { clearInterval(timer); process.exit(24); } }, 10);\",",
+          "    stdinClosedMarkerPath,",
+          "    releaseChildMarkerPath,",
+          "  ],",
+          "  {",
+          "    cwd: process.cwd(),",
+          "    env: {},",
+          "    stdin: 'payload after child closed stdin',",
+          "    timeoutSec: 5,",
+          "    graceSec: 1,",
+          "    onLog: async () => {},",
+          "    onSpawn: async () => {",
+          "      const deadline = Date.now() + 2_000;",
+          "      while (Date.now() < deadline) {",
+          "        try {",
+          "          await fs.access(stdinClosedMarkerPath);",
+          "          setTimeout(() => {",
+          "            void fs.writeFile(releaseChildMarkerPath, 'release');",
+          "          }, 100);",
+          "          return;",
+          "        } catch {",
+          "          await new Promise((resolve) => setTimeout(resolve, 10));",
+          "        }",
+          "      }",
+          "      throw new Error('child did not confirm closing stdin');",
+          "    },",
+          "  },",
+          ");",
+          "if (result.exitCode !== 23) {",
+          "  throw new Error(`unexpected exit code: ${result.exitCode}`);",
+          "}",
+          "process.stdout.write(JSON.stringify({ exitCode: result.exitCode, timedOut: result.timedOut }));",
+          "})().catch((error) => {",
+          "  console.error(error);",
+          "  process.exitCode = 1;",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const completed = await execFile(process.execPath, [tsxCli, harnessPath], {
+        cwd: process.cwd(),
+        timeout: 10_000,
+      });
+      expect(JSON.parse(completed.stdout)).toEqual({ exitCode: 23, timedOut: false });
+      expect(completed.stderr).not.toMatch(/Unhandled 'error' event|write EPIPE/);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
@@ -999,7 +1109,7 @@ describe("renderPaperclipWakePrompt", () => {
     };
     const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
     expect(ordinary).not.toContain("Execution contract:");
-    expect(ordinary).toContain("Create child issues from the approved plan");
+    expect(ordinary).toContain("Implement the accepted plan on this issue.");
     for (const resumedSession of [false, true]) {
       const chat = renderPaperclipWakePrompt(payload, {
         resumedSession, conversationMode: true, includeExecutionContract: true,
@@ -1007,7 +1117,7 @@ describe("renderPaperclipWakePrompt", () => {
       expect(chat).not.toContain("Execution contract:");
       expect(chat).not.toContain("clear final disposition");
       expect(chat).not.toContain("Create child issues");
-      expect(chat).not.toContain("you may create child implementation issues");
+      expect(chat).not.toContain("Implement the accepted plan on this issue.");
     }
   });
 
@@ -2442,7 +2552,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
     expect(prompt).not.toContain("accepted-plan continuation");
     expect(prompt).not.toContain(
-      "Create child issues from the approved plan only",
+      "Implement the accepted plan on this issue.",
     );
   });
 
@@ -2464,10 +2574,10 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("Create child issues from the approved plan only");
-    expect(prompt).toContain("may create child implementation issues");
+    expect(prompt).toContain("Implement the accepted plan on this issue.");
+    expect(prompt).toContain("Plan acceptance alone does not require subtasks.");
     expect(prompt).toContain(
-      "must not start implementation work on the planning issue itself",
+      "continue the approved work on this issue unless the approved plan explicitly assigns it elsewhere",
     );
   });
 
@@ -2810,7 +2920,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("selected text: Passed in Chrome");
     expect(prompt).toContain("Attach the run id.");
     expect(prompt).toContain(
-      "propose a child issue before making code changes",
+      "obtain authorization before making code changes",
     );
     expect(prompt).toContain(
       "prefer replying and resolving the thread over rewriting the snapshot",
@@ -2896,6 +3006,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain(payload.dispositionRepair.instruction);
     expect(prompt).not.toContain("liveness state:");
     expect(JSON.parse(stringifyPaperclipWakePayload(payload)!)).toMatchObject({ dispositionRepair: payload.dispositionRepair });
+  });
+
+  it("tells the agent what it can do when a child or blocker stalls on the board", () => {
+    const payload = {
+      reason: "issue_blocker_stalled",
+      issue: { id: "parent-1", identifier: "CHA-5", title: "Coordinate the rollout", status: "blocked", priority: "medium" },
+      blockerStall: {
+        stalledIssueId: "child-1",
+        stalledIssueIdentifier: "CHA-8",
+        stalledIssueTitle: "Ship the migration",
+        stalledIssueStatus: "blocked",
+        relation: "child",
+        recoveryAction: { id: "action-1", kind: "run_recovery", cause: "execution_recovery_budget_exhausted",
+          status: "escalated", ownerType: "board", nextAction: "Retry the run or reassign the task" },
+      },
+    };
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      blockerStall: { stalledIssueIdentifier: "CHA-8", relation: "child",
+        recoveryAction: { cause: "execution_recovery_budget_exhausted", nextAction: "Retry the run or reassign the task" } },
+    });
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("## Stalled dependency");
+    expect(prompt).toContain("CHA-8 Ship the migration (blocked)");
+    expect(prompt).toContain("execution_recovery_budget_exhausted");
+    expect(prompt).toContain("Retry the run or reassign the task");
+    expect(prompt).toContain("reassign its existing task");
+    expect(prompt).toMatch(/escalate/i);
+    expect(prompt).toMatch(/block this issue/i);
   });
 
   it("includes continuation and child issue summaries in structured wake context", () => {
@@ -3928,6 +4066,22 @@ describe("wake continuation comment ownership", () => {
     expect(prompt).toContain("comment-b");
     expect(prompt).toContain("comment-edited");
     expect(prompt).not.toContain("comment-a at");
+  });
+
+  it("tells a fresh retry attempt where the retained prior workspace and its edits are", () => {
+    const priorWorkspace = { sourceRunId: "run-old", path: "/work/.paperclip/worktrees/PAP-1", branchName: "PAP-1-task",
+      changedFilesKnown: true, changedFileCount: 1, changedFiles: ["NOTES.md"] };
+    const prompt = renderPaperclipWakePrompt({
+      reason: "task_retry",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), priorWorkspace },
+    });
+    expect(prompt).toContain("retained unmodified at priorWorkspace.path");
+    expect(prompt).toContain("/work/.paperclip/worktrees/PAP-1");
+    expect(prompt).toContain("NOTES.md");
   });
 
   it("does not suppress a current comment absent from the rendered resume delta", () => {

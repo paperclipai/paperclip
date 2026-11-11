@@ -8,7 +8,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { recordAgentChatVisit } from "@/lib/recent-agent-chats";
 import { queryKeys } from "@/lib/queryKeys";
-import { useParams } from "@/lib/router";
+import { Link, useParams } from "@/lib/router";
 import { agentRouteRef } from "@/lib/utils";
 import { TaskDetailSurface } from "./IssueDetail";
 import { isUuidLike, type Issue } from "@paperclipai/shared";
@@ -44,6 +44,14 @@ export function AgentChat() {
   const chat = useQuery({
     queryKey: chatKey,
     queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
+    initialData: () => enabled && agent && session.isSuccess
+      ? client.getQueryData<Issue[]>(queryKeys.agentChats.list(selectedCompanyId, userId))
+        ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id)
+      : undefined,
+    initialDataUpdatedAt: () => {
+      const state = client.getQueryState(queryKeys.agentChats.list(selectedCompanyId, userId));
+      return state?.isInvalidated ? 0 : state?.dataUpdatedAt;
+    },
     enabled: enabled && !!agent && session.isFetched,
   });
   const sessionView = useQueryView(session);
@@ -86,8 +94,9 @@ export function AgentChat() {
   if (!enabled && !chat.data)
     return (
       <p className="text-sm text-muted-foreground">
-        Agent Chat is disabled. Enable it in Experimental settings. Existing
-        history remains available through task links.
+        Agent Chat is disabled for this instance. An administrator can enable it in{" "}
+        <Link className="underline underline-offset-4" to="/company/settings/instance/experimental#experimental-enableAgentChat">Experimental settings</Link>.
+        {" "}Your workspace preference does not change Chat availability. Existing history remains available through task links.
       </p>
     );
   const failed = [agentsView, chatView, ...(rosterAgent ? [] : [historyView])].find((view) => view.kind === "error");

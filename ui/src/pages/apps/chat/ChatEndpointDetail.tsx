@@ -7,6 +7,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { resolveAgentAppearance } from "@paperclipai/shared";
 import { SlackTestMessageButton } from "./SlackTestMessageButton";
+import { slackConversationUrl } from "./slack/conversation-url";
+import { useAccountIdentity } from "@/api/companies-query";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { SlackSetupAdvanced } from "./SlackAppDetails";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -62,12 +64,14 @@ import {
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { AppLogo } from "../AppLogo";
 import { StatusBadge } from "@/components/StatusBadge";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
+import { describeError } from "@/api/errors";
 
 const tabs = ["settings", "access", "reviews", "conversations", "activity"] as const;
 type ChatTab = (typeof tabs)[number];
@@ -243,6 +247,7 @@ export function connectionHealthPresentation(
 }
 
 export function ChatEndpointDetail() {
+  const { userId, settled: identitySettled } = useAccountIdentity();
   const { endpointId = "", tab: routeTab, reviewId } = useParams<{
     endpointId: string;
     tab?: string;
@@ -266,6 +271,7 @@ export function ChatEndpointDetail() {
         : false,
   });
   const endpoint = endpointQuery.data;
+  const endpointView = useQueryView(endpointQuery);
   const avatarAgent = useQuery({
     queryKey: queryKeys.agents.detail(endpoint?.assignedAgentId ?? ""),
     queryFn: () => agentsApi.get(endpoint!.assignedAgentId),
@@ -297,23 +303,22 @@ export function ChatEndpointDetail() {
 
   if (!activeTab)
     return <Navigate replace to={`/apps/chat/${endpointId}/settings`} />;
-  if (endpointQuery.isLoading)
+  if (endpointQuery.isLoading || endpointView.kind === "reconnecting")
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
         Loading connection…
       </div>
     );
-  if (endpointQuery.isError || !endpoint)
+  if (endpointView.kind === "error" || !endpoint)
     return (
-      <div className="space-y-3">
-        <p className="text-sm text-destructive">
-          This chat connection could not be loaded.
-        </p>
-        <Button variant="outline" onClick={() => endpointQuery.refetch()}>
-          Try again
-        </Button>
-      </div>
+      <QueryErrorState
+        size="page"
+        error={endpointQuery.error}
+        action="load the connection"
+        onRetry={endpointView.retry}
+        retrying={endpointView.isFetching}
+      />
     );
   if (endpoint.provider === "agentmail" && activeTab === "settings")
     return <div className="space-y-7"><EmailEndpointSettings key={endpoint.id} endpointId={endpoint.id} companyId={endpoint.companyId} assignedAgentName={endpoint.assignedAgentName} /><EndpointExecutionDefaults endpoint={endpoint} /></div>;
@@ -357,6 +362,7 @@ export function ChatEndpointDetail() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {endpoint.provider === "speko" && <a href="https://platform.speko.ai/agents" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary underline">Open Speko<ExternalLink className="size-3.5" aria-hidden="true" /></a>}
+          {endpoint.provider === "slack" && !setupIncomplete && <Button asChild variant="outline"><a href={slackConversationUrl(endpoint, identitySettled ? userId : null)} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>}
           {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack configuration <ExternalLink className="size-4" /></a></Button>}
           {setupIncomplete ? (
             <Button
@@ -443,19 +449,26 @@ function EmailAccess({ endpoint }: { endpoint: ChatEndpoint }) {
     queryKey: queryKeys.agents.list(endpoint.companyId),
     queryFn: () => agentsApi.list(endpoint.companyId),
   });
-  if (!endpoint.connectionId || agents.isError || connection.isError) return (
-    <div className="space-y-3">
-      <p role="alert" className="text-sm text-destructive">Connection access could not be loaded.</p>
-      <Button variant="outline" onClick={() => { void agents.refetch(); void connection.refetch(); }}>Try again</Button>
-    </div>
+  const agentsView = useQueryView(agents);
+  const connectionView = useQueryView(connection);
+  if (!endpoint.connectionId) return <p role="alert" className="text-sm text-destructive">Connection access could not be loaded.</p>;
+  if (agentsView.kind === "error" || connectionView.kind === "error") return (
+    <QueryErrorState
+      error={agentsView.kind === "error" ? agents.error : connection.error}
+      action="load connection access"
+      onRetry={() => { agentsView.retry(); connectionView.retry(); }}
+      retrying={agents.isFetching || connection.isFetching}
+    />
   );
-  if (agents.isPending || connection.isPending) return <p role="status" className="text-sm text-muted-foreground">Loading access…</p>;
-  const sourceId = connection.data.config?.credentialConnectionId;
+  if (agents.isPending || connection.isPending || agentsView.kind === "reconnecting" || connectionView.kind === "reconnecting") {
+    return <p role="status" className="text-sm text-muted-foreground">Loading access…</p>;
+  }
+  const sourceId = connection.data?.config?.credentialConnectionId;
   const credentialId = typeof sourceId === "string" ? sourceId : endpoint.connectionId;
   return <section className="max-w-3xl space-y-4">
     <h2 className="text-lg font-semibold">Access</h2>
     {credentialId !== endpoint.connectionId && <p className="text-sm text-muted-foreground">These settings apply to the saved AgentMail account and all inboxes using it.</p>}
-    <EmailConnectionAccess key={credentialId} companyId={endpoint.companyId} connectionId={credentialId} agents={agents.data} />
+    <EmailConnectionAccess key={credentialId} companyId={endpoint.companyId} connectionId={credentialId} agents={agents.data ?? []} />
   </section>;
 }
 
@@ -474,6 +487,7 @@ function Settings({
     enabled: endpoint.provider !== "speko",
     ...(endpoint.provider === "slack" ? liveChatQueryOptions : {}),
   });
+  const resourcesView = useQueryView(resourcesQuery);
   const saveResources = useMutation({
     mutationFn: (resource: Pick<ChatEndpointResource, "id" | "enabled">) =>
       chatEndpointsApi.updateResources(endpointId, [resource]),
@@ -485,7 +499,7 @@ function Settings({
     onError: (error) =>
       pushToast({
         title: "Couldn't update destination",
-        body: error instanceof Error ? error.message : "Try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -499,7 +513,7 @@ function Settings({
     onError: (error) =>
       pushToast({
         title: "Couldn't update settings",
-        body: error instanceof Error ? error.message : "Try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -533,7 +547,7 @@ function Settings({
       )}
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
-        {resourcesQuery.isError ? <p role="alert" className="text-sm text-destructive">Couldn't load channels. <button className="underline" onClick={() => void resourcesQuery.refetch()}>Try again</button></p> : resourcesQuery.isLoading ? (
+        {resourcesView.kind === "error" ? <QueryErrorState size="inline" error={resourcesQuery.error} action={endpoint.provider === "slack" ? "load the channels" : "load the destinations"} onRetry={resourcesView.retry} retrying={resourcesView.isFetching} /> : resourcesQuery.isLoading || resourcesView.kind === "reconnecting" ? (
           <p className="text-sm text-muted-foreground">Loading destinations…</p>
         ) : destinationResources.length === 0 && endpoint.provider !== "slack" ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
@@ -692,6 +706,7 @@ function Access({
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
     refetchInterval: 5000,
   });
+  const linksView = useQueryView(linksQuery);
   const updatePolicy = useMutation({
     mutationFn: (value: boolean) =>
       chatEndpointsApi.update(endpointId, { allowUnlinkedPeople: value }),
@@ -700,7 +715,7 @@ function Access({
         queryKeys.chatEndpoints.detail(endpointId),
         next,
       ),
-    onError: (error) => pushToast({ title: "Couldn’t update access", body: error instanceof Error ? error.message : "Try again.", tone: "error" }),
+    onError: (error) => pushToast({ title: "Couldn’t update access", body: describeError(error).body, tone: "error" }),
   });
   const createIntent = useMutation({
     mutationFn: (principalId: string) =>
@@ -714,7 +729,7 @@ function Access({
     onError: (error) =>
       pushToast({
         title: "Couldn't create identity link",
-        body: error instanceof Error ? error.message : "Try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -722,7 +737,7 @@ function Access({
     mutationFn: (principalId: string) =>
       chatEndpointsApi.revokeLink(endpointId, principalId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.principals(endpointId) }),
-    onError: (error) => pushToast({ title: "Couldn't disconnect account", body: error instanceof Error ? error.message : "Try again.", tone: "error" }),
+    onError: (error) => pushToast({ title: "Couldn't disconnect account", body: describeError(error).body, tone: "error" }),
   });
   const links = linksQuery.data ?? [];
   return (
@@ -789,7 +804,7 @@ function Access({
         </div>
       )}
       <div className="space-y-2">
-        {linksQuery.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading people…</p> : linksQuery.isError ? <p role="alert" className="text-sm text-destructive">Couldn't load people. <button className="underline" onClick={() => void linksQuery.refetch()}>Try again</button></p> : links.length === 0 ? (
+        {linksQuery.isPending || linksView.kind === "reconnecting" ? <p role="status" className="text-sm text-muted-foreground">Loading people…</p> : linksView.kind === "error" ? <QueryErrorState size="inline" error={linksQuery.error} action="load people" onRetry={linksView.retry} retrying={linksView.isFetching} /> : links.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
             No linked accounts yet. Invite someone to connect.
           </p>
@@ -862,13 +877,11 @@ function Conversations({
     queryFn: () => chatEndpointsApi.listConversations(endpointId),
     ...liveChatQueryOptions,
   });
+  const view = useQueryView(query);
   return (
     <section className="space-y-4">
-      {query.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading conversations…</p> : query.isError ? (
-        <div className="space-y-3">
-          <p role="alert" className="text-sm text-destructive">Conversations could not be loaded.</p>
-          <Button variant="outline" onClick={() => void query.refetch()}>Try again</Button>
-        </div>
+      {query.isPending || view.kind === "reconnecting" ? <p role="status" className="text-sm text-muted-foreground">Loading conversations…</p> : view.kind === "error" ? (
+        <QueryErrorState error={query.error} action="load the conversations" onRetry={view.retry} retrying={view.isFetching} />
       ) : <ChatConversationList rows={query.data ?? []} provider={provider} />}
     </section>
   );
@@ -897,6 +910,8 @@ function Activity({
     ...liveChatQueryOptions,
     refetchInterval: cursor ? false : liveChatQueryOptions.refetchInterval,
   });
+  const view = useQueryView(query);
+  const activityLoaded = view.kind === "ready" || view.kind === "stale";
   const calls = useSpekoCallHistory(endpoint.companyId, endpointId, endpoint.provider === "speko" && !cursor);
   const replay = useMutation({
     mutationFn: (item: ChatActivityItem) =>
@@ -915,7 +930,7 @@ function Activity({
     onError: (error) =>
       pushToast({
         title: "Couldn't replay activity",
-        body: error instanceof Error ? error.message : "Try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -974,7 +989,7 @@ function Activity({
     onError: (error) =>
       pushToast({
         title: "Couldn't resolve activity",
-        body: error instanceof Error ? error.message : "Try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -1006,7 +1021,7 @@ function Activity({
     onError: (error) =>
       pushToast({
         title: "Couldn't update connection",
-        body: error instanceof Error ? error.message : "Try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -1014,7 +1029,7 @@ function Activity({
   // Calls use their own caller-authorized API and appear once in recent activity.
   // Older connection-event pages retain the existing cursor contract.
   const activityEntries = [
-    ...(!query.isError ? rows.map(item => ({ kind: "connection" as const, id: `connection:${item.id}`, createdAt: item.createdAt, item })) : []),
+    ...(view.kind !== "error" ? rows.map(item => ({ kind: "connection" as const, id: `connection:${item.id}`, createdAt: item.createdAt, item })) : []),
     ...(!cursor && !calls.error ? calls.entries.map(entry => ({ kind: "call" as const, id: `call:${entry.session.id}`, createdAt: entry.session.createdAt, entry })) : []),
     ...(!cursor && !calls.incomingError ? calls.unapprovedCalls.map(call => ({ kind: "unapproved_call" as const, id: `unapproved:${call.id}`, createdAt: call.createdAt, call })) : []),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
@@ -1192,24 +1207,20 @@ function Activity({
           </p>
         )}
         <div className="divide-y divide-border border-y border-border">
-          {(query.isLoading || calls.loading) && (
+          {(query.isLoading || view.kind === "reconnecting" || calls.loading) && (
             <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading activity…
             </div>
           )}
-          {query.isError && (
-            <div className="flex flex-wrap items-center justify-between gap-3 py-4">
-              <p className="text-sm text-destructive" role="alert">
-                Connection activity could not be loaded.
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => query.refetch()}
-              >
-                Try again
-              </Button>
+          {view.kind === "error" && (
+            <div className="py-4">
+              <QueryErrorState
+                error={query.error}
+                action="load the connection activity"
+                onRetry={view.retry}
+                retrying={view.isFetching}
+              />
             </div>
           )}
           {endpoint.provider === "speko" && !cursor && [
@@ -1282,7 +1293,7 @@ function Activity({
               </div>
             );
           })}
-          {!query.isLoading && !query.isError && !calls.loading && !calls.error && !calls.incomingError && activityEntries.length === 0 && (
+          {activityLoaded && !calls.loading && !calls.error && !calls.incomingError && activityEntries.length === 0 && (
             <p className="py-5 text-sm text-muted-foreground">
               No connection activity yet.
             </p>
@@ -1293,7 +1304,7 @@ function Activity({
         <span className="text-xs text-muted-foreground">Page {cursors.length}</span>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors((pages) => pages.slice(0, -1))}>Previous</Button>
-          <Button size="sm" variant="outline" disabled={!query.data?.nextCursor || query.isFetching || query.isError} onClick={() => { if (query.data?.nextCursor) setCursors((pages) => [...pages, query.data.nextCursor!]); }}>Next</Button>
+          <Button size="sm" variant="outline" disabled={!query.data?.nextCursor || query.isFetching || view.kind === "error"} onClick={() => { if (query.data?.nextCursor) setCursors((pages) => [...pages, query.data.nextCursor!]); }}>Next</Button>
         </div>
       </nav>
       <AlertDialog

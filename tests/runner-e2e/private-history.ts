@@ -14,7 +14,8 @@ export const PRIVATE_ARCHIVE_BYTES = 264 * 1024 * 1024;
 
 export function privateArtifactKey(kind: string, runId: string) {
   if (!(["evidence", "report", "protocol-control", "protocol-report"].includes(kind)
-      || /^protocol-cell-[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(kind)) || !/^[1-9][0-9]{0,19}$/.test(runId)) {
+      || /^protocol-cell-[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(kind)
+      || /^manual-cell-[0-9a-f]{64}$/.test(kind) || kind === "manual-report") || !/^[1-9][0-9]{0,19}$/.test(runId)) {
     throw new Error("Private history needs a supported artifact kind and numeric workflow run ID");
   }
   return `${PRIVATE_HISTORY_PREFIX}/campaigns/gha-${runId}-1/${kind}.zip`;
@@ -45,6 +46,12 @@ export async function verifyPrivateHistory(publisher: BoundedHistoryPublisher, b
   }
 }
 
+export interface PrivateEvidenceCompleteness {
+  meaning: "available-files-and-transfer-only";
+  doesNotAttestFeatureOutcome: true;
+  cells: Array<{ executionId: string; availableFileInventoryComplete: true; requiredPassEvidenceComplete: boolean | null; missingRequiredEvidence: string[] }>;
+}
+
 type TransferOptions = {
   operation: "upload" | "download";
   kind: string;
@@ -53,6 +60,7 @@ type TransferOptions = {
   bucket: string;
   publisher: BoundedHistoryPublisher;
   receiptIdentity?: string;
+  evidenceCompleteness?: PrivateEvidenceCompleteness;
 };
 
 function privateTransferReceiptKey(options: TransferOptions) {
@@ -88,7 +96,9 @@ async function transferVerifiedArtifact(options: TransferOptions) {
       "--range", `bytes=0-${PRIVATE_ARCHIVE_BYTES}`, archive]);
     if ((await lstat(archive)).size > PRIVATE_ARCHIVE_BYTES) throw new Error("Private archive exceeds transfer allowance");
     const metadata = await archivePrivateEvidence("unpack", archive, options.directory);
-    return { ...metadata, uri: `s3://${options.bucket}/${key}` };
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(archive)) hash.update(chunk);
+    return { ...metadata, uri: `s3://${options.bucket}/${key}`, sha256: hash.digest("hex") };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -108,6 +118,7 @@ export async function retainPrivateTransfer(options: TransferOptions, receipt: s
     await options.publisher.save();
     const snapshot = JSON.stringify({ ...JSON.parse(await readFile(receipt, "utf8")),
       ...(options.receiptIdentity === undefined ? {} : { receiptIdentity: options.receiptIdentity }),
+      ...(options.evidenceCompleteness === undefined ? {} : { evidenceCompleteness: options.evidenceCompleteness }),
       transfer: result ? { status: "complete", ...result } : { status: "failed_or_unknown" },
       receiptUpload: { status: "pending_at_snapshot", maxBytes: 1024 * 1024 } });
     if (Buffer.byteLength(snapshot) > 1024 * 1024) throw new Error("Private transfer receipt exceeds allowance");

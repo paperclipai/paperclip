@@ -1,3 +1,6 @@
+import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
+import { hasMigratedLegacyWorkspaceSource } from "../legacy-workspace-recovery-migration.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { emitStartupReuse, type StartupReuseReason } from "@paperclipai/adapter-utils/startup-reuse";
@@ -614,13 +617,14 @@ async function persistRunReference(
 ): Promise<void> {
   await db.transaction(async (tx) => {
     const run = await tx
-      .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+      .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!run) throw new Error("native_workspace_sync_run_missing");
+    await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId });
     await tx
       .update(heartbeatRuns)
       .set({
@@ -641,14 +645,14 @@ async function persistLeaseStamp(input: {
 }): Promise<void> {
   await input.db.transaction(async (tx) => {
     const lease = await tx
-      .select({ metadata: environmentLeases.metadata })
+      .select({ metadata: environmentLeases.metadata, companyId: environmentLeases.companyId, heartbeatRunId: environmentLeases.heartbeatRunId })
       .from(environmentLeases)
       .where(eq(environmentLeases.id, input.leaseId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!lease) throw new Error("native_workspace_sync_lease_missing");
-    await notifyEnvironmentCleanup(tx);
+    await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
     await tx
       .update(environmentLeases)
       .set({
@@ -811,6 +815,7 @@ async function prepareRuntime(input: {
   durableSeed?: WorkspaceDurableSeedPaths;
   seedCacheDirectory?: string;
   seedCacheCompanyDirectory?: string;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -827,6 +832,7 @@ async function prepareRuntime(input: {
     workspaceRemoteDir: input.target.remoteCwd,
     workspaceInboundMode: input.mode,
     workspaceSnapshotIsolation: "worker",
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.durableSeed,
     workspaceBaseline: input.baseline,
     workspaceGitSnapshot: input.gitSnapshot,
@@ -835,6 +841,7 @@ async function prepareRuntime(input: {
     onWorkspaceCheckpoint: input.onCheckpoint,
     workspaceSeedCacheDirectory: input.seedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.seedCacheCompanyDirectory,
+    workspaceSeedCacheScope: "company",
     runtimeSpan: input.onPhase,
   }));
 }
@@ -898,6 +905,7 @@ export async function prepareNativeWorkspaceSync(input: {
   restartRecovery?: NativeRestartRecoveryClaim;
   sameRunRecovery?: boolean;
   resourceDisposition?: NativeWorkspaceResourceDisposition;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -908,14 +916,16 @@ export async function prepareNativeWorkspaceSync(input: {
   const target = input.target;
   const providerLeaseId = providerLeaseIdFor({ target, lease: input.lease });
   // Reattachment may never seed a replacement sandbox over a still-live run.
-  if (input.restartRecovery?.kind === "reattach_remote_runner" &&
-      (input.restartRecovery.remote.kind === "plugin_task" || input.restartRecovery.runId !== input.runId ||
-       input.restartRecovery.remote.providerLeaseId !== providerLeaseId ||
-       input.restartRecovery.remote.remoteCwd !== target.remoteCwd)) {
-    throw new Error("native_remote_recovery_lease_mismatch");
+  if (input.restartRecovery?.kind === "reattach_remote_runner") {
+    const { remote, runId } = input.restartRecovery;
+    const mismatch = remote.kind === "plugin_task" ? "plugin_task" as const
+      : runId !== input.runId ? "run_id" as const
+      : remote.providerLeaseId !== providerLeaseId ? "provider_lease_id" as const
+      : remote.remoteCwd !== target.remoteCwd ? "remote_cwd" as const : null;
+    if (mismatch) throw remoteRecoveryLeaseMismatch("workspace_sync", mismatch);
   }
   const run = await measureRunPhase("workspace_sync.run_read", () => input.db
-    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -1004,7 +1014,7 @@ export async function prepareNativeWorkspaceSync(input: {
       hasPriorStamp: priorStamp !== null,
     });
     const seedCacheCompanyDirectory = path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME, "generations", requireSafeSegment(input.companyId, "company_id"));
-    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, requireSafeSegment(input.workspaceId, "workspace_id"));
+    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, "shared-v1");
     runtime = await prepareRuntime({
       runId: input.runId,
       target,
@@ -1014,6 +1024,9 @@ export async function prepareNativeWorkspaceSync(input: {
       mode,
       seedCacheCompanyDirectory,
       seedCacheDirectory,
+      workspaceGitIndexRefresh: input.workspaceGitIndexRefresh === true
+        && acquisition === "created" && mode === "host_current"
+        && !input.restartRecovery && !input.sameRunRecovery,
       durableSeed: {
         workspaceArchivePath: seedPaths.workspaceArchivePath,
         gitArchivePath: seedPaths.gitArchivePath,
@@ -1175,7 +1188,7 @@ export async function resumeNativeWorkspaceSync(input: {
     throw new Error("workspace_sync_out_unrecoverable");
   }
   const run = await input.db
-    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -1184,6 +1197,8 @@ export async function resumeNativeWorkspaceSync(input: {
     parseObject(run?.runnerProfileJson).nativeWorkspaceSync,
   );
   if (!reference) return false;
+  if (run && await hasMigratedLegacyWorkspaceSource(input.db, { companyId: run.companyId, runId: input.runId, reference }))
+    throw new Error("native_workspace_sync_source_migrated");
   const existing = await readDescriptor({ runId: input.runId, reference });
   const providerLeaseId =
     input.target.sandboxLeaseAcquisition?.providerLeaseId ??

@@ -54,6 +54,53 @@ it.each([
   });
 });
 
+it.each([
+  ["tar: ./private-file: Cannot open: Permission denied\ntar: Exiting with failure status due to previous errors", "EACCES"],
+  ["tar: ./private-dir: Cannot savedir: Operation not permitted", "EPERM"],
+  ["tar: ./private-file: Cannot stat: No such file or directory", "ENOENT"],
+  ["tar: ./private-dir/private-file: Cannot open: File name too long", "ENAMETOOLONG"],
+  ["tar: ./private-file: Read error at byte 0, while reading 512 bytes: Input/output error", "EIO"],
+  // A vanished file must not hide the error that stopped tar.
+  ["tar: ./private-file: Cannot stat: No such file or directory\ntar: ./private-dir: Cannot open: Permission denied", "EACCES"],
+  ["private-command-output mentions Permission denied mid-line only", "unknown"],
+] as const)("classifies a failed sandbox tar's output as a bounded errno: %s", async (output, errorCode) => {
+  const sandbox = {
+    process: { executeCommand: async (command: string) =>
+      command.includes("tar -c") ? { exitCode: 2, result: output } : { exitCode: 0 } },
+    fs: { downloadFiles: async () => [], deleteFile: async () => undefined },
+  };
+  await withEnvironmentSyncErrorCapture(async () => {
+    let caught: unknown;
+    try {
+      await performSyncOut({ sandbox: sandbox as never, remoteDir: "/workspace", timeoutSeconds: 30,
+        operations: [{ operationId: "fixture", files: [{ sourcePath: "/workspace/private-path", targetPath: "/unused", kind: "directory" }] }],
+      });
+    } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(Error);
+    const diagnostic = readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(caught) });
+    expect(diagnostic).toEqual({ errorCode, transferStep: "archive_create", transferFailureKind: "command_failed", exitCode: 2 });
+    expect(JSON.stringify(diagnostic)).not.toContain("private");
+  });
+});
+
+it("classifies a full sandbox disk at the guard step without recording output", async () => {
+  const sandbox = {
+    process: { executeCommand: async () => ({ exitCode: 1, result: "mkdir: cannot create directory '/workspace/private-path': No space left on device" }) },
+    fs: { downloadFiles: async () => [], deleteFile: async () => undefined },
+  };
+  await withEnvironmentSyncErrorCapture(async () => {
+    let caught: unknown;
+    try {
+      await performSyncOut({ sandbox: sandbox as never, remoteDir: "/workspace", timeoutSeconds: 30,
+        operations: [{ operationId: "fixture", files: [{ sourcePath: "/workspace/private-path", targetPath: "/unused", kind: "directory" }] }],
+      });
+    } catch (error) { caught = error; }
+    const diagnostic = readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(caught) });
+    expect(diagnostic).toMatchObject({ errorCode: "ENOSPC", transferFailureKind: "command_failed", exitCode: 1 });
+    expect(JSON.stringify(diagnostic)).not.toContain("private");
+  });
+});
+
 it("keeps a thrown download exception identical and its nested safe code", async () => {
   const original = Object.freeze(new Error("private-download-error", { cause: { code: "ECONNRESET", token: "private-token" } }));
   const sandbox = {

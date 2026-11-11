@@ -164,6 +164,8 @@ it.each([
   cell.id,
   "feedback-persistence.runner-codex.local.complaint-and-suggestion",
   "feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion",
+  "feedback-persistence.runner-codex.daytona.complaint-and-suggestion",
+  "feedback-persistence.runner-acpx-claude.daytona.complaint-and-suggestion",
   "core-compatibility.runner-acpx-claude.daytona.message-marker",
 ])("routes %s through a shared connection without ambient provider bindings", async executionId => {
   const selected = runnerMatrix.find(execution => execution.id === executionId)!;

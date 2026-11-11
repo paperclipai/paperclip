@@ -61,6 +61,11 @@ current `pnpm test:e2e:runner -- --list` before choosing work. In particular,
 Everyday Workflows, provider connections, feedback persistence, interruption,
 and case handoffs must not be inferred from a passing `--all` campaign.
 
+The explicit feedback suite also registers native Claude/Codex cells on Daytona.
+Their model usage, duration, feedback persistence and cleanup remain unqualified
+until retained live attempts prove them. These cells do not enter the daily or
+weekly selections, and `--all` continues to exclude the suite.
+
 Keep the broader rotating lane disabled until its exact cells have a metered
 route, complete retained attempts, a measured cost/time distribution, and a
 budget that includes failures. Prefer targeted continuation, approval, and

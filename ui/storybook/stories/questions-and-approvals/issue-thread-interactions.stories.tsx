@@ -35,6 +35,7 @@ import {
   notCreatorRequestConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
+  pendingToolActionLongProposalInteraction,
   runningToolActionInteraction,
   issueThreadInteractionComments,
   issueThreadInteractionEvents,
@@ -918,12 +919,25 @@ export const ToolActionPendingWrite: Story = {
     <StoryFrame>
       <ScenarioCard
         title="Pending · write"
-        description="A write tool call awaits approval: identity header, WRITE risk badge, humanized preview, collapsible technical details, expiry countdown, and an Approve & run CTA."
+        description="A write tool call awaits approval: app identity, a short preview, optional redacted arguments and audit hash, and Approve & run or Decline."
       >
         <ToolActionCard
           interaction={pendingToolActionWriteInteraction}
           interactive
         />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionLongProposal: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Pending · proposal beyond the short preview"
+        description="Open Arguments and audit hash to inspect the server-redacted proposal, including its final launch date, before approving. Inspection does not submit a decision."
+      >
+        <ToolActionCard interaction={pendingToolActionLongProposalInteraction} interactive />
       </ScenarioCard>
     </StoryFrame>
   ),

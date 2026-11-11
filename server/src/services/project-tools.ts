@@ -1,4 +1,4 @@
-import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
+import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema, requiredQualityReviewSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
@@ -19,6 +19,8 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
 export async function callProjectTool(input: {
   name: string; arguments: Record<string, unknown>; apiUrl: string; token: string;
   companyId: string; issueId: string; agentId: string; conversation: boolean; receiptOnly?: boolean;
+  /** The company's issue prefix; list_projects rows then carry their page href. */
+  companyPrefix?: string | null;
 }) {
   if (input.receiptOnly && input.name !== "create_project") throw badRequest("Receipt recovery is only supported for project creation");
   const args = input.arguments;
@@ -42,9 +44,20 @@ export async function callProjectTool(input: {
     body = createIssueSchema.parse({
       title: args.title, description: args.description, priority: args.priority,
       projectId: args.projectId, initialPlan: args.initialPlan,
-      assigneeAgentId: args.assigneeActorId ?? input.agentId,
-      parentId: input.conversation ? null : input.issueId,
-      status: Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
+      ...(args.requiredQualityReview !== undefined ? {
+        executionPolicy: { requiredQualityReview: requiredQualityReviewSchema.parse(args.requiredQualityReview) },
+      } : {}),
+      assigneeAgentId: args.assigneeActorId ?? (args.assigneeUserId ? null : input.agentId),
+      assigneeUserId: args.assigneeUserId,
+      // An explicit parent goes through the route's depth placement and
+      // authorization; a conversation itself is never a parent.
+      parentId: typeof args.parentTaskId === "string" && args.parentTaskId
+        ? args.parentTaskId
+        : (input.conversation ? null : input.issueId),
+      // Same rule as the native tool: backlog is honored and never wakes an
+      // agent; otherwise unresolved blockers make the task blocked.
+      status: args.status === "backlog" ? "backlog"
+        : Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,
     });
@@ -60,5 +73,11 @@ export async function callProjectTool(input: {
   if (input.receiptOnly && response.status === 204) return undefined;
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Project tool failed (${response.status})`);
+  // Chat replies link a project only when they know its real page; without an
+  // href the agent wrote the route as an unclickable path or omitted it.
+  if (page && input.companyPrefix && Array.isArray(result.projects)) {
+    return { ...result, projects: result.projects.map((project: { id: string }) => ({ ...project,
+      href: `/${encodeURIComponent(input.companyPrefix!)}/projects/${encodeURIComponent(project.id)}` })) };
+  }
   return result;
 }

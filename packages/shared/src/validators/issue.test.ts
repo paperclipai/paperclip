@@ -16,6 +16,13 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
+    for (const name of [key, key.toLowerCase()]) {
+      const overrides = {adapterConfig:{env:{[name]:"/workspace/startup"}}};
+      expect(createIssueSchema.safeParse({title:"Task",assigneeAdapterOverrides:overrides}).success).toBe(false);
+      expect(updateIssueSchema.safeParse({assigneeAdapterOverrides:overrides}).success).toBe(false);
+    }
+  });
   it("retains an optional nonnegative integer version for prepared-task promotion", () => {
     expect(updateIssueSchema.parse({ status: "todo", expectedStatusVersion: 0 }).expectedStatusVersion).toBe(0);
     expect(updateIssueSchema.parse({}).expectedStatusVersion).toBeUndefined();
@@ -46,6 +53,14 @@ describe("issue validators", () => {
     for (const patch of [{ actionId: "bad-id" }, { attemptCount: -1 }, { attemptCount: 0.5 }, { maxAttempts: 0 }, { kind: "prose" }]) {
       expect(issueCommentMetadataSchema.safeParse({ ...metadata, recovery: { ...recovery, ...patch } }).success).toBe(false);
     }
+  });
+
+  it("accepts an optional attachment-preparation identity and rejects malformed markers", () => {
+    const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Details" }] }] };
+    const attachmentPreparation = { attachmentId: "9af8228f-0be7-45ae-a104-6fbe0af6f1d3" };
+    expect(issueCommentMetadataSchema.parse({ ...metadata, attachmentPreparation }).attachmentPreparation).toEqual(attachmentPreparation);
+    expect(issueCommentMetadataSchema.parse(metadata).attachmentPreparation).toBeUndefined();
+    expect(issueCommentMetadataSchema.safeParse({ ...metadata, attachmentPreparation: { attachmentId: "bad-id" } }).success).toBe(false);
   });
 
   it("uses the same bounded unique upload ID contract for comment and update requests", () => {
@@ -353,6 +368,37 @@ describe("issue validators", () => {
       workspaceRepairEvidence: "Copied the retained source files and verified the restored files.",
     } }).success).toBe(true);
   });
+
+  it.each(["backlog", "in_progress", "blocked"] as const)("allows a complete controller containment request to retain %s status for locked route validation", sourceIssueStatus => {
+    const input = { actionId: "22222222-2222-4222-8222-222222222222", outcome: "restored", sourceIssueStatus,
+      executionReconciliation: { runId: "11111111-1111-4111-8111-111111111111", providerStopped: true,
+        controllerStopped: true, controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "The original-host controller and provider stopped; action outcomes were reviewed." } };
+    // The real historical HTTP request failed here before its route could
+    // enforce same-status/current-authority checks. Syntax grants no authority.
+    expect(resolveIssueRecoveryActionSchema.parse(input)).toEqual(input);
+  });
+
+  it.each(["controller-only", "digest-only", "missing-action", "wrong-outcome", "partial-with-workspace-evidence"] as const)(
+    "rejects incomplete controller containment even when ordinary status validation would pass: %s", mode => {
+      const complete = { runId: "11111111-1111-4111-8111-111111111111", providerStopped: true,
+        controllerStopped: true, controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "The original-host controller and provider stopped; action outcomes were reviewed." };
+      const ordinary = { runId: complete.runId, providerStopped: complete.providerStopped,
+        actionOutcome: complete.actionOutcome, outcomeEvidence: complete.outcomeEvidence };
+      const input = { actionId: mode === "missing-action" ? undefined : "22222222-2222-4222-8222-222222222222",
+        outcome: mode === "wrong-outcome" ? "blocked" : "restored",
+        sourceIssueStatus: mode === "wrong-outcome" ? "blocked" : "todo",
+        executionReconciliation: mode === "controller-only" ? { ...ordinary, controllerStopped: true }
+          : mode === "digest-only" ? { ...ordinary, controllerAuthorityDigest: complete.controllerAuthorityDigest }
+          : mode === "partial-with-workspace-evidence" ? { ...ordinary, controllerStopped: true,
+            workspaceRepairEvidence: "Retained workspace files were repaired and inspected separately." }
+          : complete };
+      const result = resolveIssueRecoveryActionSchema.safeParse(input);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues).toContainEqual(expect.objectContaining({ path: ["executionReconciliation"] }));
+    },
+  );
 
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
@@ -665,6 +711,12 @@ describe("issue validators", () => {
     expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
   });
 
+  it.each(["PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "paperclip_runner_prepared_harness_home"])("rejects task-level prepared storage via %s", key => {
+    const overrides = { assigneeAdapterOverrides: { adapterConfig: { env: { [key]: "/home/agent/.claude", TASK_FLAG: "kept" } } } };
+    expect(createIssueSchema.safeParse({ title: "Task", ...overrides }).success).toBe(false);
+    expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
+  });
+
   it("rejects retired model profiles in agent runtime config", () => {
     const parsed = createAgentSchema.safeParse({
       name: "Coder",
@@ -701,6 +753,18 @@ describe("persisted canonical question initial text", () => {
       const initialText = "a".repeat(codePoints - 1) + "😀";
       expect(Buffer.byteLength(JSON.stringify(input({ initialText })))).toBeLessThan(196 * 1024);
       expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(codePoints === 100_000);
+    }
+  });
+  it("bounds question text by the string length the Runner parser enforces", () => {
+    const within = paperclipQuestionSetPayloadSchema.safeParse(input({ prompt: "😀".repeat(2000) }));
+    expect(within.success).toBe(true);
+    for (const payload of [
+      input({ prompt: "😀".repeat(2000) + "x" }),
+      input({ id: "😀".repeat(81) }),
+      { ...input({}), title: "😀".repeat(501) },
+      { ...input({}), submitLabel: "😀".repeat(101) },
+    ]) {
+      expect(paperclipQuestionSetPayloadSchema.safeParse(payload).success).toBe(false);
     }
   });
   it("rejects non-text modes and unbounded or nonstring defaults", () => {

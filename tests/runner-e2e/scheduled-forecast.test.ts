@@ -58,7 +58,7 @@ it("computes distributions within one cohort and does not sum P95s", () => {
   const snapshot = structuredClone(measurements);
   const cell = selected("daily").find(cell => cell.id.startsWith("core-"))!;
   const sample = snapshot.samples.find(sample => sample.executionId === cell.id)!;
-  snapshot.samples = Array.from({ length: 20 }, (_, index) => ({ ...sample, attemptId: `attempt-${index}`,
+  snapshot.samples = Array.from({ length: 20 }, (_, index) => ({ ...sample, definitionHash: cell.suiteDefinitionHash, attemptId: `attempt-${index}`,
     knownModelUsd: String(index + 1), attemptDurationMs: (index + 1) * 1000 }));
   const forecast = scheduledForecast([cell], models, snapshot);
   expect(forecast.cells[0]!.compatibleSuccessful).toEqual({ samples: 20,
@@ -85,7 +85,7 @@ it("preserves nanodollar costs and genuine measured zero", () => {
   const snapshot = structuredClone(measurements);
   const cell = selected("daily").find(cell => cell.id.startsWith("core-"))!;
   const sample = snapshot.samples.find(sample => sample.executionId === cell.id)!;
-  snapshot.samples = [{ ...sample, knownModelUsd: "0.000000001", attemptDurationMs: 0 }];
+  snapshot.samples = [{ ...sample, definitionHash: cell.suiteDefinitionHash, knownModelUsd: "0.000000001", attemptDurationMs: 0 }];
   expect(scheduledForecast([cell], models, snapshot).compatibleSuccessfulSelection)
     .toEqual({ modelUsd: "0.000000001", summedAttemptMs: 0 });
   snapshot.samples[0]!.knownModelUsd = "0";
@@ -95,7 +95,7 @@ it("preserves nanodollar costs and genuine measured zero", () => {
 it("keeps hosts separate and requires hosted evidence for the whole selection", () => {
   const snapshot = structuredClone(measurements);
   const cell = selected("daily").find(cell => cell.id.startsWith("core-"))!;
-  const sample = snapshot.samples.find(sample => sample.executionId === cell.id)!;
+  const sample = { ...snapshot.samples.find(sample => sample.executionId === cell.id)!, definitionHash: cell.suiteDefinitionHash };
   snapshot.samples = [sample, { ...sample, attemptId: "different-host", measurementHost: "local-docker-linux-arm64" }];
   const forecast = scheduledForecast([cell], models, snapshot);
   expect(forecast.cells[0]!.historicalCohorts).toHaveLength(2);

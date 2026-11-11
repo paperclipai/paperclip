@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
@@ -371,6 +371,18 @@ describe("WorkspaceFileBrowser", () => {
     });
   });
 
+  it.each(["live", "saved"] as const)("identifies %s workspace files without presenting saved bytes as live", kind => {
+    const response = availableResponse([createItem()]);
+    response.workspace!.source = { kind, savedAt: kind === "saved" ? "2026-10-30T12:00:00.000Z" : null,
+      snapshotId: kind === "saved" ? "f6d9bb44-e06d-45bb-a7c3-72a5ac6f6ef5" : null };
+    useQueryMock.mockReturnValue(ok(response));
+    renderBrowser();
+    const source = container.querySelector('[aria-label="Workspace file source"]');
+    expect(source?.textContent).toContain(kind === "live" ? "Live workspace" : "Saved copy from");
+    expect(source?.querySelector("time")?.getAttribute("datetime") ?? null).toBe(response.workspace!.source.savedAt);
+    if (kind === "saved") expect(source?.textContent).not.toContain("Live workspace");
+  });
+
   it("groups nested paths into collapsible folder rows instead of repeating full paths", () => {
     useQueryMock.mockReturnValue(
       ok(availableResponse([
@@ -628,6 +640,66 @@ describe("WorkspaceFileBrowser", () => {
       projectId: null,
       workspaceId: null,
     });
+  });
+
+  it("settles a controlled parent with an inline browse-state handler and reports child search changes", async () => {
+    useQueryMock.mockReturnValue(ok(availableResponse([createItem()])));
+    const notifications = vi.fn();
+    type BrowseState = Parameters<NonNullable<ComponentProps<typeof WorkspaceFileBrowser>["onBrowseStateChange"]>>[0];
+    function ControlledBrowser() {
+      const [browse, setBrowse] = useState<BrowseState>({ q: null, folderPath: null, projectId: null, workspaceId: null });
+      return <>
+        <output data-testid="parent-query">{browse.q}</output>
+        <WorkspaceFileBrowser issueId="issue-1" onOpen={vi.fn()} initialQuery={browse.q}
+          onBrowseStateChange={(next) => {
+            notifications(next);
+            // Bound the broken feedback loop so the regression fails without
+            // exhausting React's nested-update limit or hanging the worker.
+            if (notifications.mock.calls.length < 10) setBrowse(next);
+          }} />
+      </>;
+    }
+    const root = createRoot(container);
+    roots.push(root);
+    act(() => root.render(<ControlledBrowser />));
+    await waitForExpectation(() => expect(notifications).toHaveBeenCalledTimes(1));
+
+    const input = container.querySelector("input")!;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    act(() => {
+      nativeSetter?.call(input, "workspace-proof");
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    });
+    await waitForExpectation(() => {
+      expect(container.querySelector('[data-testid="parent-query"]')?.textContent).toBe("workspace-proof");
+      expect(notifications).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("uses the replaced browse callback for the next actual state change without reporting callback-only changes", async () => {
+    useQueryMock.mockReturnValue(ok(availableResponse([createItem()])));
+    const first = vi.fn(), latest = vi.fn(), onOpen = vi.fn();
+    const { root } = renderBrowser(onOpen, { onBrowseStateChange: first });
+    expect(first).toHaveBeenCalledTimes(1);
+    act(() => root.render(<WorkspaceFileBrowser issueId="issue-1" onOpen={onOpen} onBrowseStateChange={latest} />));
+    expect(latest).not.toHaveBeenCalled();
+
+    const input = container.querySelector("input")!;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    act(() => {
+      nativeSetter?.call(input, " next-file ");
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    });
+    await waitForExpectation(() => expect(latest).toHaveBeenCalledWith({
+      q: "next-file", folderPath: null, projectId: null, workspaceId: null,
+    }));
+    act(() => {
+      nativeSetter?.call(input, "next-file");
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    });
+    await new Promise(resolve => window.setTimeout(resolve, 0));
+    expect(latest).toHaveBeenCalledTimes(1);
+    expect(first).toHaveBeenCalledTimes(1);
   });
 
   it("shows the remote-workspace state without file rows", () => {

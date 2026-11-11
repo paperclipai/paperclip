@@ -1,7 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { IssueMonitorBanner, IssueMonitorComposerStrip } from "@/components/IssueMonitorBanner";
 import { IssueProperties } from "@/components/IssueProperties";
+import { prepareFixtureApi } from "../../support/capability-gaps/api";
 import {
   storybookExecutionWorkspaces,
   storybookIssueDocuments,
@@ -335,3 +337,27 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const MonitorSurfaces: Story = {};
+
+export const BlockedTask: Story = {
+  beforeEach: () => prepareFixtureApi([
+    { path: `/api/issues/${overdueMonitorIssue.id}/work-products`, read: () => [] },
+  ]).cleanup,
+  render: function BlockedMonitor() {
+    const [checkingNow, setCheckingNow] = useState(false);
+    const issue = { ...overdueMonitorIssue, status: "blocked" as const };
+    const onCheckNow = () => setCheckingNow(true);
+    return <div className="space-y-4">
+      <IssueMonitorBanner issue={issue} onCheckNow={onCheckNow} checkingNow={checkingNow} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={onCheckNow} checkingNow={checkingNow} />
+      <IssueProperties issue={issue} onUpdate={() => undefined} onCheckMonitorNow={onCheckNow} checkingMonitorNow={checkingNow} inline />
+    </div>;
+  },
+  parameters: {
+    paperclip: {
+      capabilities: ["task-coordination/tree-control", "tasks/properties"],
+      implementation: "production",
+      boundary: "fixtures",
+      notes: "A retained monitor on a blocked task. Automatic checks are paused. Clicking Check now shows the shared pending state; dispatch is simulated.",
+    },
+  },
+};

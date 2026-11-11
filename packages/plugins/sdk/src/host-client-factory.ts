@@ -432,8 +432,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Logger — always allowed
   "log": null,
 
-  // Provider span sink — only a plugin that registers environment drivers may
-  // emit a provider span. The gate rejects a span from any other plugin.
+  // Timing sink for environment drivers or workspace providers. Parentage
+  // still derives solely from the current host-owned invocation.
   "span.record": "environment.drivers.register",
 
   // Companies
@@ -690,6 +690,7 @@ export function createHostClientHandlers(
     const required = METHOD_CAPABILITY_MAP[method];
     if (required === null) return; // No capability required
     if (capabilitySet.has(required)) return;
+    if (method === "span.record" && capabilitySet.has("workspaces.manage")) return;
     throw new CapabilityDeniedError(pluginId, method, required);
   }
 

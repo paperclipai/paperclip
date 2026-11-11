@@ -36,7 +36,6 @@ import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
-  CreateIssueThreadInteraction,
   CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
@@ -270,7 +269,10 @@ export interface ToolRunContext {
   runId: string;
   /** UUID of the company the run belongs to. */
   companyId: string;
-  /** UUID of the project the run belongs to. */
+  /**
+   * UUID of the project the run belongs to, or an empty string when the run
+   * has no project. Check the value before you use it as a project ID.
+   */
   projectId: string;
 }
 
@@ -1107,6 +1109,13 @@ export interface PluginSpan {
  * active host trace context.
  */
 export interface PluginTracer {
+  /** Invocation-wide monotonic clock anchored to epoch milliseconds. */
+  now?(): number;
+  isRecording?(): boolean;
+  /** Completed bounded timing receipt; the host validates times and parentage. */
+  recordSpan?(span: import("./protocol.js").PluginSpanRecord): void;
+  /** Invocation-scoped nesting; absent on older hosts. No additional IPC per child. */
+  withSpan?<T>(name: string, work: () => T | Promise<T>, attributes?: Record<string, string | number | boolean>): Promise<T>;
   /** Start one span. `options.attributes` seeds the span attributes. */
   startSpan(
     name: string,
@@ -1481,6 +1490,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    /** Inherit this issue's project and workspace strategy. The new issue always gets its own workspace. */
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
@@ -1593,7 +1603,7 @@ export interface PluginIssuesClient {
   ): Promise<IssueThreadInteraction>;
   suggestTasks(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "suggest_tasks" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "suggest_tasks" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<SuggestTasksInteraction>;
@@ -1605,13 +1615,13 @@ export interface PluginIssuesClient {
   ): Promise<AskUserQuestionsInteraction>;
   requestConfirmation(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_confirmation" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "request_confirmation" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestConfirmationInteraction>;
   requestCheckboxConfirmation(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_checkbox_confirmation" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "request_checkbox_confirmation" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestCheckboxConfirmationInteraction>;

@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
 import type { DbOrTransaction } from "../runtime-types.js";
 
 import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
@@ -116,6 +117,7 @@ export function createChatPublicationTaskControl(db: Db) {
     // finishes after /new or /close. A racing insert that commits after this
     // transaction is rejected by the completed-conversation send guard.
     await notifyChatPublicationWork(tx);
+    await notifyChatResponseAvailability(tx, publication);
     await tx
       .update(chatPublications)
       .set({

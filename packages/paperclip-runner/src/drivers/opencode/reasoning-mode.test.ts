@@ -57,7 +57,7 @@ describe("per-turn OpenCode reasoning", () => {
       });
       expect(config.provider.openrouter.models["deepseek/deepseek-v4-flash-0731"].options).toBeUndefined();
     } finally {
-      try { await session?.close(); }
+      try { await session?.close({ reason: "fixture complete" }); }
       finally { await rm(root, { recursive: true, force: true }); }
     }
   });

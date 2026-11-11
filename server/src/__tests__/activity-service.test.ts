@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -323,6 +323,68 @@ describeEmbeddedPostgres("activity service", () => {
       nextAction: "Review the completed output.",
     });
     expect(runs[0]).not.toHaveProperty("contextSnapshot");
+  });
+
+  it.each(["requested", "acknowledged", "pending_native", "missing_native", "wrong_run", "wrong_company",
+    "malformed_execution", "null_execution", "malformed_native"] as const)(
+    "projects only bounded, owner-matched Stop evidence in issue history: %s", async proof => {
+      const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Stop history", issuePrefix: `S${companyId.slice(0, 6)}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Stopped runner", adapterType: "process" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Stop the current run", assigneeAgentId: agentId });
+      const native = { schema: "paperclip.native-cancellation.v1", runId, companyId,
+        dispatchState: proof === "pending_native" ? "pending" : "acknowledged",
+        intentAuditId: "private-stop-proof", effects: ["private-stop-proof"], secret: "private-stop-proof" };
+      const result: Record<string, unknown> = {
+        executionCancellation: { state: proof === "requested" ? "requested" : "acknowledged",
+          proof: "private-stop-proof", secret: "private-stop-proof" },
+        nativeCancellation: native, unrelated: "private-stop-proof",
+      };
+      if (proof === "missing_native") delete result.nativeCancellation;
+      if (proof === "wrong_run") native.runId = randomUUID();
+      if (proof === "wrong_company") native.companyId = randomUUID();
+      if (proof === "malformed_native") result.nativeCancellation = { ...native, dispatchState: { secret: "private-stop-proof" } };
+      if (proof === "malformed_execution") result.executionCancellation = { state: { secret: "private-stop-proof" } };
+      if (proof === "null_execution") result.executionCancellation = null;
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, scopeKind: "issue",
+        nativeIssueId: issueId, runtimeMode: "native", status: "cancelled", finishedAt: new Date(),
+        contextSnapshot: { issueId }, livenessState: "advanced", resultJson: result });
+
+      const rows = await activityService(db).runsForIssue(companyId, issueId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ runId, runtimeMode: "native", status: "cancelled" });
+      expect(rows[0]!.resultJson).toEqual({
+        executionCancellation: { state: proof === "requested" ? "requested"
+          : proof === "malformed_execution" || proof === "null_execution" ? "unknown" : "acknowledged" },
+        ...(["missing_native", "wrong_run", "wrong_company", "malformed_native"].includes(proof) ? {} : {
+          nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId, companyId,
+            dispatchState: proof === "pending_native" ? "pending" : "acknowledged" },
+        }),
+      });
+      expect(JSON.stringify(rows)).not.toContain("private-stop-proof");
+    },
+  );
+
+  it.each([
+    ["recorded", "40001", "40001"],
+    ["legacy row without the field", undefined, null],
+    ["malformed", 'Failed query: select "secret" from x', null],
+    ["overlong", "X".repeat(81), null],
+    ["boolean", true, null],
+    ["number", 40001, null],
+  ] as const)("projects only a closed-shape failure cause in issue history: %s", async (_case, stored, expected) => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Failure cause", issuePrefix: `F${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Failing runner", adapterType: "process" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Fail with a cause", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, scopeKind: "issue", status: "failed",
+      errorCode: "adapter_failed", finishedAt: new Date(), contextSnapshot: { issueId }, livenessState: "failed",
+      resultJson: { stopReason: "adapter_failed", ...(stored === undefined ? {} : { failureCause: stored }) } });
+
+    const [row] = await activityService(db).runsForIssue(companyId, issueId);
+    expect(row).toMatchObject({ runId, errorCode: "adapter_failed", failureCause: expected });
+    expect(row!.resultJson).toEqual({ stopReason: "adapter_failed" });
+    expect(JSON.stringify(row)).not.toContain("secret");
   });
 
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
@@ -651,6 +713,100 @@ describeEmbeddedPostgres("activity service", () => {
       livenessState: "plan_only",
       livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
+    });
+  });
+
+  describe("run liveness backfill", () => {
+    async function seedIssue() {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Backfill", issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Coder", role: "engineer", status: "idle", adapterType: "codex_local" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Backfill target", status: "done", assigneeAgentId: agentId });
+      return { companyId, agentId, issueId };
+    }
+
+    async function insertMissingRun(companyId: string, agentId: string, contextSnapshot: Record<string, unknown>, status = "succeeded") {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status, contextSnapshot, livenessState: null });
+      return runId;
+    }
+
+    async function livenessOf(runIds: string[]) {
+      const rows = await db.select({ id: heartbeatRuns.id, livenessState: heartbeatRuns.livenessState }).from(heartbeatRuns);
+      return runIds.map((id) => rows.find((row) => row.id === id)?.livenessState ?? null);
+    }
+
+    async function waitForLiveness(service: ActivityService, companyId: string, issueId: string, runIds: string[]) {
+      const deadline = performance.now() + 3_000;
+      while (performance.now() < deadline) {
+        await service.runsForIssue(companyId, issueId);
+        if ((await livenessOf(runIds)).every((state) => state !== null)) {
+          // Let the pass finish its bookkeeping after the last update.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(`Timed out waiting for liveness: ${JSON.stringify(await livenessOf(runIds))}`);
+    }
+
+    it("backfills only this issue's runs, found by context or by issue activity", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const viaContext = await insertMissingRun(companyId, agentId, { issueId });
+      const viaActivity = await insertMissingRun(companyId, agentId, {}, "failed");
+      await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId, action: "issue.updated",
+        entityType: "issue", entityId: issueId, runId: viaActivity });
+      const running = await insertMissingRun(companyId, agentId, { issueId }, "running");
+      const otherIssueRun = await insertMissingRun(companyId, agentId, { issueId: randomUUID() });
+      const other = await seedIssue();
+      const otherCompanyRun = await insertMissingRun(other.companyId, other.agentId, { issueId });
+
+      await waitForLiveness(activityService(db), companyId, issueId, [viaContext, viaActivity]);
+
+      expect(await livenessOf([running, otherIssueRun, otherCompanyRun])).toEqual([null, null, null]);
+    });
+
+    it("does not repeat the lookup for a clean issue until the skip window ends", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const first = await insertMissingRun(companyId, agentId, { issueId });
+      const service = activityService(db);
+      await waitForLiveness(service, companyId, issueId, [first]);
+
+      const late = await insertMissingRun(companyId, agentId, { issueId });
+      for (let read = 0; read < 3; read++) {
+        await service.runsForIssue(companyId, issueId);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(await livenessOf([late])).toEqual([null]);
+
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 11 * 60_000);
+      try {
+        await waitForLiveness(service, companyId, issueId, [late]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("keeps backfilling on later reads while an issue has more than one batch", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const runIds: string[] = [];
+      for (let index = 0; index < 25; index++) runIds.push(await insertMissingRun(companyId, agentId, { issueId }));
+
+      await waitForLiveness(activityService(db), companyId, issueId, runIds);
+    });
+
+    it("leaves the backfill to the task page when a read skips it", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const runId = await insertMissingRun(companyId, agentId, { issueId });
+      const service = activityService(db);
+      await service.runsForIssue(companyId, issueId, null, 2, undefined, { skipLivenessBackfill: true });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await livenessOf([runId])).toEqual([null]);
+
+      await waitForLiveness(service, companyId, issueId, [runId]);
     });
   });
 });

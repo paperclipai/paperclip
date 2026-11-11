@@ -1,6 +1,8 @@
 import express from "express";
+import { probeReviewApproval } from "../../../tests/runner-e2e/chat-catalog-domains/external-app-review-probe.js";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskWatchdogMutationScope } from "../services/task-watchdog-scope.js";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const UNRELATED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
@@ -26,6 +28,9 @@ const mockIssueService = vi.hoisted(() => ({
   listReviewAttention: vi.fn(),
   addComment: vi.fn(),
 }));
+const mockDecisionReceipts = vi.hoisted(() => ({ list: vi.fn(), listCreatedTasks: vi.fn() }));
+const mockDocumentService = vi.hoisted(() => ({ getIssueDocumentRevision: vi.fn() }));
+const mockProjectService = vi.hoisted(() => ({ getById: vi.fn() }));
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
@@ -46,8 +51,11 @@ const mockInteractionService = vi.hoisted(() => ({
   recordSecretProposalExecutionResult: vi.fn(),
 }));
 
+const mockSecretProposals = vi.hoisted(() => ({ getById: vi.fn(), approve: vi.fn() }));
+vi.mock("../services/secret-proposals.js", () => ({ createSecretProposalsService: () => mockSecretProposals }));
+
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (_agentId: string, _options: { payload?: unknown; contextSnapshot?: unknown }) => undefined),
   cancelRun: vi.fn(async () => null),
 }));
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
@@ -62,7 +70,7 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
 const mockQuestionResponseDeliveries = vi.hoisted(() => ({
   deliver: vi.fn(async () => null),
 }));
-const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => ({ kind: "none" })));
+const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async (): Promise<TaskWatchdogMutationScope> => ({ kind: "none" })));
 const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 const mockRunAttribution = vi.hoisted(() => ({
   value: {
@@ -71,7 +79,7 @@ const mockRunAttribution = vi.hoisted(() => ({
     responsibleUserId: null,
   } as Record<string, unknown> | null,
 }));
-const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string }) => ({
+const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string; resource?: { projectId?: string; assigneeAgentId?: string; issueId?: string } }) => ({
   allowed: true,
   action: input.action,
   reason: "allow_explicit_grant",
@@ -160,6 +168,9 @@ vi.mock("../services/trust-preset-resolver.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/conversation-decision-receipts.js", () => ({
+    conversationDecisionReceiptsService: () => mockDecisionReceipts,
+  }));
   vi.doMock("../services/question-response-delivery.js", () => ({
     questionResponseDeliveryService: () => mockQuestionResponseDeliveries,
   }));
@@ -186,7 +197,7 @@ function registerModuleMocks() {
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
+    documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
@@ -231,7 +242,7 @@ function registerModuleMocks() {
       revalidateMutationScope: vi.fn(async (scope: unknown) => ({ allowed: true, scope })),
     }),
     logActivity: mockLogActivity,
-    projectService: () => ({}),
+    projectService: () => mockProjectService,
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
@@ -349,6 +360,10 @@ describe("issue thread interaction routes", () => {
       explanation: "Allowed by test grant.",
     }));
     mockIssueService.getById.mockResolvedValue(createIssue());
+    mockDecisionReceipts.list.mockResolvedValue({ items: [], nextCursor: null });
+    mockDecisionReceipts.listCreatedTasks.mockResolvedValue({ items: [], nextCursor: null });
+    mockDocumentService.getIssueDocumentRevision.mockResolvedValue(null);
+    mockProjectService.getById.mockImplementation(async (id: string) => ({ id, companyId: "company-1" }));
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
@@ -585,6 +600,168 @@ describe("issue thread interaction routes", () => {
     mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
     mockCrossIssueInfluence.priorCount = 0;
     mockCrossIssueInfluence.inserted.length = 0;
+  });
+
+  describe.each([
+    { route: "decision-receipts", method: "list" as const },
+    { route: "chat-handoffs", method: "listCreatedTasks" as const },
+  ])("owned conversation $route", ({ route, method }) => {
+    const owner = {
+      type: "board", userId: "paperclip-id:chat-owner", source: "cloud_tenant",
+      companyIds: ["company-1"], isInstanceAdmin: false,
+    };
+    const path = `/api/issues/${ISSUE_ID}/${route}`;
+    const list = mockDecisionReceipts[method];
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(createIssue({
+        conversationAgentId: ASSIGNEE_AGENT_ID, conversationUserId: owner.userId,
+      }));
+    });
+
+    it("returns the owner's canonical records with bounded pagination and no writes or wake", async () => {
+      const page = { items: [method === "list"
+        ? { id: "interaction:decision-1", issueId: OTHER_ISSUE_ID }
+        : { id: `chat_handoff:${OTHER_ISSUE_ID}`, issueId: OTHER_ISSUE_ID, identifier: "PAP-1715",
+            title: "Write the launch post", status: "todo", createdAt: "2026-10-26T15:00:00Z", sourceRunId: null, suggestionInteractionId: null }],
+        nextCursor: "next-page" };
+      list.mockResolvedValue(page);
+      const response = await request(await createApp(owner)).get(path).query({ limit: 100, cursor: "prior-page" });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual(page);
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+        actor: owner, action: "issue:read", resource: expect.objectContaining({ issueId: ISSUE_ID }),
+      }));
+      expect(list).toHaveBeenCalledWith("company-1", ISSUE_ID, {
+        actor: owner, userId: owner.userId, cursor: "prior-page", limit: 100,
+      });
+      expect(mockLogActivity).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("leaves omitted pagination to the history service defaults", async () => {
+      const response = await request(await createApp(owner)).get(path);
+      expect(response.status).toBe(200);
+      expect(list).toHaveBeenCalledWith("company-1", ISSUE_ID, {
+        actor: owner, userId: owner.userId,
+      });
+    });
+
+    it.each(["chat-owner", "paperclip-id:another-user"])("does not treat another identity as the owner: %s", async (userId) => {
+      const response = await request(await createApp({ ...owner, userId })).get(path);
+      expect(response.status).toBe(404);
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: "agent", actor: { type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_1 } },
+      { name: "board without user", actor: { ...owner, userId: undefined } },
+    ])("denies $name before reading conversation content", async ({ actor }) => {
+      const response = await request(await createApp(actor)).get(path);
+      expect(response.status).toBe(403);
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it("rejects a normal task even when the user can read it", async () => {
+      mockIssueService.getById.mockResolvedValue(createIssue({ conversationUserId: owner.userId }));
+      expect((await request(await createApp(owner)).get(path)).status).toBe(404);
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it("rechecks current conversation access even for the owner", async () => {
+      mockAccessDecide.mockResolvedValue({
+        allowed: false, action: "issue:read", reason: "deny_issue_private", explanation: "Access revoked",
+      });
+      expect((await request(await createApp(owner)).get(path)).status).toBe(404);
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it("does not read conversation records across the company boundary", async () => {
+      mockIssueService.getById.mockResolvedValue(createIssue({
+        companyId: "company-2", conversationAgentId: ASSIGNEE_AGENT_ID, conversationUserId: owner.userId,
+      }));
+      expect((await request(await createApp(owner)).get(path)).status).toBe(404);
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: "not-a-number" },
+      { cursor: "x".repeat(1001) }, { agentId: ASSIGNEE_AGENT_ID },
+    ])("rejects unsupported or unbounded conversation query %j", async (query) => {
+      expect((await request(await createApp(owner)).get(path).query(query)).status).toBe(400);
+      expect(list).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("exact document revision reads", () => {
+    const path = (key = "launch-post", revisionId = RUN_1) =>
+      `/api/issues/${ISSUE_ID}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`;
+    const board = { type: "board", userId: "reviewer", companyIds: ["company-1"], source: "session" };
+    const agent = { type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 };
+
+    it.each([{ name: "board", actor: board }, { name: "agent", actor: agent }])(
+      "returns the requested immutable revision for an authorized $name",
+      async ({ actor }) => {
+        const revision = {
+          id: RUN_1, documentId: OTHER_ISSUE_ID, revision: 2,
+          title: "Launch draft", body: "The exact version that was reviewed.",
+        };
+        mockDocumentService.getIssueDocumentRevision.mockResolvedValue(revision);
+        const response = await request(await createApp(actor)).get(path(" Launch-Post "));
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual(revision);
+        expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+          actor, action: "issue:read", resource: expect.objectContaining({ issueId: ISSUE_ID }),
+        }));
+        expect(mockDocumentService.getIssueDocumentRevision).toHaveBeenCalledWith(ISSUE_ID, "launch-post", RUN_1);
+        expect(mockLogActivity).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([{ name: "board", actor: board }, { name: "agent", actor: agent }])(
+      "denies a $name without current issue read access before looking up the revision",
+      async ({ actor }) => {
+        mockAccessDecide.mockResolvedValue({ allowed: false, action: "issue:read", reason: "deny_issue_private", explanation: "Revoked" });
+        const response = await request(await createApp(actor)).get(path());
+        expect(response.status).toBe(404);
+        expect(mockDocumentService.getIssueDocumentRevision).not.toHaveBeenCalled();
+      },
+    );
+
+    it("denies a cross-company issue before looking up the revision", async () => {
+      mockIssueService.getById.mockResolvedValue(createIssue({ companyId: "company-2" }));
+      expect((await request(await createApp(board)).get(path())).status).toBe(404);
+      expect(mockDocumentService.getIssueDocumentRevision).not.toHaveBeenCalled();
+    });
+
+    it("returns not found for a missing issue without asking for its document", async () => {
+      mockIssueService.getById.mockResolvedValue(null);
+      expect((await request(await createApp(board)).get(path())).status).toBe(404);
+      expect(mockDocumentService.getIssueDocumentRevision).not.toHaveBeenCalled();
+    });
+
+    it("returns not found when the revision does not belong to the requested issue and key", async () => {
+      mockDocumentService.getIssueDocumentRevision.mockResolvedValue(null);
+      const response = await request(await createApp(board)).get(path());
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: "Document revision not found" });
+      expect(mockDocumentService.getIssueDocumentRevision).toHaveBeenCalledWith(ISSUE_ID, "launch-post", RUN_1);
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: "invalid key characters", key: "draft.html", revisionId: RUN_1 },
+      { name: "empty trimmed key", key: "   ", revisionId: RUN_1 },
+      { name: "overlong key", key: "a".repeat(65), revisionId: RUN_1 },
+      { name: "invalid revision ID", key: "launch-post", revisionId: "latest" },
+    ])("rejects $name before document lookup", async ({ key, revisionId }) => {
+      const response = await request(await createApp(board)).get(path(key, revisionId));
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ error: "Invalid document revision reference" });
+      expect(mockDocumentService.getIssueDocumentRevision).not.toHaveBeenCalled();
+    });
   });
 
   it("creates board-authored interactions", async () => {
@@ -1530,6 +1707,32 @@ describe("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("uses only the bound continuation for the production secret approval fallback", async () => {
+    const proposalId = "44444444-4444-4444-8444-444444444444";
+    mockSecretProposals.getById.mockResolvedValue({ id: proposalId, kind: "binding", originIssueId: ISSUE_ID,
+      interactionId: "interaction-secret-fallback", configPath: "env.DEPLOYMENT_API_KEY" });
+    mockSecretProposals.approve.mockResolvedValue({ status: "approved" });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({ interaction: {
+      id: "interaction-secret-fallback", companyId: "company-1", issueId: ISSUE_ID,
+      kind: "request_confirmation", status: "accepted", continuationPolicy: "wake_assignee",
+      sourceRunId: RUN_1, payload: { version: 1, prompt: "Create binding?", secretProposal: {
+        version: 1, proposalId, configPath: "env.DEPLOYMENT_API_KEY" } },
+      result: { version: 1, outcome: "accepted" },
+    }, createdIssues: [] });
+    const app = await createApp();
+    const res = await request(app).post(`/api/issues/${ISSUE_ID}/interactions/interaction-secret-fallback/accept`).send({});
+    expect(res.status).toBe(200);
+    expect(mockSecretProposals.approve).toHaveBeenCalledWith("company-1", proposalId,
+      expect.objectContaining({ resolvedByUserId: "local-board" }));
+    expect(res.body.result.secretProposal.status).toBe("executed");
+    expect.soft(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect.soft(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ issueId: ISSUE_ID, interactionId: "interaction-secret-fallback" }),
+      payload: expect.objectContaining({ secretProposal: expect.objectContaining({ proposalId, executionStatus: "executed" }) }),
+    }));
   });
 
   it("records a failed secret-proposal execution and posts a thread comment", async () => {
@@ -2580,6 +2783,44 @@ describe("issue thread interaction routes", () => {
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
+  it("names the addressee as the only resolver when an agent tries another person's human-only card", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-for-riley",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: null,
+      createdByUserId: "user-alex",
+      addresseeUserId: "user-riley",
+      sourceRunId: null,
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Riley: approve?" },
+    });
+    const defaultWhere = mockDbSelectWhere.getMockImplementation()!;
+    // The addressee name lookup ends in .limit(1); the other reads keep their defaults.
+    mockDbSelectWhere.mockImplementation((() => ({
+      ...defaultWhere(),
+      limit: () => Promise.resolve([{ name: "Riley" }]),
+    })) as unknown as typeof defaultWhere);
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-for-riley/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "interaction_human_only",
+      details: { addresseeUserId: "user-riley", addresseeName: "Riley" },
+    });
+    expect(res.body.error).toContain("addressed to Riley.");
+    expect(res.body.error).toContain("Only Riley can accept or decline it");
+    // /accept carries no verified replying user, so the advice stays neutral.
+    expect(res.body.error).not.toContain("do not ask the person asking");
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("keeps a same-requester sibling confirmation human-only", async () => {
     mockReviewTransition.value = {
       actorType: "agent",
@@ -3033,6 +3274,42 @@ describe("issue thread interaction routes", () => {
     expect(missingRun.body).toMatchObject({ code: "interaction_run_attribution_required" });
   });
 
+  it.each([false, true])("the catalog approval probe distinguishes missing attribution from governed-action denial (drop header: %s)", async dropHeader => {
+    const approveToolActionRequest = vi.fn();
+    const revokeKey = vi.fn(async () => undefined);
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValue({
+      id: "interaction-tool-probe", companyId: "company-1", issueId: ISSUE_ID,
+      kind: "request_confirmation", status: "pending", createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1, effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve the action?", toolAction: { version: 1, actionRequestId: "action-probe", toolName: "notes_update" } },
+    });
+    const receipt = await probeReviewApproval({
+      baseURL: "https://fixture.example", companyId: "company-1", agentId: CREATED_AGENT_ID, issueId: ISSUE_ID,
+      interaction: { id: "interaction-tool-probe", status: "pending", sourceRunId: RUN_1 },
+      run: { id: RUN_1, companyId: "company-1", agentId: CREATED_AGENT_ID, status: "succeeded", contextSnapshot: { issueId: ISSUE_ID } },
+      invocation: { companyId: "company-1", agentId: CREATED_AGENT_ID, issueId: ISSUE_ID, runId: RUN_1, status: "awaiting_approval" },
+      privateSecrets: [], createKey: async () => ({ id: "probe-key", token: "synthetic-test-key" }), revokeKey,
+      boundary: async () => ({ interactionStatus: "pending", invocationStatus: "awaiting_approval", actionStatus: "pending", providerWrites: approveToolActionRequest.mock.calls.length, trustRuleIds: [] }),
+      send: async (url, options) => {
+        const headers = new Headers(options?.headers);
+        const actorRun = dropHeader ? undefined : headers.get("x-paperclip-run-id");
+        const app = await createApp({ type: "agent", companyId: "company-1", agentId: CREATED_AGENT_ID, runId: actorRun }, { approveToolActionRequest });
+        const res = await request(app).post(new URL(String(url)).pathname)
+          .set("Authorization", headers.get("authorization")!).send(JSON.parse(options?.body as string));
+        return Response.json(res.body, { status: res.status });
+      },
+    });
+    expect(receipt).toEqual({ status: dropHeader ? 422 : 403,
+      code: dropHeader ? "interaction_run_attribution_required" : "interaction_governed_action_denied",
+      boundaryUnchanged: true, keyRevoked: true });
+    expect(approveToolActionRequest).not.toHaveBeenCalled();
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(revokeKey).toHaveBeenCalledExactlyOnceWith("probe-key");
+  });
+
   it("rejects an invalid run attribution before resolving or waking", async () => {
     mockInteractionService.getForIssue.mockResolvedValueOnce({
       id: "interaction-invalid-run",
@@ -3160,6 +3437,188 @@ describe("issue thread interaction routes", () => {
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  describe("suggested-task effect authorization", () => {
+    const path = `/api/issues/${ISSUE_ID}/interactions/interaction-suggest/accept`;
+    const owner = { type: "board", userId: "local-board", companyIds: ["company-1"], source: "session" };
+    function suggest(task: Record<string, unknown> = {}, payload: Record<string, unknown> = {}) {
+      mockInteractionService.getForIssue.mockResolvedValue({
+        id: "interaction-suggest", kind: "suggest_tasks", status: "pending",
+        createdByAgentId: CREATED_AGENT_ID, sourceRunId: RUN_1,
+        requestedResolverPolicy: "anyone", effectiveResolverPolicy: "anyone",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "Write the launch post", ...task }], ...payload },
+      });
+    }
+    function denyAction(action: string) {
+      mockAccessDecide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action !== action, action: input.action,
+        reason: input.action === action ? "deny_explicit_policy" : "allow_explicit_grant",
+        explanation: "Test resource policy",
+      }));
+    }
+    function expectNoEffects() {
+      expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(createIssue({
+        conversationAgentId: ASSIGNEE_AGENT_ID, conversationUserId: owner.userId,
+      }));
+      suggest();
+    });
+
+    it.each([
+      {}, { assigneeAgentId: null }, { assigneeAgentId: CREATED_AGENT_ID }, { assigneeUserId: "reviewer" },
+    ])("requires board assignment authorization for %j", async (assignment) => {
+      suggest(assignment);
+      denyAction("tasks:assign");
+      const response = await request(await createApp(owner)).post(path).send({ selectedClientKeys: ["task-1"] });
+      expect(response.status).toBe(403);
+      expect(response.body).toMatchObject({ code: "interaction_governed_action_denied" });
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({ action: "tasks:assign", actor: owner }));
+      expectNoEffects();
+    });
+
+    it("authorizes the conversation agent before accepting an ownerless proposal", async () => {
+      expect((await request(await createApp(owner)).post(path).send({})).status).toBe(200);
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "tasks:assign", resource: expect.objectContaining({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null }),
+      }));
+    });
+
+    it.each(["implicit", "task-parent", "default-parent"])("authorizes a standalone commitment for a conversation's %s parent", async (parentMode) => {
+      suggest({ assigneeAgentId: CREATED_AGENT_ID, ...(parentMode === "task-parent" ? { parentId: ISSUE_ID } : {}) },
+        parentMode === "default-parent" ? { defaultParentId: ISSUE_ID } : {});
+      const response = await request(await createApp(owner)).post(path).send({ selectedClientKeys: ["task-1"] });
+      expect(response.status).toBe(200);
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "tasks:assign", resource: expect.objectContaining({ parentIssueId: null, assigneeAgentId: CREATED_AGENT_ID }),
+        scope: expect.objectContaining({ parentIssueId: null }),
+      }));
+      expect(mockInteractionService.acceptInteraction).toHaveBeenCalledWith(
+        expect.anything(), "interaction-suggest", expect.anything(), expect.objectContaining({ suggestedTaskEffectsAuthorized: true }),
+      );
+    });
+
+    it("retains a real source task as the implicit parent", async () => {
+      mockIssueService.getById.mockResolvedValue(createIssue());
+      suggest({ assigneeAgentId: CREATED_AGENT_ID });
+      expect((await request(await createApp(owner)).post(path).send({})).status).toBe(200);
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "tasks:assign", scope: expect.objectContaining({ parentIssueId: ISSUE_ID }),
+      }));
+    });
+
+    it.each([false, true])("authorizes inherited proposal projects independently of array order (child first: %s)", async (childFirst) => {
+      const projectId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      const tasks = [
+        { clientKey: "root", title: "Launch", projectId },
+        { clientKey: "child", parentClientKey: "root", title: "Write copy" },
+        { clientKey: "grandchild", parentClientKey: "child", title: "Review copy" },
+      ];
+      suggest({}, { tasks: childFirst ? tasks.toReversed() : tasks });
+      mockAccessDecide.mockImplementation(async (input: { action?: string; resource?: { projectId?: string } }) => ({
+        allowed: input.action !== "tasks:assign" || input.resource?.projectId === projectId,
+        action: input.action, reason: "project_scoped_grant", explanation: "Only project A assignments are permitted",
+      }));
+      expect((await request(await createApp(owner)).post(path).send({})).status).toBe(200);
+      const assignments = mockAccessDecide.mock.calls.filter(([input]) => input.action === "tasks:assign");
+      expect(assignments).toHaveLength(3);
+      expect(assignments.every(([input]) => input.resource?.projectId === projectId)).toBe(true);
+      expect(mockInteractionService.acceptInteraction).toHaveBeenCalledOnce();
+    });
+
+    it("rejects a nested proposal's explicit project outside the assignment grant", async () => {
+      const allowedProject = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      suggest({}, { tasks: [
+        { clientKey: "root", title: "Launch", projectId: allowedProject },
+        { clientKey: "child", parentClientKey: "root", title: "Write copy", projectId: OTHER_ISSUE_ID },
+      ] });
+      mockAccessDecide.mockImplementation(async (input: { action?: string; resource?: { projectId?: string } }) => ({
+        allowed: input.action !== "tasks:assign" || input.resource?.projectId === allowedProject,
+        action: input.action, reason: "project_scoped_grant", explanation: "Only project A assignments are permitted",
+      }));
+      expect((await request(await createApp(owner)).post(path).send({})).status).toBe(403);
+      expectNoEffects();
+    });
+
+    it("checks the selected subset without authorizing an unselected assignment", async () => {
+      suggest({}, { tasks: [
+        { clientKey: "task-1", title: "Unassigned draft" },
+        { clientKey: "task-2", title: "Restricted assignment", assigneeAgentId: CREATED_AGENT_ID },
+      ] });
+      mockAccessDecide.mockImplementation(async (input: { action?: string; resource?: { assigneeAgentId?: string } }) => ({
+        allowed: input.action !== "tasks:assign" || input.resource?.assigneeAgentId === ASSIGNEE_AGENT_ID,
+        action: input.action, reason: "test_policy", explanation: "Only the conversation agent may be assigned",
+      }));
+      expect((await request(await createApp(owner)).post(path).send({ selectedClientKeys: ["task-1"] })).status).toBe(200);
+      expect(mockAccessDecide.mock.calls.filter(([input]) => input.action === "tasks:assign").map(([input]) => input.resource?.assigneeAgentId)).toEqual([ASSIGNEE_AGENT_ID]);
+    });
+
+    it("denies an inaccessible explicit parent before creating an unassigned task", async () => {
+      const conversation = createIssue({ conversationAgentId: ASSIGNEE_AGENT_ID, conversationUserId: owner.userId });
+      mockIssueService.getById.mockImplementation(async (id: string) => id === OTHER_ISSUE_ID
+        ? createIssue({ id: OTHER_ISSUE_ID }) : conversation);
+      suggest({ parentId: OTHER_ISSUE_ID });
+      mockAccessDecide.mockImplementation(async (input: { action?: string; resource?: { issueId?: string } }) => ({
+        allowed: !(input.action === "issue:read" && input.resource?.issueId === OTHER_ISSUE_ID),
+        action: input.action, reason: "deny_issue_private", explanation: "Parent is private",
+      }));
+      expect((await request(await createApp(owner)).post(path).send({})).status).toBe(404);
+      expectNoEffects();
+    });
+
+    it.each(["denied", "missing", "other-company"])("denies a %s project before creating an unassigned task", async (condition) => {
+      suggest({ projectId: OTHER_ISSUE_ID });
+      if (condition === "denied") denyAction("project:read");
+      if (condition === "missing") mockProjectService.getById.mockResolvedValue(null);
+      if (condition === "other-company") mockProjectService.getById.mockResolvedValue({ id: OTHER_ISSUE_ID, companyId: "company-2" });
+      const response = await request(await createApp(owner)).post(path).send({});
+      expect(response.status).toBe(403);
+      expect(response.body).toMatchObject({ code: "interaction_governed_action_denied" });
+      expectNoEffects();
+    });
+
+    it("authorizes the source project that creation retains when an explicit parent has another project", async () => {
+      const sourceProject = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      const parentProject = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+      mockIssueService.getById.mockImplementation(async (id: string) => createIssue(id === OTHER_ISSUE_ID
+        ? { id: OTHER_ISSUE_ID, projectId: parentProject }
+        : { projectId: sourceProject }));
+      suggest({ parentId: OTHER_ISSUE_ID, assigneeAgentId: CREATED_AGENT_ID });
+      expect((await request(await createApp(owner)).post(path).send({})).status).toBe(200);
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "project:read", resource: expect.objectContaining({ projectId: sourceProject }),
+      }));
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "tasks:assign", scope: expect.objectContaining({ projectId: sourceProject, parentIssueId: OTHER_ISSUE_ID }),
+      }));
+    });
+
+    it("keeps agents subject to assignment authorization even for an unassigned task", async () => {
+      mockIssueService.getById.mockResolvedValue(createIssue({ status: "todo" }));
+      denyAction("tasks:assign");
+      const actor = { type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 };
+      const response = await request(await createApp(actor)).post(path).send({});
+      expect(response.status).toBe(403);
+      expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({ action: "tasks:assign", actor }));
+      expectNoEffects();
+    });
+
+    it("does not let a watchdog create an unrelated standalone task from a conversation", async () => {
+      mockResolveTaskWatchdogMutationScope.mockResolvedValue({
+        kind: "watchdog", watchdogId: "watchdog-1", companyId: "company-1",
+        watchedIssueId: ISSUE_ID, watchdogIssueId: null, stopFingerprint: "stop-1",
+      });
+      const response = await request(await createApp({
+        type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2,
+      })).post(path).send({});
+      expect(response.status).toBe(403);
+      expectNoEffects();
+    });
   });
 
   it("blocks human-only and tool-action interactions for agents", async () => {

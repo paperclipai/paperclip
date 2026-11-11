@@ -37,6 +37,13 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = { name: "01 · Agent list · Interactive" };
+export const UnreadMessages: Story = {
+  name: "11 · Proactive message unread",
+  args: { unreadAgentIds: [sidebarAgents[0].id] },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole("img", { name: `Unread messages from ${sidebarAgents[0].name}` })).toBeVisible();
+  },
+};
 export const Search: Story = { name: "02 · Search by role", args: { initialSearch: "research" } };
 export const NoResults: Story = { name: "03 · No matches", args: { initialSearch: "accountant" } };
 export const Loading: Story = { name: "04 · Loading", args: { agents: [], availableAgents: [], loading: true } };

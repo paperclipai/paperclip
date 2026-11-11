@@ -11,7 +11,11 @@ import type {
 } from "../contracts/harness-driver.js";
 import { OpenCodeServerDriver } from "../drivers/opencode/opencode-server-driver.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
-import { openCodeProxyTaskEnvelope } from "./opencode-proxy-task-envelope.js";
+import {
+  openCodeProxyCompletionContract,
+  openCodeProxyTaskEnvelope,
+  sameOpenCodeProxyCompletionContract,
+} from "./opencode-proxy-task-envelope.js";
 import {
   openCodeProxyItemNotification,
   openCodeProxyToolNotification,
@@ -20,6 +24,9 @@ import {
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
 import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
+import { createOpenCodeFinishDiagnosticForwarder } from "./opencode-proxy-finish-diagnostics.js";
+import { createBackpressuredFrameWriter, createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
+import { createOpenCodeProxyControllerRequests } from "./opencode-proxy-controller.js";
 import {
   assertOpenCodeProxyCollaborationMode,
   openCodeProxyCollaborationModes,
@@ -41,34 +48,31 @@ type RpcMessage = {
 };
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
-const pending = new Map<
-  string,
-  { resolve(value: unknown): void; reject(error: Error): void; retainEnvelope: boolean }
->();
-let controllerInputClosed = false;
-let nextServerRequestId = 1;
 let driver: OpenCodeServerDriver | null = null;
 let session: HarnessSession | null = null;
 let eventPump: Promise<void> | null = null;
 let cwd = "";
 let activeModel = "";
 let activeTurnId: string | null = null;
+let activeRunId = process.env.PAPERCLIP_RUN_ID ?? "runnerd-run";
+// The contract the open session checks finish claims against. The launch
+// environment and the launch parameters can belong to different runs: runnerd
+// restores a saved session with its saved contract while its environment
+// already names the run being attached.
+let activeCompletionContract: ReturnType<typeof openCodeProxyCompletionContract> = undefined;
 const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 const usageLedger = new OpenCodeProxyUsageLedger();
 
-function send(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
-}
+// runnerd reads this stream only after its controller acknowledges earlier
+// events. Keep that backlog in a queue we control so an abandoned tool call
+// can still be withdrawn before runnerd dispatches it.
+const stdoutFrames = createBackpressuredFrameWriter(process.stdout);
+const output = createOpenCodeProxyOutput((value, options) => stdoutFrames.write(value, options));
+const send = output.send;
 
-function requestController(method: string, params: unknown, retainEnvelope = false): Promise<unknown> {
-  if (controllerInputClosed) return Promise.reject(new Error("OpenCode controller input is closed"));
-  const id = `opencode-${nextServerRequestId++}`;
-  send({ id, method, params });
-  return new Promise((resolveValue, reject) =>
-    pending.set(id, { resolve: resolveValue, reject, retainEnvelope }),
-  );
-}
+const controller = createOpenCodeProxyControllerRequests(send);
+const requestController = controller.request;
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -110,6 +114,7 @@ async function open(
         JSON.parse(readFileSync(runtimeContextPath, "utf8")),
       )
     : null;
+  const finishDiagnostics = createOpenCodeFinishDiagnosticForwarder(send);
   driver = new OpenCodeServerDriver({
     model,
     permissionMode: parseOpenCodeProxyPermissionMode(
@@ -131,7 +136,10 @@ async function open(
     ),
     runtimeContext,
     dynamicTools,
-    completionFeedback: openCodeProxyCompletionFeedback((method, params) => requestController(method, params, true)),
+    // Runner owns these calls until a durable result, cancellation, or lease
+    // expiry. A shorter MCP deadline would leave an unknown effect pending.
+    durableToolRequests: true,
+    completionFeedback: openCodeProxyCompletionFeedback((method, params, signal) => requestController(method, params, true, signal)),
     dynamicToolHandler: async (call) =>
       requestController("item/tool/call", {
         threadId: session?.ids().driverSessionId ?? "opening",
@@ -139,8 +147,11 @@ async function open(
         callId: call.callId,
         tool: call.tool,
         arguments: call.arguments,
-      }),
-    onDiagnostic: (message) => process.stderr.write(`[opencode] ${message}\n`),
+      }, false, call.signal),
+    onDiagnostic: (message) => {
+      process.stderr.write(`[opencode] ${message}\n`);
+      finishDiagnostics.diagnostic(message);
+    },
     // runnerd gives this proxy its own process group. Keep `opencode serve` in
     // that same group so runnerd's TERM/KILL fallback cannot orphan it.
     isolateProcessGroup: false,
@@ -151,7 +162,7 @@ async function open(
       driverKind: "opencode_server",
       driverSessionId: threadId,
       providerSessionId: threadId,
-      runId: process.env.PAPERCLIP_RUN_ID ?? "runnerd-run",
+      runId: activeRunId,
       normalizedSessionId:
         process.env.PAPERCLIP_NORMALIZED_SESSION_ID ?? threadId,
       activeTurnId: null,
@@ -163,12 +174,14 @@ async function open(
     session = recovered.session;
   } else {
     session = await driver.openSession({
-      runId: process.env.PAPERCLIP_RUN_ID ?? "runnerd-run",
+      runId: activeRunId,
       normalizedSessionId:
         process.env.PAPERCLIP_NORMALIZED_SESSION_ID ?? `runnerd-${Date.now()}`,
       workingDirectory: cwd,
     });
   }
+  finishDiagnostics.bind(session.ids().driverSessionId);
+  activeCompletionContract = openCodeProxyCompletionContract(params.completionContract);
   eventPump = pumpEvents(session);
   void eventPump.catch((error) => failProxy(error));
   return threadResponse(
@@ -213,8 +226,9 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
       // correctly trip the facade's strict turn-binding validator.
       if (
         !shouldForwardOpenCodeProxyItem({
+          eventType: event.eventType,
           turnId: event.turnId,
-          kind: payload.kind,
+          payload,
         })
       )
         continue;
@@ -328,19 +342,7 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
 
 async function handle(message: RpcMessage): Promise<void> {
   if (message.method === undefined && message.id !== undefined) {
-    const waiter = pending.get(String(message.id));
-    if (!waiter) return;
-    pending.delete(String(message.id));
-    if (message.error !== undefined)
-      waiter.reject(new Error(JSON.stringify(message.error)));
-    else {
-      const contentItems = record(message.result).contentItems;
-      waiter.resolve(
-        !waiter.retainEnvelope && Array.isArray(contentItems)
-          ? (contentItems[0] ?? message.result)
-          : message.result,
-      );
-    }
+    controller.respond({ id: message.id, result: message.result, error: message.error });
     return;
   }
   if (!message.method || message.id === undefined) return;
@@ -365,6 +367,22 @@ async function handle(message: RpcMessage): Promise<void> {
     case "turn/start": {
       if (!session) throw new Error("OpenCode thread is not open");
       assertOpenCodeProxyCollaborationMode(params);
+      if (params.paperclipRunId !== undefined) {
+        const runId = params.paperclipRunId;
+        if (typeof runId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId))
+          throw new Error("Invalid Paperclip run identity");
+        // Runnerd sends the attached run's contract with its run identity;
+        // the launch parameters may still name an earlier run's contract,
+        // even when the launch environment already names this run.
+        const contract = openCodeProxyCompletionContract(params.paperclipCompletionContract);
+        if (runId !== activeRunId
+          || (contract !== undefined && !sameOpenCodeProxyCompletionContract(contract, activeCompletionContract))) {
+          if (!session.attachRun) throw new Error("OpenCode run attachment unavailable");
+          await session.attachRun({ runId, ...(contract ? { completionContract: contract } : {}) });
+          activeRunId = runId;
+          if (contract !== undefined) activeCompletionContract = contract;
+        }
+      }
       const inputItems = Array.isArray(params.input)
         ? params.input.map(record)
         : [];
@@ -400,6 +418,9 @@ async function handle(message: RpcMessage): Promise<void> {
       break;
     case "thread/read":
       if (!session) throw new Error("OpenCode thread is not open");
+      // runnerd reads only turn metadata after resume. Hydrating the retained
+      // OpenCode message history here grows with the session and can exceed
+      // runnerd's bounded stdout frame, which permanently blocks resume.
       result = {
         thread: {
           id: session.ids().driverSessionId,
@@ -408,7 +429,6 @@ async function handle(message: RpcMessage): Promise<void> {
             ? [{ id: activeTurnId, status: "inProgress" }]
             : [],
         },
-        transcript: await session.read?.(),
       };
       break;
     default:
@@ -472,13 +492,13 @@ function failProxy(error: unknown): void {
 
 function shutdown(exitCode = 0): Promise<void> {
   shutdownPromise ??= (async () => {
-    for (const waiter of pending.values())
-      waiter.reject(new Error("OpenCode proxy is shutting down"));
-    pending.clear();
+    controller.rejectAll(new Error("OpenCode proxy is shutting down"));
     await session
       ?.close({ reason: "proxy_shutdown", force: true })
       .catch(() => {});
     await eventPump?.catch(() => {});
+    output.flush();
+    stdoutFrames.drain();
     // A failed turn can be the last frame before a fatal exit. Pipe writes
     // are asynchronous on some platforms, so let it reach runnerd first.
     await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
@@ -487,10 +507,7 @@ function shutdown(exitCode = 0): Promise<void> {
 }
 
 input.on("close", () => {
-  controllerInputClosed = true;
-  for (const waiter of pending.values())
-    waiter.reject(new Error("OpenCode controller input closed before its response"));
-  pending.clear();
+  controller.closeInput(new Error("OpenCode controller input closed before its response"));
   // Preserve command order and the bootstrap drain. A queued command cannot
   // create a new unanswered controller request after EOF.
   void pendingInput.then(() => shutdown());

@@ -1,3 +1,4 @@
+import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
@@ -20,7 +21,7 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure, unsupportedToolConnectionTransport } from "./failures.js";
+import { healthFailureHttpStatus, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -48,8 +49,9 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
     message: string | null,
   ) {
     const now = new Date();
-    const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
-      .update(toolConnections)
+    const [updated] = await writeToolConnectionHealthChange(db, connection, async tx => {
+      await notifyChatConnectionObservation(tx, connection.id, connection.transport);
+      return tx.update(toolConnections)
       .set({
         healthStatus: status,
         healthMessage: message,
@@ -59,7 +61,8 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         updatedAt: now,
       })
       .where(eq(toolConnections.id, connection.id))
-      .returning());
+      .returning();
+    });
     if (connection.transport === "local_stdio") {
       await db
         .update(toolRuntimeSlots)
@@ -223,6 +226,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
         ...githubRecovery,
+        ...unreachableServerRemediation(error, actor),
       }));
     }
   }

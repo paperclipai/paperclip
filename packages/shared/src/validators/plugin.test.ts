@@ -33,6 +33,17 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("preserves explicit workspace ancestry support without changing legacy declarations", () => {
+    const manifest = { id: "example.storage", apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Tests",
+      categories: ["workspace"], capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
+      entrypoints: { worker: "worker.js" }, workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } };
+    expect(pluginManifestV1Schema.parse(manifest).workspaceProvider?.supportsMergeAncestry).toBeUndefined();
+    for (const supportsMergeAncestry of [true, false]) {
+      expect(pluginManifestV1Schema.parse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, supportsMergeAncestry } })
+        .workspaceProvider?.supportsMergeAncestry).toBe(supportsMergeAncestry);
+    }
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, supportsMergeAncestry: "false" } }).success).toBe(false);
+  });
   it("limits environment skills to unique declarations owned by the plugin", () => {
     const manifest = { ...buildSandboxProviderManifest({ skillKeys: ["desktop"] }),
       capabilities: ["environment.drivers.register", "skills.managed"],
@@ -505,6 +516,17 @@ describe("plugin task side-panel declarations", () => {
   it("accepts an optional panel backed by an authorized plugin-local agent route", () => {
     expect(pluginManifestV1Schema.parse(manifest).ui?.slots?.[0]?.taskSidePanel).toEqual(slot.taskSidePanel);
   });
+  it("accepts an explicit UI-independent activity mapping and preserves legacy declarations", () => {
+    const activation = { namespace: "example.runtime", activityKey: "desktop.used" };
+    expect(pluginUiSlotDeclarationSchema.parse({ ...slot, taskSidePanel: { ...slot.taskSidePanel, activation } }).taskSidePanel?.activation).toEqual(activation);
+    expect(pluginUiSlotDeclarationSchema.parse(slot).taskSidePanel?.activation).toBeUndefined();
+    for (const value of ["视".repeat(60), "😀".repeat(160)]) {
+      expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, taskSidePanel: { ...slot.taskSidePanel, activation: { namespace: value, activityKey: value } } }).success).toBe(true);
+    }
+    for (const activation of [{ namespace: "", activityKey: "used" }, { namespace: "runtime", activityKey: "😀".repeat(161) }, { namespace: "runtime", activityKey: "\u007f" }, { namespace: "runtime", activityKey: "used", runId: "other" }]) {
+      expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, taskSidePanel: { ...slot.taskSidePanel, activation } }).success).toBe(false);
+    }
+  });
   it("accepts a GET availability route when a POST at the same path is declared first", () => {
     expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes: [{ ...route, routeKey: "view.update", method: "POST" }, route] }).success).toBe(true);
   });
@@ -517,5 +539,16 @@ describe("plugin task side-panel declarations", () => {
   });
   it.each([[], [{ ...route, method: "POST" }], [{ ...route, auth: "agent" }], [{ ...route, companyResolution: { from: "query", key: "companyId" } }]].map(apiRoutes => ({ apiRoutes })))("requires a declared board GET route scoped to the supplied agent", ({ apiRoutes }) => {
     expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes }).success).toBe(false);
+  });
+});
+
+
+describe("agent environment slot requirements", () => {
+  const slot = { type: "detailTab", id: "view", displayName: "View", exportName: "View", entityTypes: ["agent"], agentEnvironmentDriver: "tasks" };
+  it("preserves the optional driver requirement", () => {
+    expect(pluginUiSlotDeclarationSchema.parse(slot).agentEnvironmentDriver).toBe("tasks");
+  });
+  it.each([{ agentEnvironmentDriver: "" }, { entityTypes: ["issue"] }, { entityTypes: ["agent", "issue"] }, { type: "page" }])("rejects unsupported requirements %j", patch => {
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, ...patch }).success).toBe(false);
   });
 });
