@@ -2650,6 +2650,30 @@ describe("remote provider pack manifest", () => {
             leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
             remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } },
         };
+        // Staging failure (OpenCode and ACPX): a same-run
+        // retry under a persisted runner artifact found the runner settled and
+        // exited. Nothing is adopted, so the transport relaunches it from its
+        // durable state and needs the admitted provider pack's launch inputs.
+        const settledExecute = vi.fn(async (request: { args: string[] }) => {
+          if (request.args[2] === "paperclip-runner-recovery-check") return { exitCode: 45, timedOut: false, stderr: "", stdout: "" };
+          if (request.args[1]?.includes("base64")) return { exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
+            ...identity, lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null,
+          })).toString("base64") };
+          return recoveryExecute(request);
+        });
+        const settledTarget = { ...(recoveryInput.runnerExecutionTarget as unknown as Record<string, unknown>),
+          runner: { execute: settledExecute, syncIn: vi.fn(async () => undefined), syncOut: vi.fn(async () => undefined) } };
+        await createRunnerdBackend({ ...recoveryInput, runnerExecutionTarget: settledTarget as never,
+          controllerPersistence: { bootId: "replacement-controller", runnerArtifact: artifact } });
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        const relaunched = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions;
+        expect(relaunched.adoptExistingRunner).toBeUndefined();
+        expect(relaunched).toMatchObject({ providerPackAuthorityDigest: admitted.digest, runnerArtifact: artifact,
+          providerNodeCommandSha256: admitted.payload.artifacts.nodeCommand.sha256,
+          ...(opencode
+            ? { opencodeCommand: `/opt/paperclip-runner/provider-pack/${admitted.payload.artifacts.opencodeExecutable.path}`,
+              opencodeCommandSha256: admitted.payload.artifacts.opencodeExecutable.sha256 }
+            : { acpxSidecarSha256: (admitted.payload.artifacts as Record<string, { sha256: string }>).acpxSidecar.sha256 }) });
         const recoveredBackend = await createRunnerdBackend(recoveryInput);
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         const recovered = state.createTransport.mock.calls.at(-1)![0];
