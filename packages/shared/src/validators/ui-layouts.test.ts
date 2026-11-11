@@ -3,6 +3,7 @@ import {
   AGENT_GRAPH_MAX_STICKIES,
   UI_LAYOUT_MAX_BYTES,
   parseUiLayoutForSurface,
+  upsertUiLayoutSchema,
   resolveAgentGraphLayout,
   resolveDashboardLayout,
 } from "./ui-layouts.js";
@@ -87,6 +88,13 @@ describe("agent graph layout validation", () => {
     const parsed = parseUiLayoutForSurface("agent_graph", graphLayout({ stickies }));
     expect(JSON.stringify(graphLayout({ stickies })).length).toBeGreaterThan(UI_LAYOUT_MAX_BYTES);
     expect(parsed).toEqual({ ok: false, error: `Layout exceeds ${UI_LAYOUT_MAX_BYTES} bytes` });
+  });
+});
+
+describe("layout save body", () => {
+  it("accepts only the layout key", () => {
+    expect(upsertUiLayoutSchema.safeParse({ layout: graphLayout() }).success).toBe(true);
+    expect(upsertUiLayoutSchema.safeParse({ layout: graphLayout(), userId: "someone-else" }).success).toBe(false);
   });
 });
 
