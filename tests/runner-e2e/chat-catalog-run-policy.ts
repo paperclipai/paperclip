@@ -68,7 +68,8 @@ export function gradeChatCatalogRuns(input: {
       detail: "The independently observed ledger matches every declared successful/cancelled/failed terminal outcome count (or its declared role-bound range)." });
   } else if (c.runPolicy?.kind === "source-settled-with-active-work") {
     const sourceRuns = runs.filter(run => taskId(run) === source?.id);
-    const workers = runs.filter(run => taskId(run) !== source?.id);
+    const handbacks = runs.filter(run => taskId(run) !== source?.id && run.agentId === input.leadId && run.contextSnapshot?.wakeReason === "case_handoff");
+    const workers = runs.filter(run => taskId(run) !== source?.id && !handbacks.includes(run));
     const cancelled = runs.filter(run => run.status === "cancelled");
     const declared = permitsReassignment(c);
     let expected: ReturnType<NonNullable<ChatCatalogCase["expectedCancelledWorkerRun"]>>;
@@ -91,8 +92,9 @@ export function gradeChatCatalogRuns(input: {
     checks.push({ id: "catalog-settled-source-separate-work", passed: !!source && source.companyId === input.companyId
       && source.conversationState === "waiting" && sourceRuns.length > 0 && sourceRuns.every(run => run.agentId === input.leadId && run.status === "succeeded")
       && workers.every(run => typeof taskId(run) === "string" && run.agentId !== input.leadId)
-      && workers.filter(run => ["queued", "running"].includes(run.status)).length <= c.runPolicy.maximumActiveWorkerRuns,
-      detail: "The CEO source is settled; unfinished worker runs are separately task-bound and bounded. The case oracle must additionally bind their exact task and assignee." });
+      && workers.filter(run => ["queued", "running"].includes(run.status)).length <= c.runPolicy.maximumActiveWorkerRuns
+      && handbacks.length <= (c.runPolicy.maximumLeadCaseHandbackRuns ?? 0) && handbacks.every(run => typeof taskId(run) === "string"),
+      detail: "The CEO source is settled; unfinished worker runs are separately task-bound and bounded, and any CEO run outside the source is a declared case handback. The case oracle must additionally bind their exact task and assignee." });
   }
   return { passed: checks.every(check => check.passed), checks };
 }
