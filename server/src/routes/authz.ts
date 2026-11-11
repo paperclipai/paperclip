@@ -49,6 +49,8 @@ export type BoardControlPage = [label: string, path: string];
 
 /** Budgets are board-only. These pages hold the budget controls behind any route that writes one. */
 export const COMPANY_BUDGETS_PAGE: BoardControlPage = ["budgets", "/<prefix>/activity/budgets"];
+/** Cost recording controls (such as retrying a run's saved-usage cost) are on the Costs page, not Budgets. */
+export const COMPANY_COSTS_PAGE: BoardControlPage = ["costs", "/<prefix>/activity/costs"];
 export function agentBudgetPage(agentId: string): BoardControlPage {
   return [`the agent's ${AGENT_PROFILE_TABS.budgets![0]}`, `/<prefix>/agents/${agentId}/${AGENT_PROFILE_TABS.budgets![1]}`];
 }
@@ -59,7 +61,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request) => [string, string] | null]> = [
   [/^\/(?:companies\/[^/]+\/)?secrets?(?:[-/]|$)/, () => ["company secrets", "/<prefix>/company/settings/secrets"]],
-  [/^\/companies\/[^/]+\/(?:budgets|budget-incidents|costs)(?:\/|$)/, () => COMPANY_BUDGETS_PAGE],
+  [/^\/companies\/[^/]+\/(?:budgets|budget-incidents)(?:\/|$)/, () => COMPANY_BUDGETS_PAGE],
+  [/^\/companies\/[^/]+\/costs(?:\/|$)/, () => COMPANY_COSTS_PAGE],
   [/^\/companies\/[^/]+\/(?:prompt-injection-prevention|decision-model)(?:\/|$)/, () => ["connection settings", "/<prefix>/company/settings/connections"]],
   [/^\/companies\/[^/]+\/(?:members|invites|join-requests)(?:\/|$)/, () => ["company members", "/<prefix>/company/settings/members"]],
   [/^\/companies\/[^/]+\/(?:tools\/)?gateways(?:\/|$)|^\/tool-gateway\//, () => ["tool gateways", "/<prefix>/apps/gateways"]],
