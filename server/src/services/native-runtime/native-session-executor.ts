@@ -13736,6 +13736,55 @@ function assertSafeExtractedCheckpoint(root: string): void {
   }
 }
 
+const REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS = 3;
+const REMOTE_CHECKPOINT_CAPTURE_RETRY_MS = 1_000;
+const TRANSIENT_REMOTE_READ_MESSAGE = /\b(?:ECONNRESET|EPIPE|ETIMEDOUT|ECONNREFUSED|socket hang up|fetch failed|no response returned)\b/;
+/** `provider_state_unreadable` refusals whose underlying read was a dropped
+ * connection. The refusal keeps its message for every other caller; only the
+ * checkpoint read retry looks through it. */
+const providerStateReadTransportFailures = new WeakMap<Error, unknown>();
+
+/** A dropped or refused sandbox connection while reading settled state. A
+ * mismatch, a missing directory or an unsafe archive is never transient. */
+export function isTransientRemoteCheckpointReadFailure(error: unknown): boolean {
+  if (error instanceof Error && providerStateReadTransportFailures.has(error)) {
+    return isTransientRemoteCheckpointReadFailure(providerStateReadTransportFailures.get(error));
+  }
+  const reason = classifyRemoteConnectionError(error);
+  if (reason !== null) return reason !== "tls_failure";
+  return error instanceof Error && !error.message.startsWith("runner_")
+    && TRANSIENT_REMOTE_READ_MESSAGE.test(error.message);
+}
+
+/** The refusal `inspectRemoteHarnessState` throws when the provider state
+ * cannot be read, remembering the read failure behind it. */
+export function remoteProviderStateUnreadable(readFailure: unknown): Error {
+  const refusal = new Error("runner_harness_state_mismatch: provider_state_unreadable");
+  providerStateReadTransportFailures.set(refusal, readFailure);
+  return refusal;
+}
+
+/**
+ * Repeats a read of settled state out of the sandbox after a dropped
+ * connection, at most {@link REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS} times in all.
+ * Any other failure, and the last transient one, is thrown unchanged.
+ */
+export async function retryTransientRemoteCheckpointRead<T>(
+  read: () => Promise<T>,
+  onRetry: (attempt: number, attempts: number) => Promise<void> | void,
+  retryDelayMs = REMOTE_CHECKPOINT_CAPTURE_RETRY_MS,
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await read();
+    } catch (error) {
+      if (attempt >= REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS || !isTransientRemoteCheckpointReadFailure(error)) throw error;
+      await onRetry(attempt, REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS);
+      await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, retryDelayMs * attempt));
+    }
+  }
+}
+
 /**
  * Copy a remote runner directory into durable local state.
  *
@@ -13754,19 +13803,6 @@ function assertSafeExtractedCheckpoint(root: string): void {
  * snapshot would, and a checkpoint without those entries is more useful than
  * no checkpoint.
  */
-const REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS = 3;
-const REMOTE_CHECKPOINT_CAPTURE_RETRY_MS = 1_000;
-const TRANSIENT_REMOTE_READ_MESSAGE = /\b(?:ECONNRESET|EPIPE|ETIMEDOUT|ECONNREFUSED|socket hang up)\b/;
-
-/** A dropped or refused sandbox connection while reading settled state. A
- * mismatch, a missing directory or an unsafe archive is never transient. */
-export function isTransientRemoteCheckpointReadFailure(error: unknown): boolean {
-  const reason = classifyRemoteConnectionError(error);
-  if (reason !== null) return reason !== "tls_failure";
-  return error instanceof Error && !error.message.startsWith("runner_")
-    && TRANSIENT_REMOTE_READ_MESSAGE.test(error.message);
-}
-
 export async function syncRemoteRunnerDirectoryOut(input: {
   runner: CommandManagedRuntimeRunner;
   sourcePath: string;
@@ -15768,8 +15804,8 @@ async function createRunnerdBackendWithinSessionClaim(
         stateDirectory: remoteStateDirectory,
         execution: input.execution,
       });
-    } catch {
-      throw new Error("runner_harness_state_mismatch: provider_state_unreadable");
+    } catch (error) {
+      throw remoteProviderStateUnreadable(error);
     }
     const providerSessionIdentity =
       providerSessionIdentityFromDurableProviderState({
@@ -16315,14 +16351,23 @@ async function createRunnerdBackendWithinSessionClaim(
     // `runner_harness_state_mismatch`. Only checkpoint a harness that runnerd
     // has proved complete. A malformed or identity-conflicting state still
     // throws from inspectRemoteHarnessState and therefore fails closed.
-    let checkpointable = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
+    // A dropped sandbox connection repeats the read (bounded) instead of
+    // losing the only backup of the provider session.
+    const inspectForCheckpoint = () => retryTransientRemoteCheckpointRead(
+      () => measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState()),
+      (attempt, attempts) => input.onLog?.(
+        "stderr",
+        `[paperclip-runner] remote checkpoint inspection interrupted (attempt ${attempt} of ${attempts}); reading the settled state again\n`,
+      ),
+    );
+    let checkpointable = await inspectForCheckpoint();
     // The remote runner writes its suspended lifecycle and provider state
     // before the outer process-owner RPC necessarily observes completion.
     // Allow a very small bounded visibility window without ever accepting an
     // active, incomplete, malformed, or identity-conflicting checkpoint.
     for (let attempt = 1; !checkpointable.complete && attempt < 3; attempt++) {
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
-      checkpointable = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
+      checkpointable = await inspectForCheckpoint();
     }
     if (!checkpointable.complete) {
       const incompleteFailure = remoteCheckpointIncompleteFailure(
@@ -16392,20 +16437,13 @@ async function createRunnerdBackendWithinSessionClaim(
                 return verified.providerSessionIdentity;
               };
               try {
-                let providerSessionIdentity: Awaited<ReturnType<typeof captureSettledState>>;
-                for (let attempt = 1; ; attempt++) {
-                  try {
-                    providerSessionIdentity = await captureSettledState();
-                    break;
-                  } catch (error) {
-                    if (attempt >= REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS || !isTransientRemoteCheckpointReadFailure(error)) throw error;
-                    await input.onLog?.(
-                      "stderr",
-                      `[paperclip-runner] remote checkpoint read interrupted (attempt ${attempt} of ${REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS}); reading the settled state again\n`,
-                    );
-                    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, REMOTE_CHECKPOINT_CAPTURE_RETRY_MS * attempt));
-                  }
-                }
+                const providerSessionIdentity = await retryTransientRemoteCheckpointRead(
+                  captureSettledState,
+                  (attempt, attempts) => input.onLog?.(
+                    "stderr",
+                    `[paperclip-runner] remote checkpoint read interrupted (attempt ${attempt} of ${attempts}); reading the settled state again\n`,
+                  ),
+                );
                 const manifest = buildNativeHarnessBackupManifest({
                   backupRoot: pendingRoot,
                   execution: input.execution,
