@@ -171,7 +171,14 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     state.actualOrdinaryDiscard = true; state.responseRetainedAcrossOrdinaryMutations = retained;
     const response = await pollUntil({ label: "Typed immutable naming answer remains queued after ordinary comments are removed", deadlineAt: Date.now() + 20_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => q.entries.filter(row => row.source).length === 1 && q.entries.find(row => row.source)?.source?.interactionId === question.id
-        && ordinaryApprovalEntries(q, humanId).length === 0 && q.entries.length === 1 + leadRelayEntries(q, leadId).length }); state.responseQueue = response;
+        && ordinaryApprovalEntries(q, humanId).length === 0 && q.entries.length === 1 + leadRelayEntries(q, leadId).length })
+      .catch(async error => {
+        const observed = await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint);
+        await ctx.input.evidence("runtime-approval-queue-after-discard.json", { questionId: question.id, targetRunId: observed.targetRunId ?? null,
+          entries: observed.entries.map(row => ({ id: row.comment.id, source: row.source?.kind ?? null, interactionId: row.source?.interactionId ?? null, person: row.comment.authorUserId === humanId, lead: row.comment.authorAgentId === leadId })),
+          interaction: (await ctx.input.api.get<IssueThreadInteraction[]>(`/api/issues/${task.id}/interactions`)).filter(row => row.id === question.id).map(row => ({ status: row.status, dismissed: !!(row as { dismissedAt?: unknown }).dismissedAt })) });
+        throw error;
+      }); state.responseQueue = response;
     const immutable = await ctx.input.page.request.patch(`${endpoint}/${question.id}`, { data: { queueId: response.queueId, revision: response.revision, body: "Replace the accepted name with an unauthorized comment edit" }, headers: { Origin: new URL(ctx.input.page.url()).origin } });
     state.responseUneditable = immutable.status() >= 400 && immutable.status() < 500 && immutable.status() !== 401; await immutable.dispose(); await verifyResponse();
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(ctx.input.page.getByTestId(`task-chat-queued-message-${question.id}`)).toBeVisible();
