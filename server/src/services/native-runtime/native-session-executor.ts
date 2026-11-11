@@ -282,7 +282,7 @@ import {
   REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, RemoteRunnerRecoveryError, attachRemoteRunnerRecoveryDiagnostic, boundRemoteRunnerExitEvidence,
   describeExitedRemoteRunner, describeExitedRemoteRunnerReason, readRemoteRunnerRecoveryError, remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
-import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
+import { isPluginRpcTimeout, readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS, remoteRunnerPluginStall, type RemoteRunnerPluginStall } from "./remote-runner-recovery-probe.js";
 import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
@@ -14506,6 +14506,7 @@ export async function readRemoteRunnerState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
   recoveryDeadline?: number;
+  stall?: RemoteRunnerPluginStall;
 }): Promise<Record<string, unknown>> {
   const statePath = posix.join(input.stateDirectory, "runner-state.json");
   const escapedPath = statePath.replaceAll("'", "'\\''");
@@ -14519,7 +14520,7 @@ export async function readRemoteRunnerState(input: {
     ? await input.runner.execute(request)
     : await readRemoteRunnerRecoveryProbe({
         runner: input.runner, request, stage: "runner_state",
-        deadline: input.recoveryDeadline, readOnly: true,
+        deadline: input.recoveryDeadline, readOnly: true, stall: input.stall,
       });
   if (result.exitCode !== 0 || result.timedOut) {
     const error = new Error(
@@ -14678,6 +14679,7 @@ export async function verifyRemoteRunnerReattachment(input: {
   normalizedSessionId: string;
   requireIdle?: boolean;
   recoveryDeadline?: number;
+  stall?: RemoteRunnerPluginStall;
 }) {
   const { claim, target, identity } = input;
   if (claim.remote.kind === "plugin_task") throw remoteRecoveryLeaseMismatch("runner_verification", "plugin_task");
@@ -14694,8 +14696,9 @@ export async function verifyRemoteRunnerReattachment(input: {
   const runner = target.runner;
   const probeDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
+  const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
   const stateDirectory = remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId);
-  const runnerState = await readRemoteRunnerState({ runner, stateDirectory, recoveryDeadline: probeDeadline });
+  const runnerState = await readRemoteRunnerState({ runner, stateDirectory, recoveryDeadline: probeDeadline, stall });
   if (input.requireIdle && (runnerState.lifecycle !== "ready" ||
       !Array.isArray(runnerState.outbox) || runnerState.outbox.length !== 0 || runnerState.pendingTerminalDelivery !== null)) {
     throw new Error("runner_state_identity_mismatch: remote_warm_session_not_idle");
@@ -14711,7 +14714,7 @@ export async function verifyRemoteRunnerReattachment(input: {
   }
   const identityPath = posix.join(stateDirectory, "runner-process.identity");
   const marker = await readRemoteRunnerRecoveryProbe({
-    runner, stage: "identity_marker", deadline: probeDeadline, readOnly: true,
+    runner, stage: "identity_marker", deadline: probeDeadline, readOnly: true, stall,
     request: {
       command: "sh",
       args: [
@@ -14739,9 +14742,10 @@ export async function verifyRemoteRunnerReattachment(input: {
   if (!processIdentity) throw new RemoteRunnerRecoveryError({ stage: "identity_marker", reason: "marker_invalid" });
   if (!processIdentity.processStartFingerprint) throw new RemoteRunnerRecoveryError({ stage: "identity_marker", reason: "fingerprint_missing" });
   const expectedStartFingerprint = processIdentity.processStartFingerprint;
-  const check = async (signal?: NodeJS.Signals, deadline = Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS) => {
+  const check = async (signal?: NodeJS.Signals, deadline = Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS,
+    verificationStall?: RemoteRunnerPluginStall) => {
     const result = await readRemoteRunnerRecoveryProbe({
-      runner, stage: "process_verification", deadline, readOnly: !signal,
+      runner, stage: "process_verification", deadline, readOnly: !signal, stall: verificationStall,
       request: {
         command: "sh",
         args: [
@@ -14766,7 +14770,7 @@ export async function verifyRemoteRunnerReattachment(input: {
     }
     return { alive, reason };
   };
-  const verified = await check(undefined, probeDeadline);
+  const verified = await check(undefined, probeDeadline, stall);
   if (!verified.alive) {
     throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: verified.reason,
       ...(verified.reason === "process_not_running" ? {
@@ -14812,8 +14816,9 @@ export async function verifyRemoteRunnerOrSettledExit(
 ) {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
+  const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
   try {
-    return await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline });
+    return await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline, stall });
   } catch (error) {
     const diagnostic = readRemoteRunnerRecoveryError(error);
     const target = input.target;
@@ -14823,7 +14828,7 @@ export async function verifyRemoteRunnerOrSettledExit(
         (!exitedBeforeSessionOpen && (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
     const state = await readRemoteRunnerState({ runner: target.runner,
-      stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline });
+      stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline, stall });
     if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
     if (exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
       : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
@@ -14906,7 +14911,8 @@ async function waitForRemoteRunnerProcessIdentity(input: {
   runnerInstanceId: string;
   requireProcessStartFingerprint?: boolean;
 }): Promise<{ pid: number; startedAt: string; processStartFingerprint?: string }> {
-  const deadline = Date.now() + REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS;
+  let deadline = Date.now() + REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS;
+  const stallDeadline = Date.now() + REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS;
   while (Date.now() < deadline) {
     const result = await input.runner
       .execute({
@@ -14920,7 +14926,10 @@ async function waitForRemoteRunnerProcessIdentity(input: {
         bypassSession: true,
         timeoutMs: 2_000,
       })
-      .catch(() => null);
+      .catch((error: unknown) => {
+        if (isPluginRpcTimeout(error)) deadline = Math.max(deadline, stallDeadline);
+        return null;
+      });
     const identity =
       result && result.exitCode === 0 && !result.timedOut
         ? parseRemoteRunnerProcessIdentity(result.stdout, input)
@@ -15113,8 +15122,11 @@ export function createRemoteRunnerProcessLauncher(input: {
         timeoutMs: 20_000,
         bypassSession: true,
         onLog: input.onLog,
+      }).catch((error: unknown) => {
+        if (isPluginRpcTimeout(error)) return null;
+        throw error;
       });
-      if (launchResult.exitCode !== 0 || launchResult.timedOut) {
+      if (launchResult && (launchResult.exitCode !== 0 || launchResult.timedOut)) {
         throw new Error(
           launchResult.timedOut
             ? "runner_remote_process_launch_timed_out"

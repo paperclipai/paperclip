@@ -84,6 +84,7 @@ import { nativeSha256 } from "./canonical.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
@@ -861,6 +862,96 @@ describe("remote controller restart adoption", () => {
     expect(adopted.pid).toBe(123);
     expect(probes).toBe(2);
     expect(execute.mock.calls.every(([request]) => !request.args.join(" ").match(/nohup|mkdir|rm -|mv -|kill -"/))).toBe(true);
+  });
+  const pluginStall = () => new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT,
+    message: 'RPC call "environmentExecute" timed out after 40000ms' });
+  it.each(["runner_state", "identity_marker", "process_verification"] as const)(
+    "reattaches the same runner through a plugin RPC stall during the %s read", async stage => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    const operation = stage === "identity_marker" ? "paperclip-runner-recovery-identity" : "paperclip-runner-recovery-check";
+    let stalls = 0;
+    execute.mockImplementation(async request => {
+      if ((stage === "runner_state" ? request.args[1].includes("base64") : request.args[2] === operation) && stalls < 2) {
+        stalls++;
+        await new Promise(resolveWait => setTimeout(resolveWait, 40_000));
+        throw pluginStall();
+      }
+      return original(request);
+    });
+    const outcome = verifyRemoteRunnerReattachment({
+      claim, target: target as never, identity, runId: "run", normalizedSessionId: "session",
+    }).catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(90_000);
+    const adopted = await outcome;
+    expect(adopted).not.toBeInstanceOf(Error);
+    expect((adopted as { pid: number }).pid).toBe(123);
+    expect(stalls).toBe(2);
+    expect(execute.mock.calls.every(([request]) => !request.args.join(" ").match(/nohup|mkdir|rm -|mv -|kill -"/))).toBe(true);
+  });
+  it("fails reattachment closed when the plugin stall outlasts its bound", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => {
+      if (request.args[2] !== "paperclip-runner-recovery-check") return original(request);
+      await new Promise(resolveWait => setTimeout(resolveWait, 40_000));
+      throw pluginStall();
+    });
+    let settled = false;
+    const outcome = verifyRemoteRunnerReattachment({
+      claim, target: target as never, identity, runId: "run", normalizedSessionId: "session",
+    }).catch(error => { settled = true; return error as Error; });
+    await vi.advanceTimersByTimeAsync(150_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(80_000);
+    expect(readRemoteRunnerRecoveryError(await outcome)).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+  });
+  it("keeps the 30-second bound for a transport failure that is not a plugin stall", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => {
+      if (request.args[2] !== "paperclip-runner-recovery-check") return original(request);
+      throw new Error("Sandbox with ID test-deleted-sandbox not found");
+    });
+    const startedAt = Date.now();
+    const outcome = verifyRemoteRunnerReattachment({
+      claim, target: target as never, identity, runId: "run", normalizedSessionId: "session",
+    }).catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(readRemoteRunnerRecoveryError(await outcome)).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+    expect(Date.now() - startedAt).toBeLessThanOrEqual(30_000);
+  });
+  it("reads the settled state of an exited runner through a plugin RPC stall", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const settled = { lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+    const { target, execute } = fixture(settled);
+    const original = execute.getMockImplementation()!;
+    let exited = false;
+    let stalls = 0;
+    execute.mockImplementation(async request => {
+      if (request.args[2] === "paperclip-runner-recovery-check") {
+        exited = true;
+        return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+      }
+      if (exited && request.args[1].includes("base64") && stalls === 0) {
+        stalls++;
+        await new Promise(resolveWait => setTimeout(resolveWait, 40_000));
+        throw pluginStall();
+      }
+      return original(request);
+    });
+    const outcome = verifyRemoteRunnerOrSettledExit({ claim, target: target as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await outcome).toBeUndefined();
+    expect(stalls).toBe(1);
   });
   it("rejects a marker that cannot prove its process generation", async () => {
     const { target, execute } = fixture();
@@ -1669,6 +1760,50 @@ fs.readFileSync = function(path, ...args) {
       expect(await failure).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
       expect(handle.isExitConfirmed?.()).toBe(false);
       expect(execute.mock.calls.some(([x]) => x.args?.[2] === "paperclip-runner-diagnostics")).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["launch", "identity"] as const)("supervises the one launched runner through a plugin RPC stall on the %s call", async stalled => {
+    vi.useFakeTimers();
+    let nonce = "";
+    let markerWritten = false;
+    let stalls = 0;
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const stall = async () => {
+      stalls++;
+      await new Promise(resolve => setTimeout(resolve, 40_000));
+      throw new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT, message: 'RPC call "environmentExecute" timed out after 40000ms' });
+    };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") {
+        nonce = input.args![4]!;
+        markerWritten = true;
+        if (stalled === "launch") return stall();
+        return ok;
+      }
+      if (label === "paperclip-runner-process-identity") {
+        if (stalled === "identity" && stalls === 0) return stall();
+        return markerWritten ? { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` } : { ...ok, exitCode: 1 };
+      }
+      if (label === "paperclip-runner-monitor") return { ...ok, exitCode: 45 };
+      return { ...ok, exitCode: 1 };
+    });
+    const onSpawn = vi.fn(async () => undefined);
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote", onSpawn,
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {} });
+    const outcome = handle.completion.catch(error => error as Error);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await outcome).toMatchObject({ code: null });
+      expect(stalls).toBe(1);
+      expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 4321, processGroupId: null, startedAt: "2026-09-06T00:00:00.000Z" });
+      expect(handle.isExitConfirmed?.()).toBe(true);
+      expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
+      expect(execute.mock.calls.some(([x]) => x.args?.[2] === "paperclip-runner-identity-failure-cleanup")).toBe(false);
     } finally { vi.useRealTimers(); }
   });
 

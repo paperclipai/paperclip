@@ -4841,7 +4841,19 @@ the Runner holds its own authenticated connection to the controller, the monitor
 keeps the same runner and turn and probes again. The bound is the remote runner
 reconnect grace (7 minutes). When the Runner has no connection and the 30-second
 budget is spent, or when the bound is spent, the monitor reports
-`runner_process_termination_unconfirmed` and the run rests with Retry. Monitoring checks the saved process generation when available.
+`runner_process_termination_unconfirmed` and the run rests with Retry.
+
+A plugin RPC timeout (`PLUGIN_RPC_ERROR_CODES.TIMEOUT`) is a stall of the
+environment plugin, not an answer from the sandbox. When a read-only recovery
+read during reattachment times out this way, the recovery's probe budget grows
+from 30 seconds to 3 minutes, capped by the caller's recovery deadline. This
+covers the saved runner state, the identity marker and the process check, and
+the settled-state read after a confirmed exit. A signal is never retried. Other
+transport failures keep the 30-second budget. At the launch of a new remote
+runner, a launch call that stalls this way is not retried. The controller reads
+the identity marker for the launch nonce instead, so the one launched runner is
+adopted or cleaned up by its nonce. The identity read uses the same 3-minute
+stall budget. Each answer that the sandbox gives keeps its current meaning. Monitoring checks the saved process generation when available.
 Only a matching ownership marker and confirmed process exit permit automatic
 replacement. Missing or conflicting identity evidence, failed reads, and an
 exhausted probe budget retain the existing ownership and recovery safeguards.
