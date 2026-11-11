@@ -212,7 +212,7 @@ describeEmbeddedPostgres("durable native preparation handoff", () => {
       expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(false);
       expect(await readFile(externalMarkerPath, "utf8")).toBe(externalMarker);
       expect((await loadNativeRunnerCheckpoint(f.db, f.scope))!.records).toEqual(published!.records);
-      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].runnerProfileJson.sessionCheckpoint)
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].runnerProfileJson?.sessionCheckpoint)
         .toEqual(profile.sessionCheckpoint);
       await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
       await f.db.update(nativeRunFinalizations).set({ phase: liveOwner.phase, failureCode: liveOwner.failureCode,
