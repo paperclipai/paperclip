@@ -143,6 +143,14 @@ which proves that the sidecar and the provider are gone.
   no file (an older sidecar) proves nothing. The earlier behavior applies
   unchanged: a failed start closes the session, and a killed Runner uses
   lost-turn recovery.
+- A session this run closed cannot reopen for the same run. The failed start,
+  and every later `turn.start` of the run, fail with the closed class
+  `provider_session_closed` in the command result. The controller records
+  `native_provider_session_closed`, stops same-run retries, and the board offers
+  Retry at once. Retry starts a new run, whose attachment reopens the saved
+  conversation. An older Runner sends the same text without the class; the
+  controller then keeps its bounded same-run retries, because the same text
+  also covers a session that can reopen after a restart.
 
 Until a proof settles it, the saved session stays `turn_starting`, so a Runner
 killed during the proof restores through the same check. The cut-off command is

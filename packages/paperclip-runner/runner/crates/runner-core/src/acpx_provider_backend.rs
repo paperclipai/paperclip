@@ -28,7 +28,8 @@ use crate::durable::QualifiedLaunchArtifact;
 use crate::durable::{
     create_private_temporary_file, open_private_regular_file, verify_private_directory,
     AcpxLaunchProfile, Command, CommandExecution, CommandExecutor, DurableRunnerConfig,
-    DurableRunnerError, EventPriority, PolledEvent, PROVIDER_STATE_INCOMPATIBLE,
+    DurableRunnerError, EventPriority, PolledEvent, PROVIDER_SESSION_CLOSED,
+    PROVIDER_STATE_INCOMPATIBLE,
 };
 use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand;
 use crate::process_supervisor::{VerifiedProcessArgument, VerifiedProcessLaunch};
@@ -2061,7 +2062,8 @@ impl AcpxCommandExecutor {
                     DurableRunnerError::invalid(format!("ACPX turn start failed closed: {error}"))
                 }
                 None => DurableRunnerError::invalid("ACPX session is not open"),
-            });
+            }
+            .with_classification(PROVIDER_SESSION_CLOSED));
         }
         let reopenable = self.session.is_none()
             && self.state.as_ref().is_some_and(|state| {
@@ -2128,7 +2130,17 @@ impl AcpxCommandExecutor {
             self.retain_buffered_provider_events()?;
         }
         if self.session.is_none() {
-            return Err(DurableRunnerError::invalid("ACPX session is not open"));
+            let error = DurableRunnerError::invalid("ACPX session is not open");
+            // Only a session this run closed is permanently closed for it. A
+            // session awaiting provider-exit proof can reopen after a restart.
+            let closed_for_run = self.state.as_ref().is_some_and(|state| {
+                state.lifecycle == "closed" && state.descriptor.run_id == self.context.run_id
+            });
+            return Err(if closed_for_run {
+                error.with_classification(PROVIDER_SESSION_CLOSED)
+            } else {
+                error
+            });
         }
         let (provider_process_will_be_replaced, previous_process_id) = self
             .session
@@ -2206,6 +2218,7 @@ impl AcpxCommandExecutor {
             }
             .to_owned();
             state.provider_exit_unconfirmed = rejected_checkpoint.is_some();
+            let rejected_checkpoint_reopenable = rejected_checkpoint.is_some();
             state.active_turn_id = None;
             self.context.provider_turn_id = None;
             self.session = None;
@@ -2225,9 +2238,15 @@ impl AcpxCommandExecutor {
                     return Err(error);
                 }
             }
-            return Err(DurableRunnerError::invalid(format!(
-                "ACPX turn start failed closed: {error}"
-            )));
+            let failure =
+                DurableRunnerError::invalid(format!("ACPX turn start failed closed: {error}"));
+            // A rejected checkpoint stays `prepared` and reopens on the next
+            // start. A `closed` session cannot reopen for this run.
+            return Err(if rejected_checkpoint_reopenable {
+                failure
+            } else {
+                failure.with_classification(PROVIDER_SESSION_CLOSED)
+            });
         }
         // Copy numeric timing fields only. Sidecar contents never enter the receipt.
         let timing = if measure {
