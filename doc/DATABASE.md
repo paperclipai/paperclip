@@ -597,6 +597,15 @@ authority once. Different task bindings must both pass. The batch is discarded
 after that delivery; later events still recheck grants, membership, task
 existence, and company boundaries.
 
+Task routes that filter several rows for one actor (summaries, lists, blockers,
+relation edges, and the chat bootstrap) use one fresh authorization batch per
+call. The batch reads the task rows and applies the task-privacy predicate to
+all of them in one statement. It reads membership, agent, and run policy once.
+The number of statements does not grow with the number of tasks. The boundary
+checks of a low-trust agent (ancestry and mention grants) stay per task and run
+at most eight at a time. The batch is discarded after the call; the next
+request reads current grants, membership, and privacy again.
+
 Browser progress events update cached live run status directly. A successful
 patch does not refetch task details, activity, or run history. Unknown runs
 retain the existing refresh fallback. Run transitions, activity events, and
