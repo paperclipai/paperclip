@@ -1014,6 +1014,93 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.setRunStatus).not.toHaveBeenCalled();
   });
 
+  it("starts the oldest ready run and cancels stale queued runs before selection", async () => {
+    const [company] = await db.insert(companies).values({ name: "Queue order", issuePrefix: "QO" }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id, name: "Reviewer", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {},
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } },
+    }).returning();
+    const [other] = await db.insert(agents).values({
+      companyId: company.id, name: "Other owner", status: "idle", adapterType: "process", adapterConfig: {},
+    }).returning();
+    const stamp = (minute: number) => new Date(Date.UTC(2026, 10, 10, 13, minute, 0));
+    async function queuedIssue(input: {
+      title: string;
+      status: string;
+      priority: string;
+      minute: number;
+      assigneeAgentId?: string | null;
+      blocked?: boolean;
+    }) {
+      const [issue] = await db.insert(issues).values({
+        companyId: company.id, title: input.title, status: input.status, priority: input.priority,
+        assigneeAgentId: input.assigneeAgentId === undefined ? agent.id : input.assigneeAgentId,
+      }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: company.id, agentId: agent.id, status: "queued", invocationSource: "assignment",
+        responsibleUserId: "queue-test-user", contextSnapshot: { issueId: issue.id },
+      }).returning();
+      await db.update(heartbeatRuns).set({ createdAt: stamp(input.minute) }).where(eq(heartbeatRuns.id, run.id));
+      return { issue, run: { ...run, createdAt: stamp(input.minute) }, blocked: input.blocked === true };
+    }
+
+    const [activeIssue] = await db.insert(issues).values({
+      companyId: company.id, title: "Running checkout", status: "in_progress", priority: "high", assigneeAgentId: agent.id,
+    }).returning();
+    const [running] = await db.insert(heartbeatRuns).values({
+      companyId: company.id, agentId: agent.id, status: "running", invocationSource: "assignment",
+      startedAt: stamp(0), contextSnapshot: { issueId: activeIssue.id },
+    }).returning();
+    await db.update(issues).set({
+      executionRunId: running.id, checkoutRunId: running.id, executionAgentNameKey: agent.name, executionLockedAt: stamp(0),
+    }).where(eq(issues.id, activeIssue.id));
+    const continuation = await queuedIssue({ title: "Continuation", status: "in_progress", priority: "high", minute: 1 });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: activeIssue.id } }).where(eq(heartbeatRuns.id, continuation.run.id));
+    const blocked = await queuedIssue({ title: "Blocked", status: "todo", priority: "critical", minute: 2, blocked: true });
+    const medium = await queuedIssue({ title: "Older medium", status: "todo", priority: "medium", minute: 3 });
+    const high = await queuedIssue({ title: "Newer high", status: "todo", priority: "high", minute: 4 });
+    const cancelled = await queuedIssue({ title: "Cancelled", status: "cancelled", priority: "high", minute: 5 });
+    await db.update(issues).set({ executionRunId: cancelled.run.id }).where(eq(issues.id, cancelled.issue.id));
+    const done = await queuedIssue({ title: "Done", status: "done", priority: "high", minute: 6 });
+    const reassigned = await queuedIssue({
+      title: "Reassigned", status: "todo", priority: "high", minute: 7, assigneeAgentId: other.id,
+    });
+
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.issuesSvc.listDependencyReadiness.mockImplementation(async (_companyId, issueIds) => new Map(
+      issueIds.map((issueId) => {
+        const waiting = issueId === blocked.issue.id;
+        return [issueId, {
+          issueId,
+          blockerIssueIds: waiting ? ["blocker"] : [],
+          unresolvedBlockerIssueIds: waiting ? ["blocker"] : [],
+          unresolvedBlockerCount: waiting ? 1 : 0,
+          pendingFinalizeBlockerIssueIds: [],
+          allBlockersDone: !waiting,
+          isDependencyReady: !waiting,
+        }];
+      }),
+    ));
+    const started = await createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id);
+
+    expect(started).toEqual([expect.objectContaining({ id: medium.run.id, status: "running" })]);
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(medium.run.id);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, company.id));
+    const byId = new Map(runs.map((run) => [run.id, run]));
+    expect(byId.get(running.id)?.status).toBe("running");
+    expect(byId.get(continuation.run.id)?.status).toBe("queued");
+    expect(byId.get(blocked.run.id)?.status).toBe("queued");
+    expect(byId.get(high.run.id)?.status).toBe("queued");
+    expect(byId.get(cancelled.run.id)).toMatchObject({ status: "cancelled", errorCode: "issue_terminal_status" });
+    expect(byId.get(done.run.id)).toMatchObject({ status: "cancelled", errorCode: "issue_terminal_status" });
+    expect(byId.get(reassigned.run.id)).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect((await db.select().from(issues).where(eq(issues.id, activeIssue.id)))[0]).toMatchObject({
+      status: "in_progress", checkoutRunId: running.id, executionRunId: running.id,
+    });
+    expect((await db.select().from(issues).where(eq(issues.id, cancelled.issue.id)))[0].executionRunId).toBeNull();
+  });
+
   it("admits the same queued input after the external connection is repaired", async () => {
     const { run, agent } = await fixture("queued");
     await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user" }).where(eq(heartbeatRuns.id, run.id));

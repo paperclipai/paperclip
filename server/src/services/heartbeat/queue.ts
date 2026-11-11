@@ -550,19 +550,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   const claimDueTimerHeartbeat = (agent: typeof agents.$inferSelect, now: Date, intervalSec: number) =>
     claimDueTimerHeartbeatForAgent(db, agent, now, intervalSec);
 
-  function issueRunPriorityRank(priority: string | null | undefined) {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
+  // Age wins inside a rank. A ready run whose issue is already in_progress waits
+  // behind ready work that has not started, so a newer high task cannot pass
+  // an older medium one. Runs that are not dependency-ready stay last.
+  function queuedRunSelectionRank(input: {
+    issueId: string | null;
+    dependencyReady: boolean;
+    issueStatus: string | null | undefined;
+  }) {
+    if (!input.issueId) return 0;
+    if (!input.dependencyReady) return 2;
+    if (input.issueStatus === "in_progress") return 1;
+    return 0;
   }
 
   async function listQueuedRunDependencyReadiness(
@@ -2220,7 +2219,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .select({
           id: issues.id,
           status: issues.status,
-          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
         })
         .from(issues)
         .where(
@@ -2233,7 +2232,41 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+      // Drop cancelled, done, and reassigned queued runs before anyone is
+      // claimed. Running checkouts are not in this list. The staleness path
+      // still keeps a run the existing bypasses say is current.
+      const selectableRuns: typeof queuedRuns = [];
+      for (const queuedRun of queuedRuns) {
+        const issueId = readNonEmptyString(parseObject(queuedRun.contextSnapshot).issueId);
+        const issue = issueId ? issueById.get(issueId) : null;
+        const terminal = issue?.status === "cancelled" || issue?.status === "done";
+        const reassigned = Boolean(issue) && issue?.assigneeAgentId !== queuedRun.agentId;
+        if (!issueId || !issue || (!terminal && !reassigned)) {
+          selectableRuns.push(queuedRun);
+          continue;
+        }
+        const staleness = await runDispatch.cancelStaleQueuedRun({
+          runId: queuedRun.id,
+          companyId: queuedRun.companyId,
+          expectedStatus: "queued",
+        });
+        if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
+          applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+          logger.info(
+            {
+              runId: queuedRun.id,
+              issueId,
+              outcome: staleness.outcome,
+              errorCode: staleness.outcome === "cancelled" ? staleness.errorCode : undefined,
+            },
+            "startNextQueuedRunForAgent: cancelled stale queued run before selection",
+          );
+          continue;
+        }
+        if (staleness.outcome === "lost_race") continue;
+        selectableRuns.push(queuedRun);
+      }
+      const prioritizedRuns = [...selectableRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(
           parseObject(left.contextSnapshot).issueId,
         );
@@ -2254,25 +2287,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           : true;
         const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
         const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
+        const leftRank = queuedRunSelectionRank({
+          issueId: leftIssueId,
+          dependencyReady: leftReady,
+          issueStatus: leftIssue?.status,
+        });
+        const rightRank = queuedRunSelectionRank({
+          issueId: rightIssueId,
+          dependencyReady: rightReady,
+          issueStatus: rightIssue?.status,
+        });
         if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
