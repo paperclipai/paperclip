@@ -53,6 +53,12 @@ The New task form opens immediately. Load its code with the board and fill
 agent and project choices in place as their requests finish. Keep text entered
 while those requests are pending.
 
+Submitting a new task closes and clears its composer immediately. Save the
+submitted text, settings, and files separately while the request runs in the
+background. A failed save reopens that draft with an actionable error. If the
+person has started another draft, keep that draft and offer recovery for the
+failed request. A background receipt must not clear or close a later draft.
+
 ## Mobile navigation and text fields
 
 The fixed bottom navigation uses an opaque surface so scrolling content cannot

@@ -4770,6 +4770,14 @@ under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
 
+New-task submissions use `useBackgroundSubmitQueue` around `useDurableSubmit`.
+The account-scoped queue retains each request's original key and draft snapshot
+before the composer closes. The worker sends requests in order. A request with an
+uncertain receipt retains its key; a rejection restores the submitted draft or
+offers a retry beside a newer draft. Submitted files use separate IndexedDB keys
+for the account, company, and request, so finishing an older save cannot remove
+newer files. Legacy single-request recovery records remain readable.
+
 New-task staged file bytes are stored in IndexedDB for the account and company.
 Writes merge the selected files with the current saved list in one read/write
 transaction. Removal and successful creation delete only the files that the
