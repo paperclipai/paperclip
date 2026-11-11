@@ -3956,7 +3956,7 @@ describe("a restored Claude session that connects when it opens", () => {
       const openSpawns = spawns - before;
       try {
         const turn = port.startTurn({ text, requestId: text });
-        for await (const _event of turn.events) { /* drain the turn */ }
+        for await (const _event of turn.events) continue;
         expect(await turn.result).toMatchObject({ status: "completed" });
         return { openSpawns, turnSpawns: spawns - before - openSpawns };
       } finally {
