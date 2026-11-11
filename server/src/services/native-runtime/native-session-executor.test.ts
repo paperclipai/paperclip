@@ -446,6 +446,9 @@ import {
   NATIVE_PROVIDER_SESSION_CLOSED,
   NATIVE_PROVIDER_STARTUP_REJECTED,
   nativeRemoteStartupRejectionCode,
+  nativeRepeatedStartupFailureAction,
+  nativePreviousStartupFailureSignature,
+  nativeStartupFailureSignature,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -14168,6 +14171,33 @@ describe("native session bounded recovery", () => {
       expect(nativeRemoteStartupRejectionCode(nativeSessionFailureSourceCode(unreported), unreported, true))
         .toBe("provider_session_open_rejected");
       expect(nativeRemoteStartupRejectionCode("native_session_interrupted", failure, true)).toBe("native_session_interrupted");
+    });
+
+    it("retries a remote startup rejection on the same run once the runner's exit is proven, but not a repeat", () => {
+      const confirmed = (fields: Record<string, unknown> = {}) =>
+        Object.defineProperty(sessionOpenFailure(startupFailure(fields)), "runnerExitConfirmed", { value: true, enumerable: false });
+      const first = confirmed();
+      expect(nativeRemoteStartupRejectionCode(nativeSessionFailureSourceCode(first), first, true))
+        .toBe("provider_session_open_rejected");
+      // Wrapped by a caller: the proof still reads through `cause`.
+      const wrapped = new Error("native session bootstrap failed", { cause: first });
+      expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected", wrapped, true))
+        .toBe("provider_session_open_rejected");
+      // The same startup error as the previous attempt stops, with the message named.
+      const previous = nativePreviousStartupFailureSignature([
+        { disposition: "retryable_failure", startupFailureSignature: nativeStartupFailureSignature(startupFailure({})) },
+        { disposition: "bootstrap_incomplete", reason: "remote_runner_exited_before_provider_work" },
+      ]);
+      expect(previous).not.toBeNull();
+      expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected", confirmed(), true, previous))
+        .toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(nativeRepeatedStartupFailureAction(startupFailure({}).message as string)).toContain("bwrap: loopback");
+      // A different startup error is not a repeat.
+      expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected",
+        confirmed({ message: "Query closed before response received" }), true, previous)).toBe("provider_session_open_rejected");
+      // A deterministic rejection never retries, even with exit proof.
+      const deterministic = confirmed({ category: "authentication", retryability: "requires_action" });
+      expect(nativeSessionFailureSourceCode(deterministic)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
     });
   });
 

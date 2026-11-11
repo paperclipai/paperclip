@@ -8517,14 +8517,62 @@ function deterministicProviderStartupFailure(error: unknown): boolean {
     && ["authentication", "permission", "invalid_request"].includes(failure.category);
 }
 
+/** The Runner transport proved the failed runner settled and its process exited. */
+export function nativeRunnerExitConfirmed(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  if (value.runnerExitConfirmed === true) return true;
+  return nativeRunnerExitConfirmed(value.cause, depth + 1)
+    || (Array.isArray(value.errors) && value.errors.slice(0, 3).some(item => nativeRunnerExitConfirmed(item, depth + 1)));
+}
+
+/** Same provider, category and message (numbers ignored): a retry would meet the same fault. */
+export function nativeStartupFailureSignature(failure: unknown): string | null {
+  const value = record(failure);
+  if (value.phase !== "startup" || typeof value.message !== "string" || !value.message.trim()) return null;
+  return JSON.stringify([value.provider ?? null, value.category ?? null, value.message.replace(/\d+/g, "#").trim()]);
+}
+
+/**
+ * On a remote target, a definite startup rejection retries on the same run
+ * only when the Runner proved its failed runner exited (so no second runner
+ * can own the sandbox) and the previous attempt did not fail with the same
+ * startup error. Otherwise it ends at once with Retry. A deterministic
+ * rejection never reaches here: it is already NATIVE_PROVIDER_STARTUP_REJECTED.
+ */
 export function nativeRemoteStartupRejectionCode<Code extends string>(
   sourceFailureCode: Code,
   error: unknown,
   remoteTarget: boolean,
+  previousStartupSignature?: string | null,
 ): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED {
-  return remoteTarget && sourceFailureCode === "provider_session_open_rejected"
-    && providerFailureFromError(error)?.phase === "startup"
-    ? NATIVE_PROVIDER_STARTUP_REJECTED : sourceFailureCode;
+  if (!remoteTarget || sourceFailureCode !== "provider_session_open_rejected") return sourceFailureCode;
+  const failure = providerFailureFromError(error);
+  if (failure?.phase !== "startup") return sourceFailureCode;
+  return nativeRunnerExitConfirmed(error) && !nativeRepeatedStartupFailure(error, previousStartupSignature)
+    ? sourceFailureCode : NATIVE_PROVIDER_STARTUP_REJECTED;
+}
+
+export function nativeRepeatedStartupFailure(error: unknown, previousStartupSignature: string | null | undefined): boolean {
+  const current = nativeStartupFailureSignature(providerFailureFromError(error));
+  return current !== null && current === previousStartupSignature;
+}
+
+/** The startup failure signature this run's previous failed attempt recorded. The
+ * execution claim clears the saved failure, but its history entry remains. */
+export function nativePreviousStartupFailureSignature(recoveryHistory: unknown): string | null {
+  if (!Array.isArray(recoveryHistory)) return null;
+  for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const entry = record(recoveryHistory[index]);
+    if (entry.disposition === "retryable_failure" || entry.disposition === "terminal_failure") {
+      return typeof entry.startupFailureSignature === "string" ? entry.startupFailureSignature : null;
+    }
+  }
+  return null;
+}
+
+export function nativeRepeatedStartupFailureAction(message: string): string {
+  return `Provider startup failed the same way on consecutive attempts, so automatic retries stopped: "${message.slice(0, 500)}". No provider work began. Fix the cause in the agent's environment if needed, then Retry. Retry starts a new run with a fresh provider session.`;
 }
 
 /** Reads the Runner's closed class from an authenticated turn.start failure. */
@@ -12330,12 +12378,27 @@ async function executePaperclipNativeSessionAttempt(
         !prepareNativeSessionOpenTimeoutRetry(input.execution, input.runnerExecutionTarget?.kind !== "remote")
         ? "native_session_interrupted" as const
         : startupClassifiedFailureCode;
+      // The previous attempt's saved failure survives the retry claim; a
+      // remote startup rejection compares against it to stop a repeat.
+      const remoteStartupRejection = classifiedFailureCode === "provider_session_open_rejected"
+        && input.runnerExecutionTarget?.kind === "remote";
+      const previousStartupSignature = remoteStartupRejection
+        ? await input.db.select({ recoveryHistory: nativeRunFinalizations.recoveryHistory }).from(nativeRunFinalizations)
+          .where(and(eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+            eq(nativeRunFinalizations.companyId, input.execution.binding.companyId)))
+          .limit(1).then(rows => nativePreviousStartupFailureSignature(rows[0]?.recoveryHistory))
+          // Without the history no repeat is provable; the attempt budget still bounds retries.
+          .catch(() => null)
+        : null;
+      const repeatedRemoteStartupFailure = remoteStartupRejection
+        && nativeRepeatedStartupFailure(error, previousStartupSignature);
       const sourceFailureCode =
         classifiedFailureCode === "native_event_replay_conflict"
           ? classifiedFailureCode
           : providerUsageLimitObserved
             ? "native_provider_usage_limit"
-            : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote");
+            : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote",
+              previousStartupSignature);
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
           && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
           ? {
@@ -12368,6 +12431,10 @@ async function executePaperclipNativeSessionAttempt(
           ? sourceFailureCode
           : disposition.failureCode;
       const providerFailure = providerFailureFromError(error);
+      const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry"
+        ? nativeStartupFailureSignature(providerFailure) : null;
+      const startupRejectedAction = repeatedRemoteStartupFailure && providerFailure
+        ? nativeRepeatedStartupFailureAction(providerFailure.message) : NATIVE_PROVIDER_STARTUP_REJECTED_ACTION;
       // Pre-provider startup retries back off and wait out a known provider
       // limit; their exhaustion explains the startup failure.
       const startupRetryExhausted =
@@ -12482,6 +12549,10 @@ async function executePaperclipNativeSessionAttempt(
                 recoveryEvidence.providerSessionEstablished,
               providerEventsExist: recoveryEvidence.providerEventsExist,
               checkpointExists: recoveryEvidence.checkpointExists,
+              // Restart recovery relaunches a remote runner for this retry only
+              // with this proof that the failed runner is gone.
+              ...(recoveryEvidence.recoveryMode === "bootstrap_retry" && nativeRunnerExitConfirmed(error)
+                ? { runnerExitConfirmed: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -12495,7 +12566,7 @@ async function executePaperclipNativeSessionAttempt(
                   : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
                   ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
-                  ? NATIVE_PROVIDER_STARTUP_REJECTED_ACTION
+                  ? startupRejectedAction
                   : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
@@ -12552,6 +12623,7 @@ async function executePaperclipNativeSessionAttempt(
                   providerSessionEstablished:
                     recoveryEvidence.providerSessionEstablished,
                   checkpointExists: recoveryEvidence.checkpointExists,
+                  ...(startupFailureSignature ? { startupFailureSignature } : {}),
                 })}::jsonb)
               ) with ordinality as history(item, ordinal)
               where ordinal > greatest(
@@ -12569,6 +12641,7 @@ async function executePaperclipNativeSessionAttempt(
                     providerSessionEstablished:
                       recoveryEvidence.providerSessionEstablished,
                     checkpointExists: recoveryEvidence.checkpointExists,
+                    ...(startupFailureSignature ? { startupFailureSignature } : {}),
                   })}::jsonb)
                 ) - 20,
                 0
@@ -12772,7 +12845,7 @@ async function executePaperclipNativeSessionAttempt(
               : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
               ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
-              ? NATIVE_PROVIDER_STARTUP_REJECTED_ACTION
+              ? startupRejectedAction
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? nativeCleanupRefusalAction(completedTurnCleanup)
               : sourceFailureCode === "runner_task_admission_rejected"
