@@ -1368,15 +1368,16 @@
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/cases.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
-    "expectedRunCount": 2,
+    "oracleVersion": "paperclip.chat-catalog.integrator.case-create.v2",
+    "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 420000,
     "runPolicy": {
       "kind": "source-settled-with-active-work",
-      "maximumActiveWorkerRuns": 1
+      "maximumActiveWorkerRuns": 1,
+      "maximumLeadCaseHandbackRuns": 1
     },
     "modulePath": "./chat-catalog-domains/integrator-case-create.js",
     "exportName": "integratorCaseCreationCases",
@@ -1448,7 +1449,7 @@
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/cases.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.case-facts.v7",
+    "oracleVersion": "paperclip.chat-catalog.integrator.case-facts.v8",
     "expectedRunCount": 6,
     "minimumRunCount": 4,
     "expectedHumanMessageCount": 2,
@@ -5677,7 +5678,7 @@
       "run-observations.ts",
       "chat-scenarios/task-coordination.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v8",
+    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v9",
     "coverageGaps": [],
     "expectedRunCount": 4,
     "minimumRunCount": 3,
