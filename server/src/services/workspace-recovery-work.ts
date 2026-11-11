@@ -12,22 +12,17 @@ export function registerWorkspaceRecoveryWork(db: Db, coordinator: ReturnType<ty
   let stopped = false;
   let scan: Promise<void> | undefined;
   let wakeWhileBusy = false;
-  let passiveSweep: PassiveSweep = {};
-  let restartPassiveSweep = false;
+  const passiveSweep: PassiveSweep = {};
   const schedule = executionControlSchedule(db);
   const worker = registerExecutionControlWork(coordinator, [{
     queue: DELIVERY_QUEUES.workspaceRecovery,
-    onSettled: () => { restartPassiveSweep = true; if (pending.size >= 2) wakeWhileBusy = true; },
+    onSettled: () => { passiveSweep.restart = true; if (pending.size >= 2) wakeWhileBusy = true; },
     run: () => scan = (async () => {
       const sweep = passiveSweep, cursor = sweep.cursor;
       const work = await reconcileRetainedWorkspaces(db, runtime, onRecovered, true, continueSweep => {
         if (!stopped && (continueSweep || wakeWhileBusy)) { wakeWhileBusy = false; worker.wake(); }
       }, sweep);
-      if (sweep.complete && restartPassiveSweep) {
-        passiveSweep = {};
-        restartPassiveSweep = false;
-        if (!stopped) worker.wake();
-      } else if (!sweep.complete && sweep.cursor !== cursor && !stopped) worker.wake();
+      if (sweep.restart && !sweep.complete && sweep.cursor !== cursor && !stopped) worker.wake();
       for (const job of work ?? []) {
         pending.add(job);
         const settled = () => { pending.delete(job); };

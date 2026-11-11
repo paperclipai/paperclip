@@ -644,7 +644,7 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);
 }
 
-export type PassiveSweep = { cursor?: string; complete?: boolean };
+export type PassiveSweep = { cursor?: string; complete?: boolean; restart?: boolean };
 
 /** Bounded discovery shares the periodic recovery lifecycle. A repaired source
  * still owes cleanup even without saved input or after task reconciliation. */
@@ -663,6 +663,10 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   const unfinished = rows.length > 0;
   if (!rows.length) {
     rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
+    if (passiveSweep && !rows.length && passiveSweep.restart) {
+      Object.assign(passiveSweep, { cursor: undefined, complete: false, restart: false });
+      rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+    }
     if (passiveSweep && !rows.length) passiveSweep.complete = true;
   }
   if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
