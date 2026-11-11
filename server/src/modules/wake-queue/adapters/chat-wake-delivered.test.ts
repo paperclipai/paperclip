@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createReleaseIssueExecution } from "../application/use-cases.js";
 import { createPostgresWakeQueueAdapter } from "./postgres.js";
 import { resolveInboundWakeReceipt } from "../../../services/chat-inbound-wakeup-publications.js";
 import { createDurableChatWakeupRequest } from "../../../services/durable-chat-wakeup.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CHAT_WAKE_TEST_DATABASE_URL");
+if (process.env.CHAT_WAKE_GATE_EXPECT_EXTERNAL === "1" && !external) throw new Error("Guarded chat wake tests require their exact external test database");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
 // A GitHub message arrives while the agent's run is active. The wake is saved
 // behind that run. The run reads the message (it is in its wake input) and
@@ -17,14 +21,16 @@ const support = await getEmbeddedPostgresTestSupport();
 // failed with `reviewed_chat_execution_binding_not_authorized` (context_mismatch)
 // and blocked the task.
 describe.skipIf(!support.supported)("release of a saved chat wake whose message was delivered", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let companyId: string;
   let agentId: string;
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("wake-chat-delivered-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("wake-chat-delivered-");
+    const url = external ?? database!.connectionString;
+    if (external) await applyPendingMigrations(url);
+    db = createDb(url, { maxConnections: 4 });
     const [company] = await db.insert(companies).values({ name: "Chat wake fixture", issuePrefix: "CWD" }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Reviewer", adapterType: "process" }).returning();
     companyId = company.id;
