@@ -32,6 +32,7 @@ import {
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
+import { PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
 import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
@@ -409,9 +410,11 @@ describe("native backend factory", () => {
 
   // An abandoned remote workspace epoch is restored into a new sibling root
   // under `.paperclip-workspaces`, while the follow-up inherits a checkpoint
-  // that names the old root. Resume there is impossible, but it is an ordinary
-  // resume failure: the runtime's replacement policy must decide, not a thrown
-  // admission error that ends the run as native_session_interrupted.
+  // that names the old root. Resume there is impossible, and retrying cannot
+  // move the saved session: the runner reports provider state incompatible.
+  // The runtime then replaces the session when the checkpoint allows it, and
+  // otherwise ends the run with the permanent named code
+  // native_provider_state_incompatible, never a generic retryable failure.
   it.each([
     ["Codex", execution()],
     ["ACPX Claude", acpxExecution("claude")],
@@ -421,6 +424,7 @@ describe("native backend factory", () => {
     expect(recovered).toEqual({
       recovered: false,
       reason: "persisted session working directory is not the assigned remote workspace",
+      failureClass: PROVIDER_STATE_INCOMPATIBLE,
     });
     // No Runner or provider process is started for a session that cannot resume here.
     expect(factory).not.toHaveBeenCalled();
@@ -430,15 +434,38 @@ describe("native backend factory", () => {
   it.each([
     ["an active turn", { activeTurnId: "turn-in-flight" }],
     ["a pending runtime request", { pendingRuntimeRequests: [{ requestId: "request-1" }] }],
-  ])("keeps refusing a moved-root session that holds %s", async (_label, inFlight) => {
+  ])("stops a moved-root session that holds %s for reconciliation, never replacing it", async (_label, inFlight) => {
     const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
     await expect(backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal }))
-      .rejects.toThrow("Remote Codex working directory does not match the assigned workspace");
+      .resolves.toEqual({
+        recovered: false,
+        reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
+        failureClass: PROVIDER_SIDE_EFFECT_PENDING,
+      });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("treats a moved-root active turn that already has a terminal record as finished", async () => {
+    const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
+    await expect(backend.recoverSession!({ ...snapshot, activeTurnId: "turn-1",
+      terminalTurns: [{ turnId: "turn-1", fingerprint: "{\"status\":\"completed\"}" }] } as never, { signal: new AbortController().signal }))
+      .resolves.toMatchObject({ recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("names the agent generically when a remote Claude session opens outside its workspace", async () => {
+    const { factory, backend } = movedRootRecovery(acpxExecution("claude"));
+    const failure = await backend.openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+      workingDirectory: "/home/daytona/paperclip-workspace/.paperclip-workspaces/elsewhere",
+    }).catch((error: unknown) => error);
+    // A Claude run must not be told its working directory is a Codex one.
+    expect((failure as Error).message).toBe("Remote agent working directory does not match the assigned workspace");
     expect(factory).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["a filesystem root", "/", "Codex working directory cannot be a filesystem root"],
+    ["a filesystem root", "/", "Agent working directory cannot be a filesystem root"],
     ["an unnormalized path", "/home/daytona/../root", "normalized absolute path"],
   ])("keeps refusing a saved session whose working directory is %s", async (_label, workingDirectory, message) => {
     const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
@@ -533,7 +560,7 @@ describe("native backend factory", () => {
 
     it.each([
       ["thread read", { read: "/projects/other", resume: "/home/agent", reason: "provider read a different working directory" }],
-      ["thread resume", { read: "/home/agent", resume: "/projects/other", reason: "Error: Codex thread response changed the assigned working directory" }],
+      ["thread resume", { read: "/home/agent", resume: "/projects/other", reason: "Error: Provider thread response changed the assigned working directory" }],
     ])("does not recover when the %s reports another cwd", async (_label, cwds) => {
       const transport = new PreparedLaunchTransport(cwds.resume);
       transport.readResponse = { thread: { id: transport.threadId, sessionId: transport.providerSessionId, cwd: cwds.read, turns: [] } };
@@ -552,7 +579,7 @@ describe("native backend factory", () => {
         codexTransportFactory: () => new PreparedLaunchTransport("/home/agent"), workingDirectoryAuthority: "remote_runner", environment: {},
       });
       await expect(backend.openSession({ identity, workingDirectory: "/home/agent" }))
-        .rejects.toThrow("Remote Codex working directory requires an assigned workspace");
+        .rejects.toThrow("Remote agent working directory requires an assigned workspace");
     });
 
     it("does not allow prepared launch authority without runnerd", () => {
