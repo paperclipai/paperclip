@@ -1012,6 +1012,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         handedOffForShutdown: isRunHandedOffForShutdown,
         runIds,
         restartKind,
+        ...(options?.trigger ? { trigger: options.trigger } : {}),
         recoveryRequestId: intent?.recoveryRequestId ?? null,
         coordinatedPreviousController: intent
           ? {

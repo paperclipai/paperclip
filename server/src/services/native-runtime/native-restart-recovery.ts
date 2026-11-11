@@ -1030,6 +1030,8 @@ export async function claimNativeRestartRecoveries(input: {
   db: Db;
   controller?: NativeControllerIdentity;
   restartKind: NativeRestartKind;
+  /** A due same-run retry, not a server restart, asked for this recovery. */
+  trigger?: "same_run_retry";
   recoveryRequestId?: string | null;
   runIds?: string[];
   liveRunExecutions?: Pick<ReadonlySet<string>, "has">;
@@ -1807,6 +1809,7 @@ export async function claimNativeRestartRecoveries(input: {
             evidence: {
               runId: row.run.id,
               reason,
+              ...(input.trigger ? { trigger: input.trigger } : {}),
               providerAttempt: row.coordinator.attempt,
               ...(hold ? { automaticAdmissionExhausted: true, executorStopEvidence: "unverified",
                 providerPid: row.run.processPid, checkpointPreserved: hasCheckpoint } : {}),
