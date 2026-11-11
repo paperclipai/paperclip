@@ -11,8 +11,9 @@ import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
 import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
-import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
+import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, TOOL_COMPLETED_WORKLOADS, UNINTERRUPTED_PROVIDER_MESSAGES, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
+import { DISK_FULL_FAULT_KINDS, isDiskFullFault, type DiskFullFaultKind } from "./disk-full-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
@@ -102,6 +103,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "poll-ms": { type: "string" },
       replay: { type: "string" },
       "daytona-image": { type: "string" },
+      "daytona-pack-mismatch": { type: "string" },
       "daytona-cpu": { type: "string" },
       "daytona-reuse-lease": { type: "boolean" },
       // The reusable warm Daytona fixture, or an environment that inherits the lifecycle (a user's default).
@@ -141,7 +143,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "tm1-hold-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "tm1-hold-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -156,6 +158,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--env daytona needs an immutable runner image: --daytona-image <registry/repository@sha256:…> or PAPERCLIP_E2E_DAYTONA_IMAGE");
   }
   if (env !== "daytona" && values["daytona-image"] !== undefined) throw new Error("--daytona-image applies only to --env daytona");
+  const daytonaSandboxImage = values["daytona-pack-mismatch"];
+  if (daytonaSandboxImage !== undefined) {
+    if (env !== "daytona") throw new Error("--daytona-pack-mismatch applies only to --env daytona");
+    if (!/^.+@sha256:[0-9a-f]{64}$/.test(daytonaSandboxImage)) {
+      throw new Error("--daytona-pack-mismatch needs an immutable image whose provider pack differs: <registry/repository@sha256:…>");
+    }
+    if (daytonaSandboxImage === daytonaImage) throw new Error("--daytona-pack-mismatch must name a different image than --daytona-image");
+  }
   // B5 grades bench.sh progress read from the live workspace while it runs. A
   // Daytona run's live workspace is inside the sandbox, so B5 is local-only.
   const workloadChoices = env === "daytona" ? WORKLOAD_IDS.filter(id => id !== "B5") : WORKLOAD_IDS;
@@ -174,19 +184,22 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const adapters = list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]);
-  // `--faults` takes restart faults (K*) and provider message faults (PV*, provider-faults.ts).
-  const allFaults = list<FaultKind | ProviderFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS], "faults",
+  // `--faults` takes restart faults (K*), provider message faults (PV*, provider-faults.ts) and the
+  // sandbox disk-full fault (DF1, disk-full-faults.ts).
+  const allFaults = list<FaultKind | ProviderFaultKind | DiskFullFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS, ...DISK_FULL_FAULT_KINDS], "faults",
     stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]);
   const providerFaults = allFaults.filter(isProviderFault);
+  const diskFullFaults = allFaults.filter(isDiskFullFault);
   const options: WaveOptions = {
     env,
     adapters,
-    // The governance scenarios (G1, H1), the journeys (Q1–Q3) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1"
+    // The governance scenarios (G1, H1), the journeys (Q1–Q4) and the contention run (L1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4"
       && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
+    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault)),
     ...(providerFaults.length ? { providerFaults } : {}),
+    ...(diskFullFaults.length ? { diskFullFaults } : {}),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -194,7 +207,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     seed: integer(values.seed, "seed", now % 2_147_483_647, 0, 2_147_483_647),
     budgetCents,
     pollMs,
-    ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
+    ...(env === "daytona" ? { daytonaImage, ...(daytonaSandboxImage ? { daytonaSandboxImage } : {}), daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
       ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}),
       ...(values["daytona-warm"] ? { daytonaWarm: true } : {}), ...(values["daytona-inherit"] ? { daytonaInherit: true } : {}) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
@@ -215,16 +228,32 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--fault-after-seconds fires faults by time; use it with --triggers time");
   }
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
+  if (diskFullFaults.length) {
+    if (stormMinutes) throw new Error("The disk-full fault (DF1) is planned per task; do not combine it with --storm-minutes");
+    // Only a remote sandbox workspace has a save the sandbox disk can refuse; a local run has none.
+    if (env !== "daytona" || values.storage !== "s3") throw new Error("The disk-full fault (DF1) needs a remote sandbox workspace save; run it with --env daytona --storage s3");
+    if (providerFaults.length) throw new Error("The disk-full fault (DF1) does not share a wave with provider message faults (PV*)");
+    // The matrix planner builds its cells from restart and provider faults only; DF1 would silently drop out.
+    if (values.matrix) throw new Error("The disk-full fault (DF1) is not a --matrix cell; run it as a planned wave");
+  }
   if (providerFaults.length) {
     if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
     if (env !== "local") throw new Error("Provider message faults (PV*) shim the local provider; run them with --env local");
     if (adapters.some(adapter => !PROVIDER_FAULT_ADAPTERS.includes(adapter))) throw new Error(`Provider message faults (PV*) cover ${PROVIDER_FAULT_ADAPTERS.join(" and ")}; remove the other adapters from --adapters`);
     // Every PV task gets its own restart through --provider-fault-restart; a planned K cell would be a different task.
     if (options.faults.length) throw new Error("Provider message faults (PV*) do not share a wave with planned restart faults (K*); use --provider-fault-restart K1 to restart after each provider fault");
-    // Every planned task gets the fault; only these workloads send the turn/interrupt the rules target.
-    const idle = options.workloads.filter(id => !PROVIDER_FAULT_WORKLOADS.includes(id));
-    if (idle.length) throw new Error(`Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
     const messages = parseProviderMessages(values["provider-fault-message"]);
+    const messageFor = (id: WorkloadId) => messages.byWorkload?.[id] ?? messages.message ?? "terminal";
+    const idle = options.workloads.filter(id => !(UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id))
+      ? TOOL_COMPLETED_WORKLOADS : PROVIDER_FAULT_WORKLOADS).includes(id));
+    if (idle.length) {
+      throw new Error(idle.some(id => UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id)))
+        ? `--provider-fault-message tool_completed needs workloads that save a document before finishing (${TOOL_COMPLETED_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`
+        : `Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
+    }
+    if (options.workloads.some(id => UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id))) && adapters.some(adapter => adapter !== "codex")) {
+      throw new Error("--provider-fault-message tool_completed shims Codex only; run it with --adapters codex");
+    }
     if (messages.message) options.providerFaultMessage = messages.message;
     if (messages.byWorkload) options.providerFaultMessageByWorkload = messages.byWorkload;
     const delays = parseProviderDelays(values["provider-fault-delays"]);
@@ -234,6 +263,11 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // Each K1 kills the whole control plane: a second task in flight would lose its held message to the
     // first task's restart and miss its own, so a restart wave runs one task at a time.
     if (options.providerFaultRestart && options.concurrency !== 1) throw new Error("--provider-fault-restart restarts the whole control plane per task; run it with --concurrency 1");
+    // The board holds its answers until the planned restart fires, but Q4's fault lands only after the
+    // first answer: the restart would wait for an answer that waits for the restart.
+    if ((options.providerFaultRestart || options.providerFaultRestartKinds?.length) && options.workloads.includes("Q4")) {
+      throw new Error("--provider-fault-restart does not cover Q4: its fault needs the first answer, which the board holds until the restart; run Q4 without it");
+    }
   } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
     || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
