@@ -176,6 +176,7 @@ export class ChaosSupervisor {
   private backendPort: number;
   /** `--fail-recovery-step`: "<point>:<nth>", armed in fail mode when the first restart fault starts its replacement. */
   private pendingRecoveryStep: string | null = null;
+  private recoveryStepWatch: NodeJS.Timeout | null = null;
   /** Wave secrets, kept across a K14 switch as an in-place upgrade keeps its configuration. */
   private readonly secrets = { PAPERCLIP_AGENT_JWT_SECRET: secret(), PAPERCLIP_DECISION_SIGNING_SECRET: secret(),
     PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: secret(), BETTER_AUTH_SECRET: secret() };
@@ -533,9 +534,10 @@ export class ChaosSupervisor {
             await this.redeployEvidence?.(receipt.faultId, "before_start");
             receipt.redeploy = await this.advanceDeploy(receipt.faultId);
           }
-          this.armPendingRecoveryStep(receipt);
           this.timeline.add("fault_restarting", { faultId: receipt.faultId });
-          return this.spawnServer();
+          const replacement = await this.spawnServer();
+          this.armPendingRecoveryStep(receipt, replacement.pid);
+          return replacement;
         },
         waitForReady: async replacement => {
           // RR with `--rr-stop-on`: watch the first replacement from spawn; waiting for health first would let a
@@ -762,10 +764,11 @@ export class ChaosSupervisor {
     if (!this.edge) throw new Error("--k15-overlap-seconds needs the edge proxy started with the wave");
     const fromPort = this.backendPort;
     receipt.redeploy = await this.advanceDeploy(receipt.faultId);
-    this.armPendingRecoveryStep(receipt);
     receipt.restartedAt = Date.now();
     this.timeline.add("fault_restarting", { faultId: receipt.faultId, overlapMs });
     const next = await this.spawnServer();
+    // Bound to the next generation: the old server keeps serving during the overlap and must not count hits.
+    this.armPendingRecoveryStep(receipt, next.pid);
     const backendUrl = `http://127.0.0.1:${this.backendPort}`;
     receipt.healthyAt = await this.waitForHealth(next, receipt.phases, backendUrl);
     const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -790,12 +793,27 @@ export class ChaosSupervisor {
     this.pendingRecoveryStep = spec;
   }
 
-  private armPendingRecoveryStep(receipt: FaultReceipt): void {
-    if (!this.pendingRecoveryStep) return;
+  /**
+   * Arms the step for the replacement process only (`pid=`), and disarms the control file once its receipt
+   * landed, so a later server (RR, K6, another task's restart) never fails the step again.
+   */
+  private armPendingRecoveryStep(receipt: FaultReceipt, pid: number | undefined): void {
+    if (!this.pendingRecoveryStep || !pid || !this.crashPointControl) return;
     const token = `rs-${receipt.faultId}`;
-    this.armCrashPoint(token, `${this.pendingRecoveryStep} fail`);
+    this.armCrashPoint(token, `${this.pendingRecoveryStep} fail pid=${pid}`);
     receipt.recoveryStep = { spec: this.pendingRecoveryStep, token };
     this.pendingRecoveryStep = null;
+    const receiptPath = this.crashPointControl.receiptPath;
+    const watch = setInterval(() => {
+      let text = "";
+      try { text = readFileSync(receiptPath, "utf8"); } catch { return; }
+      if (!text.includes(`"token":"${token}"`)) return;
+      clearInterval(watch);
+      this.disarmCrashPoint();
+      this.timeline.add("recovery_step_disarmed", { faultId: receipt.faultId, token });
+    }, 500);
+    watch.unref();
+    this.recoveryStepWatch = watch;
   }
 
   /**
@@ -927,6 +945,7 @@ export class ChaosSupervisor {
 
   async stop(): Promise<void> {
     this.shuttingDown = true;
+    if (this.recoveryStepWatch) clearInterval(this.recoveryStepWatch);
     const errors: string[] = [];
     try { await this.stopper.stopAll(); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
     await this.edge?.close().catch(error => { errors.push(error instanceof Error ? error.message : String(error)); });

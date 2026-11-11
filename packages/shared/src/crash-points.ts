@@ -21,7 +21,8 @@
  *                                               token, so writing a new token re-arms with a fresh count.
  *
  * Fail mode (control file only): a trailing `fail` makes the nth hit throw instead of
- * killing the process, once. The call site may name the error its real step throws
+ * killing the process, once. An optional `pid=<n>` binds a line to one process, so a
+ * server started earlier (still draining) never counts its hits. The call site may name the error its real step throws
  * (`crashPoint(name, { fail: () => conflict("...") })`); otherwise it throws
  * `CrashPointInjectedFailure`. The restart-chaos harness uses it to fail the Nth
  * attempt of a recovery step (`--fail-recovery-step`), so recovery chains are exercised.
@@ -113,13 +114,21 @@ type Armed = {
   token?: string | null;
 };
 
-/** Parses a control file line, "<token> <name>[:<nth>] [fail]"; null when empty or malformed. */
-export function parseCrashPointControl(text: string): { token: string; spec: CrashPointSpec; mode: CrashPointMode } | null {
+/** Parses a control file line, "<token> <name>[:<nth>] [fail] [pid=<n>]"; null when empty or malformed. */
+export function parseCrashPointControl(text: string): { token: string; spec: CrashPointSpec; mode: CrashPointMode; pid?: number } | null {
   const [token, raw, ...rest] = text.trim().split(/\s+/);
-  if (!token || !raw || rest.length > 1 || (rest.length === 1 && rest[0] !== "fail")) return null;
+  if (!token || !raw || rest.length > 2) return null;
+  let mode: CrashPointMode = "kill";
+  let pid: number | undefined;
+  for (const option of rest) {
+    const match = /^pid=([1-9][0-9]{0,9})$/.exec(option);
+    if (option === "fail" && mode === "kill") mode = "fail";
+    else if (match && pid === undefined) pid = Number(match[1]);
+    else return null;
+  }
   try {
     const spec = parseCrashPointSpec(raw);
-    return spec ? { token, spec, mode: rest[0] === "fail" ? "fail" : "kill" } : null;
+    return spec ? { token, spec, mode, ...(pid !== undefined ? { pid } : {}) } : null;
   } catch {
     return null;
   }
@@ -167,6 +176,8 @@ function readControl(current: Armed): boolean {
   try { text = readFileSync(current.controlPath!, "utf8"); } catch { return false; }
   const control = parseCrashPointControl(text);
   if (!control) return false;
+  // A line bound to another process is disarmed here.
+  if (control.pid !== undefined && control.pid !== process.pid) return false;
   if (control.token !== current.token) {
     current.token = control.token;
     current.spec = control.spec;

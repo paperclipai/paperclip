@@ -55,6 +55,9 @@ describe("parseCrashPointControl", () => {
   it("reads a token and a spec, and treats anything else as disarmed", () => {
     expect(parseCrashPointControl(`t1 ${first}:3\n`)).toEqual({ token: "t1", spec: { name: first, nth: 3 }, mode: "kill" });
     expect(parseCrashPointControl(`t1 ${first}:2 fail\n`)).toEqual({ token: "t1", spec: { name: first, nth: 2 }, mode: "fail" });
+    expect(parseCrashPointControl(`t1 ${first}:2 fail pid=42`)).toEqual({ token: "t1", spec: { name: first, nth: 2 }, mode: "fail", pid: 42 });
+    expect(parseCrashPointControl(`t1 ${first} pid=42`)).toEqual({ token: "t1", spec: { name: first, nth: 1 }, mode: "kill", pid: 42 });
+    expect(parseCrashPointControl(`t1 ${first} fail fail`)).toBeNull();
     expect(parseCrashPointControl(`t1 ${first}:2 explode`)).toBeNull();
     expect(parseCrashPointControl(`t1 ${first}:2 fail extra`)).toBeNull();
     expect(parseCrashPointControl("")).toBeNull();
@@ -201,12 +204,14 @@ describe("crashPoint armed by the environment", { timeout: 60_000 }, () => {
         `writeFileSync(${JSON.stringify(control)}, "t1 ${first}:2 fail\\n");`,
         hit("one"), hit("two"), hit("three"),
         `try { crashPoint(${JSON.stringify(second)}); crashPoint(${JSON.stringify(first)}); process.stdout.write("plain-ok\\n"); } catch (error) { process.stdout.write("plain-" + error.name + "\\n"); }`,
-        `writeFileSync(${JSON.stringify(control)}, "t2 ${first} fail\\n");`,
+        `writeFileSync(${JSON.stringify(control)}, "t3 ${first} fail pid=1\\n");`,
+        `try { crashPoint(${JSON.stringify(first)}); process.stdout.write("other-pid-ok\\n"); } catch (error) { process.stdout.write("other-pid-" + error.name + "\\n"); }`,
+        `writeFileSync(${JSON.stringify(control)}, "t2 ${first} fail pid=" + process.pid + "\\n");`,
         `try { crashPoint(${JSON.stringify(first)}); } catch (error) { process.stdout.write("default-" + error.name + "\\n"); }`,
       ].join("\n");
       const result = runChild({ PAPERCLIP_CRASH_POINT_CONTROL: control, PAPERCLIP_CRASH_POINT_RECEIPT: receipt }, source);
       expect(result.signal).toBeNull();
-      expect(result.stdout).toBe("one-ok\ntwo-lock held\nthree-ok\nplain-ok\ndefault-CrashPointInjectedFailure\n");
+      expect(result.stdout).toBe("one-ok\ntwo-lock held\nthree-ok\nplain-ok\nother-pid-ok\ndefault-CrashPointInjectedFailure\n");
       const receipts = readFileSync(receipt, "utf8").trim().split("\n").map(line => JSON.parse(line));
       expect(receipts).toEqual([expect.objectContaining({ point: first, hit: 2, token: "t1", mode: "fail" }),
         expect.objectContaining({ point: first, hit: 1, token: "t2", mode: "fail" })]);

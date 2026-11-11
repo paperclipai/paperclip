@@ -195,8 +195,9 @@ export async function rewakeStep(input: RewakeStepInput): Promise<void> {
     input.note("rewake_config_changed", { ...change });
     return;
   }
-  const delayMs = Math.max(plan.followUpAfterMs ?? 0, plan.workload === "W2C" ? CONFIG_SETTLE_MS : 0);
-  if (now < rewake.firstSettledAt + delayMs) return;
+  if (now < rewake.firstSettledAt + (plan.followUpAfterMs ?? 0)) return;
+  // W2C: the change commits at least CONFIG_SETTLE_MS before the wake, however late the board made it.
+  if (rewake.configChange && now < rewake.configChange.at + CONFIG_SETTLE_MS) return;
   const sent: NonNullable<RewakeRecord["sent"]> = { at: now, kind: rewake.kind, statusAtWake: sample.issueStatus ?? null, httpStatus: null, error: null };
   try {
     if (rewake.kind === "comment") {

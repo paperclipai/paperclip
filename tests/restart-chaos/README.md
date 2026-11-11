@@ -1044,7 +1044,10 @@ harmless and a later step failed: a bootstrap retry met a missing runtime asset,
 
 `--fail-recovery-step <step>[:<nth>]` lets the wave's first restart fault (K1, K2, K4, K6, K14, K15 or
 RR1–RR3) fire normally. When that fault's replacement server starts, the harness arms one crash point in
-fail mode: the nth hit of the point in the replacement throws, once, the error its real step throws. `nth`
+fail mode: the nth hit of the point in the replacement throws, once, the error its real step throws. The
+control line is bound to the replacement's pid (`pid=<n>`), so an old server still draining during a K15
+overlap never counts hits, and the harness disarms it once the receipt lands, so a later restart (RR, K6,
+another task's fault) does not fail the step again. `nth`
 1 fails recovery's first attempt at the step, 2 its second, 3 its third. Steps:
 
 | Step | Crash point | Error thrown | Environments |
@@ -1599,7 +1602,7 @@ and grades only (no server logs).
    `not_reached` result means the workload never crosses it.
 
 **Fail mode.** A control-file line may end in `fail` (`<token> <name>:<nth> fail`): the nth hit then
-throws once instead of killing the server. A call site can name the error its real step throws
+throws once instead of killing the server. An optional `pid=<n>` binds the line to one server process. A call site can name the error its real step throws
 (`crashPoint("<name>", { fail: () => conflict("...") })`). `--fail-recovery-step` uses it.
 
 Disarmed, a point costs one comparison (about 4 ns), and the arming variables

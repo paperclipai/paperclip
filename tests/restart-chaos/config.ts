@@ -251,6 +251,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (baseline && (stormMinutes || crashPoint)) throw new Error("--faults K0 plans cells with no fault; a storm or crash-point wave has its own faults");
   Object.assign(options, validateRecoveryStep(options, values["fail-recovery-step"]));
   Object.assign(options, parseLongTurnMinutes(values["long-turn-minutes"]));
+  // The matrix planner builds its own task plans; a long turn would silently drop out of them.
+  if (options.longTurnMinutes && values.matrix) throw new Error("--long-turn-minutes is not a --matrix option; run it as a planned wave");
   if (providerFaults.length) {
     if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
     if (env !== "local") throw new Error("Provider message faults (PV*) shim the local provider; run them with --env local");

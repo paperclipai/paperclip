@@ -98,6 +98,17 @@ describe("W2, W2Q, W2C: re-wake after success", () => {
     expect(calls).toHaveLength(1);
     await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 10_000);
     expect(calls).toHaveLength(2);
+  });
+
+  it("W2C: waits CONFIG_SETTLE_MS after a late configuration change", async () => {
+    const { calls, record, step } = harness({ workload: "W2C", followUpAfterMs: 0 });
+    await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 5_000, false);
+    // The board was held for 30 s; the seeded delay is long past when it may act.
+    await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 35_000);
+    await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 38_000);
+    expect(calls).toHaveLength(1);
+    await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 40_000);
+    expect(calls).toHaveLength(2);
     expect(record.rewake?.configChange).toMatchObject({ httpStatus: 200, idleTimeoutMs: 301_003 });
   });
 
@@ -171,6 +182,7 @@ describe("--long-turn-minutes", () => {
     expect(options.longTurnMinutes).toBe(15);
     expect(planWave("w-20261111T000000-s1", options).tasks[0]).toMatchObject({ longTurnMinutes: 15 });
     expect(() => parseCommand(["--long-turn-minutes", "5"])).toThrow("between 15 and 60");
+    expect(() => parseCommand(["--workloads", "Q1", "--faults", "K1", "--matrix", "--long-turn-minutes", "15"])).toThrow("not a --matrix option");
     const definition = withLongTurn(workloadDefinitions.A1, 15);
     expect(definition.budgetMs).toBe(workloadDefinitions.A1.budgetMs + 15 * 60_000);
     expect(definition.collect.documents).toEqual(["brief", "long-turn"]);
