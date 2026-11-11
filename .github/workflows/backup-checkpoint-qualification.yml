@@ -46,7 +46,16 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Install dependencies
+        # Pull requests never commit pnpm-lock.yaml (doc/DEVELOPING.md), so a
+        # manifest change leaves it stale for this run. Resolve it in place,
+        # as the other CI lanes do.
+        run: |
+          if ! pnpm install --frozen-lockfile --ignore-scripts; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile --ignore-scripts
+          fi
       - name: Build workspace import prerequisites
         run: |
           pnpm --filter @paperclipai/shared build
