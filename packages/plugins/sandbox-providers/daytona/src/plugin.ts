@@ -1221,6 +1221,7 @@ async function createSandbox(
     onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
     onCreateFailure?: () => PluginEnvironmentAcquisitionDiagnostic;
     onSnapshotIdentity?: (identity: SnapshotIdentity) => void;
+    keepAllocation?: () => boolean;
   } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateCreationTtl(config) ?? validateRuntimeResourceRequest(config);
@@ -1284,6 +1285,7 @@ async function createSandbox(
     }
     return sandbox;
   } catch (createError) {
+    if (options.keepAllocation?.()) throw createError;
     // Observe the create failure before compensating deletion can stall or fail.
     const diagnostic = options.onCreateFailure?.();
     try {
@@ -1364,19 +1366,31 @@ const REPORTED_CREATE_STATES = new Set<string>([
 // One read-only lookup of the provisional creation name, so a create deadline
 // records where the provider left the allocation. It neither deletes nor
 // records an observed ID: the host-owned cleanup envelope is unchanged.
-async function observeCreateState(
+async function lookupCreation(
   config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
-): Promise<PluginEnvironmentAcquisitionProviderState> {
+): Promise<{ state: PluginEnvironmentAcquisitionProviderState; sandbox?: Sandbox }> {
   try {
     const sandbox = await withLivenessTimeout("sandbox.createStateLookup", 5_000,
       () => createDaytonaClient(config).get(cleanup.providerLeaseId));
     if (!sandbox || sandbox.name !== cleanup.providerLeaseId || typeof sandbox.state !== "string" ||
-        Object.entries(cleanup.labels).some(([key, value]) => sandbox.labels?.[key] !== value)) return "unavailable";
-    return REPORTED_CREATE_STATES.has(sandbox.state) ? sandbox.state as PluginEnvironmentAcquisitionProviderState : "other";
+        Object.entries(cleanup.labels).some(([key, value]) => sandbox.labels?.[key] !== value)) return { state: "unavailable" };
+    return { state: REPORTED_CREATE_STATES.has(sandbox.state) ? sandbox.state as PluginEnvironmentAcquisitionProviderState : "other", sandbox };
   } catch (error) {
-    return error instanceof DaytonaNotFoundError ? "absent" : "unavailable";
+    return { state: error instanceof DaytonaNotFoundError ? "absent" : "unavailable" };
   }
 }
+
+async function observeCreateState(
+  config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
+): Promise<PluginEnvironmentAcquisitionProviderState> {
+  return (await lookupCreation(config, cleanup)).state;
+}
+
+const DAYTONA_CREATE_ATTEMPT_MS = 90_000;
+const DAYTONA_ACQUIRE_ATTEMPT_BUDGET_MS = 180_000;
+const SNAPSHOT_PREPARATION_STATES = new Set<PluginEnvironmentAcquisitionProviderState>([
+  "pending_build", "building_snapshot", "pulling_snapshot",
+]);
 
 // ─── Per-lease started-sandbox handle cache ──────────────────────────────────
 // Memoize the started Daytona `Sandbox` handle so repeated exec/sync/resume/
@@ -2960,7 +2974,10 @@ const plugin = definePlugin(trackDaytonaHooks({
     let snapshotIdentity: SnapshotIdentity | undefined;
     // One budget covers creation, setup, and inline cleanup. The host leaves
     // 30 seconds beyond this deadline to receive/journal the cleanup record.
-    const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
+    const budgetMs = Math.min(config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
+      DAYTONA_ACQUIRE_ATTEMPT_BUDGET_MS);
+    const createCapMs = Math.min(DAYTONA_CREATE_ATTEMPT_MS, budgetMs);
+    let adopted = false;
     const startedAt = Date.now();
     const deadline = startedAt + budgetMs;
     let expired = false;
@@ -2999,12 +3016,36 @@ const plugin = definePlugin(trackDaytonaHooks({
       if (createPending) diagnostic.providerState = await observeCreateState(config, createPending);
       return timeoutFailure();
     };
+    const createWithinCap = async (creating: Promise<Sandbox>): Promise<Sandbox> => {
+      let capTimer: ReturnType<typeof setTimeout> | undefined;
+      const capReached = await Promise.race([
+        creating.then(() => false, () => false),
+        new Promise<boolean>(resolve => { capTimer = setTimeout(() => resolve(true), Math.max(0, startedAt + createCapMs - Date.now())); }),
+      ]).finally(() => clearTimeout(capTimer));
+      if (!capReached || !cleanup || expired || phase !== "create" || firstFailure) return creating;
+      const elapsedMs = Math.max(createCapMs, Date.now() - startedAt);
+      const observed = await lookupCreation(config, cleanup);
+      if (expired) return creating;
+      if (observed.state === "started" && observed.sandbox) {
+        adopted = true;
+        cleanup.observedProviderLeaseId = observed.sandbox.id;
+        idleActivity.observe(idleActivity.resource(providerActivityKey(params, config, cleanup.providerLeaseId), true),
+          providerActivityKey(params, config, observed.sandbox.id));
+        return observed.sandbox;
+      }
+      if (SNAPSHOT_PREPARATION_STATES.has(observed.state)) return creating;
+      firstFailure = { phase: "create", elapsedMs, budgetMs: createCapMs, providerState: observed.state };
+      expired = true;
+      throw timeoutFailure();
+    };
     const acquire = async (): Promise<PluginEnvironmentLease> => {
-      const sandbox = await traceLeaseStep("lease.create", () => createSandbox(params, config, {
+      const creating = traceLeaseStep("lease.create", () => createSandbox(params, config, {
         onCreateAttempt: (attempt) => { assertActive(); cleanup = attempt; },
         onCreateFailure: observeFailure,
         onSnapshotIdentity: identity => { snapshotIdentity = identity; },
+        keepAllocation: () => adopted,
       }));
+      const sandbox = createCapMs < budgetMs ? await createWithinCap(creating) : await creating;
       try {
         assertActive();
         if (cleanup) cleanup.observedProviderLeaseId = sandbox.id;

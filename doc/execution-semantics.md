@@ -1440,11 +1440,13 @@ status, errno-style code), never by provider text. On exhaustion, the task gets 
 specific recovery notice, and generic recovery does not grant another budget.
 
 An environment provider that refuses a new lease with a transient status (HTTP
-408, 425, 429, 500, 502, 503 or 504, or a closed connection errno) before provider
-dispatch uses the same bounded bootstrap budget (`environment_provider_unavailable`).
-The status comes only from structured fields: the worker's validated acquisition
-envelope or the in-process error's status; message text is never parsed, and
-other statuses stay `setup_failed`. Each retry is a new creation attempt with its
+408, 425, 429, 500, 502, 503 or 504, or a closed connection errno), or whose
+acquisition reached its own deadline, before provider dispatch uses the same
+bounded bootstrap budget (`environment_provider_unavailable`). The status comes
+only from structured fields: the worker's validated acquisition envelope, its
+acquisition diagnostic (a first failure at or after the expired budget), or the
+in-process error's status; message text is never parsed, and other statuses and
+earlier setup failures stay `setup_failed`. Each retry is a new creation attempt with its
 own durable creation record and provider name. A provisional allocation whose
 cleanup could not be confirmed stays owned by its own record, which the creation
 reconciler settles; a retry neither reuses nor abandons it. The task shows the

@@ -1350,11 +1350,11 @@ describe("Daytona sandbox provider plugin", () => {
       mockGet.mockImplementation(() => new Promise(() => {}));
       let settled = false;
       const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => { settled = true; return error; });
-      await vi.advanceTimersByTimeAsync(304_999);
+      await vi.advanceTimersByTimeAsync(94_999);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const error = await pending;
-      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "create", elapsedMs: 300_000, budgetMs: 300_000, providerState: "unavailable" });
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "create", elapsedMs: 90_000, budgetMs: 90_000, providerState: "unavailable" });
       expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
     });
 
@@ -1406,22 +1406,64 @@ describe("Daytona sandbox provider plugin", () => {
       expect(await plugin.definition.onEnvironmentAcquireLease!(params)).not.toHaveProperty("acquisitionDiagnostic");
     });
 
+    it("ends a create still pending at 90 seconds instead of waiting out five minutes", async () => {
+      mockCreate.mockImplementation(() => new Promise(() => {}));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => (found = ownedCreation("creating")));
+      let settled = false;
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(89_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await pending;
+      expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "create", elapsedMs: 90_000, budgetMs: 90_000, providerState: "creating" });
+      expect(readEnvironmentCreationCleanupError(error)?.providerLeaseId).toBe(mockCreate.mock.calls[0][0].name);
+      expect(found!.getWorkDir).not.toHaveBeenCalled();
+    });
+
+    it("adopts a create that started by 90 seconds although its SDK wait is still pending", async () => {
+      let rejectCreate!: (error: Error) => void;
+      mockCreate.mockImplementation(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => (found ??= ownedCreation("started")));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params);
+      await vi.advanceTimersByTimeAsync(90_000);
+      const lease = await pending;
+      expect(lease).toMatchObject({ providerLeaseId: found!.id });
+      expect(found!.getWorkDir).toHaveBeenCalled();
+      rejectCreate(new MockDaytonaTimeoutError("late SDK wait"));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(found!.delete).not.toHaveBeenCalled();
+    });
+
+    it("keeps waiting for a create that is still preparing its snapshot at 90 seconds", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 120_000)));
+      mockGet.mockImplementation(async () => ownedCreation("pulling_snapshot"));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params);
+      await vi.advanceTimersByTimeAsync(121_000);
+      expect(await pending).toMatchObject({ providerLeaseId: sandbox.id });
+    });
+
     it("allows a slow create and setup that finish inside the total budget", async () => {
       const sandbox = createMockSandbox();
-      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 160_000)));
+      mockGet.mockImplementation(async () => ownedCreation("pulling_snapshot"));
       sandbox.process.executeCommand.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ result: "bash" }), 15_000)));
       const pending = plugin.definition.onEnvironmentAcquireLease!(params);
-      await vi.advanceTimersByTimeAsync(295_000);
+      await vi.advanceTimersByTimeAsync(175_000);
       expect(await pending).toMatchObject({ providerLeaseId: sandbox.id });
       expect(vi.getTimerCount()).toBe(0);
     });
 
     it("journals ownership before the host deadline when setup outlasts creation", async () => {
       const sandbox = createMockSandbox();
-      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 160_000)));
+      mockGet.mockImplementation(async () => ownedCreation("pulling_snapshot"));
       sandbox.process.executeCommand.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ result: "bash" }), 55_000)));
       const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
-      await vi.advanceTimersByTimeAsync(300_000);
+      await vi.advanceTimersByTimeAsync(180_000);
       const cleanup = readEnvironmentCreationCleanupError(await pending);
       expect(cleanup).toMatchObject({ companyId: params.companyId, environmentId: params.environmentId,
         runId: params.runId, observedProviderLeaseId: sandbox.id, providerLeaseId: mockCreate.mock.calls[0][0].name });
@@ -1470,7 +1512,7 @@ describe("Daytona sandbox provider plugin", () => {
         observedProviderLeaseId: sandbox.id, companyId: params.companyId, runId: params.runId,
       });
       expect(vi.getTimerCount()).toBe(0);
-      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "workspace", elapsedMs: 0, budgetMs: 300_000 });
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "workspace", elapsedMs: 0, budgetMs: 180_000 });
     });
   });
 
@@ -1804,7 +1846,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.fs.uploadFile).toHaveBeenCalledWith(
       expect.any(Buffer),
       "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
-      300,
+      180,
     );
   });
 
