@@ -258,6 +258,16 @@ describeEmbeddedPostgres("attention close, transfer and approval cancel (PAP-749
     await request(app(board(companyId, DOTTA))).post(url).send({ mode: "withdraw" }).expect(200);
   });
 
+  it("returns the recorded outcome when the original addressee claims a closed request", async () => {
+    const { companyId, workerId } = await seedCompany("RAC");
+    const issueId = await insertIssue(companyId);
+    const sourceId = await insertInteraction(companyId, issueId, workerId, { addresseeUserId: SCOTT });
+    const boardApp = app(board(companyId, SCOTT));
+    await request(boardApp).post(closeUrl(companyId, "issue_thread_interaction", sourceId)).send({ mode: "withdraw" }).expect(200);
+    const response = await request(boardApp).post(`/api/companies/${companyId}/attention/issue_thread_interaction/${sourceId}/claim`).expect(409);
+    expect(response.body.details).toMatchObject({ code: "attention_already_closed", status: "cancelled", resolvedByUserId: SCOTT });
+  });
+
   it("lets a person withdraw a stale card on a closed task", async () => {
     const { companyId, workerId } = await seedCompany("CLD");
     const doneTask = await insertIssue(companyId, { status: "done", createdByUserId: SCOTT });

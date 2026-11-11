@@ -2845,11 +2845,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         issueId: row.issueId,
         claimedByUserId: input.userId,
       };
-      if (row.addresseeUserId === input.userId) {
-        return { ...result, alreadyClaimed: true, previousAddresseeAgentId: null };
-      }
       if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
         throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
+      }
+      if (row.addresseeUserId === input.userId) {
+        return { ...result, alreadyClaimed: true, previousAddresseeAgentId: null };
       }
       if (row.addresseeUserId) {
         throw conflict("This card is already for another person", { addresseeUserId: row.addresseeUserId });
