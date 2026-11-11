@@ -44,15 +44,6 @@ import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-s
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 const sandboxDiskFull = /No space left on device|Disk quota exceeded/i;
-/**
- * A save that still finds the sandbox disk full after a confirmed safe cache
- * reclaim (or with nothing to reclaim) fails the same way on every automatic
- * attempt: nothing else frees space in a stopped, retained sandbox. It ends
- * the generation at once, named, and the board's Retry saves again.
- * `user_action_required` is neither a retryable nor a permanent-source class,
- * so the run's unsaved files are never replaced by the last save. Earlier
- * releases' recovery schema already accepts both values.
- */
 export const SANDBOX_DISK_FULL_RECOVERY_CAUSE = { label: "sandbox_disk_full", code: "ENOSPC", status: null } as const;
 const isSandboxDiskFullSave = (error: unknown) => error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL;
 type Source = { companyId: string; issueId: string; runId: string; actionId: string };
@@ -392,8 +383,6 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
                 cacheReclaimUnconfirmed = true;
                 logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed");
               }
-              // An unconfirmed cleanup resumes from its journal on the next
-              // attempt and can still free space, so that attempt stays scheduled.
               if (!reclaimed) throw error;
               await ownership.assertHeld();
               saved = await save();

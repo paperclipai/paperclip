@@ -25,11 +25,6 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
 describe("saved-work recovery on a full sandbox disk", () => {
   useWorkspaceRecoveryFixture(targets);
 
-  // Staging class F (doc/plans/2026-11-11-staging-failures-vs-chaos-coverage.md): a copy-back hit a full
-  // sandbox disk. Finalization hands it to saved-work recovery at once (#20678),
-  // but recovery then treated the same full disk as a transient provider error
-  // and kept re-saving on its 30-minute schedule. Nothing in a stopped, retained
-  // sandbox frees space between those attempts.
   it("ends recovery at the first full-disk save with a named cause and a Retry that saves once there is room", async () => {
     const f = await acceptedRemoteExport();
     const target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!;
@@ -49,7 +44,6 @@ describe("saved-work recovery on a full sandbox disk", () => {
     const savesAtFailure = saves;
     expect(savesAtFailure).toBeGreaterThan(0);
 
-    // The next sweep hands the spent generation to the board; it never saves again by itself.
     await recoverRetainedWorkspace(f.input);
     await recoverRetainedWorkspace(f.input);
     expect(saves).toBe(savesAtFailure);
@@ -58,10 +52,6 @@ describe("saved-work recovery on a full sandbox disk", () => {
     expect(handedOff.nextAction).toMatch(/sandbox disk is full/);
     expect(handedOff.nextAction).toMatch(/Retry saves the files again/);
 
-    // Nothing was half-published: the workspace still points at its previous
-    // saved version, the sandbox keeps the agent's files, and the in-sandbox
-    // capture left no unfinished attempt behind (a complete `captured` archive
-    // is the reusable result of an earlier step, not a partial one).
     const workspaceAfter = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0];
     expect(readRemoteWorkspaceAuthority(workspaceAfter.metadata)?.snapshotId)
       .toBe(readRemoteWorkspaceAuthority(workspaceBefore.metadata)?.snapshotId ?? null);
@@ -70,14 +60,12 @@ describe("saved-work recovery on a full sandbox disk", () => {
     for (const attempt of await readdir(staging).catch(() => [] as string[]))
       expect((await readdir(path.join(staging, attempt))).filter(name => name.startsWith("capture-"))).toEqual([]);
 
-    // The task offers a working Retry, and no provider turn was requested.
     const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true, observedRunId: f.runId });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId,
       workspaceRecovery: { canRetry: true } });
     const runsBefore = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
 
-    // Space is available again. One Retry is accepted and saves the files once.
     full = false;
     const app = receiptOnlyRecoveryApp();
     const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
@@ -93,13 +81,11 @@ describe("saved-work recovery on a full sandbox disk", () => {
       snapshotId: authority.snapshotId! });
     try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
     finally { await saved.cleanup(); }
-    // Saving again started no provider run, and a repeated sweep saves nothing more.
     const savesAfterRetry = saves;
     await recoverRetainedWorkspace(f.input);
     expect(saves).toBe(savesAfterRetry);
     expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId)))
       .toEqual(runsBefore);
-    // The accepted Retry then starts exactly one run, even when its dispatch is replayed.
     const heartbeat = heartbeatService(db);
     await Promise.all([heartbeat.resumeTaskRetry(f.companyId, receipt.requestId),
       heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);

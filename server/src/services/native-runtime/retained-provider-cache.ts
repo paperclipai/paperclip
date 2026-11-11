@@ -162,15 +162,12 @@ function readInventory(value: unknown, runId: string, expected: string): Invento
   return parsed;
 }
 
-/** `changed`: the cleanup removed something. `confirmed`: its outcome is known. */
 export type NativeProviderCacheReclaim = { changed: boolean; confirmed: boolean };
 
 export async function reclaimInactiveNativeProviderCache(input: {
   db: Db; companyId: string; issueId: string; runId: string; workspaceId: string;
   target: RemoteWorkspaceTarget; assertOwned: () => Promise<void>;
 }): Promise<NativeProviderCacheReclaim> {
-  // Nothing to reclaim is a confirmed answer; only a cleanup whose outcome is
-  // unknown can still free space when its journal resumes on a later attempt.
   const nothing = { changed: false, confirmed: true } as const;
   await input.assertOwned();
   const [source] = await input.db.select({ run: heartbeatRuns, coordinator: nativeRunFinalizations })
