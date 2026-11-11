@@ -175,7 +175,7 @@ describeEmbeddedPostgres("workspace operation reconciliation", () => {
       await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     });
     try {
-      await issueHeld;
+      await Promise.race([issueHeld, lockerDone.then(() => { throw new Error("locker ended before it held the issue"); })]);
       const recording = workspaceOperationService(db)
         .createRecorder({ ...scope, heartbeatRunId: runId, issueId })
         .recordOperation({ phase: "workspace_finalize", run: async () => ({ status: "failed" }) })
