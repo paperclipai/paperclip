@@ -143,11 +143,15 @@ async function notifyAccountingHoldRelease(tx: object, companyId: string) {
 
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
 /** `at` is one shared cutoff, so the actionable scan and the wake query
- * cannot both miss a run whose bound falls between them. */
+ * cannot both miss a run whose bound falls between them. A legacy run has no
+ * recovery coordinator: its adapter's execute() resolves only after the child
+ * process closes, so once the run is terminal nothing can deliver a missing
+ * final receipt (a restart also takes the in-process recorder down). Its last
+ * checkpoint waits for the same bound, which leaves time to drain spooled
+ * receipts, and then settles like a native run whose evidence never arrived. */
 function closureEvidenceTimedOut(at: Date = new Date()) {
-  return sql`${heartbeatRuns.runtimeMode} = 'native'
-  and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
-  and ${settledNativeCoordinator}
+  return sql`${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
+  and (${heartbeatRuns.runtimeMode} is distinct from 'native' or ${settledNativeCoordinator})
   and coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
     <= ${at.toISOString()}::timestamptz - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`;
 }
@@ -173,7 +177,7 @@ async function captureFailureSettles(db: Db, runId: string): Promise<boolean> {
   return row?.due === true;
 }
 
-async function readNativeReceiptClosure(db: Db, runId: string) {
+async function readReceiptClosure(db: Db, runId: string) {
   const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}`,
     timedOut: sql<boolean>`${closureEvidenceTimedOut()}`, neverStarted: sql<boolean>`${nativeProviderWorkNeverStarted}` }).from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId));
@@ -258,6 +262,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId });
     }
     if (run.costAccountedAt) {
+      // An acknowledged run holds no capacity. Settle a reservation that an
+      // earlier or out-of-band acknowledgement left held.
+      await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() })
+        .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
       if (object(run.usageJson).accountingLateReceiptPending === true) {
         // Clearing late debt can release an admission hold too.
         await notifyAccountingHoldRelease(tx, run.companyId);
@@ -285,7 +293,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     const captureFailed = object(run.usageJson).accountingCaptureFailed === true;
     if (captureFailed && !await captureFailureSettles(tx, run.id)) return false;
     const providerWorkNeverStarted = !captureFailed && run.runtimeMode === "native" && object(run.usageJson).accountingReceiptReady === false
-      && await readNativeReceiptClosure(tx, run.id) === "no_provider_work";
+      && await readReceiptClosure(tx, run.id) === "no_provider_work";
     const preProviderFailure = !captureFailed && (object(object(run.resultJson).executionRecovery).providerWorkStarted === false
       || object(run.usageJson).accountingProviderWorkStarted === false || providerWorkNeverStarted);
     // A failed native turn is not necessarily the end of this heartbeat: the
@@ -299,11 +307,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // arrives. Keep the debt pending instead of acknowledging an invented zero
     // and permanently discarding that late receipt. Once native recovery has
     // given up and the provider process is verified stopped, no producer can
-    // deliver it: settle the known part as unpriced usage. A later receipt
-    // still posts through late-receipt reconciliation.
+    // deliver it: settle the known part as unpriced usage. A legacy run's
+    // provider has exited once the run is terminal; it settles at the closure
+    // bound. A later receipt still posts through late-receipt reconciliation.
     const receiptUnavailable = !preProviderFailure && (captureFailed || object(run.usageJson).accountingReceiptReady === false);
     const receiptClosure = captureFailed ? "timed_out" as const
-      : receiptUnavailable ? await readNativeReceiptClosure(tx, run.id) : null;
+      : receiptUnavailable ? await readReceiptClosure(tx, run.id) : null;
     if (receiptUnavailable && !receiptClosure) return false;
     const closureTimedOut = receiptClosure === "timed_out";
     if (!preProviderFailure) await ensureRuntimeAccountingBaseline(tx, run.companyId, run.agentId);
@@ -481,16 +490,10 @@ export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDi
   const [closure] = await db.select({ at: sql<Date | string | null>`min(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}))` })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true), isNull(heartbeatRuns.costAccountedAt),
       sql`${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')`,
-      or(and(
-        sql`${heartbeatRuns.usageJson}->>'accountingReceiptReady' = 'false'`,
-        sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' is distinct from 'true'`,
-        sql`${heartbeatRuns.runtimeMode} = 'native'`,
-        settledNativeCoordinator,
-      ), and(
-        // A failed capture waits for the same bound; see captureFailureBoundPassed.
-        sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' = 'true'`,
-        sql`(${heartbeatRuns.runtimeMode} is distinct from 'native' or ${settledNativeCoordinator})`,
-      )),
+      sql`(${heartbeatRuns.runtimeMode} is distinct from 'native' or ${settledNativeCoordinator})`,
+      // A failed capture waits for the same bound; see captureFailureBoundPassed.
+      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' = 'false'
+        or ${heartbeatRuns.usageJson}->>'accountingCaptureFailed' = 'true')`,
       // Only future bounds: a run already past it is in the actionable scan,
       // and a past deadline must never schedule an immediate pass again.
       sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})

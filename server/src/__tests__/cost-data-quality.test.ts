@@ -229,7 +229,8 @@ describe("actionable cost data quality", () => {
 
   it("retry cannot invent a missing receipt; a late receipt is recorded exactly once", async () => {
     const owner = await company();
-    const pending = await run(owner);
+    // Inside the accounting closure bound, so the final receipt can still arrive.
+    const pending = await run(owner, { finishedAt: new Date() });
     const integrity = accountingIntegrityService(db);
     expect(await integrity.retry(owner.companyId, pending.id, "board")).toEqual({ accounted: false });
     expect((await db.select().from(costEvents).where(eq(costEvents.companyId, owner.companyId)))).toEqual([]);
