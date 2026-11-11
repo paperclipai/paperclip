@@ -13989,6 +13989,16 @@ describe("native session bounded recovery", () => {
     },
   );
 
+  it("stops same-run retries when the execution provider proves task admission was rejected", () => {
+    for (const prefix of ["", "runner_ingress_unavailable: runnerd exited unexpectedly with code 1: "]) {
+      const code = nativeSessionFailureSourceCode(new Error(`${prefix}runner_task_admission_rejected: session_state_unavailable`));
+      expect(code).toBe("runner_task_admission_rejected");
+      expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
+        phase: "terminal_failure", failureCode: code, nextAttemptAt: null,
+      });
+    }
+  });
+
   it("stops same-run retries when the runner proves the saved provider session incompatible", () => {
     const failure = new NativeProviderStateIncompatibleError(
       "Error: PRP command run.attach failed: ACPX durable launch profile digest does not match runner startup",

@@ -71,7 +71,7 @@ export function createPluginRunnerTaskOwner(input: {
   let adoptionVerified = false;
   let markReady!: () => void;
   let failReady!: (error: unknown) => void;
-  let confirmStopped: (code: number) => void = () => {};
+  let confirmStopped: (code: number, error?: Error) => void = () => {};
   let stoppedState: Extract<PluginEnvironmentTaskResult, { kind: "status" }> | undefined;
   let completed = false;
   let retiredBeforeClaim = false;
@@ -225,11 +225,11 @@ export function createPluginRunnerTaskOwner(input: {
         return true;
       } };
     const completion = new Promise<Awaited<RunnerProcessHandle["completion"]>>(resolve => {
-      confirmStopped = code => {
+      confirmStopped = (code, error) => {
         if (child.exitCode !== null) return;
         child.exitCode = code;
-        failReady(new Error("Plugin Runner stopped before connection"));
-        resolve({ code, signal: null, stdout: "", stderr: "" });
+        failReady(error ?? new Error("Plugin Runner stopped before connection"));
+        resolve({ code, signal: null, stdout: "", stderr: error?.message ?? "" });
       };
     });
     void (async () => {
@@ -248,9 +248,17 @@ export function createPluginRunnerTaskOwner(input: {
         return;
       }
       submitted = true;
-      try { await call(operation); } catch {
+      const result = await call(operation).catch(async () => {
         // Submission can have succeeded remotely. Inspect the same saved task.
         await readStatus();
+      });
+      if (result?.kind === "admission_rejected") {
+        submitted = false;
+        removeStartupAbort();
+        const error = new Error(`runner_task_admission_rejected: ${result.reason}`);
+        rejectFailure(error);
+        confirmStopped(1, error);
+        return;
       }
       let stopSent = false;
       while (child.exitCode === null) {
