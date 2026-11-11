@@ -7,7 +7,8 @@
 // except for the one provider message an armed rule names:
 //   - "terminal": the `turn/completed` notification that follows a `turn/interrupt`
 //     request (a governed wait or a board Stop);
-//   - "interrupt_ack": the response to that `turn/interrupt` request.
+//   - "interrupt_ack": the response to that `turn/interrupt` request;
+//   - "tool_completed": Codex's `item/completed` for a non-terminal Paperclip tool call.
 // Rules are armed per task in the control file, by the task's nonce. A process is
 // bound to a nonce once the nonce appears in its traffic (the task's prompt or a
 // tool result). Every rule applies at most once per task (an exclusive marker file
@@ -118,8 +119,16 @@ child.stdin.on("error", () => undefined);
 const pendingTimers = new Map();
 function emit(line) { process.stdout.write(`${line}\n`); }
 
+const TERMINAL_TOOLS = new Set(["paperclip_finish", "paperclip_block"]);
+
 function classify(message) {
   if (!message) return null;
+  if (message.method === "item/completed" && message.params?.item?.type === "dynamicToolCall"
+    && typeof message.params.item.tool === "string" && !TERMINAL_TOOLS.has(message.params.item.tool)) {
+    const threadId = message.params?.threadId;
+    return { message: "tool_completed", afterInterrupt: true, threadId: typeof threadId === "string" ? threadId : null,
+      turnStatus: null, tool: message.params.item.tool };
+  }
   if (message.method === "turn/completed") {
     const threadId = message.params?.threadId;
     const afterInterrupt = typeof threadId === "string" && interruptedThreads.size ? interruptedThreads.has(threadId) : interruptSeen;
@@ -146,7 +155,7 @@ function relay(line) {
   const rule = target ? ruleFor(target) : null;
   if (!target || !rule || !claim(rule)) { emit(line); return; }
   const base = { event: "applied", nonce: rule.nonce, kind: rule.kind, message: target.message, turnStatus: target.turnStatus,
-    requestId: message.id ?? null, sinceSpawnMs: Date.now() - startedAt };
+    requestId: message.id ?? null, sinceSpawnMs: Date.now() - startedAt, ...(target.tool ? { tool: target.tool } : {}) };
   if (rule.kind === "PV2") { log({ ...base, action: "drop" }); return; }
   if (rule.kind === "PV3") { emit(line); emit(line); log({ ...base, action: "duplicate" }); return; }
   const delayMs = Number(rule.delayMs ?? 0);
