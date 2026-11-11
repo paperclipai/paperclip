@@ -17,10 +17,8 @@ export function typesafeRoutes(db: Db, fetchImpl: typeof fetch = fetch) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      // Access is an agent's connection install; a board user has none to resolve.
       if (req.actor.type !== "agent" || !req.actor.agentId)
         throw forbidden("Only agents can ask TypeSafe");
-      // The middleware copies the run header unverified; a key alone must not reach the vault.
       const runId = req.actor.runId;
       const [run] = runId
         ? await db

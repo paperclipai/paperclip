@@ -351,7 +351,6 @@ export function connectionIntentService(db: Db) {
     sourceRunId?: string | null;
     agentSetup?: true;
     agentSetupOperationId?: string;
-    /** The task the agent would call from; governance conditions can depend on it. */
     issueId?: string | null;
     inventory?: Awaited<ReturnType<typeof connectionInventory>>;
   }) {
@@ -374,7 +373,6 @@ export function connectionIntentService(db: Db) {
       && connection.status !== "archived" && connection.connectionPurpose !== "ai"
     );
     if (matching.length === 0) return null;
-    // TypeSafe has no catalog tools; its connector eligibility and policy decision are the readiness test.
     if (input.serviceSlug === TYPESAFE_GALLERY_KEY) {
       const usable = await typesafeUsableConnections(db, { companyId: input.companyId, agentId: input.agentId, issueId: input.issueId });
       return usable.length === 1 ? access.getConnection(usable[0]!.id, input.companyId) : null;

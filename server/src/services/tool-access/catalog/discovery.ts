@@ -444,7 +444,6 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, typesa
         actorId: null,
       },
     );
-    // The list holds aliases only, so it proves the key, not the configured model.
     await typesafeApi(key, typesafeFetch).listModels();
   }
 

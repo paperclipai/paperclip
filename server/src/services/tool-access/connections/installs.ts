@@ -67,8 +67,7 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
     // Installation controls where a connection is exposed, not which actions
     // it grants. The app wizard's catalog-entry includes are the authority for
     // action selection, so remove the legacy connection-wide include that used
-    // to silently turn every installed action on. TypeSafe has no catalog, so its
-    // connection include is its only grant, not a legacy one.
+    // to silently turn every installed action on.
     if (!isTypesafeConnection(connection))
       await dbClient
         .delete(toolProfileEntries)

@@ -190,7 +190,6 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     expect(
       await assignedTypesafeConnections(db, { companyId: other.companyId, agentId: other.first.id }),
     ).toEqual([]);
-    // A forged binding that pairs another company's agent with the owner company.
     expect(
       await assignedTypesafeConnections(db, { companyId: other.companyId, agentId: owner.first.id }),
     ).toEqual([]);

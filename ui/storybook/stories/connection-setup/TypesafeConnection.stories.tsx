@@ -263,7 +263,6 @@ function seededClient(connected: boolean) {
   return client;
 }
 
-// Stories never reach Paperclip or TypeSafe; setup writes are answered here.
 function installConnectFixtures(scenario: ConnectScenario) {
   const original = window.fetch;
   window.fetch = async (input, init) => {

@@ -14,7 +14,6 @@ import {
 } from "../typesafe-api.js";
 
 const structured = { type: ["string", "object", "array"] };
-// Connector-owned definition. It is never part of the universal runner catalog.
 export const TYPESAFE_TOOLS = [
   {
     name: "typesafe_ask",
@@ -90,9 +89,7 @@ export async function assignedTypesafeConnections(
         eq(toolConnections.transport, "rest_api"),
         eq(toolConnections.status, "active"),
         eq(toolConnections.enabled, true),
-        // Same health gate as the tool gateway's catalog.
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
-        // The key is the organization identity; revoking that grant revokes the key.
         exists(
           db
             .select({ id: connectionGrants.id })
@@ -154,14 +151,12 @@ function askPolicyRequest(
       toolName: "typesafe.ask",
       providerType: "typesafe",
       riskLevel: "read" as const,
-      // Shape only: the audit row must not hold the state or the questions.
       arguments: args,
       sideEffecting: false,
     },
   };
 }
 
-/** Assigned connections whose governance would allow a call in this task context. Read-only: no rate limit or audit. */
 export async function typesafeUsableConnections(db: Db, binding: AskBinding) {
   const policy = toolAccessPolicyService(db);
   const usable = [];
@@ -263,7 +258,6 @@ export async function executeTypesafeAsk(
     });
   }
 
-  // Usage only: state, instructions and answers may hold private task content.
   await logActivity(db, {
     companyId: binding.companyId,
     actorType: "agent",
@@ -275,7 +269,6 @@ export async function executeTypesafeAsk(
     entityType: "tool_connection",
     entityId: connection.id,
     details: {
-      // The requested name: resolved versions such as jev-1.13.0 trip the JWT-shape redactor.
       model,
       questionCount,
       inputTokens: result.usage.input_tokens,

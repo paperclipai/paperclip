@@ -67,7 +67,7 @@ const SECRET_SENSITIVE_HTTP_PATHS: ReadonlyArray<readonly [SecretSensitiveRouteF
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
-/** Free-form agent feedback and TypeSafe task content must never be copied into HTTP diagnostics. */
+/** Free-form agent feedback must never be copied into HTTP diagnostics. */
 export function isPrivateAgentContentHttpRequest(url: string | undefined): boolean {
   if (!url) return false;
   // Express routes are case-insensitive and also accept absolute-form URLs.

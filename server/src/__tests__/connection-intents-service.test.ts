@@ -783,7 +783,6 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [agent!.id] }, preserveExistingAccess: true,
     }, actor);
 
-    // A task-limited include: execution supplies the issue, so readiness must too.
     const [appProfile] = await db.select().from(toolProfiles)
       .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connectionId}`)));
     await db.update(toolProfileEntries).set({ conditions: { context: { requireIssue: true } } })

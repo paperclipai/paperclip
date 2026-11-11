@@ -1,4 +1,3 @@
-/** Bundled only for authorized TypeSafe connection assignments. */
 export const TYPESAFE_SKILL = `---
 name: typesafe
 description: Ask TypeSafe's Jev model yes/no, multiple-choice and scoring questions about text or data and get calibrated answers with a confidence. Provided automatically by your TypeSafe connection.

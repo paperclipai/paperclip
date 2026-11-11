@@ -5,7 +5,6 @@ const BASE_URL = "https://api.typesafe.ai/v1";
 export const TYPESAFE_GALLERY_KEY = "typesafe";
 export const TYPESAFE_HEALTH_MESSAGE = "TypeSafe API key is connected.";
 
-// The generic connect flow stores the catalog slug, never a provider name.
 export function isTypesafeConnection(connection: {
   transport: string;
   config: Record<string, unknown>;
@@ -17,7 +16,6 @@ export function isTypesafeConnection(connection: {
 }
 interface TypesafeFailure {
   code: string;
-  /** Status Paperclip returns to its own caller. */
   httpStatus: number;
   retryable: boolean;
 }
@@ -47,13 +45,11 @@ const INVALID_REQUEST: TypesafeFailure = {
   retryable: false,
 };
 const FAILURES: Record<number, TypesafeFailure> = {
-  // Undocumented: the live API answers 400 for an unknown model name.
   400: INVALID_REQUEST,
   401: KEY_REJECTED,
   403: KEY_REJECTED,
   422: INVALID_REQUEST,
   429: { code: "typesafe_rate_limited", httpStatus: 429, retryable: true },
-  // 529 is not a registered status; 503 carries the same meaning to HTTP clients.
   529: { code: "typesafe_overloaded", httpStatus: 503, retryable: true },
 };
 
@@ -65,7 +61,6 @@ export class TypesafeApiError extends Error {
     readonly status: number,
     failure: TypesafeFailure = FAILURES[status] ?? REQUEST_FAILED,
   ) {
-    // Provider bodies may echo submitted state. Never log them.
     super(
       failure === INVALID_RESPONSE
         ? "TypeSafe returned a response Paperclip could not read"
@@ -114,7 +109,6 @@ export interface TypesafeEvaluateRequest {
   questions: Record<string, unknown>;
 }
 
-/** Credentials stay on the server; agents only ever see answers. */
 export function typesafeApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
   async function request(path: string, body?: unknown): Promise<unknown> {
     const response = await fetchImpl(`${BASE_URL}${path}`, {
@@ -127,11 +121,9 @@ export function typesafeApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     }).catch(() => {
-      // Timeouts and network errors carry host details; keep only the class of failure.
       throw new TypesafeApiError(0, UNREACHABLE);
     });
     if (!response.ok) throw new TypesafeApiError(response.status);
-    // The deadline also covers the body; a stream failure is transient, malformed JSON is not.
     const text = await response.text().catch(() => {
       throw new TypesafeApiError(0, UNREACHABLE);
     });
@@ -141,7 +133,6 @@ export function typesafeApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
       return undefined;
     }
   }
-  // Zod issues can echo provider values, so a mismatch never leaves as a ZodError.
   function read<T>(schema: z.ZodType<T>, body: unknown): T {
     const parsed = schema.safeParse(body);
     if (!parsed.success) throw new TypesafeApiError(502, INVALID_RESPONSE);

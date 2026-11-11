@@ -172,7 +172,6 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
-  /** Test seam for TypeSafe without live vendor traffic. */
   typesafeFetch?: typeof fetch;
 };
 
@@ -3266,7 +3265,6 @@ export function toolAccessService(
         applicationId: connection.applicationId,
       }),
     );
-    // No catalog actions exist to include, so the profile grants the connection itself.
     if (isTypesafeConnection(connection))
       entries.push({
         selectorType: "connection",
@@ -3369,7 +3367,6 @@ export function toolAccessService(
             .select()
             .from(toolProfileEntries)
             .where(eq(toolProfileEntries.profileId, existingProfile.id));
-          // Saved selector rules (exclusions, conditions) outrank this setup's defaults.
           const defaults = entries.splice(0, entries.length);
           entries.push(
             ...defaults.filter(
@@ -3604,7 +3601,6 @@ export function toolAccessService(
         .set({ status: "active", updatedAt: new Date() })
         .where(eq(toolApplications.id, connection.applicationId));
       if (isTypesafeConnection(connection)) {
-        // Connector tools resolve access from installs, which API-key setup does not otherwise create.
         const installTargets =
           input.access === "all_agents"
             ? [{ targetType: "company" as const, targetId: companyId }]
