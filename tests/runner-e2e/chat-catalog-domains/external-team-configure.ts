@@ -26,7 +26,6 @@ function missingAccountProbe(row: Probe, agentId: string) {
 function readyProbe(row: Probe, agentId: string) {
   return row.agentId === agentId && row.status === "pass" && row.checks.every(check => check.level === "info");
 }
-/** Each member's observed readiness, for a setup blocker that says which side of the split did not form. */
 export function memberReadinessSummary(rows: readonly Probe[], members: ReadonlyArray<Pick<Agent, "id" | "name">>, missingId: string, workingId: string) {
   return rows.map(row => {
     const role = row.agentId === missingId ? "expected missing account" : row.agentId === workingId ? "expected ready" : "other member";
