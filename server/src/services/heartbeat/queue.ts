@@ -1308,7 +1308,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
       if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
-        if (staleness.outcome === "cancelled" && staleness.errorCode === "issue_assignee_changed") {
+        if (staleness.outcome === "cancelled" && staleness.errorCode !== "execution_reconciliation_required") {
+          // The withdrawn run may be the holder that other wakes for this
+          // issue were deferred behind. Drain them now, like the mention-gate
+          // cancellation above; nothing else would wake them. A refusal by an
+          // existing execution hold leaves its saved wakes to that hold.
           await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true, deferredPostCommitEffects }).catch((err) => {
             logger.warn({ err, runId: run.id, issueId }, "claimQueuedRun: new owner's wake will be promoted by recovery");
           });
