@@ -1974,6 +1974,82 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
   });
 
+  it("archives a cleanup_failed workspace again at a new lifecycle generation", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const failedClosedAt = new Date(Date.now() - 60_000);
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "cleanup_failed",
+        closedAt: failedClosedAt,
+        cleanupReason: "teardown failed",
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const closedAt = new Date();
+    const result = await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt,
+    });
+
+    expect(result).toMatchObject({ outcome: "archived", capturedGeneration: 3 });
+
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(workspace?.status).toBe("archived");
+    expect(workspace?.closedAt?.getTime()).toBe(closedAt.getTime());
+    expect(workspace?.cleanupReason).toBeNull();
+    expect(
+      (workspace?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(3);
+  });
+
+  it("does not archive a workspace that is already archived", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const archivedAt = new Date(Date.now() - 60_000);
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt: archivedAt,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt: new Date(),
+    });
+
+    expect(result).toBeNull();
+
+    const [workspace] = await db
+      .select({ closedAt: executionWorkspaces.closedAt, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(workspace?.closedAt?.getTime()).toBe(archivedAt.getTime());
+    expect(
+      (workspace?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(2);
+  });
+
   it("does not overwrite a newer archive when a stale cleanup failure lands late", async () => {
     // The archive route records a cleanup failure through the generation-fenced
     // write after the destructive cleanup throws. Simulate a reopen and a fresh
