@@ -1,7 +1,7 @@
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
-import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/domain/wake-context.js";
+import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
 /**
  * A preparation that a restart interrupted before any provider work started
