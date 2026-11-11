@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
-import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
+import { SPEC_OPERATION_TABLES, buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -224,14 +224,413 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   return `${prefix}${routePath}`;
 }
 
+const constantPathRoutes: Array<{ file: string; marker: string; route: string }> = [
+  { file: "companies.ts", marker: "router.post(COMPANY_IMPORT_ROUTE_PATH", route: "POST /api/companies/import" },
+  {
+    file: "companies.ts",
+    marker: "router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH",
+    route: `POST /api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`,
+  },
+];
+
+function maskLiterals(source: string) {
+  const out = source.split("");
+  const regexPrecedingKeywords = new Set([
+    "return", "typeof", "case", "in", "of", "new", "delete", "void", "instanceof", "do", "else", "yield", "await",
+  ]);
+  const opensRegex = (at: number) => {
+    let j = at - 1;
+    while (j >= 0 && /\s/.test(out[j])) j--;
+    if (j < 0) return true;
+    if (/[A-Za-z0-9_$]/.test(out[j])) {
+      let k = j;
+      while (k >= 0 && /[A-Za-z0-9_$]/.test(out[k])) k--;
+      if (k >= 0 && out[k] === ".") return false;
+      return regexPrecedingKeywords.has(out.slice(k + 1, j + 1).join(""));
+    }
+    if ((out[j] === "+" || out[j] === "-") && out[j - 1] === out[j]) return false;
+    return !")]}\"'`".includes(out[j]);
+  };
+
+  const blocks: string[] = [];
+  const blank = (at: number) => {
+    if (at < source.length) out[at] = " ";
+  };
+  let state = "code";
+  let i = 0;
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (state === "code") {
+      if (char === "/" && (next === "/" || next === "*")) {
+        state = next === "/" ? "line" : "block";
+        blank(i);
+        blank(i + 1);
+        i += 2;
+        continue;
+      }
+      if (char === "/" && opensRegex(i)) {
+        out[i] = " ";
+        i++;
+        let inClass = false;
+        for (; i < source.length && source[i] !== "\n"; i++) {
+          const regexChar = source[i];
+          if (regexChar === "\\") {
+            blank(i);
+            blank(i + 1);
+            i++;
+            continue;
+          }
+          if (regexChar === "[") inClass = true;
+          else if (regexChar === "]") inClass = false;
+          out[i] = " ";
+          if (regexChar === "/" && !inClass) {
+            i++;
+            break;
+          }
+        }
+        while (i < source.length && /[a-z]/.test(source[i])) out[i++] = " ";
+        continue;
+      }
+      if (char === '"' || char === "'" || char === "`") {
+        state = char === "`" ? "template" : "string";
+        blocks.push(char);
+        i++;
+        continue;
+      }
+      if (char === "{") {
+        blocks.push("brace");
+        i++;
+        continue;
+      }
+      if (char === "}") {
+        if (blocks.pop() === "substitution") state = "template";
+        i++;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (state === "line") {
+      if (char === "\n") state = "code";
+      else out[i] = " ";
+      i++;
+      continue;
+    }
+    if (state === "block") {
+      if (char === "*" && next === "/") {
+        blank(i);
+        blank(i + 1);
+        i += 2;
+        state = "code";
+        continue;
+      }
+      if (char !== "\n") out[i] = " ";
+      i++;
+      continue;
+    }
+    if (char === "\\") {
+      blank(i);
+      blank(i + 1);
+      i += 2;
+      continue;
+    }
+    if (char === blocks[blocks.length - 1]) {
+      blocks.pop();
+      state = "code";
+      i++;
+      continue;
+    }
+    if (state === "template" && char === "$" && next === "{") {
+      blocks.push("substitution");
+      state = "code";
+      i += 2;
+      continue;
+    }
+    if (char !== "\n") out[i] = " ";
+    i++;
+  }
+  return out.join("");
+}
+
+const BOARD_ASSERT_ROOT = "assertBoard";
+const INSTANCE_ADMIN_ASSERT_ROOT = "assertInstanceAdmin";
+const AUTHZ_FILE = "authz.ts";
+
+const INLINE_BOARD_ASSERTIONS: Record<string, readonly string[]> = {};
+
+const INLINE_INSTANCE_ADMIN_ASSERTIONS: Record<string, readonly string[]> = {
+  "environments.ts": ["assertCanAccessInstanceEnvironments"],
+  "instance-settings.ts": ["assertCanManageInstanceSettings"],
+};
+
+const FUNCTION_DECLARATION_PATTERN = /(?:^|[\s;})])(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g;
+const ARROW_DECLARATION_PATTERN = /(?:^|[\s;})])(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/g;
+
+function declarationsIn(masked: string) {
+  const declarations: Array<{ name: string; index: number; isNamedFunction: boolean }> = [];
+  for (const [pattern, isNamedFunction] of [
+    [FUNCTION_DECLARATION_PATTERN, true],
+    [ARROW_DECLARATION_PATTERN, false],
+  ] as const) {
+    for (const match of masked.matchAll(pattern)) {
+      declarations.push({ name: match[1], index: match.index, isNamedFunction });
+    }
+  }
+  return declarations;
+}
+
+function boardAssertCallPattern(names: ReadonlySet<string>) {
+  const alternation = [...names].map((name) => name.replace(/[$]/g, "\\$")).join("|");
+  return new RegExp(`^(?:${alternation})\\(\\s*_?req\\s*[,)]`);
+}
+
+function namedFunctionBodyStart(source: string) {
+  const open = source.indexOf("(");
+  if (open < 0) return -1;
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "(") depth++;
+    else if (source[i] === ")" && --depth === 0) return bodyBraceAfterParams(source, i + 1);
+  }
+  return -1;
+}
+
+function bodyBraceAfterParams(source: string, from: number) {
+  let j = from;
+  while (j < source.length && /\s/.test(source[j])) j++;
+  if (source[j] === "{") return j;
+  if (source[j] !== ":") return -1;
+  let angles = 0;
+  let parens = 0;
+  let previous = ":";
+  for (let i = j + 1; i < source.length; i++) {
+    const char = source[i];
+    if (/\s/.test(char)) continue;
+    if (char === ";" || char === "=") return -1;
+    if (char === "<") angles++;
+    else if (char === ">") angles = Math.max(0, angles - 1);
+    else if (char === "(") parens++;
+    else if (char === ")") parens = Math.max(0, parens - 1);
+    else if (char === "{") {
+      if (angles === 0 && parens === 0 && !":|&,<(".includes(previous)) return i;
+      let braceDepth = 0;
+      for (; i < source.length; i++) {
+        if (source[i] === "{") braceDepth++;
+        else if (source[i] === "}" && --braceDepth === 0) break;
+      }
+      previous = "}";
+      continue;
+    }
+    previous = char;
+  }
+  return -1;
+}
+
+const SUCCESS_RESPONSE_PATTERN = /\bres\s*\.\s*(?:json|send|end|redirect|render|sendFile|download|write|sendStatus)\s*\(/;
+const ERROR_STATUS_PATTERN = /\.\s*(?:status|sendStatus)\s*\(\s*[45]\d\d\s*\)/;
+
+function assertsBoardUnconditionally(
+  handlerSource: string,
+  assertNames: ReadonlySet<string>,
+  isNamedFunction = false,
+  rejectEarlyReturn = false,
+) {
+  const bodyStart = isNamedFunction
+    ? namedFunctionBodyStart(handlerSource)
+    : nextTopLevelArrowBodyStart(handlerSource, 0);
+  if (bodyStart < 0) return false;
+  const callPattern = boardAssertCallPattern(assertNames);
+  const blocks: string[] = [];
+  const blockStarts: number[] = [];
+  for (let i = handlerSource.indexOf("{", bodyStart); i < handlerSource.length; i++) {
+    const char = handlerSource[i];
+    if (char === "{") {
+      blocks.push(blocks.length > 0 && /\btry$/.test(handlerSource.slice(0, i).trimEnd()) ? "try" : "block");
+      blockStarts.push(i);
+      continue;
+    }
+    if (char === "}") {
+      blocks.pop();
+      blockStarts.pop();
+      if (blocks.length === 0) {
+        const next = nextTopLevelArrowBodyStart(handlerSource, i + 1);
+        if (next < 0) return false;
+        i = next - 1;
+      }
+      continue;
+    }
+    if (char === "r" && !/[\w$.]/.test(handlerSource[i - 1] ?? " ") && /^return\b/.test(handlerSource.slice(i, i + 7))) {
+      const returned = handlerSource.slice(i).replace(/^return\s+(?:await\s+)?/, "");
+      if (!(blocks.length === 1 && callPattern.test(returned))) {
+        if (rejectEarlyReturn) return false;
+        const statementEnd = handlerSource.indexOf(";", i);
+        const path = handlerSource.slice(blockStarts.at(-1) ?? i, statementEnd < 0 ? undefined : statementEnd);
+        if (SUCCESS_RESPONSE_PATTERN.test(path) && !ERROR_STATUS_PATTERN.test(path)) return false;
+      }
+    }
+    if (blocks.slice(1).some((kind) => kind !== "try")) continue;
+    if (!/[A-Za-z_$]/.test(char)) continue;
+    if (/[\w$.]/.test(handlerSource[i - 1] ?? " ")) continue;
+    if (!callPattern.test(handlerSource.slice(i))) continue;
+    if (!isUnconditionalStatement(handlerSource, i)) continue;
+    return true;
+  }
+  return false;
+}
+
+function isUnconditionalStatement(source: string, at: number) {
+  let j = at - 1;
+  const skipWhitespace = () => {
+    while (j >= 0 && /\s/.test(source[j])) j--;
+  };
+  skipWhitespace();
+  if (j >= 4 && source.slice(j - 4, j + 1) === "await") {
+    j -= 5;
+    skipWhitespace();
+  }
+  if (j < 0) return true;
+  if (j >= 5 && source.slice(j - 5, j + 1) === "return" && !/[\w$]/.test(source[j - 6] ?? " ")) {
+    j -= 6;
+    skipWhitespace();
+    if (j < 0) return true;
+    return source[j] === ";" || source[j] === "{" || source[j] === "}";
+  }
+  const previous = source[j];
+  if (previous === ";" || previous === "{" || previous === "}") return true;
+  if (previous !== "=") return false;
+  if (j > 0 && "=!<>+-*/%&|^".includes(source[j - 1])) return false;
+  if (source[j + 1] === ">") return false;
+  let start = j - 1;
+  while (start >= 0 && !";{}".includes(source[start])) start--;
+  const target = source.slice(start + 1, j);
+  return !/[()?]|&&|\|\||\b(?:else|case|default|do)\b/.test(target);
+}
+
+function resolveBoardAssertNames(masked: string, seed: ReadonlySet<string>) {
+  const names = new Set(seed);
+  const declarations = declarationsIn(masked)
+    .map((declaration) => ({ ...declaration, body: declarationBody(masked, declaration) }))
+    .filter((declaration): declaration is typeof declaration & { body: string } => declaration.body !== null);
+  for (;;) {
+    const found = declarations.filter(
+      (declaration) =>
+        !names.has(declaration.name) &&
+        assertsBoardUnconditionally(declaration.body, names, declaration.isNamedFunction, true),
+    );
+    if (found.length === 0) return names;
+    for (const declaration of found) names.add(declaration.name);
+  }
+}
+
+function declarationBody(masked: string, declaration: { index: number; isNamedFunction: boolean }) {
+  const source = masked.slice(declaration.index);
+  const bodyStart = declaration.isNamedFunction ? namedFunctionBodyStart(source) : arrowFunctionBodyStart(source);
+  if (bodyStart < 0) return null;
+  let depth = 0;
+  for (let i = bodyStart; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return source.slice(0, i + 1);
+  }
+  return null;
+}
+
+function nextTopLevelArrowBodyStart(source: string, from: number) {
+  let parens = 0;
+  let braces = 0;
+  for (let i = from; i < source.length; i++) {
+    const char = source[i];
+    if (char === "(") parens++;
+    else if (char === ")") parens--;
+    else if (char === "{") braces++;
+    else if (char === "}") braces--;
+    else if (char === "=" && source[i + 1] === ">" && parens === 0 && braces === 0) {
+      const body = source.slice(i + 2).match(/^\s*\{/);
+      if (body) return i + 2 + body[0].length - 1;
+      i++;
+    }
+  }
+  return -1;
+}
+
+function arrowFunctionBodyStart(source: string) {
+  const open = source.indexOf("(");
+  if (open < 0) return -1;
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "(") depth++;
+    else if (source[i] === ")" && --depth === 0) {
+      const body = source.slice(i + 1).match(/^\s*(?::[^{;=]*)?=>\s*\{/);
+      return body ? i + 1 + body[0].length - 1 : -1;
+    }
+  }
+  return -1;
+}
+
+function namedHandlerAssertsBoard(masked: string, registrationIndex: number, assertNames: ReadonlySet<string>) {
+  const args = registrationArguments(masked, registrationIndex);
+  if (args === null) return false;
+  const handlerName =
+    args
+      .split(",")
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+      .pop() ?? "";
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(handlerName)) return false;
+  const declaration = declarationsIn(masked).find((entry) => entry.name === handlerName);
+  if (!declaration) return false;
+  const body = declarationBody(masked, declaration);
+  if (body === null) return false;
+  return assertsBoardUnconditionally(body, assertNames, declaration.isNamedFunction);
+}
+
+function registrationArguments(masked: string, registrationIndex: number) {
+  const open = masked.indexOf("(", registrationIndex);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let close = open; close < masked.length; close++) {
+    if (masked[close] === "(") depth++;
+    else if (masked[close] === ")" && --depth === 0) return masked.slice(open + 1, close);
+  }
+  return null;
+}
+
+function routeIsBoardGuarded(masked: string, registrationIndex: number, assertNames: ReadonlySet<string>) {
+  return (
+    assertsBoardUnconditionally(registrationArguments(masked, registrationIndex) ?? "", assertNames) ||
+    namedHandlerAssertsBoard(masked, registrationIndex, assertNames)
+  );
+}
+
+function braceBalanceOf(masked: string) {
+  let balance = 0;
+  for (const char of masked) {
+    if (char === "{") balance++;
+    else if (char === "}") balance--;
+  }
+  return balance;
+}
+
+let cachedActualRoutes: ReturnType<typeof computeActualRoutes> | undefined;
 function loadActualRoutes() {
+  return (cachedActualRoutes ??= computeActualRoutes());
+}
+
+function computeActualRoutes() {
   const routes = new Set<string>();
   const excludedRoutes = new Set<string>();
+  const boardGuardedRoutes = new Set<string>();
+  const instanceAdminGuardedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
+  const unbalancedRouteFiles: string[] = [];
+  const missingInlineAssertions: string[] = [];
 
-  for (const file of fs
-    .readdirSync(ROUTES_DIR)
-    .filter((entry) => entry.endsWith(".ts"))) {
+  const maskedAuthz = maskLiterals(fs.readFileSync(path.join(ROUTES_DIR, AUTHZ_FILE), "utf8"));
+  if (braceBalanceOf(maskedAuthz) !== 0) unbalancedRouteFiles.push(AUTHZ_FILE);
+  const sharedAssertNames = resolveBoardAssertNames(maskedAuthz, new Set([BOARD_ASSERT_ROOT]));
+  const sharedInstanceAdminNames = resolveBoardAssertNames(maskedAuthz, new Set([INSTANCE_ADMIN_ASSERT_ROOT]));
+
+  for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
     if (explicitOpenApiCoverageExclusions.has(file)) continue;
     const prefix = apiPrefixes[file];
     const source = fs.readFileSync(path.join(ROUTES_DIR, file), "utf8");
@@ -242,16 +641,39 @@ function loadActualRoutes() {
       continue;
     }
 
-    for (const match of source.matchAll(ROUTE_LITERAL_PATTERN)) {
-      const method = match[1].toUpperCase();
-      const routePath = match[2];
-      const operation = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
-      if (explicitOpenApiOperationCoverageExclusions.has(operation)) {
-        excludedRoutes.add(operation);
-      } else {
-        routes.add(operation);
+    const masked = maskLiterals(source);
+    if (braceBalanceOf(masked) !== 0) unbalancedRouteFiles.push(file);
+
+    const inlineInstanceAdminAssertions = INLINE_INSTANCE_ADMIN_ASSERTIONS[file] ?? [];
+    const inlineAssertions = [...(INLINE_BOARD_ASSERTIONS[file] ?? []), ...inlineInstanceAdminAssertions];
+    if (inlineAssertions.length > 0) {
+      const declared = new Set(declarationsIn(masked).map((declaration) => declaration.name));
+      for (const name of inlineAssertions) {
+        if (!declared.has(name)) missingInlineAssertions.push(`${file}: ${name}`);
       }
     }
+    const assertNames = resolveBoardAssertNames(masked, new Set([...sharedAssertNames, ...inlineAssertions]));
+    const instanceAdminAssertNames = resolveBoardAssertNames(
+      masked,
+      new Set([...sharedInstanceAdminNames, ...inlineInstanceAdminAssertions]),
+    );
+
+    const classify = (route: string, at: number) => {
+      if (explicitOpenApiOperationCoverageExclusions.has(route)) {
+        excludedRoutes.add(route);
+        return;
+      }
+      routes.add(route);
+      if (routeIsBoardGuarded(masked, at, assertNames)) boardGuardedRoutes.add(route);
+      if (routeIsBoardGuarded(masked, at, instanceAdminAssertNames)) instanceAdminGuardedRoutes.add(route);
+    };
+
+    const registrations = [...source.matchAll(ROUTE_LITERAL_PATTERN)];
+    registrations.forEach((match) => {
+      const method = match[1].toUpperCase();
+      const routePath = match[2];
+      classify(`${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`, match.index);
+    });
 
     for (const match of source.matchAll(ROUTE_ARRAY_PATTERN)) {
       for (const literal of match[2].matchAll(/["'`]([^"'`]+)["'`]/g)) {
@@ -295,28 +717,31 @@ function loadActualRoutes() {
       for (const route of MUSE_PUBLIC_ROUTES) excludedRoutes.add(`${route.method} ${route.path}`);
     }
 
-    if (
-      file === "companies.ts" &&
-      source.includes("router.post(COMPANY_IMPORT_ROUTE_PATH")
-    ) {
-      routes.add("POST /api/companies/import");
-    }
-    if (
-      file === "companies.ts" &&
-      source.includes("router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH")
-    ) {
-      routes.add(`POST /api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`);
+    for (const { file: constantFile, marker, route } of constantPathRoutes) {
+      if (file !== constantFile) continue;
+      const at = masked.indexOf(marker);
+      if (at < 0) continue;
+      classify(route, at);
     }
   }
 
   return {
     routes,
     excludedRoutes,
+    boardGuardedRoutes,
+    instanceAdminGuardedRoutes,
     unknownRouteFiles: unknownRouteFiles.sort(),
+    unbalancedRouteFiles: unbalancedRouteFiles.sort(),
+    missingInlineAssertions: missingInlineAssertions.sort(),
   };
 }
 
+let cachedSpecRoutes: ReturnType<typeof computeSpecRoutes> | undefined;
 function loadSpecRoutes() {
+  return (cachedSpecRoutes ??= computeSpecRoutes());
+}
+
+function computeSpecRoutes() {
   const spec = buildOpenApiSpec();
   const routes = new Set<string>();
 
@@ -1368,6 +1793,213 @@ describe("openapi routes", () => {
     const review = spec.paths[root + "reviews/{reviewId}"].get;
     expect(review.parameters.map((param: { name: string }) => param.name)).toEqual(["endpointId", "reviewId"]);
     expect(review.responses["404"]).toBeDefined();
+  });
+
+  it("resolves board assertions transitively and scopes them to the right handler", () => {
+    const closure = (source: string) =>
+      resolveBoardAssertNames(maskLiterals(source), new Set([BOARD_ASSERT_ROOT]));
+
+    const chained = closure(`
+      function outer(req: Request, companyId: string) { inner(req, companyId); }
+      function inner(req: Request, companyId: string) { assertBoard(req); other(req); }
+    `);
+    expect([...chained].sort()).toEqual(["assertBoard", "inner", "outer"]);
+
+    expect([...closure("function gate(req: Request, res: Response): string | null { assertBoard(req); }")])
+      .toContain("gate");
+    expect([...closure("function typed(req: Request): { ok: boolean } { assertBoard(req); }")])
+      .toContain("typed");
+    expect([...closure("async function generic(req: Request): Promise<{ id: string }> { assertBoard(req); }")])
+      .toContain("generic");
+
+    expect([...closure("function maybe(req: Request) { if (req.actor.type === 'board') assertBoard(req); }")])
+      .not.toContain("maybe");
+    expect([...closure("function branch(req: Request) { if (x) { assertBoard(req); } }")])
+      .not.toContain("branch");
+    expect([...closure("function admit(req: Request) { if (req.actor.type === 'agent') { return ctx(req); } assertBoard(req); }")])
+      .not.toContain("admit");
+    expect([...closure("function tail(req: Request) { return assertBoard(req); }")])
+      .toContain("tail");
+    expect([...closure("function nested(req: Request) { if (needsBoard(req)) assertBoard(req); }")])
+      .not.toContain("nested");
+    expect([...closure("function andForm(req: Request) { x && assertBoard(req); }")]).not.toContain("andForm");
+    expect([...closure("function ternary(req: Request) { flag ? assertBoard(req) : null; }")])
+      .not.toContain("ternary");
+    expect([...closure("function elseAssign(req: Request) { if (x) { serve(); } else y = assertBoard(req); }")])
+      .not.toContain("elseAssign");
+    expect([...closure("function viaConst(req: Request) { const id = assertBoard(req); return id; }")])
+      .toContain("viaConst");
+    expect([...closure("async function viaAwait(req: Request) { const id = await assertBoard(req); return id; }")])
+      .toContain("viaAwait");
+    expect([...closure("function viaReturn(req: Request) { return assertBoard(req); }")])
+      .toContain("viaReturn");
+    expect([...closure("function condReturn(req: Request) { if (x) return assertBoard(req); }")])
+      .not.toContain("condReturn");
+    expect([...closure("function afterDivision(req: Request) { n++; const a = n++ / 2; assertBoard(req); }")])
+      .toContain("afterDivision");
+    expect([...closure('function divAfterString(req: Request) { const n = "100" / rate; assertBoard(req); }')])
+      .toContain("divAfterString");
+    expect([...closure("function propKeyword(req: Request) { const half = q.in / 2; assertBoard(req); }")])
+      .toContain("propKeyword");
+    expect([...closure("function forHeader(req: Request) { for (let i = 0; i < n; i++) x = assertBoard(req); }")])
+      .not.toContain("forHeader");
+    expect([...closure("function wrapped(req: Request) { assertBoard(\n              req,\n            ); }")])
+      .toContain("wrapped");
+
+    const spillover = closure(`
+      const concise = (req: Request) => ({ id: req.params.id });
+      const real = (req: Request) => { assertBoard(req); };
+    `);
+    expect([...spillover]).toContain("real");
+    expect([...spillover]).not.toContain("concise");
+
+    const names = new Set([BOARD_ASSERT_ROOT]);
+
+    expect(assertsBoardUnconditionally("(req, res) => { assertBoard(req, extra); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(_req, res) => { assertBoard(_req); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(req, res) => { assertBoard(other); }", names)).toBe(false);
+    expect(assertsBoardUnconditionally("(req, res) => { svc.assertBoard(req); }", names)).toBe(false);
+
+    expect(assertsBoardUnconditionally("(req, res) => { const x = await load(req, res); if (!x) return; assertBoard(req); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(req, res) => { if (!x) { res.status(404).json(e); return; } assertBoard(req); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(req, res) => { if (agent) { res.json(entry); return; } assertBoard(req); }", names)).toBe(false);
+    expect(assertsBoardUnconditionally("(req, res) => { if (agent) return res.json(entry); assertBoard(req); }", names)).toBe(false);
+
+    expect(
+      assertsBoardUnconditionally(
+        '"/x", (req, res, next) => { next(); }, (req, res) => { assertBoard(req); res.json({}); }',
+        names,
+      ),
+    ).toBe(true);
+    expect(
+      assertsBoardUnconditionally(
+        '"/x", (req, res, next) => { next(); }, (req, res) => { res.json({}); }',
+        names,
+      ),
+    ).toBe(false);
+    expect(
+      assertsBoardUnconditionally(
+        '"/x", limiter({ onLimit: (req, res) => { assertBoard(req); } }), realHandler',
+        names,
+      ),
+    ).toBe(false);
+
+    const wrapped = maskLiterals(`
+      router.get(
+        "/wrapped",
+        wrappedHandler,
+      );
+      function wrappedHandler(req: Request, res: Response) { assertBoard(req); res.json({}); }
+    `);
+    expect(namedHandlerAssertsBoard(wrapped, wrapped.indexOf("router.get"), names)).toBe(true);
+
+    const arrowThenNamed = maskLiterals(`
+      router.get("/x", (req, res, next) => { next(); }, namedAfterArrow);
+      function namedAfterArrow(req: Request, res: Response) { assertBoard(req); res.json({}); }
+    `);
+    expect(namedHandlerAssertsBoard(arrowThenNamed, arrowThenNamed.indexOf("router.get"), names)).toBe(true);
+
+    const source = maskLiterals(`
+      router.get("/thing", namedHandler);
+      const helper = (req: Request) => { assertBoard(req); };
+      function namedHandler(req: Request, res: Response) { res.json({}); }
+    `);
+    const registration = source.indexOf("router.get");
+    expect(registrationArguments(source, registration)?.trim().endsWith("namedHandler")).toBe(true);
+    expect(assertsBoardUnconditionally(source.slice(registration), names)).toBe(true);
+    expect(assertsBoardUnconditionally(registrationArguments(source, registration) ?? "", names)).toBe(false);
+    expect(namedHandlerAssertsBoard(source, registration, names)).toBe(false);
+  });
+
+  it("annotates every unconditionally board-guarded route as board-only", () => {
+    const { boardGuardedRoutes, unbalancedRouteFiles, missingInlineAssertions } = loadActualRoutes();
+    const { spec } = loadSpecRoutes();
+
+    expect(unbalancedRouteFiles).toEqual([]);
+    expect(missingInlineAssertions).toEqual([]);
+    expect(boardGuardedRoutes.size).toBeGreaterThanOrEqual(240);
+    expect([...boardGuardedRoutes]).toContain("POST /api/execution-workspaces/{id}/reconcile-branch");
+    expect([...boardGuardedRoutes]).toContain("GET /api/tools/oauth/cloud-connector/callback");
+    expect([...boardGuardedRoutes]).toContain("PATCH /api/adapters/{type}");
+    expect([...boardGuardedRoutes]).toContain("GET /api/heartbeat-runs/{runId}/provider-trace/download");
+    expect([...boardGuardedRoutes]).toContain("POST /api/companies/{companyId}/secrets");
+    expect([...boardGuardedRoutes]).toContain("GET /api/sidebar-preferences/me");
+    expect([...boardGuardedRoutes]).toContain("POST /api/tool-gateway/action-requests/{id}/approve");
+    expect([...boardGuardedRoutes]).toContain("GET /api/adapters");
+    expect([...boardGuardedRoutes]).toContain("PATCH /api/environments/{id}");
+    expect([...boardGuardedRoutes]).toContain("POST /api/companies/{companyId}/environments");
+    expect([...boardGuardedRoutes]).not.toContain("POST /api/invites/{inviteId}/revoke");
+    expect([...boardGuardedRoutes]).not.toContain("POST /api/agents/{id}/heartbeat/invoke");
+
+    const connectionManagedBoardGuards = ["GET /api/companies/{companyId}/tools/stdio-templates"];
+    for (const route of connectionManagedBoardGuards) {
+      expect([...boardGuardedRoutes]).toContain(route);
+      const separator = route.indexOf(" ");
+      const operation = spec.paths[route.slice(separator + 1)][route.slice(0, separator).toLowerCase()];
+      expect(operation["x-paperclip-connection-management"]).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+    }
+
+    const mislabeled = [...boardGuardedRoutes]
+      .filter((route) => !connectionManagedBoardGuards.includes(route))
+      .filter((route) => {
+        const separator = route.indexOf(" ");
+        const operation = spec.paths?.[route.slice(separator + 1)]?.[route.slice(0, separator).toLowerCase()];
+        if (!operation) return false;
+        return operation["x-paperclip-authorization"]?.actor !== "board";
+      })
+      .sort();
+
+    expect(mislabeled).toEqual([]);
+  });
+
+  it("annotates every unconditionally instance-admin-guarded route as instance-admin", () => {
+    const { boardGuardedRoutes, instanceAdminGuardedRoutes } = loadActualRoutes();
+    const { spec } = loadSpecRoutes();
+
+    expect([...instanceAdminGuardedRoutes].filter((route) => !boardGuardedRoutes.has(route))).toEqual([]);
+
+    expect([...instanceAdminGuardedRoutes]).toContain("PATCH /api/adapters/{type}");
+    expect([...instanceAdminGuardedRoutes]).toContain("PATCH /api/environments/{id}");
+    expect([...instanceAdminGuardedRoutes]).not.toContain("POST /api/execution-workspaces/{id}/reconcile-branch");
+    expect([...instanceAdminGuardedRoutes]).not.toContain("POST /api/invites/{inviteId}/revoke");
+
+    const mislabeled = [...instanceAdminGuardedRoutes]
+      .filter((route) => {
+        const separator = route.indexOf(" ");
+        const operation = spec.paths?.[route.slice(separator + 1)]?.[route.slice(0, separator).toLowerCase()];
+        if (!operation) return false;
+        return operation["x-paperclip-authorization"]?.instanceAdmin !== true;
+      })
+      .sort();
+
+    expect(mislabeled).toEqual([]);
+
+    expect(instanceAdminGuardedRoutes.size).toBeGreaterThanOrEqual(40);
+  });
+
+  it("keeps every operation-table entry matched to a served operation", () => {
+    const { routes: specRoutes } = loadSpecRoutes();
+
+    const stale = Object.entries(SPEC_OPERATION_TABLES)
+      .flatMap(([table, operations]) =>
+        [...operations].filter((operation) => !specRoutes.has(operation)).map((operation) => `${table}: ${operation}`),
+      )
+      .sort();
+
+    expect(stale).toEqual([]);
+
+    const authTables = ["public", "runtimeTools", "board", "instanceAdmin"] as const;
+    const seen = new Map<string, string>();
+    const shadowed: string[] = [];
+    for (const table of authTables) {
+      for (const operation of SPEC_OPERATION_TABLES[table]) {
+        const holder = seen.get(operation);
+        if (holder) shadowed.push(`${operation} (${holder} + ${table})`);
+        else seen.set(operation, table);
+      }
+    }
+    expect(shadowed.sort()).toEqual([]);
   });
 
   it("documents auth and reviewed response-code invariants", () => {
