@@ -5,10 +5,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem } from "@paperclipai/shared";
+import { issuesApi } from "@/api/issues";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { approvalsApi } from "@/api/approvals";
 import { ApprovalResolver } from "@/components/AttentionQueueRow";
-import { needsYouMentionedArtifact } from "./CoordinatorReviewPanel";
+import { CoordinatorReviewPanel, needsYouMentionedArtifact } from "./CoordinatorReviewPanel";
 
+vi.mock("@/api/issues", () => ({ issuesApi: { getDocument: vi.fn(), getDocumentRevision: vi.fn() } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async () => [{ id: "mgr", name: "Dottabot" }]) } }));
 vi.mock("@/api/approvals", () => ({ approvalsApi: { approve: vi.fn(), reject: vi.fn(), requestRevision: vi.fn(), get: vi.fn() } }));
 
@@ -17,10 +20,16 @@ vi.mock("@/api/approvals", () => ({ approvalsApi: { approve: vi.fn(), reject: vi
 describe("needsYouMentionedArtifact (PAP-775)", () => {
   it("reads a task document, an approval and an attachment from a card's links", () => {
     expect(needsYouMentionedArtifact("/NEE/issues/NEE-12#document-design", "design notes"))
-      .toEqual({ kind: "document", issueId: "NEE-12", key: "design", title: "design notes" });
+      .toMatchObject({ kind: "document", issueId: "NEE-12", key: "design", title: "design notes" });
     expect(needsYouMentionedArtifact("/NEE/approvals/appr-1")).toEqual({ kind: "approval", approvalId: "appr-1" });
     expect(needsYouMentionedArtifact("/api/attachments/att-1/content", "screenshot.png"))
       .toEqual({ kind: "attachment", assetId: "att-1", name: "screenshot.png" });
+  });
+
+  it("preserves pinned document revisions, annotations, and the document owner", () => {
+    expect(needsYouMentionedArtifact("/NEE/issues/NEE-12#document-launch%20plan&revision=rev-1&interaction=req-1&documentIssue=NEE-9&thread=thread-2"))
+      .toMatchObject({ kind: "document", issueId: "NEE-9", key: "launch plan", documentTarget: { revisionId: "rev-1", interactionId: "req-1", threadId: "thread-2", documentIssueId: "NEE-9" } });
+    expect(needsYouMentionedArtifact("/NEE/issues/NEE-12#document-%invalid")).toBeNull();
   });
 
   it("leaves every other link alone", () => {
@@ -70,6 +79,40 @@ describe("ApprovalResolver shared between a card and its side panel (PAP-775)", 
     expect(approvalsApi.approve).toHaveBeenCalledTimes(1);
     expect(approvalsApi.approve).toHaveBeenCalledWith("appr-1", "Looks right");
     await act(async () => resolveApprove({}));
+    client.clear();
+  });
+
+  it("loads the pinned revision and retains the full document link", async () => {
+    vi.mocked(issuesApi.getDocumentRevision).mockResolvedValue({ title: "Pinned plan", body: "Revision under review" } as never);
+    const artifact = needsYouMentionedArtifact("/NEE/issues/NEE-12#document-plan&revision=rev-1&interaction=req-1&documentIssue=NEE-9&thread=thread-2")!;
+    const onOpen = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ThemeProvider><CoordinatorReviewPanel companyId="company" item={item} artifact={artifact} agentMap={new Map()} currentUserId="scott" onOpenTask={onOpen} onResolved={vi.fn()} /></ThemeProvider>
+    </QueryClientProvider>));
+    for (let tick = 0; tick < 3; tick++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(issuesApi.getDocumentRevision).toHaveBeenCalledExactlyOnceWith("NEE-9", "plan", "rev-1");
+    expect(issuesApi.getDocument).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Revision under review");
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Open in"))!.click());
+    expect(onOpen.mock.calls[0]?.[0]).toContain("#document-plan&thread=thread-2&revision=rev-1&interaction=req-1&documentIssue=NEE-9");
+    client.clear();
+  });
+
+  it("confirms before the panel answers another person's request", async () => {
+    vi.mocked(approvalsApi.approve).mockClear().mockResolvedValue({} as never);
+    const other = { ...item, inlineResolvable: true, audience: { kind: "user", userId: "dotta", reason: "requester" } } as AttentionItem;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <CoordinatorReviewPanel companyId="company" item={other} artifact={{ kind: "images" }} agentMap={new Map()} currentUserId="scott"
+        userLabelMap={new Map([["dotta", "Dotta"]])} onOpenTask={vi.fn()} onResolved={vi.fn()} />
+    </QueryClientProvider>));
+    const button = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(entry => entry.textContent === label)!;
+    await act(async () => button("Approve").click());
+    expect(approvalsApi.approve).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("This is for @Dotta");
+    await act(async () => button("Continue").click());
+    expect(approvalsApi.approve).toHaveBeenCalledTimes(1);
     client.clear();
   });
 

@@ -948,7 +948,7 @@ function SuggestTasksCard({
                 : null;
               const meta = [owner, task.billingCode, ...(task.labels ?? [])].filter(Boolean).join(" · ");
               return (
-                <div key={task.clientKey} className="flex items-start gap-2.5" style={depth > 0 ? { paddingLeft: `${depth * 24}px` } : undefined}>
+                <div key={task.clientKey} className="flex items-start gap-2.5" style={depth > 0 ? { paddingLeft: `calc(var(--spacing) * 6 * ${depth})` } : undefined}>
                   <Checkbox
                     checked={selectedClientKeys.has(task.clientKey)}
                     onCheckedChange={(checked) => handleToggleSelection(node, checked === true)}
@@ -2070,6 +2070,11 @@ function RequestToolActionCard({
           <DecisionPanel>
             <NeedsYouPanelRow icon={<Lock />} title={appName ? `${appName} · ${payload.toolDisplayName}` : payload.toolDisplayName} meta={previewIsLine ? preview.replace(/[*_`]/g, "") : toolArgumentsLine(payload.argumentsSummaryJson)} />
             {preview && !previewIsLine ? <DecisionPanelMarkdown markdown={preview} lead={false} externalReferences={externalReferences} /> : null}
+            {isPending ? inspectableArguments ? <details>
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Arguments</summary>
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">{payload.argumentsSummaryJson}</pre>
+              <ToolActionAuditHashCopy hash={payload.argumentsHash} />
+            </details> : <p className="text-xs text-muted-foreground">Request arguments are unavailable.</p> : null}
             {isPending ? (
               <NeedsYouPanelNote>
                 {payload.risk === "destructive" ? "Destructive action. " : ""}Runs once when you allow it · {payload.expiresAt ? <>Expires {formatShortDate(payload.expiresAt)}</> : null}

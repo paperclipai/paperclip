@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionItem, AttentionReceipt, DecisionHistoryItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem, AttentionReceipt, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -17,7 +17,8 @@ vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: fixture.mobile }) }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ userId: "reviewer" }) }));
 vi.mock("@/lib/router", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/router")>(), useNavigate: () => fixture.navigate }));
-vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [{ id: "agent-cos", name: "Chief of Staff" }] } }));
+const agentFixture = vi.hoisted(() => ({ rows: [] as Agent[] }));
+vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => agentFixture.rows } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: {
   listUserDirectory: async () => ({ users: [{ principalId: "dotta", status: "active", user: { name: "Dotta" } }] }),
@@ -66,6 +67,7 @@ let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
+  agentFixture.rows = [{ id: "agent-cos", name: "Chief of Staff" }] as Agent[];
   fixture.history = []; fixture.url = "/decisions"; vi.clearAllMocks();
   fixture.byView = {}; fixture.viewCounts = undefined; fixture.receipts = []; fixture.listCalls = []; fixture.boardAccess = null; fixture.historyByScope = {}; fixture.historyCalls = [];
   fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false; fixture.mobile = false;
@@ -123,6 +125,7 @@ describe("Coordinator Needs You — Archived view and history filters (PAP-749 t
     expect(group.querySelector('[data-attention-card="snz"] [data-attention-hidden="snoozed"]')).not.toBeNull();
     expect(group.querySelector('[data-attention-card="arch"]')).toBeNull();
 
+    dismissals.restore.mockImplementationOnce(async () => { fixture.byView.archived = fixture.byView.archived!.filter(item => item.id !== "arch"); return {}; });
     const trigger = archivedCard.querySelector<HTMLElement>("[data-attention-close-menu]")!;
     await act(async () => {
       trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
@@ -506,8 +509,28 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     client.clear();
   });
 
+  it("indexes company agents once when many task cards need assignee names", async () => {
+    let reads = 0;
+    agentFixture.rows = Array.from({ length: 1000 }, (_, index) => ({
+      get id() { if (++reads > 15_000) throw new Error("Repeated company roster scan"); return `agent-${index}`; },
+      name: `Agent ${index}`,
+    })) as Agent[];
+    fixture.byView = { mine: Array.from({ length: 80 }, (_, index) => ({
+      ...mine(`review-${index}`, "assignee"), sourceKind: "review", inlineResolvable: false,
+      subject: { id: `task-${index}`, companyId: "company", identifier: `PAP-${index}`, kind: "issue", title: `Review ${index}`, status: "in_review", href: `/PAP/issues/PAP-${index}`,
+        metadata: { assigneeAgentId: "agent-999" } }, relatedIssue: null,
+    }) as AttentionItem) };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    expect(container.querySelectorAll('[data-attention-card]')).toHaveLength(40);
+    expect(container.textContent?.match(/Assigned to Agent 999/g)).toHaveLength(40);
+    expect(reads).toBeLessThan(15_000);
+    client.clear();
+  });
+
   it("archives a card for me from its Close… menu with the version I saw", async () => {
     fixture.byView = { mine: [{ ...mine("m1", "addressee"), closeModes: ["withdraw", "archive", "snooze"], changeFingerprint: "fp-1.me" } as unknown as AttentionItem, mine("m2", "addressee")] };
+    fixture.close.mockImplementationOnce(async () => { fixture.byView.mine = [mine("m2", "addressee")]; return { until: null }; });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client);
     const menu = container.querySelector<HTMLElement>("[data-attention-close-menu]")!;
@@ -519,6 +542,11 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect(fixture.close).toHaveBeenCalledWith("company", "issue_thread_interaction", "m1", { mode: "archive", reason: undefined, until: undefined, fingerprint: "fp-1.me" });
     expect(container.querySelector('[data-attention-card="m1"]')).toBeNull();
     expect(container.querySelector('[data-attention-card="m2"]')).not.toBeNull();
+    // The server can return the same request after a snooze or content change.
+    fixture.byView.mine = [{ ...mine("m1", "addressee"), changeFingerprint: "fp-2.me" } as AttentionItem, mine("m2", "addressee")];
+    await act(async () => { await client.invalidateQueries({ queryKey: ["attention", "company"] }); });
+    await flush();
+    expect(container.querySelector('[data-attention-card="m1"]')).not.toBeNull();
     client.clear();
   });
 

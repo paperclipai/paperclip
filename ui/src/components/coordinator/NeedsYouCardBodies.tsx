@@ -1,12 +1,7 @@
-import { useMemo, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { FileText, TriangleAlert } from "lucide-react";
-import type { AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { accessApi } from "@/api/access";
-import { agentsApi } from "@/api/agents";
-import { buildCompanyUserLabelMap } from "@/lib/company-members";
-import { queryKeys } from "@/lib/queryKeys";
 import { readIssueReviewPolicyMetadata } from "@/lib/review-policy";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { StalledReviewActions } from "@/components/StalledReviewActions";
@@ -24,6 +19,8 @@ import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "./NeedsYouCa
 export interface NeedsYouCardBodyProps {
   item: AttentionItem;
   companyId: string;
+  agentMap?: ReadonlyMap<string, Agent>;
+  userLabelMap?: ReadonlyMap<string, string>;
   /** The task link at the left of the footer. */
   leading?: ReactNode;
   footerContext?: ReactNode;
@@ -42,14 +39,11 @@ const taskLine = (task: { identifier?: string | null; title?: string | null }) =
   [task.identifier, task.title].filter(Boolean).join(" · ") || "Task";
 
 /** The assignee's name, from the same agent and people lists the page reads. */
-function useAssigneeName(item: AttentionItem, companyId: string): string | null {
+function assigneeName(item: AttentionItem, agentMap?: ReadonlyMap<string, Agent>, userLabelMap?: ReadonlyMap<string, string>): string | null {
   const agentId = metadataString(item, "assigneeAgentId");
   const userId = metadataString(item, "assigneeUserId");
-  const agents = useQuery({ queryKey: queryKeys.agents.list(companyId), queryFn: () => agentsApi.list(companyId), enabled: !!agentId });
-  const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(companyId), queryFn: () => accessApi.listUserDirectory(companyId), enabled: !!userId && !agentId });
-  const users = useMemo(() => buildCompanyUserLabelMap(directory.data?.users), [directory.data?.users]);
-  if (agentId) return agents.data?.find((agent) => agent.id === agentId)?.name ?? null;
-  return userId ? users.get(userId) ?? null : null;
+  if (agentId) return agentMap?.get(agentId)?.name ?? null;
+  return userId ? userLabelMap?.get(userId) ?? null : null;
 }
 
 /** The primary "Open …" action: in-app navigation when given, else a link. */
@@ -63,8 +57,8 @@ function OpenButton({ href, onOpen, variant = "default", children }: { href: str
  * the task, where the review stage, its policy and the comment live, so the
  * card opens it.
  */
-export function ReviewTaskCardBody({ item, companyId, leading, footerContext, onOpen }: NeedsYouCardBodyProps) {
-  const assignee = useAssigneeName(item, companyId);
+export function ReviewTaskCardBody({ item, companyId, agentMap, userLabelMap, leading, footerContext, onOpen }: NeedsYouCardBodyProps) {
+  const assignee = assigneeName(item, agentMap, userLabelMap);
   const href = item.subject.href;
   // The feed carries no acceptance checklist yet, so the panel is the state line.
   return <>
@@ -83,8 +77,8 @@ export function ReviewTaskCardBody({ item, companyId, leading, footerContext, on
  * stalled review itself) and what it blocks. A stalled review is answered here
  * with its review verbs; any other blocker opens the task that is in the way.
  */
-export function BlockedTaskCardBody({ item, companyId, leading, footerContext, onResolved, onOpen }: NeedsYouCardBodyProps) {
-  const assignee = useAssigneeName(item, companyId);
+export function BlockedTaskCardBody({ item, companyId, agentMap, userLabelMap, leading, footerContext, onResolved, onOpen }: NeedsYouCardBodyProps) {
+  const assignee = assigneeName(item, agentMap, userLabelMap);
   const stalledReview = item.sourceKind === "review";
   const blocking = item.detail?.kind === "blocker" ? item.detail.blockingIssue : null;
   // "/NEE": the company prefix of the card's own links.

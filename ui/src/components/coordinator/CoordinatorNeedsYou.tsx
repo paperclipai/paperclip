@@ -107,16 +107,22 @@ export function CoordinatorNeedsYou() {
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [settling, setSettling] = useState<AttentionItem[]>([]);
-  const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
+  const [savedIds, setSavedIds] = useState<Map<string, { version: number; fingerprint: string; closed: boolean }>>(() => new Map());
   // The Stale (N) group starts collapsed in each view; the Archived view's
   // Snoozed group starts open (PAP-749 plan §3).
   const [staleOpen, setStaleOpen] = useState(false);
   const [snoozedOpen, setSnoozedOpen] = useState(true);
-  useEffect(() => { setSettling([]); setSavedIds(new Set()); setStaleOpen(false); setSnoozedOpen(true); }, [selectedCompanyId, userId, view]);
+  useEffect(() => { setSettling([]); setSavedIds(new Map()); setStaleOpen(false); setSnoozedOpen(true); }, [selectedCompanyId, userId, view]);
   const archivedView = view === "archived";
   const [renderLimit, setRenderLimit] = useState(40);
   // Keyed by person and view; the For you key is the one the badge reads.
   const feed = useAttentionViewFeed(selectedCompanyId, view);
+  useEffect(() => {
+    setSavedIds(current => {
+      const pending = new Map([...current].filter(([, hidden]) => hidden.closed || hidden.version === feed.dataUpdatedAt));
+      return pending.size === current.size ? current : pending;
+    });
+  }, [feed.dataUpdatedAt]);
   const feedView = useQueryView(feed);
   const feedWaiting = feedView.kind === "loading" || feedView.kind === "reconnecting";
   const { viewCounts } = useAttentionBadge(selectedCompanyId);
@@ -128,15 +134,15 @@ export function CoordinatorNeedsYou() {
   // receipt in Recent Decisions after the history refetch. In the Archived
   // view a new snooze time keeps the card (it only changes group), and a
   // restored card leaves it; elsewhere an Undo brings the card straight back.
-  const hideCard = useCallback((item: AttentionItem) => {
-    setSavedIds(current => new Set([...current, `${item.sourceKind}:${item.subject.id}`]));
-  }, []);
+  const hideCard = useCallback((item: AttentionItem, closed = false) => {
+    setSavedIds(current => new Map(current).set(`${item.sourceKind}:${item.subject.id}`, { version: feed.dataUpdatedAt, fingerprint: item.changeFingerprint, closed }));
+  }, [feed.dataUpdatedAt]);
   const showCard = useCallback((item: AttentionItem) => {
-    setSavedIds(current => { const next = new Set(current); next.delete(`${item.sourceKind}:${item.subject.id}`); return next; });
+    setSavedIds(current => { const next = new Map(current); next.delete(`${item.sourceKind}:${item.subject.id}`); return next; });
   }, []);
   const onCardClosed = useCallback((item: AttentionItem, mode: AttentionCloseMode) => {
     if (archivedView && mode !== "withdraw") return;
-    hideCard(item);
+    hideCard(item, mode === "withdraw");
   }, [archivedView, hideCard]);
   const onCardRestored = useCallback((item: AttentionItem) => (archivedView ? hideCard : showCard)(item), [archivedView, hideCard, showCard]);
   const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onClosed: onCardClosed, onRestored: onCardRestored });
@@ -157,8 +163,12 @@ export function CoordinatorNeedsYou() {
     const receipts = new Set(recentItems.map((item) => item.id));
     const items = new Map(obligations.cards.map((item) => [`${item.sourceKind}:${item.subject.id}`, item]));
     for (const item of settling) if (!items.has(`${item.sourceKind}:${item.subject.id}`)) items.set(`${item.sourceKind}:${item.subject.id}`, item);
-    return [...items].filter(([key]) => settlingIds.has(key) || (!receipts.has(key) && !savedIds.has(key))).map(([, item]) => item);
-  }, [obligations, settling, settlingIds, recentItems, savedIds]);
+    return [...items].filter(([key, item]) => {
+      const hidden = savedIds.get(key);
+      const locallyHidden = hidden && (hidden.closed ? hidden.fingerprint === item.changeFingerprint : hidden.version === feed.dataUpdatedAt);
+      return settlingIds.has(key) || (!receipts.has(key) && !locallyHidden);
+    }).map(([, item]) => item);
+  }, [obligations, settling, settlingIds, recentItems, savedIds, feed.dataUpdatedAt]);
   const filtered = useMemo(() => pendingItems.filter((item) => {
     const agentId = String(item.subject.metadata?.createdByAgentId ?? item.subject.metadata?.originAgentId ?? "");
     if (agentFilter && agentId !== agentFilter && item.originAgentName !== agentMap.get(agentFilter)?.name) return false;
@@ -253,7 +263,7 @@ export function CoordinatorNeedsYou() {
   }, [recentItems]);
   const onResolved = (item: AttentionItem) => {
     const id = `${item.sourceKind}:${item.subject.id}`;
-    setSavedIds(current => new Set([...current, id]));
+    hideCard(item, true);
     setSettling(current => current.some(entry => entry.id === item.id) ? current : [...current, item]);
     void recent.refetch().then(result => {
       if (result.isError) setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id));
@@ -341,13 +351,13 @@ export function CoordinatorNeedsYou() {
         onResolved(item);
       }} />
         : decision ? <DecisionResolver companyId={selectedCompanyId!} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} leading={taskLink} onResolved={() => onResolved(item)} />
-        : stalledReview ? <><div className="space-y-1.5"><h2>Choose how this task continues</h2><p className="text-sm text-muted-foreground">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p></div><BlockedTaskCardBody item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
+        : stalledReview ? <><div className="space-y-1.5"><h2>Choose how this task continues</h2><p className="text-sm text-muted-foreground">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p></div><BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} presentation="card" onResolved={refetchAll} /></>
         : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} presentation="card" onResolved={refetchAll} /></>
         : approval ? <>{heading}<ApprovalResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} footerContext={footerContext} presentation="card" onViewDetails={isMobile ? undefined : () => showReview(item)} shareDraft onResolved={() => onResolved(item)} /></>
         : joinRequest ? <>{heading}<JoinRequestResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} presentation="card" onResolved={() => onResolved(item)} /></>
-        : type === "review_task" ? <>{heading}<ReviewTaskCardBody item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
-        : type === "blocked_task" ? <>{heading}<BlockedTaskCardBody item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
+        : type === "review_task" ? <>{heading}<ReviewTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
+        : type === "blocked_task" ? <>{heading}<BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : type === "recovery" ? <>{heading}<RecoveryCardBody item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : <>{heading}{footerContext}<DecisionCardFooter leading={taskLink}><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></DecisionCardFooter></>}
       </AttentionForOtherGate>

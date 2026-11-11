@@ -3,6 +3,8 @@ import { ArrowUpRight, Loader2 } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { approvalsApi } from "@/api/approvals";
 import { issuesApi } from "@/api/issues";
+import { buildDocumentAnnotationHash, parseDocumentAnnotationHash, type DocumentAnnotationHashTarget } from "@/lib/document-annotation-hash";
+import { AttentionForOtherGate } from "@/components/AttentionCloseMenu";
 import { queryKeys } from "@/lib/queryKeys";
 import { attentionDetailImages, attentionImageUrl, isInlineResolvable } from "@/lib/attention";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
@@ -23,7 +25,7 @@ export function attentionReviewDocumentKey(item: AttentionItem): string | null {
  * screenshots attached to the task.
  */
 export type NeedsYouArtifact =
-  | { kind: "document"; key: string; issueId: string; title?: string }
+  | { kind: "document"; key: string; issueId: string; title?: string; documentTarget?: DocumentAnnotationHashTarget }
   | { kind: "approval"; approvalId?: string }
   | { kind: "images" }
   | { kind: "attachment"; assetId: string; name?: string };
@@ -47,9 +49,12 @@ export function needsYouMentionedArtifact(href: string, name?: string | null): N
   let url: URL;
   try { url = new URL(href, "http://paperclip.local"); } catch { return null; }
   if (url.origin !== "http://paperclip.local" && typeof window !== "undefined" && url.origin !== window.location.origin) return null;
-  const doc = url.hash.match(/^#document-(.+)$/);
+  const doc = parseDocumentAnnotationHash(url.hash);
   const issue = url.pathname.match(/\/issues\/([^/]+)\/?$/);
-  if (doc && issue) return { kind: "document", issueId: decodeURIComponent(issue[1]), key: decodeURIComponent(doc[1]), title: name?.trim() || undefined };
+  if (doc && issue) {
+    try { return { kind: "document", issueId: doc.documentIssueId ?? decodeURIComponent(issue[1]), key: doc.documentKey, title: name?.trim() || undefined, ...(url.hash.includes("&") ? { documentTarget: doc } : {}) }; }
+    catch { return null; }
+  }
   const approval = url.pathname.match(/\/approvals\/([^/]+)\/?$/);
   if (approval) return { kind: "approval", approvalId: decodeURIComponent(approval[1]) };
   const attachment = url.pathname.match(/^\/api\/attachments\/([^/]+)\/content\/?$/);
@@ -59,7 +64,7 @@ export function needsYouMentionedArtifact(href: string, name?: string | null): N
 
 /** One id per artifact, so the same plan or approval never opens twice. */
 export function needsYouArtifactId(artifact: NeedsYouArtifact, item: AttentionItem) {
-  if (artifact.kind === "document") return `document:${artifact.issueId}:${artifact.key}`;
+  if (artifact.kind === "document") return `document:${artifact.issueId}:${artifact.key}${artifact.documentTarget?.revisionId ? `:${artifact.documentTarget.revisionId}` : ""}`;
   if (artifact.kind === "approval") return `approval:${artifact.approvalId ?? item.subject.id}`;
   if (artifact.kind === "attachment") return `attachment:${artifact.assetId}`;
   return `images:${item.id}`;
@@ -97,7 +102,7 @@ export function CoordinatorReviewPanel({ companyId, item, artifact, agentMap, cu
   const approvalId = artifact.kind === "approval" ? artifact.approvalId ?? item.subject.id : null;
   // "/NEE": the company prefix of the card's own links, for a mentioned artifact's link.
   const prefix = (task?.href ?? item.subject.href ?? "").match(/^\/[^/]+/)?.[0] ?? "";
-  const exactHref = artifact.kind === "document" ? `${ownDocument && task?.href ? task.href : `${prefix}/issues/${artifact.issueId}`}#document-${artifact.key}`
+  const exactHref = artifact.kind === "document" ? `${ownDocument && task?.href ? task.href : `${prefix}/issues/${artifact.issueId}`}${buildDocumentAnnotationHash(artifact.documentTarget ?? { documentKey: artifact.key, threadId: null, commentId: null })}`
     : artifact.kind === "approval" ? (approvalId === item.subject.id ? item.subject.href : `${prefix}/approvals/${approvalId}`)
       : artifact.kind === "attachment" ? attachmentUrl(artifact.assetId)
         : task?.href ?? item.subject.href;
@@ -106,7 +111,7 @@ export function CoordinatorReviewPanel({ companyId, item, artifact, agentMap, cu
     : null;
   return <div className="flex min-h-full flex-col gap-4" data-coordinator-review-panel={item.id} data-artifact={artifact.kind}>
     <div className="min-h-0 flex-1">
-      {artifact.kind === "document" ? <DocumentArtifact issueId={artifact.issueId} documentKey={artifact.key} label={label} />
+      {artifact.kind === "document" ? <DocumentArtifact issueId={artifact.issueId} documentKey={artifact.key} label={label} revisionId={artifact.documentTarget?.revisionId} />
         : artifact.kind === "approval" ? <ApprovalArtifact approvalId={approvalId!} title={approvalId === item.subject.id ? item.subject.title : null} />
           : artifact.kind === "attachment" ? <AttachmentArtifact assetId={artifact.assetId} name={label} />
             : <ImagesArtifact item={item} />}
@@ -117,16 +122,21 @@ export function CoordinatorReviewPanel({ companyId, item, artifact, agentMap, cu
     {/* The card's own actions, pinned to the bottom of the artifact. */}
     {/* Only the buttons the card itself offers (UX1). */}
     {interactionIssueId || (item.sourceKind === "approval" && isInlineResolvable(item)) ? <div className="coordinator-review-actions sticky bottom-0 -mx-4 border-t border-border bg-card px-4 py-3">
+      <AttentionForOtherGate key={`${item.id}:${item.audience?.userId}`} item={item} currentUserId={currentUserId} userLabelMap={userLabelMap}>
       {interactionIssueId ? <AttentionInteractionResolver presentation="coordinator-decision" companyId={companyId} issueId={interactionIssueId} interactionId={item.subject.id} shareReviseDraft
         agentMap={agentMap} currentUserId={currentUserId} userLabelMap={userLabelMap}
         onResolved={resolved => { if (resolved && resolved.status !== "pending") onResolved(); }} />
         : <ApprovalResolver item={item} companyId={companyId} toggle={null} presentation="panel" shareDraft onResolved={onResolved} />}
+      </AttentionForOtherGate>
     </div> : null}
   </div>;
 }
 
-function DocumentArtifact({ issueId, documentKey, label }: { issueId: string; documentKey: string; label: string }) {
-  const doc = useQuery({ queryKey: queryKeys.issues.document(issueId, documentKey), queryFn: () => issuesApi.getDocument(issueId, documentKey) });
+function DocumentArtifact({ issueId, documentKey, label, revisionId }: { issueId: string; documentKey: string; label: string; revisionId?: string }) {
+  const doc = useQuery<{ title: string | null; body: string }>({
+    queryKey: revisionId ? [...queryKeys.issues.document(issueId, documentKey), "revision", revisionId] : queryKeys.issues.document(issueId, documentKey),
+    queryFn: () => revisionId ? issuesApi.getDocumentRevision(issueId, documentKey, revisionId) : issuesApi.getDocument(issueId, documentKey),
+  });
   return <>
     {/* Say the title once (IA4): a body that opens with it already shows it. */}
     {doc.data?.body.trimStart().toLocaleLowerCase().startsWith(`# ${(doc.data.title ?? label).toLocaleLowerCase()}`) ? null : <h2 className="mb-4 text-lg font-medium">{doc.data?.title ?? label}</h2>}

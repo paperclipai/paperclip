@@ -1382,11 +1382,11 @@ describe("IssueThreadInteractionCard tool-action card", () => {
       .toContain("Reconnect");
   });
 
-  it("renders only the server-redacted proposal as plain text when inspected", async () => {
+  it.each(["default", "coordinator-decision"] as const)("renders the full redacted proposal as plain text before approval (%s)", async (presentationVariant) => {
     const interaction = structuredClone(pendingToolActionWriteInteraction);
     interaction.payload.toolAction!.argumentsSummaryJson = JSON.stringify({ text: '<img src="x" onerror="alert(1)">', apiKey: "[redacted]" });
     const accept = vi.fn();
-    const host = renderCard({ interaction, onAcceptInteraction: accept });
+    const host = renderCard({ interaction, onAcceptInteraction: accept, presentationVariant });
     const details = host.querySelector("details")!;
     expect(details.open).toBe(false);
     await act(async () => details.querySelector("summary")!.click());
