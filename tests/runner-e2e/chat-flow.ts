@@ -1,3 +1,6 @@
+import { prepareChatCatalogRespondent } from "./chat-catalog-respondent.js";
+import type { ChatPrivateInputs } from "./chat-private-inputs.js";
+import type { ChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
 import { runHiringTemplateFlow } from "./hiring-template-flow.js";
 import { gradeHiringTemplateTurns } from "./hiring-template-turn-accounting.js";
 import type { HiringTemplateEvidence } from "./hiring-template-scoring.js";
@@ -18,15 +21,26 @@ import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycl
 import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { runChatCompletionUpdate } from "./completion-update-flow.js";
+import { findChatCatalogCase } from "./chat-catalog-registry.js";
 import { CHAT_FEATURE_SUITE } from "./chat-feature-cases.js";
 import { runChatFeatureFlow } from "./chat-feature-flow.js";
+import { needsChatCompletionProof, verifyChatCompletion, type ChatCompletionEvidence } from "./chat-completion-proof.js";
+import { chatRunEvidenceApi, readChatRuns, type OwnedChatRunEvidenceObserver } from "./chat-run-evidence-observer.js";
 
-/** Hiring alone admits bounded, verified lifecycle notifications. Other suites keep their count contract. */
+export function retryChatCompletionObservation(error: unknown) {
+  return !(error instanceof Error && error.message.startsWith("Chat completion proof:"));
+}
+
+/** Keep the ordinary-turn bound. Required completion delivery is separately proved real work. */
 export function assertChatFlowRunCount(input: {
-  suiteId: string; task: Parameters<typeof matchesRunCount>[0]; runs: ChatRun[];
+  suiteId: string; task: Parameters<typeof matchesRunCount>[0] & { id?: string }; runs: ChatRun[];
+  profileId?: string; environmentId?: string; completionEvidence?: ChatCompletionEvidence;
   hiringEvidence?: HiringTemplateEvidence; hiringApiState?: unknown;
 }) {
-  expect(matchesRunCount(input.task, input.runs.length), "Declared total provider-run bounds").toBe(true);
+  const completion = needsChatCompletionProof(input.suiteId, input.task.id, input.profileId, input.environmentId)
+    ? verifyChatCompletion(input.runs, input.completionEvidence) : undefined;
+  expect(matchesRunCount(input.task, completion?.totalProviderRuns ?? input.runs.length),
+    completion ? "Declared total provider-run bounds with one proved completion turn" : "Declared total provider-run bounds").toBe(true);
   if (input.suiteId !== "hiring-templates") return;
   const accounting = gradeHiringTemplateTurns({
     evidence: input.hiringEvidence ? { ...input.hiringEvidence, runs: input.runs } : undefined,
@@ -152,7 +166,7 @@ export function assertChatExecutionOutput(
 
 /** A requested output document may have a descriptive key; a copied plan is not output. */
 export async function readChatOutputDocument(
-  api: Pick<RunnerApi, "get">,
+  api: { get<T>(route: string): Promise<T> },
   issueId: string,
   marker: string,
 ): Promise<ChatOutputDocument> {
@@ -183,6 +197,12 @@ export async function readChatOutputDocument(
 export const isResetRun = (run: ChatRun) =>
   run.contextSnapshot?.conversationReset === true ||
   run.resultJson?.conversationReset === true;
+/** The source chat's automatic turn that reports one completed handoff. */
+export const isChatCompletionReply = (run: ChatRun, chatIssueId: string, taskId: string) =>
+  run.contextSnapshot?.issueId === chatIssueId &&
+  run.contextSnapshot?.wakeReason === "chat_task_completed" &&
+  Array.isArray(run.contextSnapshot?.chatCompletionUpdates) &&
+  (run.contextSnapshot.chatCompletionUpdates as Array<{ id?: unknown }>).some((update) => update?.id === taskId);
 export function chatRunFailure(
   runs: ChatRun[],
   allowCancelled = false,
@@ -290,9 +310,10 @@ export async function readRunningChatLog(
 /** Reset/blocked runs and proven pre-provider failures may have no provider log.
  * Preserve their durable events; missing logs for real provider work still fail. */
 export async function collectChatRunEvidence(
-  api: Pick<RunnerApi, "get">,
+  api: Pick<RunnerApi, "get" | "getRunObservation">,
   run: ChatRun,
   allowAdmissionWait = false,
+  includeWorkspaceOperations = false,
 ) {
   const admissionEvents = allowAdmissionWait ? await collectRunEvents((afterSeq, limit) =>
     api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
@@ -303,17 +324,24 @@ export async function collectChatRunEvidence(
     run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   const reassignedBeforeStart = isReassignedUnstartedWake(run);
+  const terminalBeforeStart = run.status === "cancelled" && run.errorCode === "issue_terminal_status" &&
+    run.startedAt === null && run.logStore === null && run.logRef === null;
   return {
     runId: run.id,
     ...(providerNeverStarted ? { logOmissionReason: "provider_not_started" } : {}),
     ...(admissionWait ? { logOmissionReason: "pre_dispatch_execution_wait" } : {}),
     ...(reassignedBeforeStart ? { logOmissionReason: "assignee_changed_before_start" } : {}),
+    ...(terminalBeforeStart ? { logOmissionReason: "issue_terminal_before_start" } : {}),
     log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted || admissionWait || reassignedBeforeStart
+      || terminalBeforeStart
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
     events: admissionEvents ?? await collectRunEvents((afterSeq, limit) =>
-      api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
+      api.getRunObservation(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
     ),
+    ...(includeWorkspaceOperations ? {
+      workspaceOperations: await api.get<Array<Record<string, unknown>>>(`/api/heartbeat-runs/${run.id}/workspace-operations`),
+    } : {}),
   };
 }
 
@@ -331,19 +359,16 @@ export function assertChatHandoff(
     );
   }
 }
-export async function sendChatMessage(page: Page, message: string) {
+export async function sendChatMessage(page: Page, message: string, remainingBudget?: () => number) {
+  const options = () => remainingBudget ? { timeout: remainingBudget() } : {};
   const composer = page.getByTestId("task-chat-composer-input").last();
-  const takeover = page.getByTestId("task-chat-composer-takeover").last();
-  await expect(composer.or(takeover).first()).toBeVisible();
-  if (await takeover.isVisible()) {
-    // Close the card's composer view without answering, skipping, or approving it.
-    await takeover.getByRole("button", { name: /^Dismiss / }).click();
-  }
+  await expect(composer).toBeVisible(options());
   await composer
     .locator('[contenteditable="true"], textarea')
     .first()
-    .fill(message);
-  await page.getByTestId("task-chat-composer-send").last().click();
+    .fill(message, options());
+  await page.getByTestId("task-chat-composer-send").last().click(options());
+  remainingBudget?.();
 }
 
 
@@ -364,31 +389,43 @@ export function assertChatReassignment(input: {
 }
 
 export interface ChatFlowInput {
+  /** Exact commentary privacy case only: independent GET-only owned run evidence. Never model/product authority. */
+  ownedRunEvidenceObserver?: OwnedChatRunEvidenceObserver;
   page: Page;
   api: RunnerApi;
   fixtures: LiveFixtureValues;
   execution: MatrixExecution;
   nonce: string;
   workspacePath: string;
+  /** Attempt-private redaction sink for synthetic secondary-user credentials. Never evidence. */
+  privateSecrets?: string[];
+  privateInputs?: ChatPrivateInputs;
   deadlineAt: number;
   restart: () => Promise<void>;
+  retireFailedAttempt?: (error: unknown) => Promise<void>;
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
   evidence: (name: string, data: unknown) => Promise<void>;
   check?: (id: string, passed: boolean, detail: string) => void;
 }
 export async function runChatFlow(input: ChatFlowInput) {
+  if (input.execution.suite.id === CHAT_FEATURE_SUITE) await prepareChatCatalogRespondent(input, findChatCatalogCase(input.execution.task.id));
   const { page, api, fixtures: f, execution, nonce } = input;
   const chatPath = `/api/companies/${f.company.id}/chats/${f.agent.id}`;
   const route = `/${f.company.issuePrefix}/chats/${f.agent.id}`;
   const marker = execution.task.buildVisibleMarker(nonce);
   const draftMarker = chatMarker("DRAFT", nonce);
   const caseId = execution.task.id;
+  const completionAccounting = needsChatCompletionProof(execution.suite.id, caseId, execution.profile.id, execution.environment.id);
+  let completionChildId: string | undefined;
+  let completionEvidence: ChatCompletionEvidence | undefined;
+  const catalogDescriptor = execution.suite.id === CHAT_FEATURE_SUITE ? findChatCatalogCase(caseId) : undefined;
   const stopCase = ["stop-new-resume", "stop-startup-new-resume"].includes(caseId);
   const interruptionCase = ["followup-while-running", "revise-while-running"].includes(caseId);
   const expectedStops = new Map<string, string>();
   let issue: ChatIssue;
   let runs: ChatRun[] = [];
+  let catalogFinalRunVerifier: ChatCatalogFinalRunVerifier | void = undefined;
   const admissionAccounting = execution.suite.id === "kimi-qualification" && caseId === "stop-new-resume" && execution.profile.generation === "native";
   let admissionWaits: ChatAdmissionWait[] = [];
   let stoppedForSessionReset: string | undefined;
@@ -396,14 +433,25 @@ export async function runChatFlow(input: ChatFlowInput) {
   const settings = await api.get<Record<string, unknown>>(
     "/api/instance/settings/experimental",
   );
-  const allRuns = async () => {
-    const rows = await api.get<ChatRun[]>(
-      `/api/companies/${f.company.id}/heartbeat-runs?limit=100`,
-    );
-    return Promise.all(
-      rows.map((row) => api.get<ChatRun>(`/api/heartbeat-runs/${row.id}`)),
-    );
-  };
+  const allRuns = () => readChatRuns(input);
+  if (catalogDescriptor?.journeyKind === "native-slack-thread") {
+    let sourceId: string | undefined;
+    await runChatFeatureFlow({ input, issue: () => issue, allRuns,
+      refreshIssue: async () => { if (sourceId) issue = await api.get<ChatIssue>(`/api/issues/${sourceId}`); },
+      selectSlackSource: async id => {
+        if (sourceId && sourceId !== id) throw new Error("Native Slack source cannot change after canonical ingress");
+        const selected = await api.get<ChatIssue>(`/api/issues/${id}`);
+        if (selected.companyId !== f.company.id) throw new Error("Native Slack source escaped the owned company");
+        sourceId = id; issue = selected; input.observe(issue, await allRuns());
+      } });
+    if (!sourceId) throw new Error("Native Slack ingress did not establish its real source");
+    return { issue: await api.get<ChatIssue>(`/api/issues/${sourceId}`), runs: await allRuns() };
+  }
+  if (catalogDescriptor?.journeyKind === "scoped-external-assistant") {
+    await runChatFeatureFlow({ input, issue: () => issue, allRuns,
+      refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); } });
+    return { issue: await api.get<ChatIssue>(chatPath), runs: await allRuns() };
+  }
   const tasks = () =>
     api.get<ChatIssue[]>(`/api/companies/${f.company.id}/issues`);
   const comments = async () =>
@@ -423,12 +471,13 @@ export async function runChatFlow(input: ChatFlowInput) {
       response: await api.get(`/api/issues/${issue!.id}/recovery-actions?inspectSourceRunId=${stoppedForSessionReset}&inspectSourceActionId=${wait.recoveryActionId}`),
     }))),
   });
-  const idle = async (minimumProviderRuns: number) => {
+  const idle = async (minimumProviderRuns: number, requireCompletion = false) => {
     const inconsistentIdle = createChatIdleFailureDetector(minimumProviderRuns);
     await pollUntil({
       label: "chat turn settles to waiting",
       deadlineAt: Date.now() + 240_000,
       intervalMs: 1000,
+      retryOnError: retryChatCompletionObservation,
       load: async () => {
         const resolved = await api.get<ChatIssue | null>(chatPath);
         if (resolved) issue = resolved;
@@ -456,7 +505,38 @@ export async function runChatFlow(input: ChatFlowInput) {
           if (admissionReady) verifyChatAdmissionWaitCoverage({ runs, runEvidence: proof.runEvidence, comments: proof.comments,
             issue: issue!, companyId: f.company.id, agentId: f.agent.id, stoppedRunId: stoppedForSessionReset, recoverySources: proof.sources });
         }
+        let completionReady = !requireCompletion;
+        if (requireCompletion && providerRuns().length >= minimumProviderRuns
+            && runs.every(run => run.status === "succeeded")) {
+          const notifications = runs.filter(run => run.contextSnapshot?.wakeReason === "chat_task_completed");
+          expect(notifications, "one required completion delivery").toHaveLength(1);
+          expect(completionChildId, "the existing delegated task must be retained").toBeTruthy();
+          const [source, child, finalTasks, sourceComments] = await Promise.all([
+            api.get<ChatCompletionEvidence["issue"]>(chatPath),
+            api.get<ChatCompletionEvidence["child"]>(`/api/issues/${completionChildId}`), tasks(),
+            api.get<ChatCompletionEvidence["comments"]>(`/api/issues/${issue!.id}/comments?order=asc`),
+          ]);
+          const replies = sourceComments.filter(comment => comment.createdByRunId === notifications[0]!.id);
+          const renderedLinks = (await Promise.all(replies.map(async reply => {
+            const hrefs = await page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}] a[href]`)
+              .evaluateAll(elements => elements.map(element => element.getAttribute("href")!));
+            return hrefs.map(href => ({ commentId: reply.id, href }));
+          }))).flat();
+          // Wait for the real reply to render inside this existing idle deadline.
+          // Never extend the scenario or retry a provider to obtain the proof.
+          if (replies.length && renderedLinks.some(link => link.href.includes("/issues/"))) {
+            const companyPrefix = f.company.issuePrefix;
+            if (!companyPrefix) throw new Error("Chat completion proof: company_prefix_missing");
+            completionEvidence = { companyId: f.company.id, agentId: f.agent.id,
+              companyPrefix, baseURL: api.baseURL, issue: source, child,
+              tasks: finalTasks, comments: sourceComments, renderedLinks,
+              runEvidence: [await collectChatRunEvidence(api, notifications[0]!, false, true)] };
+            verifyChatCompletion(runs, completionEvidence);
+            completionReady = true;
+          }
+        }
         return {
+          completionReady,
           admissionReady,
           resolved: Boolean(resolved),
           status: resolved?.status,
@@ -471,6 +551,7 @@ export async function runChatFlow(input: ChatFlowInput) {
       reject: (state) => state.failure ?? inconsistentIdle(state),
       accept: (state) =>
         !state.failure &&
+        state.completionReady &&
         state.admissionReady &&
         state.resolved &&
         state.providerRunCount >= minimumProviderRuns &&
@@ -501,8 +582,13 @@ export async function runChatFlow(input: ChatFlowInput) {
     expect(await allRuns()).toHaveLength(0);
 
     if (execution.suite.id === CHAT_FEATURE_SUITE) {
-      return await runChatFeatureFlow({ input, issue: () => issue, allRuns,
+      const featureResult = await runChatFeatureFlow({ input, issue: () => issue, allRuns,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+      if (!catalogDescriptor) {
+        if (typeof featureResult === "function") throw new Error("Unexpected catalog verifier for a standalone chat case");
+        return featureResult;
+      }
+      catalogFinalRunVerifier = typeof featureResult === "function" ? featureResult : undefined;
     } else if (caseId === "confirmation-ambiguous") {
       await runAmbiguousConfirmationReply({ input, issue: () => issue!, idle, comments });
     } else if (caseId === "unanswered-question-return") {
@@ -933,6 +1019,7 @@ export async function runChatFlow(input: ChatFlowInput) {
       const children = await tasks();
       expect(children).toHaveLength(1);
       const child = children[0]!;
+      if (completionAccounting) completionChildId = child.id;
       await pollUntil({
         label: `execution task ${child.id} completes`,
         deadlineAt: Date.now() + 240_000,
@@ -944,7 +1031,28 @@ export async function runChatFlow(input: ChatFlowInput) {
         accept: (state) => state.task.status === "done",
         reject: (state) => chatTaskCompletionFailure(state.task, state.runs),
       });
-      runs = await allRuns();
+      // A completed handoff returns to the source chat (#14408) as one
+      // correlated provider turn. Observe that delivery instead of racing it.
+      const completionReply = await pollUntil({
+        label: `completion of ${child.id} is reported in the chat`,
+        deadlineAt: Date.now() + 240_000,
+        intervalMs: 1000,
+        load: async () => {
+          const rows = await allRuns();
+          const reply = rows.filter((run) => isChatCompletionReply(run, issue!.id, child.id));
+          return { runs: rows, reply, comments: await comments() };
+        },
+        // A native reply comment is presented after its run succeeds, so wait
+        // for the comment too; a failed reply turn settles immediately.
+        accept: (state) => state.reply.length > 0 &&
+          state.reply.every((run) => ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) &&
+          (state.reply.some((run) => run.status !== "succeeded") ||
+            state.comments.some((c) => c.authorAgentId === f.agent.id && state.reply.some((run) => run.id === c.createdByRunId))),
+      });
+      expect(completionReply.reply.map((run) => run.status), "one completion reply turn").toEqual(["succeeded"]);
+      expect(completionReply.comments.filter((c) => c.authorAgentId === f.agent.id &&
+        c.createdByRunId === completionReply.reply[0]!.id), "completion reply posted in the chat").toHaveLength(1);
+      runs = completionReply.runs;
       input.observe(issue!, runs);
       const plan =
         caseId === "plan-handoff"
@@ -1056,7 +1164,8 @@ export async function runChatFlow(input: ChatFlowInput) {
         projects,
       });
     }
-    await idle(minimumRunCount(execution.task));
+    if (catalogDescriptor) runs = await allRuns();
+    else await idle(minimumRunCount(execution.task), completionAccounting);
     if (execution.suite.id === "hiring-templates") {
       // Refresh the whole consistent evidence generation for the final guard.
       hiringEvidence = await refreshHiringEvidence!();
@@ -1069,13 +1178,22 @@ export async function runChatFlow(input: ChatFlowInput) {
     if (admissionAccounting) admissionWaits = verifyChatAdmissionWaitCoverage({ runs, runEvidence: admissionRunEvidence!, comments: finalComments!, issue: issue!,
       companyId: f.company.id, agentId: f.agent.id, stoppedRunId: stoppedForSessionReset, recoverySources: admissionWaitSources });
     assertChatFlowRunCount({ suiteId: execution.suite.id, task: execution.task,
+      profileId: execution.profile.id, environmentId: execution.environment.id, completionEvidence,
       // Hiring must account for every actual company run, including unexpected resets.
-      runs: execution.suite.id === "hiring-templates" ? runs : providerRuns(),
+      runs: execution.suite.id === "hiring-templates" || completionAccounting ? runs : providerRuns(),
       hiringEvidence, hiringApiState: execution.suite.id === "hiring-templates"
         ? hiringEvidence!.turnApiState : undefined,
     });
+    if (completionAccounting) await input.evidence("chat-completion-proof.json", verifyChatCompletion(runs, completionEvidence));
+    if (catalogDescriptor?.runPolicy) {
+      if (typeof catalogFinalRunVerifier !== "function") throw new Error("Missing executable catalog final-run proof");
+      issue = await api.get<ChatIssue>(chatPath);
+      const finalGrade = catalogFinalRunVerifier(issue, runs.filter(run => !isResetRun(run)));
+      expect(finalGrade.passed, `Final catalog run custody: ${finalGrade.checks.filter(check => !check.passed).map(check => check.id).join(", ")}`).toBe(true);
+    }
     for (const run of providerRuns()) {
       expect(run.runtimeMode).toBe(execution.profile.expectedRuntimeMode);
+      if (catalogDescriptor?.runPolicy) continue;
       expect(run.status).toBe(
         expectedStops.get(run.id) ?? (stopCase && run.status === "cancelled"
           ? "cancelled"
@@ -1104,7 +1222,9 @@ export async function runChatFlow(input: ChatFlowInput) {
       },
       comments: finalComments ?? await comments(),
       activity: await api.get(`/api/issues/${issue!.id}/activity`),
-      runEvidence: admissionRunEvidence ?? await Promise.all(runs.map(run => collectChatRunEvidence(api, run))),
+      runEvidence: admissionRunEvidence ?? await Promise.all(
+        runs.map((run) => collectChatRunEvidence(chatRunEvidenceApi(input), run)),
+      ),
     });
     await input.capture(
       "final-state",

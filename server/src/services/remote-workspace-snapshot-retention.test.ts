@@ -5,7 +5,7 @@ import path from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
   executionWorkspaces, issueRecoveryActions, issues, workspaceOperations } from "@paperclipai/db";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -13,13 +13,15 @@ import { createStorageService } from "../storage/service.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageService } from "../storage/types.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { notifyRemoteWorkspaceSnapshots, registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 
-const url = process.env.PAPERCLIP_TEST_DATABASE_URL;
-if (url && !/^remote_workspace_[a-z_]*test$/.test(new URL(url).pathname.slice(1))) throw new Error("Disposable remote_workspace_*test database required");
+const historyUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
+const url = historyUrl ?? process.env.PAPERCLIP_TEST_DATABASE_URL;
+if (!historyUrl && url && !/^remote_workspace_[a-z_]*test$/.test(new URL(url).pathname.slice(1))) throw new Error("Disposable remote_workspace_*test database required");
 const support = url ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
 async function versionedS3Fixture() {
@@ -42,7 +44,10 @@ async function versionedS3Fixture() {
       const versionId = parsed.searchParams.get("versionId");
       const keyMarker = parsed.searchParams.get("key-marker"), versionMarker = parsed.searchParams.get("version-id-marker");
       requests.push({ method: req.method!, key, versionId, keyMarker, versionMarker });
-      if (parsed.searchParams.has("versions")) {
+      if (parsed.searchParams.has("uploads")) {
+        res.setHeader("content-type", "application/xml");
+        res.end(`<?xml version="1.0"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>bucket</Bucket><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>`);
+      } else if (parsed.searchParams.has("versions")) {
         if (faults.listDenied) {
           res.writeHead(403, { "content-type": "application/xml" });
           res.end("<Error><Code>AccessDenied</Code><Message>Version listing permission is required</Message></Error>");
@@ -95,7 +100,8 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   const now = new Date("2026-10-30T12:00:00Z");
   beforeAll(async () => {
-    if (url) { await applyPendingMigrations(url); db = createDb(url); }
+    if (historyUrl) db = createDb(historyUrl, { maxConnections: 4 });
+    else if (url) { await applyPendingMigrations(url); db = createDb(url); }
     else { temporary = await startEmbeddedPostgresTestDatabase("workspace-snapshot-retention-"); db = createDb(temporary.connectionString); }
   }, 90_000);
   afterAll(async () => { if (url) await closeRegisteredClients(url, { scope: "database" }); else await temporary?.cleanup(); });
@@ -122,10 +128,75 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     return { row: row!, companyId, workspaceId, issueId: issue!.id, operationId, keys };
   }
   const service = () => remoteWorkspaceSnapshotRetentionService(db, { storage, now: () => now });
+  it("deletes the attempted uploads of an abandoned save once its ledger row is retired, and keeps a failed save's retry pin", async () => {
+    const retired = await seed("pending"), held = await seed("pending");
+    for (const f of [retired, held]) {
+      await db.insert(workspaceOperations).values({ id: f.operationId, companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+        phase: "remote_workspace_snapshot", status: "failed",
+        metadata: { epoch: 1, generation: 1, lastFailure: { code: "remote_workspace_save_abandoned" } } });
+    }
+    await db.update(executionWorkspaceSnapshots).set({ status: "delete_requested", objectKey: null,
+      metadata: { ...retired.row.metadata, abandonedUpload: { operationId: retired.operationId } } })
+      .where(eq(executionWorkspaceSnapshots.id, retired.row.id));
+    await db.update(executionWorkspaceSnapshots).set({ objectKey: null }).where(eq(executionWorkspaceSnapshots.id, held.row.id));
+    expect(await service().tick()).toMatchObject({ deleted: 1, pinned: 1, failed: 0 });
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, retired.row.id)))[0]!.status).toBe("deleted");
+    for (const key of retired.keys) expect((await storage.headObject(retired.companyId, key)).exists).toBe(false);
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, held.row.id)))[0]!.status).toBe("pending");
+    for (const key of held.keys) expect((await storage.headObject(held.companyId, key)).exists).toBe(true);
+  });
+  it("aborts each attempt's incomplete multipart upload before deleting a retired snapshot's objects", async () => {
+    const f = await seed(), order: string[] = [], deleteObject = storage.deleteObject.bind(storage);
+    storage.abortIncompleteUploads = vi.fn(async (_companyId: string, key: string) => { order.push(`abort:${key}`); return 1; });
+    storage.deleteObject = async (companyId, key, options) => { order.push(`delete:${key}`); return deleteObject(companyId, key, options); };
+    expect(await service().tick()).toMatchObject({ deleted: 1, failed: 0 });
+    expect(order).toEqual([...f.keys.map(key => `abort:${key}`), ...f.keys.map(key => `delete:${key}`)]);
+  });
+  it("still retires a snapshot when the store refuses to list its multipart uploads", async () => {
+    const f = await seed();
+    storage.abortIncompleteUploads = vi.fn(async () => { throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" }); });
+    expect(await service().tick()).toMatchObject({ deleted: 1, failed: 0 });
+    for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
+  });
   it("deletes every recorded attempt and winning object after grace", async () => {
     const f = await seed(); const owner = service();
     expect(await owner.tick()).toMatchObject({ deleted: 1, failed: 0 });
     for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
+    expect(await owner.nextDeadlineAt()).toBeNull();
+  });
+  it("uses the dependency index when a company has many unrelated snapshots", async () => {
+    const child = await seed();
+    await db.execute(sql`insert into execution_workspace_snapshots
+      (company_id, execution_workspace_id, source_operation_id, generation, epoch, status)
+      select ${child.companyId}::uuid, gen_random_uuid(), gen_random_uuid(), 1, 1, 'committed'
+      from generate_series(1, 2500)`);
+    await db.insert(executionWorkspaceSnapshots).values({ companyId: child.companyId, executionWorkspaceId: randomUUID(),
+      sourceOperationId: randomUUID(), generation: 1, epoch: 1, status: "committed",
+      metadata: { importedWorkspaceChildren: [{ workspaceId: child.workspaceId, snapshotId: child.row.id }] } });
+    await db.execute(sql`analyze execution_workspace_snapshots`);
+    const plan = await db.execute(sql`explain (format json) select id from execution_workspace_snapshots
+      where company_id = ${child.companyId}::uuid and status <> 'deleted'
+        and metadata ? 'importedWorkspaceChildren'
+        and metadata->'importedWorkspaceChildren' @> ${JSON.stringify([{ workspaceId: child.workspaceId, snapshotId: child.row.id }])}::jsonb
+      limit 1`);
+    expect(JSON.stringify(plan)).toContain("execution_workspace_snapshots_imported_children_idx");
+  });
+  it("pins imported child bytes until the covering parent snapshot is deleted", async () => {
+    const child = await seed(), parentId = randomUUID(), workspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: child.companyId, name: "Imported parent", mode: "isolated_workspace", strategyType: "project_primary",
+      metadata: { remoteWorkspace: { snapshotId: parentId } } });
+    await db.insert(executionWorkspaceSnapshots).values({ id: parentId, companyId: child.companyId, executionWorkspaceId: workspaceId,
+      sourceOperationId: randomUUID(), generation: 1, epoch: 1, status: "committed",
+      metadata: { importedWorkspaceChildren: [{ workspaceId: child.workspaceId, snapshotId: child.row.id }] } });
+    const owner = service();
+    expect(await owner.tick()).toMatchObject({ pinned: 1, deleted: 0 });
+    expect(await owner.nextDeadlineAt()).toBeNull();
+    expect((await storage.headObject(child.companyId, child.keys[0]!)).exists).toBe(true);
+    await db.update(executionWorkspaces).set({ metadata: {} }).where(eq(executionWorkspaces.id, workspaceId));
+    await db.update(executionWorkspaceSnapshots).set({ status: "superseded", deleteAfter: new Date(now.getTime() - 1) })
+      .where(eq(executionWorkspaceSnapshots.id, parentId));
+    await owner.tick(); await owner.tick();
+    expect((await storage.headObject(child.companyId, child.keys[0]!)).exists).toBe(false);
     expect(await owner.nextDeadlineAt()).toBeNull();
   });
   it("purges exact-key S3 versions and delete markers before settling retention", async () => {
@@ -320,6 +391,13 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
       ownerType: "board", cause: "workspace_recovery", fingerprint: randomUUID(), nextAction: "Recover saved files" });
     const owner = service(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const remove = storage.deleteObject.bind(storage);
+    let secondDeleteHeld = false, releaseSecondDelete!: () => void;
+    const secondDeleteReleased = new Promise<void>(resolve => { releaseSecondDelete = resolve; });
+    storage.deleteObject = async (...args) => {
+      if (args[1] === f.keys[1]) { secondDeleteHeld = true; await secondDeleteReleased; }
+      await remove(...args);
+    };
     const worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, owner, () => {});
     try {
       await worker.ready;
@@ -328,8 +406,23 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
       const resolved = await issueRecoveryActionService(db).resolveActiveForIssue({ companyId: f.companyId, sourceIssueId: f.issueId,
         status: "resolved", outcome: "restored", resolutionNote: "Verified saved files" });
       expect(resolved?.status).toBe("resolved");
-      await vi.waitFor(async () => expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false));
-      expect(await owner.nextDeadlineAt()).toBeNull();
-    } finally { await worker.stop(); await coordinator.stop(); }
+      try {
+        await vi.waitFor(() => expect(secondDeleteHeld).toBe(true));
+        expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false);
+        expect((await storage.headObject(f.companyId, f.keys[1]!)).exists).toBe(true);
+        expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id)))[0])
+          .toMatchObject({ id: f.row.id, status: "delete_requested", deleteAfter: now });
+        expect(await owner.nextDeadlineAt()).toBe(now.getTime());
+        expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      } finally { releaseSecondDelete(); }
+      await vi.waitFor(async () => {
+        for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
+        expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id)))[0])
+          .toMatchObject({ id: f.row.id, status: "deleted", deleteAfter: null });
+        expect(await owner.nextDeadlineAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      });
+    } finally { releaseSecondDelete(); await worker.stop(); await coordinator.stop(); }
   });
 });

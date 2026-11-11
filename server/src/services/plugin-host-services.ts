@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { projectGitAuthorizationService } from "./project-git-authorization.js";
 import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
 import { createLiveRunEventRedactor } from "./live-run-event-redaction.js";
@@ -93,6 +95,7 @@ import {
 } from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
 import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import { WORKSPACE_OPERATION_FAILURE_REASONS } from "@paperclipai/plugin-sdk";
 import {
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTRS,
@@ -537,8 +540,11 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "postUploadCommand",
   "session.open",
   "session.close",
+  "lease.wait_for_teardown", "lease.lookup", "lease.refresh", "lease.channel_cleanup",
+  "lease.start", "lease.recover", "lease.wait_transition", "lease.force_stop", "lease.verify", "lease.workspace", "lease.sentinel",
+  "lease.shell", "lease.create", "lease.expiry", "lease.cleanup",
   "plugin.worker", "plugin.host.identity.read", "plugin.host.config.read", "plugin.host.progress.read", "plugin.host.progress.write",
-  "plugin.workspace.prepare", "plugin.storage.queue", "plugin.storage.execute",
+  "plugin.workspace.prepare", "plugin.workspace.failure", "plugin.storage.queue", "plugin.storage.execute",
   "plugin.runtime.queue", "plugin.runtime.prepare", "plugin.runtime.reconcile", "plugin.runtime.verify",
   "plugin.remote.request", "plugin.remote.operation", "plugin.remote.lifecycle",
 ]);
@@ -564,8 +570,12 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
   SPAN_ATTRS.transferDirection,
-  "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count",
+  SPAN_ATTRS.state,
+  "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count", "plugin.failure_reason",
 ]);
+
+/** The closed value set for `plugin.failure_reason`: a workspace operation failure reason, or `unknown`. */
+const KNOWN_PLUGIN_FAILURE_REASONS: ReadonlySet<string> = new Set<string>([...WORKSPACE_OPERATION_FAILURE_REASONS, "unknown"]);
 
 /** The subset of allowed keys that carry a finite number. */
 const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
@@ -581,6 +591,12 @@ const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "fail
 /** The closed value set for the `transfer.direction` attribute. */
 const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
 
+// Settled states plus the transitions a start waits out; anything else is dropped.
+const PROVIDER_STARTUP_STATES: ReadonlySet<string> = new Set([
+  "started", "stopped", "archived", "error", "other",
+  "starting", "stopping", "restoring", "archiving", "resizing",
+]);
+
 /**
  * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
  * is not on the allowlist. Re-map `provider` through `normalizeProviderFamily`,
@@ -595,11 +611,19 @@ export function clampProviderSpanAttributes(
   if (!raw) return clamped;
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === SPAN_ATTRS.state) {
+      if (typeof value === "string" && PROVIDER_STARTUP_STATES.has(value)) clamped[key] = value;
+      continue;
+    }
     if (key === "plugin.operation") {
       if (typeof value === "string" && ["request", "queue.wait", "launch.wait", "mount.refresh", "guest.setup", "process.execute", "script.workspace", "script.git", "script.settings", "script.publication", "cleanup", "process.start", "hello", "checkpoint.load"].includes(value)) clamped[key] = value;
       continue;
     }
     if (key === "plugin.reused") { if (typeof value === "boolean") clamped[key] = value; continue; }
+    if (key === "plugin.failure_reason") {
+      if (typeof value === "string" && KNOWN_PLUGIN_FAILURE_REASONS.has(value)) clamped[key] = value;
+      continue;
+    }
     if (key === SPAN_ATTRS.provider) {
       clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
       continue;
@@ -3087,6 +3111,9 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
+        const origin = currentPluginInteractionOrigin();
+        await assertAgentInteraction(db, { companyId, actorAgentId: origin?.agentId,
+          operation: "assign", targetAgentId: params.agentId, texts: params.prompt ? [params.prompt] : [] });
         const run = await heartbeat.wakeup(params.agentId, {
           source: "automation",
           triggerDetail: "system",
@@ -3100,8 +3127,8 @@ export function buildHostServices(
               pluginKey,
             },
           },
-          requestedByActorType: "system",
-          requestedByActorId: pluginId,
+          requestedByActorType: origin ? "agent" : "system",
+          requestedByActorId: origin?.agentId ?? pluginId,
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
@@ -3381,15 +3408,14 @@ export function buildHostServices(
         const policy = params.policy ? sanitizeRecord(params.policy) : null;
         if (params.resourceType === "agent") {
           const agent = requireInCompany("Agent", await agents.getById(params.resourceId), companyId);
-          const permissions = agent.permissions && typeof agent.permissions === "object"
-            ? { ...(agent.permissions as Record<string, unknown>) }
-            : {};
-          if (policy) permissions.authorizationPolicy = policy;
-          else delete permissions.authorizationPolicy;
-          await db
-            .update(agentsTable)
-            .set({ permissions, updatedAt: new Date() })
-            .where(eq(agentsTable.id, agent.id));
+          await db.transaction(async tx => {
+            await assertAgentInteraction(tx, { companyId, operation: "configure", targetAgentId: agent.id, lock: "update" });
+            await tx.update(agentsTable)
+              .set({ permissions: policy
+                ? sql`jsonb_set(${agentsTable.permissions}, '{authorizationPolicy}', ${JSON.stringify(policy)}::jsonb)`
+                : sql`${agentsTable.permissions} - 'authorizationPolicy'`, updatedAt: new Date() })
+              .where(eq(agentsTable.id, agent.id));
+          });
         } else if (params.resourceType === "project") {
           const project = requireInCompany("Project", await projects.getById(params.resourceId), companyId);
           const executionWorkspacePolicy = project.executionWorkspacePolicy && typeof project.executionWorkspacePolicy === "object"
@@ -3402,16 +3428,18 @@ export function buildHostServices(
             .set({ executionWorkspacePolicy, updatedAt: new Date() })
             .where(eq(projectsTable.id, project.id));
         } else if (params.resourceType === "issue") {
-          const issue = requireInCompany("Issue", await issues.getById(params.resourceId), companyId);
-          const executionPolicy = issue.executionPolicy && typeof issue.executionPolicy === "object"
-            ? { ...(issue.executionPolicy as Record<string, unknown>) }
-            : {};
-          if (policy) executionPolicy.authorizationPolicy = policy;
-          else delete executionPolicy.authorizationPolicy;
-          await db
-            .update(issuesTable)
-            .set({ executionPolicy, updatedAt: new Date() })
-            .where(eq(issuesTable.id, issue.id));
+          await db.transaction(async tx => {
+            const [locked] = await tx.select().from(issuesTable).where(and(
+              eq(issuesTable.id, params.resourceId), eq(issuesTable.companyId, companyId))).for("update");
+            const issue = requireInCompany("Issue", locked ?? null, companyId);
+            await assertAgentInteraction(tx, { companyId, operation: "edit", issueId: issue.id, lock: true });
+            const executionPolicy = issue.executionPolicy && typeof issue.executionPolicy === "object"
+              ? { ...(issue.executionPolicy as Record<string, unknown>) } : {};
+            if (policy) executionPolicy.authorizationPolicy = policy;
+            else delete executionPolicy.authorizationPolicy;
+            await tx.update(issuesTable).set({ executionPolicy, updatedAt: new Date() })
+              .where(and(eq(issuesTable.id, issue.id), eq(issuesTable.companyId, companyId)));
+          });
         } else {
           const company = await companies.getById(params.resourceId);
           if (!company || company.id !== companyId) throw new Error("Company not found");

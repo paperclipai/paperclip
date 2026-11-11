@@ -1,8 +1,13 @@
-import { expect } from "@playwright/test";
-import { createTaskThroughUi } from "../user-actions.js";
+import { expect, type Page } from "@playwright/test";
+import { createTaskThroughUi, withBrowserEvent } from "../user-actions.js";
 import { projectContextEvidencePasses, type ProjectContextObservation } from "./project-context-evidence.js";
 import { openProjectTaskThroughList, reopenProjectThroughList } from "./project-context-readback.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
+
+/** The toolbar action was renamed from "Add Project" to "Create project"; accept both deployed labels. */
+export function newProjectButton(page: Page) {
+  return page.getByRole("button", { name: /^(?:Add Project|Create project)$/ }).first();
+}
 
 export async function projectTaskContext(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence) {
   const { page, api, company } = context;
@@ -11,14 +16,14 @@ export async function projectTaskContext(context: JourneyContext, session: Targe
   const prompt = `Keep this task assigned to me in ${projectName}. I will review it myself.`;
   const journeyId = "project-task-context" as const;
   await page.goto(`${api.origin}/${company.issuePrefix}/projects`);
-  await page.getByRole("button", { name: "Add Project", exact: true }).first().click();
+  await newProjectButton(page).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox", { name: "Project name", exact: true }).fill(projectName);
   await session.own({ kind: "project", name: projectName, journeyId });
-  const responsePromise = page.waitForResponse(response => response.request().method() === "POST"
-    && new URL(response.url()).pathname === `/api/companies/${company.id}/projects`);
-  await dialog.getByRole("button", { name: "Create project", exact: true }).click();
-  const response = await responsePromise;
+  const response = await withBrowserEvent(
+    () => page.waitForResponse(response => response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/companies/${company.id}/projects`),
+    () => dialog.getByRole("button", { name: "Create project", exact: true }).click());
   if (response.status() !== 201) throw new JourneyError("failed", "project_ui_creation_failed");
   const createdProject = await response.json();
   if (typeof createdProject.id !== "string" || !createdProject.id || createdProject.companyId !== company.id || createdProject.name !== projectName) {

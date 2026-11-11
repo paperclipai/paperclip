@@ -197,6 +197,11 @@ function publicProviderPayload(
           };
         }),
       };
+    case "plan_proposal":
+      return {
+        ...common(["schema", "proposalId", "status", "source"]),
+        markdown: clamp(typeof source.markdown === "string" ? source.markdown : "", 60_000),
+      };
     case "tool_execution":
       return common(["schema", "executionId", "transport", "operation", "name", "target", "namespace", "readOnly", "status", "durationMs", "exitCode", "progress", "output", "outputBytes", "outputTruncated", "outputDigest"]);
     case "research":

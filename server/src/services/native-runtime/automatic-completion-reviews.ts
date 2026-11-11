@@ -3,9 +3,10 @@ import type { AutomaticCompletionReviewScope } from "../automatic-completion-rev
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
-import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   completionContracts,
+  heartbeatRuns,
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
@@ -53,6 +54,11 @@ function findAutomaticReviewCandidates(db: Db, options: { issueId?: string; comp
       ),
     )
     .innerJoin(
+      heartbeatRuns,
+      and(eq(heartbeatRuns.id, issueThreadInteractions.sourceRunId),
+        eq(heartbeatRuns.companyId, issueThreadInteractions.companyId)),
+    )
+    .innerJoin(
       workAssessments,
       and(
         eq(workAssessments.id, statusDecisions.assessmentId),
@@ -72,7 +78,8 @@ function findAutomaticReviewCandidates(db: Db, options: { issueId?: string; comp
       and(
         eq(issueThreadInteractions.status, "pending"),
         eq(issueThreadInteractions.kind, "request_confirmation"),
-        isNull(issueThreadInteractions.createdByAgentId),
+        or(isNull(issueThreadInteractions.createdByAgentId),
+          eq(issueThreadInteractions.createdByAgentId, heartbeatRuns.agentId)),
         isNull(issueThreadInteractions.createdByUserId),
         eq(statusDecisions.applicationState, "applied"),
         eq(statusDecisions.toStatus, "in_review"),
@@ -162,7 +169,10 @@ async function dismissCandidates(db: Db, candidates: Awaited<ReturnType<typeof f
               eq(issueThreadInteractions.kind, interaction.kind),
               eq(issueThreadInteractions.sourceRunId, decision.runId),
               eq(issueThreadInteractions.idempotencyKey, interaction.idempotencyKey!),
-              isNull(issueThreadInteractions.createdByAgentId), isNull(issueThreadInteractions.createdByUserId),
+              interaction.createdByAgentId
+                ? eq(issueThreadInteractions.createdByAgentId, interaction.createdByAgentId)
+                : isNull(issueThreadInteractions.createdByAgentId),
+              isNull(issueThreadInteractions.createdByUserId),
             ),
           )
           .returning();

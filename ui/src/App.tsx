@@ -461,9 +461,8 @@ function AppsConnectEntryRoute({
 }
 
 function InboxRootRedirect() {
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
-  return streamlinedUiEnabled && combinedInboxTasksEnabled
+  return combinedInboxTasksEnabled
     ? <TaskViewRedirect view={taskViewForInboxTab(loadLastInboxTab())} />
     : <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
 }
@@ -812,6 +811,7 @@ export function App() {
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="tasks" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
+          <Route path="approvals/:approvalId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
           <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
           <Route path="cases" element={<UnprefixedBoardRedirect />} />

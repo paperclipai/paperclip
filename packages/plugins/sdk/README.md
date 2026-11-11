@@ -52,6 +52,36 @@ The SDK is stable enough for local development and first-party examples, but the
 
 If you are authoring a plugin for others to deploy, treat npm-packaged installation as the supported path and treat repo-local example installs as a development convenience.
 
+## Runner ingress failures
+
+Environment providers can throw `PluginEnvironmentRunnerIngressError` from
+`onEnvironmentRunnerIngressEndpoint` with a validated SDK HTTP status and one
+closed phase: `sandbox_lookup`, `sandbox_start`, `sandbox_refresh` or
+`private_preview`. The worker forwards only this closed status/phase envelope.
+It omits response bodies, URLs, headers and causes. The host independently
+validates it with `readEnvironmentRunnerIngressFailure`. Do not derive a status
+from error text. Unknown and configuration failures keep their normal errors.
+The envelope alone grants no retry, accounting or cleanup authority; native
+execution also requires its complete, current controller checkpoint proof.
+
+## Stop failures
+
+Environment providers can throw `PluginEnvironmentStopError` from
+`onEnvironmentStopLease` when they cannot stop a resource that is in a provider
+error state. The error takes one closed reason:
+
+- `resource_unrecoverable`: the provider reports that the resource cannot recover.
+- `recovery_failed`: the resource is in an error state again after one recovery attempt.
+- `recovery_incomplete`: recovery did not finish before the stop deadline.
+
+The worker forwards only the reason. It omits messages, provider error text and
+causes. The host reads it with `readEnvironmentStopFailure`, which derives the
+`terminal` flag from the reason. The first two reasons are terminal: another
+automatic attempt cannot succeed without provider or operator action. The host
+escalates a terminal failure at once and retries it at its slowest cleanup
+interval. It never abandons the pending cleanup. Other stop errors keep their
+normal retry behavior.
+
 ## Worker quick start
 
 ```ts
@@ -565,13 +595,14 @@ headers?, body? }`.
 
 Workflow plugins can use `ctx.issues` for orchestration-grade issue operations without importing host server internals.
 
+A child issue always gets its own execution workspace, realized from the project base. It keeps the parent's project and workspace strategy, never the parent's checkout, branch or unmerged changes. `inheritExecutionWorkspaceFromIssueId` likewise copies only the source issue's project and workspace strategy.
+
 Expanded create/update fields include blockers, billing code, board or agent assignees, labels, namespaced plugin origins, request depth, and safe execution workspace fields:
 
 ```ts
 const child = await ctx.issues.create({
   companyId,
   parentId: missionIssueId,
-  inheritExecutionWorkspaceFromIssueId: missionIssueId,
   title: "Implement feature slice",
   status: "todo",
   assigneeAgentId: workerAgentId,
@@ -1386,10 +1417,10 @@ implement `onResourceLifecycle` and `onWorkspaceOperation`. Project lifecycle
 creates and retains the storage; workspace operations manage task checkouts in
 that storage. Execution remains a separate environment driver contract.
 
-Set `project.executionWorkspacePolicy.storageProviderPluginId` to an installed
-plugin's UUID for an explicit selection, or `null` for explicit Core/local storage.
-Omit the field to inherit the installed company-enabled default. A provider claims
-that default by declaring, for example:
+`project.executionWorkspacePolicy.storageProviderPluginId` holds a project's storage:
+an installed plugin's UUID, or `null` or no value for Core/local storage. Core
+applies the installed company-enabled default once, when it creates the project. A
+provider claims that default by declaring, for example:
 
 ```ts
 workspaceProvider: {
@@ -1399,13 +1430,16 @@ workspaceProvider: {
 }
 ```
 
-The declared defaults must be supported by the provider. Core applies missing mode
-and strategy settings to Git projects, including existing unconfigured projects,
-without writing their policy. Explicit settings remain intact; incompatible
-settings fail with a configuration error. Multiple enabled default claims require
-an explicit project choice or disabling a conflicting provider. Worker health does
-not change the selected default: unavailable providers fail without local fallback.
-No company settings row means enabled, matching the normal plugin contract.
+The declared defaults must be supported by the provider. Installing a provider
+does not change existing projects. A Core/local project can move to a provider, and
+a plugin-backed project stays attached to that plugin: requests to change it fail,
+and it never falls back to local storage. Core applies missing mode and strategy
+settings without writing them. Explicit settings remain intact; incompatible
+settings fail with a configuration error. If more than one enabled provider claims
+the default, creating a project needs an explicit choice. Core sends a provider
+project lifecycle events only for projects attached to it, and acknowledges the
+others on its behalf. No company settings row means enabled, matching the normal
+plugin contract.
 
 New and imported tasks leave an unspecified project mode inherited. Provider-owned
 workspaces retain explicit project and task strategies in shared and operator-branch
@@ -1532,3 +1566,26 @@ The return value is transient raw credential material with the Connector's
 existing permissions. This capability is for trusted execution infrastructure,
 not agent-facing tools or UI. Never expose or persist it. See
 [GitHub identity](../../../doc/execution-github-identity.md#project-authorization-for-background-repository-work).
+
+## Login on an existing computer
+
+A driver can use the existing login PTY hooks for a login on a saved agent's
+computer. Core sends `purpose: "login"`, a closed `loginCommandKey`, a stable
+`creationOperationId`, and an absolute `requestedExpiresAt` to lease acquisition.
+Release and destroy must retire only that login allocation and preserve the
+computer. Omitted purpose retains the existing execution behavior.
+
+Core supplies `expiresAt` to the PTY open and an `inputId` for each input write.
+Input, stop, and close retain the opening company context so provider callbacks
+can use company-scoped host services during cleanup.
+A provider that retries delivery must retain the input identity and bytes, and
+reject reuse of the identity with different input. A failed input call ends the
+Core login; Core does not silently replay an unconfirmed write.
+
+Providers can implement `onLoginPtyReadCredential` to export the fixed Codex
+credential artifact for a bound login lease. The result is
+`{ kind: "codex-auth-json", authJson }`; the request accepts no path or command.
+The worker advertises this optional method only when the hook exists. The host
+must check that method before using this read path, enforce a size limit, and
+keep credential bytes out of logs and public session responses. Existing sandbox
+providers can continue to use their descriptor-bound credential read.

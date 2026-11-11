@@ -15,7 +15,7 @@ import { HttpError } from "../errors.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration, type HeartbeatExecutionConfigurationInput } from "../services/heartbeat/execution-configuration.js";
 import { buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
-import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, type Environment } from "@paperclipai/shared";
 import { secretService } from "../services/secrets.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -207,15 +207,16 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const persisted = saved === null ? null : { schema: saved === "isolated" ? "paperclip.native-execution-input.v5" : "paperclip.native-execution-input.v7",
       ...(saved === "preconfigured" ? { homeMode: saved } : {}),
     } as unknown as HeartbeatExecutionConfigurationInput["environment"]["persistedNativeExecutionInput"];
+    const localEnvironment = await environmentService(db).ensureLocalEnvironment();
     const opening = prepareHeartbeatExecutionConfiguration(db, {
       run, agent, task: { issueId: f.issueId, context: {}, responsibleUserId: f.userId,
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null, taskProjectContext: null,
         routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: { ...agent.adapterConfig, homeMode: "preconfigured" }, aiBinding: managed
-        ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) : undefined },
+        ? aiConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) : undefined },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
         useIsolatedTaskDirectory: false, explicitTaskDirectory: false, requestedExecutionWorkspaceMode: "shared_workspace" },
-      environment: { selectedEnvironmentId: null, selectedEnvironmentForConfig: null,
+      environment: { selectedEnvironmentId: localEnvironment.id, selectedEnvironmentForConfig: localEnvironment,
         resolvedInstanceSettings: await instanceSettingsService(db).get(), persistedNativeExecutionInput: persisted },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: vi.fn(), onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: vi.fn(),
@@ -275,11 +276,69 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
+  async function runnerTaskEnvironment(supportsTasks = true): Promise<Environment> {
+    const pluginId = randomUUID(), pluginKey = `test.runner-tasks.${pluginId}`;
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "@test/runner-tasks", version: "1.0.0", apiVersion: 1,
+      categories: ["automation"], status: "ready", manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Runner tasks", description: "Runner task fixture", author: "Paperclip", categories: ["automation"],
+        capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks, configSchema: { type: "object" } }] } });
+    const [environment] = await db.insert(environments).values({ name: `Runner tasks ${pluginId}`, driver: "plugin", status: "active",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    return environment as unknown as Environment;
+  }
+
+  it.each([
+    { name: "a run without a managed AI connection", managed: false, homeMode: undefined, persisted: false, supportsTasks: true, refused: true },
+    { name: "a preconfigured home that drops the managed AI connection", managed: true, homeMode: "preconfigured", persisted: false, supportsTasks: true, refused: true },
+    { name: "a run with a managed AI connection", managed: true, homeMode: undefined, persisted: false, supportsTasks: true, refused: false },
+    { name: "resumed native input admitted before the rule", managed: false, homeMode: undefined, persisted: true, supportsTasks: true, refused: false },
+    { name: "a plugin environment without Runner tasks", managed: false, homeMode: undefined, persisted: false, supportsTasks: false, refused: false },
+  ] as const)("plugin Runner-task environments require a managed AI connection: $name", async ({ managed, homeMode, persisted, supportsTasks, refused }) => {
+    const f = await seed(managed);
+    const environment = await runnerTaskEnvironment(supportsTasks);
+    const config = { provider: "codex", model: "gpt-6.1-sol", ...(homeMode ? { homeMode } : {}) };
+    const [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue",
+      status: "running", runtimeMode: "native", contextSnapshot: { issueId: f.issueId } }).returning();
+    const reached = "fixture passed managed AI admission";
+    const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValue(new Error(reached));
+    skillFailures.set(f.companyId, reached);
+    const secretsResolved = vi.fn(), redactorPrepared = vi.fn();
+    const opening = prepareHeartbeatExecutionConfiguration(db, {
+      run, agent, task: { issueId: f.issueId, context: {}, responsibleUserId: f.userId,
+        acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null, taskProjectContext: null,
+        routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
+      config: { sourceWorkspaceConfig: config, aiBinding: managed ? aiConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) : undefined },
+      policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+        useIsolatedTaskDirectory: false, explicitTaskDirectory: false, requestedExecutionWorkspaceMode: "shared_workspace" },
+      environment: { selectedEnvironmentId: environment.id, selectedEnvironmentForConfig: environment,
+        resolvedInstanceSettings: await instanceSettingsService(db).get(),
+        persistedNativeExecutionInput: persisted ? { schema: "paperclip.native-execution-input.v5" } as unknown as HeartbeatExecutionConfigurationInput["environment"]["persistedNativeExecutionInput"] : null },
+      services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
+      onFailureSecretsResolved: secretsResolved, onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: redactorPrepared,
+    });
+    if (refused) {
+      await expect(opening).rejects.toMatchObject({ name: "ConfigurationIncompleteFailure", code: "configuration_incomplete",
+        message: expect.stringContaining(homeMode ? "isolated Runner home" : "Choose an AI connection"),
+        resultJson: { configurationIncomplete: { reason: "ai_connection_required", actionUrl: `/agents/${f.agentId}/runtime`,
+          ...(homeMode ? { homeMode: "preconfigured" } : {}) } } });
+      // Refused before observability, secrets, or the managed runtime.
+      expect(redactorPrepared).not.toHaveBeenCalled();
+      expect(secretsResolved).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+    } else {
+      await expect(opening).rejects.toThrow(reached);
+      expect(redactorPrepared).toHaveBeenCalledOnce();
+    }
+  });
+
   async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"]) {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
     const appendRunEvent = vi.fn();
+    const environment = selectedEnvironmentForConfig ?? await environmentService(db).ensureLocalEnvironment();
     return { run, appendRunEvent, prepare: () => prepareHeartbeatExecutionConfiguration(db, {
       run, agent,
       task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest,
@@ -287,7 +346,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: config, aiBinding: undefined },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory, requestedExecutionWorkspaceMode },
-      environment: { selectedEnvironmentId: selectedEnvironmentForConfig?.id ?? null, selectedEnvironmentForConfig,
+      environment: { selectedEnvironmentId: environment.id, selectedEnvironmentForConfig: environment,
         resolvedInstanceSettings, persistedNativeExecutionInput: null },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent, finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
@@ -392,9 +451,9 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         skills: [{ skillKey: "new-invalid", displayName: "New invalid skill", markdown: "---\nname: new-invalid\nmetadata:\n  sources:\n    - kind: github-dir\n      repo: fixture/skills\n---\nUnpinned." }] } });
     const [environment] = await db.insert(environments).values({ name: "Fixture", driver: "plugin", config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
     const config = { paperclipSkillSync: { desiredSkills: [] } };
-    const restoring = await configuration(f, config, { skillVersions: {}, skillSelectionSnapshot: true }, "paperclip_runner", false, "shared_workspace", environment);
+    const restoring = await configuration(f, config, { skillVersions: {}, skillSelectionSnapshot: true }, "paperclip_runner", false, "shared_workspace", environment as Environment);
     expect(await restoring.prepare()).toMatchObject({ prepared: true, runtimeSkillEntries: [] });
-    const fresh = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const fresh = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment as Environment);
     const rejected = await fresh.prepare().then(() => false, error => { expect(error.message).toMatch(/pinned Git commit/); return true; });
     expect(rejected).toBe(true);
   });
@@ -411,7 +470,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "plugin", config: { pluginKey, driverKey: "tasks" } }).returning();
     await db.update(issues).set({ description: `Use [company skill](skill://${existing.id}).` }).where(eq(issues.id, f.issueId));
     const config = { paperclipSkillSync: { desiredSkills: [existing.key] } };
-    const run = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const run = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment as Environment);
     const result = await run.prepare();
     expect(result.prepared).toBe(true);
     if (!result.prepared) throw new Error("Configuration did not finish");
@@ -422,7 +481,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.run.id));
     expect(saved.contextSnapshot!.shadowedSkills).toEqual([{ key: existing.key, shadowedBy: key }]);
     expect(Object.keys(saved.contextSnapshot!.skillVersions as object)).toEqual([key]);
-    const recovery = await configuration(f, config, saved.contextSnapshot!, "paperclip_runner", false, "shared_workspace", environment);
+    const recovery = await configuration(f, config, saved.contextSnapshot!, "paperclip_runner", false, "shared_workspace", environment as Environment);
     const resumed = await recovery.prepare();
     expect(resumed.prepared).toBe(true);
     if (!resumed.prepared) throw new Error("Recovery did not finish");
@@ -671,7 +730,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
     const f = await seed(true);
     skillFailures.set(f.companyId, `Invalid fixture skill configuration: ${f.credential}`);
-    const capturedFailure = vi.spyOn(sentry, "captureRunFailure").mockImplementation(() => undefined);
+    const capturedFailure = vi.spyOn(sentry, "captureRunFailure").mockImplementation(() => false);
     const prepare = aiRuntime.prepareManagedAiRuntime;
     let acquiredHome: string | undefined;
     vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockImplementation(async (...args) => {

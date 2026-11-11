@@ -2,6 +2,10 @@ export const endpoint = 'https://paperclip.testops.cloud';
 export const planName = 'Chat feature evals';
 export const fullName = 'paperclip.Product E2E.chat-features.create-backlog';
 export const aliases = [fullName, 'paperclip.Product E2E.chat-features.tasks.create-backlog'];
+export function launchNameSearch(name) {
+  // TestOps search uses the UI's typed filter carrier, not plain search text.
+  return Buffer.from(JSON.stringify([{ id: 'name', type: 'string', value: name }]), 'utf8').toString('base64');
+}
 class SetupFailure extends Error {
   constructor(code, status = null) { super(code); this.code = code; this.status = status; }
 }
@@ -49,7 +53,7 @@ const diagnosticCodes = new Set(['untrusted_chat_testops_context', 'testops_toke
   'testops_case_alias_conflict', 'testops_plan_name_conflict', 'testops_plan_identity_invalid',
   'testops_integration_identity_invalid', 'testops_bootstrap_identity_invalid', 'testops_plan_without_matching_case',
   'testops_created_case_identity_invalid', 'testops_created_plan_identity_invalid', 'testops_plan_scope_mismatch',
-  'testops_operation_invalid', 'testops_output_invalid', 'untrusted_public_testops_context', 'chat_testops_identity_missing',
+  'testops_plan_retired', 'testops_operation_invalid', 'testops_output_invalid', 'untrusted_public_testops_context', 'chat_testops_identity_missing',
   'chat_testops_case_mismatch', 'chat_testops_plan_mismatch', 'chat_testops_plan_job_mismatch', 'chat_testops_job_mismatch',
   'chat_testops_job_id_mismatch', 'chat_testops_job_type_mismatch', 'chat_testops_job_parameters_shape_mismatch',
   'chat_testops_job_parameters_limit', 'chat_testops_job_url_mismatch', 'chat_testops_jobrun_mismatch', 'chat_testops_launch_mismatch', 'chat_testops_selection_mismatch', 'chat_testops_parameter_mismatch', 'chat_testops_nonce_invalid', 'chat_testops_nonce_conflict', 'chat_testops_catalog_incomplete', 'chat_testops_launch_admission', 'chat_testops_github_http', 'chat_testops_integration_mismatch', 'chat_testops_upload_mismatch', 'chat_testops_upload_unverified']);
@@ -81,9 +85,21 @@ export async function testopsClient(token, fetchImpl = fetch) {
   return async (route, method = 'GET', body, timeoutMs = 30_000) => {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) fail('chat_testops_upload_unverified');
     if (!route.startsWith('/api/') || route.includes('://')) fail('testops_route_invalid');
+    const multipart = body instanceof FormData;
+    if (multipart) {
+      const entries = [...body.entries()], files = entries.map(([, file]) => file);
+      if (method !== 'POST' || !/^\/api\/jobrun\/[1-9][0-9]{0,15}\/upload$/.test(route)
+        || !Number.isSafeInteger(Number(route.split('/')[3])) || entries.length !== 3
+        || entries.some(([name]) => name !== 'file')
+        || files.some(file => !(file instanceof Blob) || file.type !== 'application/json' || file.size > 12 * 1024 * 1024
+          || !/^[a-f0-9-]{36}-(?:attachment|result)\.json$/.test(file.name))
+        || files.filter(file => file.name.endsWith('-result.json')).length !== 1
+        || new Set(files.map(file => file.name)).size !== 3
+        || files.reduce((bytes, file) => bytes + file.size, 0) > 32 * 1024 * 1024) fail('testops_route_invalid');
+    }
     const response = await fetchImpl(`${endpoint}${route}`, { method, redirect: 'error',
-      headers: { Accept: 'application/json', Authorization: `Bearer ${value.access_token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) });
+      headers: { Accept: 'application/json', Authorization: `Bearer ${value.access_token}`, ...(body && !multipart ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: multipart ? body : JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) fail(`testops_api_http_${response.status}`);
     if (response.status === 204) return null;
     const text = await response.text();
@@ -135,32 +151,10 @@ export async function inspectChatMetadata(api) {
   return { projectId: 1, caseConflict: cases.size > 1, cases: [...cases.values()], plans: plans.map(value => ({ id: value.id, name: planName, count: value.testCasesCount })), integrations };
 }
 
-export async function ensureChatPlan(api, inspected, markOnce) {
-  if (inspected.projectId !== 1 || inspected.plans.length > 1) fail('testops_bootstrap_identity_invalid');
-  if (inspected.caseConflict === true || inspected.cases.length > 1) fail('testops_case_alias_conflict');
-  let selected = inspected.cases[0], plan = inspected.plans[0];
-  if (plan && !selected) fail('testops_plan_without_matching_case');
-  if (!selected || !plan) await markOnce();
-  if (!selected) {
-    const created = await api('/api/testcase', 'POST', { projectId: 1, name: 'Create a task backlog through chat', fullName,
-      automated: true, description: 'Canonical scenario: tasks.create-backlog. Readiness and recorded outcomes remain separate.',
-      expectedResult: 'The real agent creates the requested backlog; public Product E2E assertions and cleanup must pass.' });
-    if (!id(created?.id) || created.projectId !== 1 || created.fullName !== fullName) fail('testops_created_case_identity_invalid');
-    selected = { id: created.id, fullName, automated: created.automated === true };
-  }
-  if (!plan) {
-    const created = await api('/api/testplan', 'POST', { projectId: 1, name: planName,
-      treeSelection: { inverted: false, leafsInclude: [selected.id] } });
-    if (!id(created?.id) || created.projectId !== 1 || created.name !== planName) fail('testops_created_plan_identity_invalid');
-    plan = { id: created.id, name: planName };
-  }
-  const actual = await api(`/api/testplan/${plan.id}`);
-  if (actual.projectId !== 1 || actual.name !== planName || actual.testCasesCount !== 1
-    || actual.treeSelection?.inverted === true || !same(actual.treeSelection?.leafsInclude, [selected.id])
-    || (actual.treeSelection?.groupsInclude?.length ?? 0) > 0 || (actual.treeSelection?.leafsExclude?.length ?? 0) > 0) fail('testops_plan_scope_mismatch');
-  return { projectId: 1, case: selected, plan: { id: plan.id, name: planName, count: 1 },
-    caseUrl: `${endpoint}/project/1/test-cases/${selected.id}`, planUrl: `${endpoint}/testplan/${plan.id}`,
-    actualResult: null, note: 'Plan preparation is not an executed measurement or a passing result.' };
+// Kept as an explicit retirement boundary for callers of the former smoke lane.
+// Catalog registration owns the shared cases; deleting the old plan must persist.
+export async function ensureChatPlan() {
+  fail('testops_plan_retired');
 }
 
 
@@ -348,7 +342,7 @@ export async function launchChatPlan(api, env, markOnce, admission) {
   const assignments = await api(`/api/testplan/${known.planId}/job`);
   if (!Array.isArray(assignments) || assignments.length > 1 || assignments.some(row => row.job?.id !== known.jobId || row.testCasesCount !== 1)) fail('chat_testops_plan_job_mismatch');
   const launchName = `${planName} · ${nonce}`;
-  const existing = rows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: launchName, page: '0', size: '100' })}`));
+  const existing = rows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: launchNameSearch(launchName), page: '0', size: '100' })}`));
   if (existing.length) {
     if (existing.length !== 1 || existing[0].name !== launchName || !id(existing[0].id)) fail('chat_testops_nonce_conflict');
     return { schema: 'paperclip.chat-feature-testops-launch/v1', ...source, nonce, planId: known.planId,

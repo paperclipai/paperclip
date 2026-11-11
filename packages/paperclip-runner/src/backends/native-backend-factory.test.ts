@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as codexSecurity from "../drivers/codex/codex-security-config.js";
 
-import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInput, type NativeExecutionInputV1, type NativeExecutionInputV2 } from "../contracts/native-execution.js";
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions } from "../contracts/runtime-context.js";
 
 const contextRoots: string[] = [];
@@ -36,12 +36,12 @@ import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } fr
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
 function execution(
-  provider: NativeExecutionInput["provider"] = {
+  provider: NativeExecutionInputV1["provider"] = {
     kind: "codex",
     model: null,
     approvalPolicy: "never",
   },
-): NativeExecutionInput {
+): NativeExecutionInputV1 {
   return {
     schema: "paperclip.native-execution-input.v1",
     binding: {
@@ -88,7 +88,7 @@ function execution(
 
 function acpxExecution(
   agent: "codex" | "pi" | "claude" = "codex",
-): NativeExecutionInput {
+): NativeExecutionInputV1 {
   return {
     ...execution(),
     session: {
@@ -107,7 +107,7 @@ function acpxExecution(
   };
 }
 
-function opencodeExecution(): NativeExecutionInput {
+function opencodeExecution(): NativeExecutionInputV1 {
   return {
     ...execution(),
     session: {
@@ -124,7 +124,7 @@ function opencodeExecution(): NativeExecutionInput {
   };
 }
 
-function planningExecution(input: NativeExecutionInput): NativeExecutionInput {
+function planningExecution(input: NativeExecutionInputV1): NativeExecutionInputV2 {
   return {
     ...input,
     schema: "paperclip.native-execution-input.v2",
@@ -143,7 +143,7 @@ function planningExecution(input: NativeExecutionInput): NativeExecutionInput {
 
 function managedExecution(
   kind: "claude_managed" | "aws_agentcore",
-): NativeExecutionInput {
+): NativeExecutionInputV1 {
   if (kind === "claude_managed") {
     return {
       ...execution(),
@@ -223,7 +223,7 @@ describe("native backend factory", () => {
     });
     try {
       const backend = createNativeSessionBackend(input, { environment: {} });
-      await expect(backend.openSession({ identity: { runId: "run", sessionId: "session", companyId: "company", agentId: "agent" },
+      await expect(backend.openSession({ identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
         workingDirectory: WORKSPACE })).rejects.toThrow("offline-stop-before-process-spawn");
       expect(generated).toBeDefined();
       if (webSearch) expect(generated?.slice(-3)).toEqual(["-c", 'web_search="disabled"', "app-server"]);
@@ -290,6 +290,23 @@ describe("native backend factory", () => {
         collaborationModes: ["default", "plan"],
       },
     });
+  });
+
+  it("reports Cursor Cloud capabilities without inheriting native Codex promises", async () => {
+    const input = execution({ kind: "cursor_cloud", model: "explicit-model", cursorCloud: {
+      schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/project" }],
+    } });
+    input.session.driverKind = "cursor_cloud_api";
+    const backend = createRunnerdNativeSessionBackend(preparedExecution(input), {
+      transportFactory: () => { throw new Error("descriptor must not launch the transport"); },
+    });
+    const descriptor = await backend.descriptor();
+    expect(descriptor).toMatchObject({ name: "cursor_cloud_api", version: "cursor-cloud-v1", capabilities: {
+      resume: true, dynamicTools: true, runtimeRequestResolution: false, runtimeRequestHandoff: false,
+      steering: false, goals: false, threadLineage: false,
+      unsupported: expect.arrayContaining(["native_permissions", "native_questions", "preprompt_model_acknowledgment"]),
+    } });
+    expect(descriptor.capabilities.typedEventFamilies).toBeUndefined();
   });
 
   it("defers remote ACPX workspace admission to the runner filesystem", async () => {
@@ -387,7 +404,7 @@ describe("native backend factory", () => {
     expect(recovered).toMatchObject({ recovered: true });
     expect(factory).toHaveBeenCalledWith(expect.objectContaining({ baseInstructions: retainedSystemInstructions }));
     expect(transport.calls.some(call => call.method === "thread/start" || call.method === "turn/start")).toBe(false);
-    if (recovered.recovered) await recovered.session.close({ reason: "test complete" });
+    if (recovered.recovered) await recovered.session!.close({ reason: "test complete" });
   });
 
   describe("runner-prepared launch working directory", () => {
@@ -403,7 +420,7 @@ describe("native backend factory", () => {
         return response;
       }
     }
-    const identity = { runId: "run", sessionId: "session", companyId: "company", agentId: "agent" };
+    const identity = { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" };
     const providers = [
       ["Codex", execution()],
       ["OpenCode", opencodeExecution()],
@@ -435,8 +452,8 @@ describe("native backend factory", () => {
       }).recoverSession!({ ...snapshot, activeTurnId: null }, { signal: new AbortController().signal });
       expect(recovered).toMatchObject({ recovered: true });
       if (recovered.recovered) {
-        expect((await recovered.session.snapshot()).workingDirectory).toBe(cwd);
-        await recovered.session.close({ reason: "test complete" });
+        expect((await recovered.session!.snapshot()).workingDirectory).toBe(cwd);
+        await recovered.session!.close({ reason: "test complete" });
       }
     });
 
@@ -752,6 +769,7 @@ describe("native backend factory", () => {
     await backend.openSession({
       identity: {
         companyId: "company",
+        issueId: "issue",
         agentId: "agent",
         runId: "run",
         sessionId: "session",
@@ -790,7 +808,7 @@ describe("native backend factory", () => {
       environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
     });
     const session = await backend.openSession({
-      identity: { companyId: "company", agentId: "agent", runId: "run", sessionId: "session" },
+      identity: { companyId: "company", issueId: "issue", agentId: "agent", runId: "run", sessionId: "session" },
       workingDirectory: WORKSPACE,
     });
     const first = JSON.stringify(buildNativeModelEnvelope(input));

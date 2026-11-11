@@ -11,6 +11,7 @@ import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
 import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
+import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "../runner-revision-mismatch.js";
 
 /** Core verifies a real Runner; providers only implement their task API. */
 export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTestContext,
@@ -43,7 +44,7 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       identity: managed?.identity, accountIdentity: managed?.accountIdentity,
       home: managed?.home, environment,
     });
-    const owner = createPluginRunnerTaskOwner({ ...credentials, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
+    const owner = createPluginRunnerTaskOwner({ ...credentials, taskId: description.taskId, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
       harness: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
       credentialIdentity: managed?.identity });
     probeStarted = true;
@@ -70,6 +71,7 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       checks: [{ code: "runner_hello_probe_passed", level: "info", message: `Runner verified ${result.providerDriver} with model ${result.effectiveModel}.` }] };
   } catch (error) {
     if (error instanceof NativeEnvironmentProbeCleanupError) throw error;
+    if (isRunnerRevisionMismatch(error)) return runnerRevisionMismatchTestResult("paperclip_runner", testedAt);
     // Provider failures may contain credentials or private addressing.
     return { adapterType: "paperclip_runner", status: "fail", testedAt,
       checks: [{ code: "runner_hello_probe_failed", level: "error", message: "The selected plugin environment did not complete the Runner hello probe and confirmed cleanup. Check its runtime, account, and model access." }] };

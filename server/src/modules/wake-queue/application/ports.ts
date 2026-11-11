@@ -14,6 +14,13 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 export type LockedIssueExecution = {
   /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
   recoveryOnly?: boolean;
+  /**
+   * The finishing run was deliberately stopped, and the issue now belongs to
+   * this other agent (a reassignment committed while that stop was settling).
+   * Promote only that assignee's deferred wake; the stopped run's own queued
+   * work stays put and no recovery is planned for it.
+   */
+  handoffAssigneeAgentId?: string;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
 };
@@ -118,7 +125,12 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     finishingRunAgentId: string;
     queuedCommentIds: string[];
-  }): Promise<{ liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean }>;
+  }): Promise<{
+    liveNonSelfCommentIds: string[];
+    containedSelfAuthoredComment: boolean;
+    /** Live comment ids a succeeded run of the wake's agent already received in its prompt. */
+    deliveredCommentIds?: string[];
+  }>;
   /** Cancels the wake with `status = 'deferred_issue_execution'` as an atomic compare-and-set guard. */
   cancelDeferredWake(input: {
     companyId: string;
@@ -425,6 +437,7 @@ export interface WakeAdmissionWriter {
     input: {
       companyId: string;
       activeExecutionRunId: string;
+      activeExecutionRunStatus: WakeAdmissionActiveExecutionRun["status"];
       mergedContextSnapshot: Record<string, unknown>;
       durableReceipt?: DurableWakeAdmissionReceipt;
       agentId: string;
@@ -435,7 +448,7 @@ export interface WakeAdmissionWriter {
       requestedByActorId: string | null;
       idempotencyKey: string | null;
     },
-  ): Promise<Record<string, unknown>>;
+  ): Promise<Record<string, unknown> | null>;
   /** Merges the wake's context into an already-queued deferred wake, guarded by its current status. */
   mergeIntoExistingDeferredWake(
     scope: TransactionScope,

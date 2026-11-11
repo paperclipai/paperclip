@@ -1,3 +1,4 @@
+import { projectEnvironmentOptions } from "../services/project-environments.js";
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
@@ -172,9 +173,9 @@ export function projectRoutes(db: Db) {
     return false;
   }
 
-  async function assertProjectWorkspaceWriteAllowed(req: Request, res: Response, project: { id: string; companyId: string }) {
+  async function assertProjectWorkspaceWriteAllowed(req: Request, res: Response, project: { id?: string; companyId: string }) {
     const assigneeAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
-    const decision = await access.decide({ actor: req.actor, action: "project:write_workspace",
+    const decision = await access.decide({ actor: req.actor, action: project.id ? "project:write_workspace" : "tasks:assign",
       resource: { type: "issue", companyId: project.companyId, projectId: project.id, assigneeAgentId },
       scope: { projectId: project.id, assigneeAgentId } });
     if (decision.allowed) return true;
@@ -375,20 +376,33 @@ export function projectRoutes(db: Db) {
     res.json(summary);
   });
 
+  router.get("/companies/:companyId/project-environments", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await projectEnvironmentOptions(db, companyId, {
+      userId: req.actor.type === "board" ? req.actor.userId : req.actor.onBehalfOfUserId,
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+    }));
+  });
+
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
       repositoryIds?: string[];
+      environmentId?: string;
+      expectedStorageProviderPluginId?: string | null;
     };
 
-    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, environmentId, expectedStorageProviderPluginId, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
     const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
     if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
+    if ((environmentId || readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy))
+      && !(await assertProjectWorkspaceWriteAllowed(req, res, { companyId }))) return;
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -412,7 +426,7 @@ export function projectRoutes(db: Db) {
     const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
     const actor = getActorInfo(req);
-    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls })).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls, environmentId, expectedStorageProviderPluginId })).digest("hex");
     const receiptKey = idempotencyKey ? `project:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}` : null;
     const result = await db.transaction(async (tx) => {
       if (receiptKey) {
@@ -457,7 +471,13 @@ export function projectRoutes(db: Db) {
       if (receiptOnly) return null;
       if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
-      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
+      const environment = {
+        environmentId,
+        expectedStorageProviderPluginId,
+        userId: req.actor.type === "board" ? req.actor.userId : req.actor.onBehalfOfUserId,
+        agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      };
+      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories, environment) : await service.create(companyId, projectData, environment);
       if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
       const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
       const registeredUrls: typeof urlRepositories = [];
@@ -504,6 +524,9 @@ export function projectRoutes(db: Db) {
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const body = { ...req.body };
+    const nextEnvironmentId = body.environmentId !== undefined ? body.environmentId : readProjectPolicyEnvironmentId(body.executionWorkspacePolicy);
+    const environmentChanged = nextEnvironmentId !== undefined && nextEnvironmentId !== (existing.environmentId ?? null);
+    if (environmentChanged && !(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
     if (body.visibility !== undefined) {
       if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
     }
@@ -512,10 +535,9 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
     );
-    await assertProjectEnvironmentSelection(
-      existing.companyId,
-      readProjectPolicyEnvironmentId(body.executionWorkspacePolicy),
-    );
+    if (environmentChanged && body.environmentId === undefined) {
+      await assertProjectEnvironmentSelection(existing.companyId, nextEnvironmentId);
+    }
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }

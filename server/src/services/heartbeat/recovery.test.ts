@@ -1,3 +1,4 @@
+import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -13,10 +14,14 @@ import { createHeartbeatRunState } from "./run-state.js";
 import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED } from "../native-runtime/native-restart-recovery.js";
 import { startNativeSessionExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
+import { createRunLogWriterAuthority } from "./run-log-authority.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash, currentProcessStartedAtMs } from "../controller-process-identity.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "../recovery/ownership-invariant-report.js";
+import { OWNABLE_KINDS } from "../recovery/ownership-registry.js";
 import { logger } from "../../middleware/logger.js";
 import { listExpiredNativeRunnerAuthorities } from "../native-runtime/native-runner-checkpoint.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
@@ -168,13 +173,13 @@ describe("heartbeat recovery module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
-  it("persists an authentication ownership hold before its event without terminating or retrying", async () => {
+  it.each(["adopted_runner_authentication_timeout"] as const)("persists a %s ownership hold before its event without terminating or retrying", async reason => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
     const run = { id: "run", runtimeMode: "native", status: "running" } as Run;
     const blocked = { ...run, nativePhase: "terminal_failure", errorCode: NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE };
     deps.setRunStatusFromLive.mockResolvedValue({ updated: true, run: blocked });
-    expect(await createHeartbeatRecovery(database.db, deps).markNativeOwnershipUnverified(run, { reason: "adopted_runner_authentication_timeout" })).toBe(blocked);
+    expect(await createHeartbeatRecovery(database.db, deps).markNativeOwnershipUnverified(run, { reason })).toBe(blocked);
     expect(deps.setRunStatusFromLive).toHaveBeenCalledWith("run", "running", ["running"], expect.objectContaining({ nativePhase: "terminal_failure" }));
     expect(deps.appendRunEvent).toHaveBeenCalledAfter(deps.setRunStatusFromLive);
     expect(deps.cancelHeartbeatNativeRun).not.toHaveBeenCalled();
@@ -206,6 +211,72 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Recover this run", status: "in_progress", assigneeAgentId: agentId });
     return (await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, invocationSource: "automation", status: "running", runtimeMode: "legacy" }).returning())[0];
   }
+
+  it.each([false, true])("delivers scoped recovery to a preparation without a runner PID or checkpoint (locally tracked=%s)", async tracked => {
+    const run = await seedRun(), deps = callbacks(db);
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId,
+      nativePhase: "observed", runnerProfileJson: { nativePreparationFencingVersion: 1 },
+    }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!,
+      phase: "observed", leaseOwner: "old-preparation", leaseExpiresAt: new Date(0), controllerHostHash: "operator_attested" });
+    const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: run.id, leaseOwner: "recovered-owner",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null };
+    native.claims.mockResolvedValue([claim]);
+    if (tracked) deps.activeRunExecutions.add(run.id);
+    try {
+      await createHeartbeatRecovery(db, deps).recoverActiveExecutions({ companyId: run.companyId, runId: run.id });
+      if (tracked) {
+        expect(native.claims).not.toHaveBeenCalled();
+        expect(deps.executeRun).not.toHaveBeenCalled();
+      } else {
+        expect(native.claims).toHaveBeenCalledWith(expect.objectContaining({ runIds: [run.id] }));
+        expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(run.id, { nativeLeaseOwner: claim.leaseOwner, nativeRestartRecovery: claim });
+      }
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      expect(deps.terminateHeartbeatRunProcess).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all([...deps.activeRunExecutionPromises]);
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
+
+  it("routes an expired pre-capability startup to cleanup before generic orphan ownership holds", async () => {
+    const run = await seedRun(), leaseId = randomUUID(), environmentId = randomUUID(), leaseOwner = randomUUID();
+    const deadlineAtMs = Date.now() - 1_000, contextId = randomUUID();
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, run.issueId!));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId, nativePhase: "observed",
+      runnerInstanceId: randomUUID(), nativeSessionId: randomUUID(), runnerProfileJson: { nativeStartupContext: {
+        schema: "paperclip.native-startup-context.v1", companyId: run.companyId, agentId: run.agentId, runId: run.id,
+        contextId, deadlineAtMs, leaseId, leaseOwner, controllerGeneration: 1, attempt: 1 } } }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!,
+      phase: "observed", attempt: 1, leaseOwner, controllerGeneration: 1, leaseExpiresAt: new Date(Date.now() - 1_000),
+      controllerBootId: randomUUID(), controllerPid: process.pid, controllerProcessStartedAt: new Date() });
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "plugin", config: {} });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: run.companyId, environmentId, heartbeatRunId: run.id,
+      issueId: run.issueId, provider: "plugin", providerLeaseId: "early-task", status: "active", metadata: { runnerTaskLease: true } });
+    const deps = callbacks(db);
+    deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
+    native.claims.mockImplementationOnce(claimNativeRestartRecoveries);
+    try {
+      await createHeartbeatRecovery(db, deps).recoverActiveExecutions({ runId: run.id });
+      expect(native.claims).toHaveBeenCalledWith(expect.objectContaining({ runIds: [run.id] }));
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(current).toMatchObject({ status: "running", errorCode: "native_startup_cleanup_pending",
+        resultJson: { nativeStartupCleanup: { contextId, state: "pending" } } });
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+    } finally {
+      await db.delete(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id));
+      await db.delete(activityLog).where(eq(activityLog.runId, run.id));
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, run.issueId!));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
 
   async function ownedProcess() {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", `paperclip-recovery-${randomUUID()}`], {
@@ -274,7 +345,7 @@ describePostgres("heartbeat recovery module ownership", () => {
     } finally { try { await f.cleanup(); } finally { await child.stop(); } }
   });
 
-  async function remoteRetryFixture(pid: number, target: "workspace" | "plugin_task" = "workspace") {
+  async function remoteRetryFixture(pid: number, target: "workspace" | "remote_workspace" | "plugin_task" = "workspace") {
     const fixture = await nativeProcessFixture(pid, "remote", "failed");
     const sessionId = randomUUID();
     const [lease] = await db.insert(environmentLeases).values({ companyId: fixture.run.companyId,
@@ -283,13 +354,17 @@ describePostgres("heartbeat recovery module ownership", () => {
     }).returning();
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, fixture.run.agentId));
     await db.update(issues).set({ executionRunId: fixture.run.id }).where(eq(issues.id, fixture.run.issueId!));
-    await db.update(heartbeatRuns).set({ nativeSessionId: sessionId, runnerProfileJson: {
+    await db.update(heartbeatRuns).set({ nativeSessionId: sessionId,
+      ...(target === "remote_workspace" ? { processGroupId: null } : {}), runnerProfileJson: {
       sessionCheckpoint: { identity: { runId: fixture.run.id, companyId: fixture.run.companyId,
         issueId: fixture.run.issueId, agentId: fixture.run.agentId, sessionId }, providerSessionId: "existing-provider" },
       ...(target === "workspace" ? { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
         workspaceId: randomUUID(), leaseId: lease.id, providerLeaseId: lease.providerLeaseId, remoteCwd: "/work",
         descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
         resourceDisposition: "keep_running" } } : {}),
+      ...(target === "remote_workspace" ? { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1",
+        workspaceId: randomUUID(), epoch: 3, leaseId: lease.id, providerLeaseId: lease.providerLeaseId,
+        remoteCwd: "/work", state: "prepared", snapshotId: randomUUID() } } : {}),
     } }).where(eq(heartbeatRuns.id, fixture.run.id));
     await db.insert(nativeRunnerCheckpoints).values({ runId: fixture.run.id, companyId: fixture.run.companyId,
       issueId: fixture.run.issueId!, part: "opaque-checkpoint-record", material: { fixture: true } });
@@ -299,9 +374,12 @@ describePostgres("heartbeat recovery module ownership", () => {
     return { ...fixture, lease };
   }
 
-  it.each(["failed", "running"] as const)("routes a due remote %s retry through verified recovery without local PID inspection", async status => {
+  it.each((["workspace", "remote_workspace"] as const).flatMap(target =>
+    (["failed", "running"] as const).map(status => ({ target, status })),
+  ))("routes a due $target $status retry through verified recovery without local PID inspection", async ({ target, status }) => {
     const child = await ownedProcess();
-    const f = await remoteRetryFixture(child.pid);
+    const f = await remoteRetryFixture(child.pid, target);
+    const processGroupId = target === "remote_workspace" ? null : child.pid;
     const originalKill = process.kill.bind(process);
     const kill = vi.spyOn(process, "kill").mockImplementation(originalKill);
     try {
@@ -315,7 +393,7 @@ describePostgres("heartbeat recovery module ownership", () => {
           remote: { providerLeaseId: f.lease.providerLeaseId, remoteCwd: "/work" } }),
       }));
       expect(native.claims).toHaveBeenCalledWith(expect.objectContaining({ runIds: [f.run.id] }));
-      expect(await f.current()).toMatchObject({ status: "running", processPid: child.pid, processGroupId: child.pid });
+      expect(await f.current()).toMatchObject({ status: "running", processPid: child.pid, processGroupId });
       expect(kill.mock.calls.filter(([pid]) => Math.abs(pid as number) === child.pid)).toEqual([]);
       expect(await hasNativeLocalProcessStop(db, f.run.companyId, f.run.id)).toBe(false);
       await recovery.reapOrphanedRuns();
@@ -325,6 +403,137 @@ describePostgres("heartbeat recovery module ownership", () => {
       expect(child.alive()).toBe(true);
     } finally { kill.mockRestore(); try { await f.cleanup(); } finally { await child.stop(); } }
   });
+
+  // Staging shape: a chat continuation inherited its predecessor's saved
+  // provider session and warm runner identity, then failed while staging its
+  // provider pack, before it ever asked for a runner of its own. Its workspace
+  // reference is saved and its own sandbox lease is still active.
+  type InheritedCase = "staging" | "own_turn" | "own_launch" | "own_checkpoint" | "no_predecessor"
+    | "pending_side_effect" | "legacy_detail";
+  async function inheritedRunnerRetry(pid: number, condition: InheritedCase) {
+    const f = await remoteRetryFixture(pid, "remote_workspace");
+    const run = await f.current();
+    // The PID came from the predecessor, so this run recorded no process identity.
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+    if (condition !== "own_checkpoint") await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.run.id));
+    const profile = run.runnerProfileJson ?? {};
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    await db.update(agents).set({ status: "active" }).where(eq(agents.id, f.run.agentId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...profile, nativeExecutionInput: { fixture: true },
+      remoteWorkspace: { ...(profile.remoteWorkspace as Record<string, unknown>), state: "saved" },
+      sessionCheckpoint: { ...checkpoint, activeTurnId: null,
+        pendingRuntimeRequests: condition === "pending_side_effect" ? [{ requestId: "tool-1", kind: "tool_call" }] : [] },
+    } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(environmentLeases).set({ executionWorkspaceId: null }).where(eq(environmentLeases.id, f.lease.id));
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, failureDetail: {
+      message: "runner_remote_provider_archive_invalid", recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+      providerSessionEstablished: true, ...(condition === "legacy_detail" ? {} : { providerEventsExist: false }),
+    } }).where(eq(nativeRunFinalizations.runId, f.run.id));
+    const predecessorId = randomUUID();
+    if (condition !== "no_predecessor") await db.insert(heartbeatRuns).values({ id: predecessorId,
+      companyId: f.run.companyId, agentId: f.run.agentId, issueId: f.run.issueId, invocationSource: "automation",
+      status: "succeeded", runtimeMode: "native", nativeSessionId: run.nativeSessionId, createdAt: new Date(Date.now() - 600_000),
+      finishedAt: new Date(Date.now() - 300_000), processPid: run.processPid, processGroupId: run.processGroupId,
+      processStartedAt: run.processStartedAt });
+    if (condition === "own_turn") await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id,
+      agentId: f.run.agentId, eventType: "turn.started", stream: "system", level: "info", message: "turn.started" });
+    if (condition === "own_launch") await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id,
+      agentId: f.run.agentId, eventType: PROCESS_START_REQUESTED, stream: "system", level: "info" });
+    return { ...f, predecessorId, async cleanupAll() {
+      try { await f.cleanup(); } finally { await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, predecessorId)); }
+    } };
+  }
+
+  it("resumes a continuation that never launched its own runner in its retained sandbox, without reattaching", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    try {
+      native.claims.mockClear();
+      await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id });
+      await Promise.all([...f.deps.activeRunExecutionPromises]);
+      expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(false);
+      expect(f.deps.executeRun).toHaveBeenCalledExactlyOnceWith(f.run.id, { nativeLeaseOwner: expect.any(String) });
+      const current = await f.current();
+      expect(current).toMatchObject({ processPid: null, processGroupId: null, processStartedAt: null });
+      expect(current.runnerProfileJson?.nativeInheritedRunnerRetirement).toEqual({
+        schema: "paperclip.native-inherited-runner-retirement.v1", predecessorRunId: f.predecessorId,
+        retainedSandbox: { leaseId: f.lease.id, providerLeaseId: f.lease.providerLeaseId, remoteCwd: "/work" } });
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      expect(events.find(event => event.payload?.reason === "inherited_runner_never_launched")?.payload)
+        .toMatchObject({ predecessorRunId: f.predecessorId, retainedSandbox: true });
+      // The retained sandbox lease stays the run's only lease; nothing new was acquired.
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.run.id)))
+        .toMatchObject([{ id: f.lease.id, status: "active" }]);
+      expect(f.deps.terminateHeartbeatRunProcess).not.toHaveBeenCalled();
+      expect(child.alive()).toBe(true);
+    } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
+  });
+
+  it("routes a run another sweep already retired to the same resume", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    try {
+      expect(await retireInheritedRemoteRunnerIdentity(db, f.run.id)).toBe("retired");
+      expect(await retireInheritedRemoteRunnerIdentity(db, f.run.id)).toBe("retired");
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      expect(events.filter(event => event.payload?.reason === "inherited_runner_never_launched")).toHaveLength(1);
+    } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
+  });
+
+  it("defers instead of reattaching when the retirement cannot take its locks", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const holding = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.run.issueId!)).for("update");
+      locked();
+      await released;
+    });
+    try {
+      await holding;
+      native.claims.mockClear();
+      const deferred = vi.fn();
+      await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id, onDeferredDeadline: deferred });
+      expect(deferred).toHaveBeenCalled();
+      expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(false);
+      expect(f.deps.executeRun).not.toHaveBeenCalled();
+      expect((await f.current()).processPid).toBe(child.pid);
+    } finally {
+      release(); await holder;
+      try { await f.cleanupAll(); } finally { await child.stop(); }
+    }
+  }, 30_000);
+
+  it("keeps the existing recovery path for a non-transient retirement error", async () => {
+    const failing = { transaction: async () => { throw new Error("unexpected retirement fault"); } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(failing, randomUUID())).toBe("not_applicable");
+    const lockTimeout = Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("lock timeout"), { code: "55P03" }) });
+    const contended = { transaction: async () => { throw lockTimeout; } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(contended, randomUUID())).toBe("transient");
+    const statementTimeout = Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("statement timeout"), { code: "57014" }) });
+    const slow = { transaction: async () => { throw statementTimeout; } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(slow, randomUUID())).toBe("transient");
+  });
+
+  it.each(["own_turn", "own_launch", "own_checkpoint", "no_predecessor", "pending_side_effect", "legacy_detail"] as const)(
+    "keeps verified reattachment when the run's own runner may hold work or the proof is incomplete: %s", async condition => {
+      const child = await ownedProcess();
+      const f = await inheritedRunnerRetry(child.pid, condition);
+      try {
+        native.claims.mockClear();
+        await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id });
+        await Promise.all([...f.deps.activeRunExecutionPromises]);
+        expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(true);
+        expect(f.deps.executeRun).not.toHaveBeenCalledWith(f.run.id, { nativeLeaseOwner: expect.any(String) });
+        const current = await f.current();
+        expect(current.processPid).toBe(child.pid);
+        expect(current.runnerProfileJson).not.toHaveProperty("nativeInheritedRunnerRetirement");
+      } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
+    },
+  );
 
   it("routes a due plugin-task retry through its existing remote lease", async () => {
     const child = await ownedProcess();
@@ -342,10 +551,13 @@ describePostgres("heartbeat recovery module ownership", () => {
     } finally { try { await f.cleanup(); } finally { await child.stop(); } }
   });
 
-  it.each(["future_retry", "live_owner", "missing_checkpoint", "active_execution"] as const)(
-    "does not execute a remote retry without current authority: %s", async condition => {
+  it.each((["workspace", "remote_workspace"] as const).flatMap(target =>
+    (["future_retry", "live_owner", "missing_checkpoint", "active_execution"] as const).map(condition => ({ target, condition })),
+  ))(
+    "does not execute a $target retry without current authority: $condition", async ({ target, condition }) => {
       const child = await ownedProcess();
-      const f = await remoteRetryFixture(child.pid);
+      const f = await remoteRetryFixture(child.pid, target);
+      const processGroupId = target === "remote_workspace" ? null : child.pid;
       try {
         if (condition === "future_retry") await db.update(nativeRunFinalizations)
           .set({ nextAttemptAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.run.id));
@@ -361,7 +573,7 @@ describePostgres("heartbeat recovery module ownership", () => {
         await createHeartbeatRecovery(db, f.deps).reapOrphanedRuns();
         expect(f.deps.executeRun).not.toHaveBeenCalled();
         expect(f.deps.terminateHeartbeatRunProcess).not.toHaveBeenCalled();
-        expect(await f.current()).toMatchObject({ processPid: child.pid, processGroupId: child.pid });
+        expect(await f.current()).toMatchObject({ processPid: child.pid, processGroupId });
         if (condition === "future_retry") expect(native.claims).not.toHaveBeenCalled();
         if (condition === "missing_checkpoint") {
           const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
@@ -509,7 +721,7 @@ describePostgres("heartbeat recovery module ownership", () => {
       const [environment] = await db.insert(environments).values({ name: run.id, driver: "sandbox" }).returning();
       const [lease] = await db.insert(environmentLeases).values({ companyId: run.companyId, issueId: run.issueId,
         heartbeatRunId: run.id, environmentId: environment.id, provider: "daytona", providerLeaseId: randomUUID(),
-        status: "active", leasePolicy: state === "reuse_by_environment" ? state : "ephemeral",
+        status: "active", leasePolicy: state === "reuse_by_environment" ? state : "ephemeral", updatedAt: new Date(0),
         metadata: { driver: "sandbox", sandboxProviderPlugin: true, pluginId: randomUUID(), remoteCwd: "/work" },
       }).returning();
       await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: run.issueId,
@@ -668,6 +880,69 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
     adapterExecutionControls.delete(f.run.id);
   }
+
+  async function fenceFromPreviousServer(f: Awaited<ReturnType<typeof seedShutdownSource>>,
+    controller: Record<string, unknown> | null) {
+    const [row] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const marker: Record<string, unknown> = { ...(row.metadata!.legacyShutdownWorkspaceSettlement as Record<string, unknown>),
+      controllerBootId: randomUUID() };
+    if (controller) marker.controller = { ...controller, bootId: marker.controllerBootId };
+    else delete marker.controller;
+    await db.update(environmentLeases).set({ metadata: { ...row.metadata, legacyShutdownWorkspaceSettlement: marker } })
+      .where(eq(environmentLeases.id, f.lease.id));
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, f.run.id));
+  }
+  const fenceState = async (leaseId: string) => ((await db.select().from(environmentLeases)
+    .where(eq(environmentLeases.id, leaseId)))[0].metadata!.legacyShutdownWorkspaceSettlement as { state: string });
+  const deadController = () => ({ pid: 4_194_303, hostHash: currentProcessSpaceHash(), processStartedAt: new Date(0).toISOString() });
+
+  it("stamps the shutdown fence with the committing server process", async () => {
+    await currentProcessStartedAtMs();
+    const f = await seedShutdownSource();
+    try {
+      const controller = currentControllerProcessStamp();
+      expect((await fenceState(f.lease.id) as unknown as { controller: unknown }).controller)
+        .toEqual({ bootId: controller.bootId, pid: process.pid, hostHash: controller.hostHash,
+          processStartedAt: controller.processStartedAt });
+    } finally { await deleteShutdownSource(f); }
+  });
+
+  it("settles the fence of a previous server proven gone without waiting out its deadline", async () => {
+    const f = await seedShutdownSource();
+    try {
+      await fenceFromPreviousServer(f, deadController());
+      await sweepLegacyShutdownWorkspaceSettlements(db);
+      expect(await fenceState(f.lease.id)).toMatchObject({ state: "expired" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].resultJson)
+        .toMatchObject({ workspaceRestoreFailure: "restore_failed" });
+    } finally { await deleteShutdownSource(f); }
+  });
+
+  it("settles a proven-gone fence owner from the shared reconciler, and only that one", async () => {
+    const dead = await seedShutdownSource();
+    const foreign = await seedShutdownSource();
+    const legacy = await seedShutdownSource();
+    const kind = OWNABLE_KINDS.find(entry => entry.id === "legacy_shutdown_settlement_fence")!;
+    try {
+      await fenceFromPreviousServer(dead, deadController());
+      await fenceFromPreviousServer(foreign, { ...deadController(), hostHash: "another-host-pid-space" });
+      await fenceFromPreviousServer(legacy, null);
+      const readOnly = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), kinds: [kind], record: false });
+      expect(readOnly.kinds[0]).toMatchObject({ inProgress: 3, settled: 0 });
+      expect(await fenceState(dead.lease.id)).toMatchObject({ state: "pending" });
+
+      const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), kinds: [kind] });
+      expect(report.kinds[0]).toMatchObject({ inProgress: 3, settled: 1 });
+      expect(await fenceState(dead.lease.id)).toMatchObject({ state: "expired" });
+      await sweepLegacyShutdownWorkspaceSettlements(db);
+      expect(await fenceState(foreign.lease.id)).toMatchObject({ state: "pending" });
+      expect(await fenceState(legacy.lease.id)).toMatchObject({ state: "pending" });
+      await sweepLegacyShutdownWorkspaceSettlements(db, new Date(Date.now() + 60_000));
+      expect(await fenceState(foreign.lease.id)).toMatchObject({ state: "expired" });
+      expect(await fenceState(legacy.lease.id)).toMatchObject({ state: "expired" });
+    } finally { for (const f of [dead, foreign, legacy]) await deleteShutdownSource(f); }
+  });
 
   it("does not let an elapsed shutdown wait stop a sandbox whose exporter still owns settlement", async () => {
     const f = await seedShutdownSource();
@@ -1045,6 +1320,67 @@ describePostgres("heartbeat recovery module ownership", () => {
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("keeps a remote bootstrap restart claim through preparation longer than its first lease, then hands it to the next attempt", async () => {
+    const run = await seedRun();
+    const deps = callbacks(db);
+    const controller = await currentNativeControllerIdentity();
+    const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: run.id, leaseOwner: randomUUID(),
+      controllerGeneration: 3, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null };
+    const scope = { companyId: run.companyId, issueId: run.issueId!, controller, remote: true };
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId, status: "running" }).where(eq(heartbeatRuns.id, run.id));
+    const firstLeaseEndsAt = new Date(Date.now() + 4_000);
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!, phase: "observed", attempt: 1,
+      controllerBootId: controller.bootId, controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+      leaseOwner: claim.leaseOwner, leaseExpiresAt: firstLeaseEndsAt });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    native.claims.mockImplementationOnce(async input => {
+      await input.onClaim?.(claim, scope);
+      return [claim];
+    });
+    const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    const authority = createRunLogWriterAuthority(db, admitted, claim.leaseOwner);
+    let finish!: () => void, report!: (outcome: unknown) => void;
+    const outcome = new Promise<unknown>(resolve => { report = resolve; });
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    deps.executeRun.mockImplementationOnce(async (_runId, options) => { try {
+      await vi.advanceTimersByTimeAsync(21_000);
+      await vi.waitFor(async () => {
+        const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+        expect(coordinator.leaseExpiresAt!.getTime()).toBeGreaterThan(firstLeaseEndsAt.getTime() + 10_000);
+      });
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, firstLeaseEndsAt.getTime() - Date.now() + 1_000)));
+      await authority();
+      await db.update(nativeRunFinalizations).set({ attempt: 2 }).where(eq(nativeRunFinalizations.runId, run.id));
+      const execution = startNativeSessionExecutionLeaseRenewal({ db, ...scope, runId: run.id,
+        leaseOwner: claim.leaseOwner, attempt: 2, onLost: () => native.detach() });
+      try {
+        await options?.onNativeExecutionLeaseAcquired?.();
+        const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+        await vi.advanceTimersByTimeAsync(21_000);
+        await vi.waitFor(async () => {
+          const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+          expect(after.leaseExpiresAt!.getTime()).toBeGreaterThan(before.leaseExpiresAt!.getTime());
+        });
+        report("handed off");
+        await finished;
+      } finally { await execution.stop(); }
+    } catch (error) { report(error); } });
+    try {
+      native.detach.mockClear();
+      await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart(new Date(), [run.id]);
+      expect(await outcome).toBe("handed off");
+      expect(deps.executeRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ nativeLeaseOwner: claim.leaseOwner,
+        onNativeExecutionLeaseAcquired: expect.any(Function) }));
+      await vi.waitFor(() => expect(native.detach).not.toHaveBeenCalled());
+    } finally {
+      finish();
+      await Promise.all([...deps.activeRunExecutionPromises]);
+      vi.useRealTimers();
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it.each(["bootstrap_incomplete", "blocked"] as const)("retries durable remote takeover and preserves its %s disposition", async kind => {
     const run = await seedRun();
     const deps = callbacks(db);
@@ -1157,6 +1493,29 @@ describePostgres("heartbeat recovery module ownership", () => {
     }
   });
 
+  it.each(["getRun", "appendRunEvent"] as const)("dispatches committed claims when recording a transition fails in %s", async failing => {
+    const deps = callbacks(db);
+    const deferred = { kind: "awaiting_evidence" as const, runId: randomUUID(), reason: NATIVE_RESTART_RECOVERY_FAILED,
+      retryAt: new Date(Date.now() + 30_000) };
+    const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: randomUUID(), leaseOwner: "claimed-owner",
+      controllerGeneration: 1, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null };
+    native.claims.mockResolvedValueOnce([deferred, claim]);
+    if (failing === "getRun") deps.getRun.mockRejectedValue(new Error("run read failed"));
+    else {
+      deps.getRun.mockImplementation(async id => ({ id }) as unknown as Awaited<ReturnType<HeartbeatRecoveryDependencies["getRun"]>>);
+      deps.appendRunEvent.mockRejectedValue(new Error("event write failed"));
+    }
+    const result = await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
+    expect(result.claims).toEqual([claim]);
+    expect(result.awaitingEvidenceRunIds).toEqual([deferred.runId]);
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(claim.runId, { nativeLeaseOwner: claim.leaseOwner, nativeRestartRecovery: claim });
+    if (failing === "appendRunEvent") {
+      expect(deps.appendRunEvent).toHaveBeenCalledWith(expect.objectContaining({ id: deferred.runId }), expect.objectContaining({
+        level: "warn", payload: expect.objectContaining({ reason: NATIVE_RESTART_RECOVERY_FAILED }) }));
+    }
+    await Promise.all([...deps.activeRunExecutionPromises]);
+  });
+
   it("does not claim or execute recovery when persisted finalization fails", async () => {
     const deps = callbacks(db);
     native.finalizations.mockRejectedValueOnce(new Error("result settlement failed"));
@@ -1192,6 +1551,53 @@ describePostgres("heartbeat recovery module ownership", () => {
     expect(result.scheduledRetryRunIds).toEqual([run.id]);
     expect(deps.scheduleNativeSessionResumeDispatch).toHaveBeenCalledWith(run.id, nextAttemptAt);
     expect(deps.executeRun).not.toHaveBeenCalled();
+    await Promise.all([...deps.activeRunExecutionPromises]);
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+  });
+
+  it("schedules deferred remote retries without repeating unchanged transition events", async () => {
+    const run = await seedRun();
+    const deps = callbacks(db), retryAt = new Date(Date.now() + 30_000);
+    deps.getRun.mockResolvedValue(run);
+    const held = { kind: "blocked" as const, runId: run.id, reason: "native_retry_admission_ineligible", retryAt };
+    native.claims.mockResolvedValue([{ ...held, transitionUnchanged: false }]);
+    const recovery = createHeartbeatRecovery(db, deps);
+    await recovery.recoverNativeRunsAfterRestart(new Date(), [run.id], { skipDelegatedWork: true });
+    expect(deps.scheduleNativeSessionResumeDispatch).toHaveBeenCalledWith(run.id, retryAt, "restart");
+    expect(deps.appendRunEvent).toHaveBeenCalledTimes(1);
+    native.claims.mockResolvedValue([{ ...held, transitionUnchanged: true }]);
+    await recovery.recoverNativeRunsAfterRestart(new Date(), [run.id], { skipDelegatedWork: true });
+    expect(deps.appendRunEvent).toHaveBeenCalledTimes(1);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+  });
+
+  it.each(["nativeWorkspaceSync", "remoteWorkspace"])("routes a due %s retry to remote ownership verification", async reference => {
+    const run = await seedRun();
+    const leaseId = randomUUID(), workspaceId = randomUUID();
+    await db.update(agents).set({ adapterType: "paperclip_runner", status: "active" }).where(eq(agents.id, run.agentId));
+    await db.update(issues).set({ status: "in_progress", assigneeAgentId: run.agentId,
+      executionRunId: null, checkoutRunId: null }).where(eq(issues.id, run.issueId!));
+    const location = { workspaceId, leaseId, providerLeaseId: "retained-sandbox", remoteCwd: "/workspace", state: "prepared" };
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId, status: "failed",
+      processPid: process.pid, processStartedAt: new Date(), runnerProfileJson: {
+        [reference]: reference === "remoteWorkspace"
+          ? { ...location, schema: "paperclip.remote-workspace-run.v1", epoch: 1, snapshotId: null }
+          : { ...location, schema: "paperclip.native-workspace-sync/v3", descriptorSha256: "a".repeat(64),
+            baselineSha256: "b".repeat(64), finalHostSha256: null, resourceDisposition: "destroy" },
+      } }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!,
+      phase: "retryable_failure", nextAttemptAt: new Date(0),
+      failureDetail: { recoveryMode: "exact_checkpoint_resume" } });
+    const deps = callbacks(db);
+    deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
+    native.claims.mockImplementation(claimNativeRestartRecoveries);
+    await createHeartbeatRecovery(db, deps).resumeRetryableNativeProcessSessions({ runId: run.id });
+    expect(native.claims).toHaveBeenCalledWith(expect.objectContaining({ runIds: [run.id] }));
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    expect((await deps.getRun(run.id))?.processPid).toBe(process.pid);
+    expect((await db.select().from(issues).where(eq(issues.id, run.issueId!)))[0].executionRunId).toBeNull();
     await Promise.all([...deps.activeRunExecutionPromises]);
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));

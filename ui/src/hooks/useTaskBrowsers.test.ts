@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TaskBrowser } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { browserUseApi } from "@/api/browser-use";
-import { useBrowserArrivals, useTaskBrowsers } from "./useTaskBrowsers";
+import { TASK_BROWSERS_REFETCH_MS, taskBrowsersRefetchInterval, useBrowserArrivals, useTaskBrowsers } from "./useTaskBrowsers";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const cleanups = new Set<() => void>();
 function cleanup() { for (const unmount of cleanups) unmount(); }
@@ -104,4 +104,19 @@ it("does not steal focus when browser-tab storage is unavailable", () => {
   act(() => result.current.acknowledgeBrowserOpened());
   rerender();
   expect(result.current.openBrowserId).toBe(null);
+});
+it.each([
+  ["no browsers", [], false],
+  ["only finished browsers", [{ ...browser("a"), status: "closed" }, { ...browser("b"), status: "failed" }], false],
+  ["a starting browser", [{ ...browser("a"), status: "starting" }], TASK_BROWSERS_REFETCH_MS],
+  ["an idle browser", [browser("a")], TASK_BROWSERS_REFETCH_MS],
+  ["a stopping browser", [{ ...browser("a"), status: "stopping" }], TASK_BROWSERS_REFETCH_MS],
+] as Array<[string, TaskBrowser[], number | false]>)("with the live connection open, polls %s at %s", (_label, data, expected) => {
+  expect(taskBrowsersRefetchInterval(true, { status: "success", data })).toBe(expected);
+  // A closed connection always keeps the polling fallback.
+  expect(taskBrowsersRefetchInterval(false, { status: "success", data })).toBe(TASK_BROWSERS_REFETCH_MS);
+});
+it.each(["pending", "error"] as const)("keeps polling a %s browser read while connected", (status) => {
+  expect(taskBrowsersRefetchInterval(true, { status, data: [] })).toBe(TASK_BROWSERS_REFETCH_MS);
+  expect(taskBrowsersRefetchInterval(true, { status, data: undefined })).toBe(TASK_BROWSERS_REFETCH_MS);
 });

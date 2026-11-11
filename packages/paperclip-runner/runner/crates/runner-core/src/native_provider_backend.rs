@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -60,6 +61,22 @@ impl CommandExecutor for SelectedExecutor {
         }
     }
 
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.poll_disconnected_events(),
+            Self::Acpx(executor) => executor.poll_disconnected_events(),
+            Self::Managed(executor) => executor.poll_disconnected_events(),
+            Self::Dot(executor) => executor.poll_disconnected_events(),
+        }
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.maintain_disconnected_provider(),
+            _ => Ok(None),
+        }
+    }
+
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
         match self {
             Self::LocalFacade(executor) => executor.rotate_authority(config),
@@ -75,6 +92,13 @@ impl CommandExecutor for SelectedExecutor {
             Self::Acpx(executor) => executor.maintain_backpressured_provider(),
             Self::Managed(executor) => executor.maintain_backpressured_provider(),
             Self::Dot(executor) => executor.maintain_backpressured_provider(),
+        }
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        match self {
+            Self::LocalFacade(executor) => executor.provider_poll_is_live(),
+            _ => false,
         }
     }
 
@@ -207,6 +231,35 @@ impl NativeProviderCommandExecutor {
         Ok(())
     }
 
+    fn poll_with_credentials(
+        &mut self,
+        poll: fn(&mut SelectedExecutor) -> Result<Vec<PolledEvent>, DurableRunnerError>,
+    ) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.credentials.poll(false)?;
+        if let Some(event) = self.credentials.pending() {
+            return Ok(vec![event]);
+        }
+        let events = self
+            .selected
+            .as_mut()
+            .map_or_else(|| Ok(Vec::new()), poll)?;
+        let terminal = events.iter().any(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "turn.completed"
+                    | "turn.failed"
+                    | "turn.interrupted"
+                    | "turn.cancelled"
+                    | "harness.exited"
+            )
+        });
+        self.credentials.poll(terminal)?;
+        Ok(self
+            .credentials
+            .pending()
+            .map_or(events, |event| vec![event]))
+    }
+
     fn select_from_payload(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
         let kind = payload
             .pointer("/provider/kind")
@@ -257,7 +310,7 @@ impl NativeProviderCommandExecutor {
                 &self.config,
                 ExternalProviderCodec::Grok,
             )),
-            "codex" | "opencode" => SelectedExecutor::LocalFacade(
+            "codex" | "opencode" | "cursor_cloud" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
             "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_runner_config(
@@ -278,6 +331,62 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        // Observe credentials without selecting or restoring a provider.
+        self.credentials.poll(true)?;
+        if self.credentials.pending().is_some() {
+            return Ok(false);
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.host_park_ready(),
+            Some(SelectedExecutor::Acpx(executor)) => executor.host_park_ready(),
+            _ => Ok(false),
+        }
+    }
+
+    fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_for_park(deadline),
+            _ => Ok(false),
+        }
+    }
+
+    fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        // A per-turn Runner exits with its run. Restarting the provider after
+        // its turn would only spawn a generation for teardown; a later turn of
+        // the same run still restarts lazily at its start.
+        if self.config.turn_scoped {
+            return Ok(());
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_next_turn(),
+            _ => Ok(()),
+        }
+    }
+
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.take_turn_end_restart_failure(),
+            _ => None,
+        }
+    }
+
+    fn observe_recovery_state(
+        &mut self,
+        state: &crate::durable::DurableState,
+    ) -> Result<(), DurableRunnerError> {
+        if state.warm_transition.is_some() {
+            return Ok(());
+        }
+        self.select_recovery()?;
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.observe_recovery_state(state),
+            Some(SelectedExecutor::Acpx(executor)) => executor.observe_recovery_state(state),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected
@@ -339,29 +448,23 @@ impl CommandExecutor for NativeProviderCommandExecutor {
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.select_recovery()?;
-        self.credentials.poll(false)?;
-        if let Some(event) = self.credentials.pending() {
-            return Ok(vec![event]);
-        }
-        let events = self
-            .selected
+        self.poll_with_credentials(CommandExecutor::poll_events)
+    }
+
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.poll_with_credentials(CommandExecutor::poll_disconnected_events)
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        self.selected
             .as_mut()
-            .map_or_else(|| Ok(Vec::new()), CommandExecutor::poll_events)?;
-        let terminal = events.iter().any(|event| {
-            matches!(
-                event.event_type.as_str(),
-                "turn.completed"
-                    | "turn.failed"
-                    | "turn.interrupted"
-                    | "turn.cancelled"
-                    | "harness.exited"
-            )
-        });
-        self.credentials.poll(terminal)?;
-        Ok(self
-            .credentials
-            .pending()
-            .map_or(events, |event| vec![event]))
+            .map_or(Ok(None), CommandExecutor::maintain_disconnected_provider)
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(CommandExecutor::provider_poll_is_live)
     }
 
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { assertNativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 
 type Selection = {
   admittedRunId: string;
@@ -29,7 +30,7 @@ const admitted = new WeakMap<NativeSession, Readonly<Selection>>();
 const digest = /^sha256:[a-f0-9]{64}$/;
 type NativeRunIdentity = ReturnType<NativeSession["identity"]>;
 
-export type NativeProviderPackAdmissionSource = { runId: string; receipt: unknown; state: unknown };
+export type NativeProviderPackAdmissionSource = { runId: string; receipt: unknown; state: unknown; artifacts?: unknown };
 
 export function nativeProviderPackAdmissionPending(admissionEpoch: string) {
   return { schema: "paperclip.native-provider-pack-admission-state.v1" as const, state: "pending" as const, admissionEpoch };
@@ -127,9 +128,20 @@ export async function recordNativeProviderPackAdmission(db: Db, input: {
   identity: NativeRunIdentity;
   admissionEpoch: string;
   claim: { leaseOwner: string; attempt: number; controllerGeneration: number; controllerBootId: string };
+  waitForClaim?: boolean;
 }): Promise<boolean> {
   const receipt = admittedNativeProviderPack(input.session, input.identity);
   return db.transaction(async tx => {
+    // Bounds every lock wait below, including the run-row lock. A run-event
+    // append holds that row FOR UPDATE for milliseconds; NOWAIT there lost the
+    // admission and then failed the run as admission_unverified.
+    await tx.execute(sql`select set_config('lock_timeout', '1000ms', true)`);
+    if (input.waitForClaim) {
+      await assertNativeRunnerCheckpointOwner(tx, { companyId: input.identity.companyId,
+        issueId: input.identity.issueId, runId: input.identity.runId, authorityRunId: input.identity.runId,
+        bootId: input.claim.controllerBootId, leaseOwner: input.claim.leaseOwner,
+        generation: input.claim.controllerGeneration }, false);
+    }
     const [owner] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.runId, input.identity.runId), eq(nativeRunFinalizations.companyId, input.identity.companyId),
       eq(nativeRunFinalizations.issueId, input.identity.issueId), eq(nativeRunFinalizations.leaseOwner, input.claim.leaseOwner),
@@ -142,7 +154,7 @@ export async function recordNativeProviderPackAdmission(db: Db, input: {
       eq(heartbeatRuns.id, input.identity.runId), eq(heartbeatRuns.companyId, input.identity.companyId),
       eq(heartbeatRuns.agentId, input.identity.agentId), eq(heartbeatRuns.nativeIssueId, input.identity.issueId),
       eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "running"),
-    )).for("update", { noWait: true }).limit(1);
+    )).for("update").limit(1);
     if (!run) return false;
     const current = run.profile?.nativeProviderPackAdmissionState as Record<string, unknown> | undefined;
     if (current?.schema !== "paperclip.native-provider-pack-admission-state.v1" || current.admissionEpoch !== input.admissionEpoch

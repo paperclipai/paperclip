@@ -92,6 +92,24 @@ test('registration keeps an existing exact assignment without assigning it twice
   assert.equal(f.calls.filter(row => row.route.endsWith('/assign')).length, 0);
 });
 
+for (const bucket of [{ job: null, testCasesCount: 3 }, { testCasesCount: 3 }]) {
+  test(`registration binds an explicit unassigned bucket (${Object.hasOwn(bucket, 'job') ? 'null' : 'omitted'} job)`, async () => {
+    const f = mutationApi({ assignments: [bucket] }), markers = []; let observed;
+    await completePilotRegistration(f.api, prepared, official, context, 999, async stage => markers.push(stage), async value => { observed = value; });
+    assert.deepEqual(markers, ['bind_owned_job', 'assign_plan']);
+    assert.equal(f.calls.filter(row => row.route.endsWith('/assign')).length, 1);
+    assert.deepEqual(observed.assignments, [{ kind: 'unassigned', jobId: null, testCasesCount: 3 }]);
+  });
+}
+
+for (const bucket of [{ job: null, testCasesCount: 2 }, { job: null, testCasesCount: 3, otherJobId: 99 }]) {
+  test('registration rejects incomplete or unknown unassigned bucket data without writes', async () => {
+    const f = mutationApi({ assignments: [bucket] });
+    await assert.rejects(completePilotRegistration(f.api, prepared, official, context, 999, async () => assert.fail('no mutation marker')));
+    assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+  });
+}
+
 test('bootstrap retains a closed observation before rejecting an unknown parameter shape', async () => {
   const f = mutationApi({ parameters: [{ id: 34, name: 'PRIVATE_NAME', defaultValue: 'PRIVATE_DEFAULT', value: 'PRIVATE_VALUE' }] });
   let observed;
@@ -108,6 +126,22 @@ test('the fenced launcher requests one exact three-case TestOps launch', async (
   assert.deepEqual(receipt.caseIds, [100, 101, 102]); assert.deepEqual(markers, ['launch_plan']);
   assert.deepEqual(f.calls.filter(row => row.method !== 'GET'), [{ route: '/api/testplan/10/run', method: 'POST', body: {
     launchName: `${planName} · ${operatorEnv.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE}` } }]);
+});
+
+test('completion launch preflight sends the typed UTF-8 name filter required by TestOps', async () => {
+  const f = mutationApi({ assignments: [{ job, testCasesCount: 3 }] });
+  const api = async (route, ...args) => {
+    if (route.startsWith('/api/launch?')) {
+      const wire = new URL(route, 'https://paperclip.testops.cloud').searchParams.get('search');
+      let filters;
+      try { filters = JSON.parse(Buffer.from(wire, 'base64').toString('utf8')); }
+      catch { throw new Error('TestOps HTTP 400: typed launch search required'); }
+      assert.deepEqual(filters, [{ id: 'name', type: 'string', value: `${planName} · ${operatorEnv.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE}` }]);
+    }
+    return f.api(route, ...args);
+  };
+  await launchPilotPlan(api, operatorEnv, context, 999, async () => {});
+  assert.equal(f.calls.filter(row => row.method === 'POST').length, 1);
 });
 
 for (const changed of [{ GITHUB_RUN_NUMBER: '6' }, { CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE: 'not-a-nonce' }, { CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER: '' }]) {
@@ -146,35 +180,9 @@ test('an uncertain launch response is never automatically resent', async () => {
   assert.equal(f.calls.filter(row => row.method === 'POST').length, 1);
 });
 
-test('registration creates only the three missing cases and the dedicated plan after once markers', async () => {
-  const calls = []; let nextCase = 100;
-  const get = async (route, method = 'GET', body) => {
-    calls.push({ route, method, body });
-    if (route === '/api/integration/2/project/1') return { id: 2, projectId: 1, info: { type: 'github' }, disabled: false };
-    if (route.startsWith('/api/testcase?')) return { content: [], number: 0, totalPages: 0, totalElements: 0 };
-    if (route.startsWith('/api/testplan?')) return { content: [], totalPages: 0 };
-    if (route === '/api/testcase' && method === 'POST') return { ...body, id: nextCase++ };
-    if (route === '/api/testplan' && method === 'POST') return { ...plan, name: planName };
-    if (route === '/api/testplan/10') return plan;
-    assert.fail(route);
-  };
-  const value = await bootstrapPilotPlan(get, 2, async stage => calls.push({ marker: stage }));
-  assert.equal(value.cases.length, 3); assert.equal(value.planId, 10);
-  assert.equal(calls.filter(row => row.method === 'POST').length, 4);
-  for (const [i, row] of calls.entries()) if (row.method === 'POST') assert.ok(calls[i - 1].marker);
-});
-
-test('uncertain case creation is never automatically resent', async () => {
-  let writes = 0, markers = 0;
-  const get = async (route, method = 'GET') => {
-    if (method === 'POST') { writes++; throw new Error('uncertain transport'); }
-    if (route === '/api/integration/2/project/1') return { id: 2, projectId: 1, info: { type: 'github' }, disabled: false };
-    if (route.startsWith('/api/testcase?')) return { content: [], number: 0, totalPages: 0, totalElements: 0 };
-    if (route.startsWith('/api/testplan?')) return { content: [], totalPages: 0 };
-    assert.fail(route);
-  };
-  await assert.rejects(bootstrapPilotPlan(get, 2, async () => { markers++; }), /uncertain transport/);
-  assert.equal(writes, 1); assert.equal(markers, 1);
+test('retired pilot bootstrap cannot recreate a plan or call the integration API', async () => {
+  await assert.rejects(bootstrapPilotPlan(() => assert.fail('retired route must not call the API'), 2,
+    () => assert.fail('retired route must not mark a mutation')), /chat_completion_testops_plan_retired/);
 });
 
 function api(replace = {}) {

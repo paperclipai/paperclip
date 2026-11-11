@@ -40,6 +40,8 @@ import { prepareEvalGatewayRuntime } from "./eval-gateway-runtime.js";
 import { prepareEvalObservabilityRuntime } from "./eval-observability-runtime.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
+import { createCapabilityRunnerdCodexTransport } from "../live/runnerd-codex-transport.js";
+import { evalFailureDiagnosticFromError, observeEvalProviderFailures, type EvalProviderFailureDiagnostic } from "./eval-failure-diagnostics.js";
 
 interface EvalSessionCliOptions {
   requestPath: string;
@@ -416,6 +418,7 @@ export async function runEvalSessionCli(
   let session: CapabilityLiveSession | null = null;
   let turn: CapabilityLiveTurnResult | null = null;
   let snapshot: CapabilityLiveSessionSnapshot | null = null;
+  const providerFailureDiagnostics: EvalProviderFailureDiagnostic[] = [];
 
   try {
     if (cli.observabilityConfigPath) observability = await prepareEvalObservabilityRuntime(cli.observabilityConfigPath, request, gateway!);
@@ -436,7 +439,11 @@ export async function runEvalSessionCli(
       },
     };
     const service = options.serviceFactory?.(runnerdPath, transportOptions)
-      ?? new CapabilityLiveSessionService({ transportOptions });
+      ?? new CapabilityLiveSessionService({ transportOptions,
+        transportFactory: observeEvalProviderFailures(createCapabilityRunnerdCodexTransport, failure => {
+          if (providerFailureDiagnostics.length < 8) providerFailureDiagnostics.push(failure);
+        }),
+      });
     // PR3 expands this same service input with the two qualified remote
     // profiles. The cast keeps this isolated PR typecheckable before PR3 lands;
     // the runtime fields and their fail-closed validation are already present.
@@ -514,6 +521,7 @@ export async function runEvalSessionCli(
         : {}),
       turn,
       snapshot,
+      ...(providerFailureDiagnostics.length ? { providerFailureDiagnostics } : {}),
       ...(accountingError === null ? {} : {
         accountingError: accountingError.message,
         accountingFailure: failureClass(accountingError),
@@ -533,6 +541,8 @@ export async function runEvalSessionCli(
     }, null, 2)}\n`));
     return accountingError === null ? 0 : 2;
   } catch (error) {
+    const failureDiagnostic = evalFailureDiagnosticFromError(error);
+    if (failureDiagnostic && providerFailureDiagnostics.length < 8) providerFailureDiagnostics.push(failureDiagnostic);
     if (session !== null) {
       snapshot = session.snapshot();
       const attempt = snapshot.attempts?.find(
@@ -561,6 +571,7 @@ export async function runEvalSessionCli(
       attemptId: request.attemptId,
       infrastructureError: error instanceof Error ? error.message : String(error),
       infrastructureFailure: failureClass(error),
+      ...(providerFailureDiagnostics.length ? { providerFailureDiagnostics } : {}),
       build: PAPERCLIP_RUNNER_BUILD_METADATA,
       runnerd: { path: "[withheld]", sha256: `sha256:${actualDigest}` },
       requestedModel: request.model,

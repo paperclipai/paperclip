@@ -22,9 +22,42 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+function resetDismissals() {
+  localStorage.removeItem("paperclip:task-question-dismissals:user-board:task-unanswered-questions-demo");
+}
+
+async function sendInsteadOfConfirming(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.getByTestId("task-chat-composer-takeover")).toBeVisible());
+  await userEvent.type(canvas.getByRole("textbox", { name: "editable markdown" }), "Leave that review for later. Show me the integration status.");
+  await userEvent.click(canvas.getByRole("button", { name: /^Send$/ }));
+  await expect(canvas.queryByTestId("task-chat-composer-takeover")).not.toBeInTheDocument();
+  await expect(canvas.queryByTestId("task-chat-pending-input-indicator")).not.toBeInTheDocument();
+  await expect(canvas.getByRole("button", { name: "Open request: Review requested" })).toBeVisible();
+}
+
 // Keep the test-drive story's dismissal preference across actual page reloads.
 export const TestDrive: Story = {};
 export const CompletionReview: Story = { args: { review: true } };
+export const SendInsteadOfConfirming: Story = {
+  args: { review: true },
+  beforeEach: resetDismissals,
+  play: async ({ canvasElement }) => {
+    await sendInsteadOfConfirming(canvasElement);
+  },
+};
+export const ReopenSkippedConfirmation: Story = {
+  args: { review: true },
+  beforeEach: resetDismissals,
+  play: async ({ canvasElement }) => {
+    await sendInsteadOfConfirming(canvasElement);
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Open request: Review requested" }));
+    await expect(canvas.getByTestId("task-chat-composer-takeover")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Approve completion" })).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Continue work" })).toBeVisible();
+  },
+};
 export const MovedOn: Story = { args: { movedOn: true } };
 export const MultipleUnanswered: Story = { args: { multiple: true } };
 export const AnsweredHistory: Story = { args: { answered: true } };
@@ -44,6 +77,6 @@ export const DismissAndAnswerLater: Story = {
     await userEvent.click(canvas.getByTestId("task-chat-unanswered-question"));
     await expect(canvas.getByRole("radio", { name: "Green" })).toBeChecked();
     await userEvent.click(canvas.getByRole("button", { name: /^(Send|Submit) answers$/ }));
-    await waitFor(() => expect(canvas.getByTestId("task-chat-answered-questions-receipt")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Answers recorded", { exact: true })).toBeVisible());
   },
 };

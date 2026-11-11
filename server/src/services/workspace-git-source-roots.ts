@@ -1,0 +1,180 @@
+import fs from "node:fs/promises";
+import { constants } from "node:fs";
+import path from "node:path";
+import { createHash } from "node:crypto";
+
+type Identity = { path: string; device: string; inode: string };
+type Metadata = Identity & { sha256: string; bytes: number };
+export type WorkspaceGitSourceRoots = {
+  root: string; gitDirectory: Identity; commonDirectory: Identity;
+  objectDirectories: Identity[]; metadata: Metadata[]; fingerprint: string;
+};
+const invalid = () => new Error("workspace_git_source_unproven");
+const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+const entry = (target: string) => fs.lstat(target, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
+  if (error.code === "ENOENT") return null;
+  throw error;
+});
+
+async function directoryIdentity(target: string): Promise<Identity> {
+  const stat = await entry(target);
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) throw invalid();
+  const actual = await fs.realpath(target);
+  return { path: actual, device: String(stat.dev), inode: String(stat.ino) };
+}
+
+async function readMetadata(target: string, limit: number): Promise<{ metadata: Metadata; text: string } | null> {
+  const before = await entry(target);
+  if (!before) return null;
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > BigInt(limit)) throw invalid();
+  const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (opened.dev !== before.dev || opened.ino !== before.ino || !opened.isFile()) throw invalid();
+    const buffer = Buffer.alloc(limit + 1), { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const after = await handle.stat({ bigint: true }), current = await entry(target);
+    if (!current || bytesRead !== Number(before.size) || bytesRead > limit
+      || [opened, after, current].some(stat => stat.dev !== before.dev || stat.ino !== before.ino || stat.size !== before.size
+        || stat.mtimeNs !== before.mtimeNs || stat.ctimeNs !== before.ctimeNs)) throw invalid();
+    const bytes = buffer.subarray(0, bytesRead);
+    return { metadata: { path: target, device: String(before.dev), inode: String(before.ino), bytes: bytesRead, sha256: sha256(bytes) },
+      text: bytes.toString("utf8") };
+  } finally { await handle.close(); }
+}
+
+function metadataPath(text: string): string {
+  const value = text.replace(/\r?\n$/, "");
+  if (!value || /[\0\r\n]/.test(value)) throw invalid();
+  return value;
+}
+
+async function onlyEntry(directory: string, name: string): Promise<boolean> {
+  let found = false;
+  for await (const child of await fs.opendir(directory)) {
+    if (found || child.name !== name) return false;
+    found = true;
+  }
+  return found;
+}
+
+export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancestors?: boolean } = {}): Promise<WorkspaceGitSourceRoots | null> {
+  let root = path.resolve(cwd), marker = "", markerEntry: Awaited<ReturnType<typeof entry>>;
+  for (let depth = 0; ; depth++) {
+    if (depth > 32) throw invalid();
+    const source = await entry(root);
+    if (!source) return null;
+    if (!source.isDirectory() || source.isSymbolicLink()) throw invalid();
+    root = await fs.realpath(root);
+    marker = path.join(root, ".git"); markerEntry = await entry(marker);
+    if (markerEntry) break;
+    if (await entry(path.join(root, "objects")) && await entry(path.join(root, "HEAD"))) throw invalid();
+    if (!options.ancestors || path.dirname(root) === root) return null;
+    root = path.dirname(root);
+  }
+  const metadata: Metadata[] = [];
+  let gitDirectory: Identity;
+  if (markerEntry.isDirectory() && !markerEntry.isSymbolicLink()) {
+    if (!await entry(path.join(marker, "objects")) && await onlyEntry(marker, "info")) {
+      const info = path.join(marker, "info"), infoEntry = await entry(info);
+      if (infoEntry?.isDirectory() && !infoEntry.isSymbolicLink() && await onlyEntry(info, "exclude")) {
+        const exclude = await entry(path.join(info, "exclude"));
+        if (exclude?.isFile() && !exclude.isSymbolicLink() && exclude.nlink === 1n) return null;
+      }
+    }
+    gitDirectory = await directoryIdentity(marker);
+  }
+  else {
+    const pointer = await readMetadata(marker, 4096);
+    if (!pointer || !pointer.text.startsWith("gitdir: ")) throw invalid();
+    metadata.push(pointer.metadata);
+    gitDirectory = await directoryIdentity(path.resolve(root, metadataPath(pointer.text.slice(8))));
+  }
+  const commonPointer = await readMetadata(path.join(gitDirectory.path, "commondir"), 4096);
+  if (commonPointer) metadata.push(commonPointer.metadata);
+  const commonDirectory = commonPointer
+    ? await directoryIdentity(path.resolve(gitDirectory.path, metadataPath(commonPointer.text))) : gitDirectory;
+  const objectDirectories: Identity[] = [], seen = new Set<string>();
+  const visit = async (target: string, depth: number): Promise<void> => {
+    if (depth > 4 || seen.size >= 32) throw invalid();
+    const directory = await directoryIdentity(target);
+    if (seen.has(directory.path)) return;
+    seen.add(directory.path); objectDirectories.push(directory);
+    if (await entry(path.join(directory.path, "info", "http-alternates"))) throw invalid();
+    const alternates = await readMetadata(path.join(directory.path, "info", "alternates"), 64 * 1024);
+    if (!alternates) return;
+    metadata.push(alternates.metadata);
+    const values = alternates.text.split("\n").filter(Boolean);
+    if (values.length > 32 || values.some(value => /[\0\r]/.test(value) || value.startsWith('"'))) throw invalid();
+    for (const value of values) await visit(path.resolve(directory.path, value), depth + 1);
+  };
+  await visit(path.join(commonDirectory.path, "objects"), 0);
+  objectDirectories.sort((a, b) => a.path.localeCompare(b.path));
+  metadata.sort((a, b) => a.path.localeCompare(b.path));
+  const result = { root, gitDirectory, commonDirectory, objectDirectories, metadata };
+  return { ...result, fingerprint: sha256(JSON.stringify(result)) };
+}
+
+export async function readNestedWorkspaceGitSourceRoots(cwd: string): Promise<WorkspaceGitSourceRoots[]> {
+  const roots: WorkspaceGitSourceRoots[] = [];
+  let entries = 0;
+  const visit = async (directory: string, depth: number, inRepository: boolean) => {
+    if (depth > 64) throw invalid();
+    await directoryIdentity(directory);
+    const children = (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+    entries += children.length;
+    if (entries > 100_000) throw invalid();
+    if (children.some(child => child.name === ".git")) {
+      const source = await readWorkspaceGitSourceRoots(directory);
+      if (!source || roots.length >= 64) throw invalid();
+      roots.push(source); inRepository = true;
+    } else if (children.some(child => child.name === "objects") && children.some(child => child.name === "HEAD")) throw invalid();
+    for (const child of children) {
+      if (!child.isDirectory() || child.name === ".git" || depth === 0 && child.name === ".paperclip-runtime") continue;
+      const next = path.join(directory, child.name);
+      if (!inRepository) {
+        const marker = await entry(child.name === "node_modules" ? path.join(directory, "package.json") : path.join(next, "pyvenv.cfg"));
+        if (marker?.isFile() && !marker.isSymbolicLink()) continue;
+      }
+      await visit(next, depth + 1, inRepository);
+    }
+  };
+  await visit(path.resolve(cwd), 0, false);
+  return roots;
+}
+
+export async function readWorkspaceGitLinkedRoots(source: WorkspaceGitSourceRoots) {
+  const commonDirectories = new Map([[source.commonDirectory.path, source.commonDirectory]]);
+  for (const objects of source.objectDirectories) {
+    if (path.basename(objects.path) !== "objects" || commonDirectories.has(path.dirname(objects.path))) continue;
+    const common = await directoryIdentity(path.dirname(objects.path)); commonDirectories.set(common.path, common);
+  }
+  const results: Array<{ commonDirectory: Identity; directory: Identity | null;
+    links: Array<{ root: Identity; gitDirectory: Identity }>; metadata: Metadata[] }> = [];
+  for (const commonDirectory of [...commonDirectories.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+    const target = path.join(commonDirectory.path, "worktrees"), present = await entry(target);
+    if (!present) { results.push({ commonDirectory, directory: null, links: [], metadata: [] }); continue; }
+    const directory = await directoryIdentity(target), names = (await fs.readdir(directory.path)).sort();
+    if (names.length > 256) throw invalid();
+    const links: Array<{ root: Identity; gitDirectory: Identity }> = [], metadata: Metadata[] = [];
+    for (const name of names) {
+      const gitDirectory = await directoryIdentity(path.join(directory.path, name));
+      const backlink = await readMetadata(path.join(gitDirectory.path, "gitdir"), 4096);
+      const common = await readMetadata(path.join(gitDirectory.path, "commondir"), 4096);
+      if (!backlink || !common || path.resolve(gitDirectory.path, metadataPath(common.text)) !== commonDirectory.path) throw invalid();
+      const marker = path.resolve(gitDirectory.path, metadataPath(backlink.text));
+      if (path.basename(marker) !== ".git") throw invalid();
+      const root = await directoryIdentity(path.dirname(marker)), pointer = await readMetadata(marker, 4096);
+      if (marker !== path.join(root.path, ".git") || !pointer?.text.startsWith("gitdir: ")
+        || path.resolve(root.path, metadataPath(pointer.text.slice(8))) !== gitDirectory.path) throw invalid();
+      links.push({ root, gitDirectory }); metadata.push(backlink.metadata, common.metadata, pointer.metadata);
+    }
+    if (JSON.stringify(names) !== JSON.stringify((await fs.readdir(directory.path)).sort())
+      || JSON.stringify(directory) !== JSON.stringify(await directoryIdentity(target))) throw invalid();
+    for (const receipt of metadata) {
+      const current = await readMetadata(receipt.path, 4096);
+      if (JSON.stringify(current?.metadata) !== JSON.stringify(receipt)) throw invalid();
+    }
+    results.push({ commonDirectory, directory, links, metadata: metadata.sort((a, b) => a.path.localeCompare(b.path)) });
+  }
+  return results;
+}

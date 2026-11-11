@@ -1,5 +1,11 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
-export const ISSUE_SUMMARIES_MAX_IDS = 5;
+/**
+ * IDs per `/issues/summaries` request. Large enough that a typical recent-task
+ * list is one request; callers split longer lists into parallel chunks.
+ */
+export const ISSUE_SUMMARIES_MAX_IDS = 50;
+/** Tasks per chat bootstrap request. The list preloads larger sets in chunks. */
+export const ISSUE_CHAT_BOOTSTRAP_MAX_IDS = 10;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
@@ -198,6 +204,12 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+/** Read-only task presentation. Monitoring never grants execution authority. */
+export const ISSUE_DISPLAY_STATUSES = [
+  "backlog", "todo", "in_progress", "monitoring", "in_review", "done", "blocked", "cancelled",
+] as const;
+export type IssueDisplayStatus = (typeof ISSUE_DISPLAY_STATUSES)[number];
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -217,6 +229,13 @@ export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+/**
+ * Deepest task tree an agent (or automation acting for one) may create: a root
+ * task plus one level of children. A deeper request is not rejected; the new
+ * task is parented at this depth instead, as a sibling of the requester. Board
+ * users are not limited, and existing deeper trees stay valid.
+ */
+export const MAX_AGENT_TASK_HIERARCHY_DEPTH = 2;
 
 export const SUMMARY_SLOT_SCOPE_KINDS = [
   "project",
@@ -403,6 +422,14 @@ export const ISSUE_RECOVERY_ACTION_OWNER_TYPES = [
   "system",
 ] as const;
 export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_TYPES)[number];
+
+/**
+ * Wake reason for an agent whose child or blocker stalled on a recovery action
+ * that needs the board. Woken once per stall (one recovery action).
+ */
+export const ISSUE_BLOCKER_STALLED_WAKE_REASON = "issue_blocker_stalled" as const;
+export const ISSUE_BLOCKER_STALL_RELATIONS = ["child", "blocker"] as const;
+export type IssueBlockerStallRelation = (typeof ISSUE_BLOCKER_STALL_RELATIONS)[number];
 
 export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
@@ -948,6 +975,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.activity",
   "agent.session.goal.changed",
   "agent.status",
+  "agent.runtime_state.updated",
   "activity.logged",
   "external_object.updated",
   "plugin.ui.updated",
@@ -1003,6 +1031,7 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:read",
   "agents:configure",
   "agents:suggest-changes",
   "skills:create",

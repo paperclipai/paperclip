@@ -9,7 +9,7 @@ import {
   promises as fs,
 } from "node:fs";
 import os from "node:os";
-import { createWorkspaceManifest, WorkspaceManifestMap, workspacePaths, workspacePathMatcher, writeWorkspacePaths, isPathManifest, type WorkspacePaths } from "./workspace-manifest.js";
+import { assertWorkspaceManifestDiskSpace, createWorkspaceManifest, WorkspaceManifestMap, workspacePaths, workspacePathMatcher, writeWorkspacePaths, isPathManifest, type WorkspacePaths } from "./workspace-manifest.js";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -28,6 +28,7 @@ import {
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
   readManagedWorkspaceRepositories,
+  listProjectRepositoryStagingPaths,
   copyCloneTree,
   disposeGitWorkspaceSnapshot,
   ReferencedSourceIgnoreScanLimitExceededError,
@@ -451,6 +452,12 @@ export interface SandboxTransferProgressOptions {
   onProgress?: (transferredBytes: number, totalBytes: number | null) => void | Promise<void>;
 }
 
+export const MAX_SANDBOX_SYNC_TIMEOUT_MS = 30 * 60_000;
+
+export interface SandboxSyncOptions {
+  minimumTimeoutMs?: number;
+}
+
 /**
  * A single source→target file or directory transfer within a sync operation.
  * Mirrors the plugin SDK `PluginSyncFileMapping`; kept as a local structural
@@ -463,8 +470,17 @@ export interface SandboxSyncFileMapping {
   targetPath: string;
   kind: "file" | "directory";
   mode?: number;
+  /** Directory glob patterns; literal root-relative paths when preserving source entries. */
   exclude?: string[];
   followSymlinks?: boolean;
+  /**
+   * Outbound directory transfers preserve source entry names, including `._*`
+   * and provider scratch-like names. In this mode `exclude` contains literal
+   * root-relative paths; providers omit only those paths and scratch paths
+   * created by this exact transfer. Archive member and symlink validation stay
+   * unchanged. Ignored for syncIn/files.
+   */
+  preserveSourceEntries?: boolean;
   /**
    * Advisory read-write intent for the sandbox target. `"rw"` marks a target the
    * agent may change and keep; `"ro"` marks a read-only tree. An absent value
@@ -561,9 +577,9 @@ export interface SandboxManagedRuntimeClient {
    * orchestrator falls back to the tar + base64 `writeFile`/`run` path so
    * behavior is byte-identical to a provider that never opted in.
    */
-  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncIn?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
   /** Optional native outbound transfer. See {@link syncIn}. */
-  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncOut?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
 }
 
 /**
@@ -887,6 +903,12 @@ async function persistDurableSeedArchive(input: {
   if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
     throw new Error("workspace_durable_seed_root_invalid");
   }
+  const source = await fs.lstat(input.sourcePath);
+  if (source.isSymbolicLink() || !source.isFile()) {
+    throw new Error("workspace_durable_seed_invalid");
+  }
+  // A seed is a full archive copy; refuse it before it consumes the host reserve.
+  assertWorkspaceManifestDiskSpace(parent, source.size);
   const temporary = path.join(
     parent,
     `.${path.basename(input.targetPath)}.${randomUUID()}.tmp`,
@@ -1378,6 +1400,7 @@ export async function prepareSandboxManagedRuntime(input: {
     return [`${relative}/.git`, ...repositoryGitPaths(repo.snapshot.repositories ?? [], relative)];
   });
   const repositoryMetadataExcludes = repositoryGitPaths(repositories);
+  const repositoryStagingExcludes = syncWorkspace ? await listProjectRepositoryStagingPaths(input.workspaceLocalDir) : [];
   let managedIgnored: Awaited<ReturnType<typeof createWorkspaceManifest>> | null = null;
   let ignoredPaths = input.workspaceFileMode === "all" ? undefined : gitSnapshot?.ignoredPaths;
   if (!gitSnapshot && repositories.length) {
@@ -1414,6 +1437,7 @@ export async function prepareSandboxManagedRuntime(input: {
   const workspaceArchiveExclude = mergeExcludes(
     [".paperclip-runtime"],
     repositoryMetadataExcludes,
+    repositoryStagingExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
     input.workspaceExclude,
@@ -1421,6 +1445,7 @@ export async function prepareSandboxManagedRuntime(input: {
   );
   const restoreExclude = mergeExcludes(
     repositoryMetadataExcludes,
+    repositoryStagingExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
     [".paperclip-runtime"],
@@ -2202,8 +2227,11 @@ export async function prepareSandboxManagedRuntime(input: {
                       }
                       if (captured) {
                         const output = path.join(tempDir, "checkpoint");
+                        // The checkpoint output is an exact copy that the host validates entry
+                        // by entry. Ordinary export applies the host umask and drops `._*` names,
+                        // which turns a legitimate workspace file into a permanent mismatch.
                         const outbound: SandboxSyncOperation[] = [{ operationId: nextSyncOperationId(), files: [
-                          { sourcePath: remoteOutput, targetPath: output, kind: "directory" },
+                          { sourcePath: remoteOutput, targetPath: output, kind: "directory", preserveSourceEntries: true },
                         ] }];
                         assertSyncOperationsConfined(outbound, { sourceRoots: [runtimeRootDir], targetRoots: [tempDir] });
                         await withWorkspaceRestoreStep("workspace_transfer", () => input.client.syncOut!(outbound));

@@ -1,5 +1,6 @@
 export * from "./configured-environment.js";
 export * from "./catalog/index.js";
+export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
 export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
 export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
 export * from "./contracts/control-plane-port.js";
@@ -33,6 +34,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
   RUNNER_PRP_PROTOCOL_MIN,
@@ -44,18 +46,31 @@ export {
   type StagedRunAttachment,
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
+  type DurablePrpConnectionLeaseFailure,
   decodeDurablePrpCheckpoint,
+  captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectUnclaimedBootstrapCheckpoint,
+  inspectUnclaimedBootstrapState,
   type PrpWireConnection,
   type PrpWireAttachment,
   type TransportCloseReason,
   type RunnerProcessConnection,
   type RunnerProcessLaunchSpec,
   type RunnerProcessHandle,
+  type SemanticInputAdmission,
 } from "./control-plane/durable-prp-control-plane.js";
+export {
+  TOOL_CALLBACK_INTERRUPTED_CODE,
+  dispatchToolCallback,
+  interruptedToolCallbackOutcome,
+  recoverToolCallback,
+  toolCallbackOwnedByThisProcess,
+} from "./control-plane/orphaned-tool-callback.js";
 export type { DurableRecoveryIdentity } from "./control-plane/prp-transport-types.js";
 export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
+export { codexUsageBaselineForNextRun } from "./drivers/codex/codex-usage-baseline.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
 export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
@@ -82,6 +97,7 @@ export {
   defaultCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
+  coldAdmissionTimeoutMs,
   resolveSourceCodexHome,
   settleRetainedRunnerdSession,
   retainedRunnerdCleanupProofIsCurrent,
@@ -90,6 +106,7 @@ export {
   type RetainedRunnerdMaintenanceEpochReceipt,
   type RunnerdCodexTransport,
   type RunnerdCodexTransportOptions,
+  type RunnerdStartupStep,
 } from "./live/runnerd-codex-transport.js";
 export * from "./live/workspace-file-reference.js";
 export { readLinuxProcessStartedAt, type LinuxProcessStartOptions } from "./live/linux-process-start.js";
@@ -118,3 +135,13 @@ export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunner
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
 
 export { resolveGrokDisableWebSearch } from "./drivers/acpx/grok-web-search.js";
+
+export { CURSOR_CLOUD_DEFAULT_TIMEOUT_MS, parseNativeCursorCloudConfig, type NativeCursorCloudConfig } from "./contracts/cursor-cloud.js";
+
+export { CursorCloudClient, CursorCloudClientError, isCursorCloudRunActive } from "./drivers/cursor-cloud/cloud-client.js";
+
+export { archiveCursorCloudSessionCheckpoint } from "./drivers/cursor-cloud/checkpoint.js";
+
+export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
+export { providerFailureFromError } from "./drivers/provider-failure.js";
+export { SAFE_ERROR_CAUSE_PATTERN, safeErrorCauseCode } from "./control-plane/safe-error-cause.js";

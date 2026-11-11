@@ -1,3 +1,4 @@
+export type { InboxMineSnapshot, InboxSourceError } from "./types/inbox-mine.js";
 export { CASE_HANDOFF_STATES, handoffCaseSchema, agentCaseHandoffSchema, doneCaseHandoffSchema, caseWorkflowDocumentTextSchema, caseInitialDocumentSchema, caseInitialDocumentsSchema, type CaseInitialDocument, type CaseHandoffState, type CaseHandoffDestinationKind, type AgentCaseHandoffInput, type DoneCaseHandoffInput, type HandoffCaseInput, type HandoffCaseResult, type CaseHandoff, type CaseWorkflowTransition } from "./case-handoffs.js";
 export * from "./slack-app-manifest.js";
 export { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema, type ComposioAppSetupInput, type ComposioAppSetupResult, type ComposioAppAccountInput, type ComposioAppAccount, type ComposioAppSnapshot, type ComposioAppSyncState, type ComposioAppsResponse } from "./composio-app-setup.js";
@@ -21,6 +22,7 @@ export {
   type RunnerGoalActionRequest,
   type RunnerGoalActionAccepted,
 } from "./runner-goal.js";
+export type { IssueContextCompaction, IssueContextUsage } from "./issue-context-usage.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
   CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -294,7 +296,7 @@ export {
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
 } from "./app-definitions.js";
-export { isConnectorFeatureEnabled } from "./connector-availability.js";
+export { isConnectorFeatureEnabled, nativeConnectorRequiresCustomerOAuthApp } from "./connector-availability.js";
 export { getAppDefinitionForApplicationKey } from "./connector-identity.js";
 export {
   connectionSetupStateForApp,
@@ -364,7 +366,9 @@ export {
   AGENT_ICON_NAMES,
   PROJECT_ICON_NAMES,
   ISSUE_STATUSES,
+  ISSUE_DISPLAY_STATUSES,
   ISSUE_SUMMARIES_MAX_IDS,
+  ISSUE_CHAT_BOOTSTRAP_MAX_IDS,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
   ISSUE_PRIORITIES,
@@ -372,6 +376,7 @@ export {
   ISSUE_WORK_MODES,
   ISSUE_HARNESS_KINDS,
   MAX_ISSUE_REQUEST_DEPTH,
+  MAX_AGENT_TASK_HIERARCHY_DEPTH,
   SUMMARY_SLOT_SCOPE_KINDS,
   SUMMARY_SLOT_KEYS,
   SUMMARY_SLOT_STATUSES,
@@ -400,6 +405,8 @@ export {
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
+  ISSUE_BLOCKER_STALLED_WAKE_REASON,
+  ISSUE_BLOCKER_STALL_RELATIONS,
   ISSUE_RECOVERY_ACTION_OUTCOMES,
   pluginOperationIssueOriginKind,
   isPluginOperationIssueOriginKind,
@@ -562,6 +569,7 @@ export {
   type AgentIconName,
   type ProjectIconName,
   type IssueStatus,
+  type IssueDisplayStatus,
   type IssuePriority,
   type IssueReviewPolicy,
   type IssueWorkMode,
@@ -592,6 +600,7 @@ export {
   type IssueRecoveryActionKind,
   type IssueRecoveryActionStatus,
   type IssueRecoveryActionOwnerType,
+  type IssueBlockerStallRelation,
   type IssueRecoveryActionOutcome,
   type IssueRelationType,
   type IssueTreeControlMode,
@@ -935,6 +944,7 @@ export type {
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
+  ProjectEnvironmentOptions,
   ProjectGitAuthorization,
   ProjectCodebase,
   ProjectCodebaseOrigin,
@@ -1117,6 +1127,7 @@ export type {
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
   IssueRecoveryAction,
+  IssueBlockerStalledWakeContext,
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
@@ -1143,6 +1154,8 @@ export type {
   IssueExecutionDecision,
   IssueComment,
   IssueRecentComments,
+  IssueChatBootstrap,
+  IssueChatBootstrapItem,
   IssueQueuedCommentEntry,
   IssueQueuedCommentProtocol,
   IssueQueuedCommentQueue,
@@ -1215,10 +1228,13 @@ export type {
   IssueDocument,
   IssueDocumentSummary,
   DocumentRevision,
+  ExactDocumentRevision,
   DocumentFormat,
   LegacyPlanDocument,
   IssueAttachment,
   IssueCreationSource,
+  IssueParentAdjustment,
+  IssueParentAdjustmentReason,
   IssueLabel,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -1464,6 +1480,7 @@ export type {
   ToolAppAttentionItem,
   ToolAppAttentionReason,
   ToolAppsAttentionResponse,
+  ToolConnectionReviewCounts,
   ToolActionRequestListItem,
   ToolActionRequestsResponse,
   ToolConnectionActivityResponse,
@@ -1524,6 +1541,7 @@ export type {
   ToolProfileSummary,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileConfiguration,
   ToolRateLimitCounter,
   ToolRateLimitRule,
   ToolRateLimitWindowKind,
@@ -1959,6 +1977,7 @@ export {
   type CompanySearchQuery,
   createIssueSchema,
   issueSummariesQuerySchema,
+  issueChatBootstrapQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -1985,6 +2004,9 @@ export {
   taskRetrySchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
+  confirmOwnerGoneSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -2358,6 +2380,8 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  updateAgentPermissionGrantSchema,
+  type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
   type CreateCostEvent,
@@ -2603,6 +2627,7 @@ export {
 export {
   adapterSupportsRemoteManagedEnvironments,
   getEnvironmentCapabilities,
+  environmentSupportsLoginPty,
   getAdapterEnvironmentSupport,
   isEnvironmentDriverSupportedForAdapter,
   isSandboxProviderSupportedForAdapter,
@@ -2842,7 +2867,7 @@ export { updatePrimaryAgentSchema, type UpdatePrimaryAgent, type PrimaryAgentPre
 export * from "./agent-avatar-upload.js";
 
 export type { DotBinding, DotInvitation, DotConnection, DotPairing } from "./dot-invitations.js";
-export { agentHarnessType, agentRuntimeSettingsHarness, agentRunner, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, type AgentRunnerChoice, type AgentRunner, type AgentRunnerAvailability } from "./agent-runner.js";
+export { agentHarnessType, agentRuntimeSettingsHarness, agentRunner, paperclipRunnerCreationLifecycle, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, type AgentRunnerChoice, type AgentRunner, type AgentRunnerAvailability } from "./agent-runner.js";
 export { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "./runner-configuration-warnings.js";
 export { EXTERNAL_AGENT_TOOL_GUIDANCE, DOT_AGENT_TOOL_GUIDANCE, GROK_BOT_AGENT_TOOL_GUIDANCE } from "./external-agent-guidance.js";
 
@@ -2879,3 +2904,15 @@ export {
   type RemoteWorkspaceAuthority,
   type RemoteWorkspaceRunReference,
 } from "./remote-workspace.js";
+
+export { readProviderFailure, type ProviderFailure } from "./provider-failure.generated.js";
+export type { BoardBootstrap, BoardBootstrapSession } from "./types/board-bootstrap.js";
+export { readBoardBootstrap } from "./board-bootstrap.js";
+export * from "./provider-rate-limits.js";
+export * from "./agent-interaction-permissions.js";
+export * from "./run-failure-cause.js";
+export {
+  TASK_IDENTITY_CHANGED_FIELD,
+  issueActivityChangesTaskIdentity,
+} from "./issue-activity-identity.js";
+export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";

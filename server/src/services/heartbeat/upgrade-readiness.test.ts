@@ -36,6 +36,17 @@ describe("upgrade readiness", () => {
   it("never treats a truncated census as complete", () => {
     const rows = Array.from({ length: 1_001 }, (_, i) => ({ id: String(i), recoverable: true }));
     expect(report({ rows, activeRunIds: [] })).toMatchObject({ ready: false, truncated: true });
+    expect(report({ rows: rows.map(row => ({ ...row, recoverable: false, retainedUnowned: true })),
+      before: idle, after: idle, activeRunIds: [] })).toMatchObject({ ready: false, truncated: true, activeRuns: 0 });
+  });
+  it("keeps current execution and admission barriers with retained recovery work", () => {
+    const rows = [{ id: "retained", recoverable: false, retainedUnowned: true }, { id: "remote", recoverable: true }];
+    expect(report({ rows })).toMatchObject({ ready: true, activeRuns: 1, recoverableRuns: 1, retainedBlockedRuns: 1 });
+    expect(report({ rows, activeRunIds: ["remote", "retained"], after: { ...idle, activeRuns: 2 } }))
+      .toMatchObject({ ready: false, activeRuns: 2, blockingRuns: 1, retainedBlockedRuns: 0 });
+    for (const before of [{ ...idle, activeRuns: 2 }, { ...idle, pendingWakes: 1 }, { ...idle, draining: true }]) {
+      expect(report({ rows, before }).ready).toBe(false);
+    }
   });
 });
 
@@ -54,6 +65,80 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); });
+  it("keeps an old unowned preparation visible without making it a live upgrade blocker", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    const owner = await currentNativeControllerIdentity();
+    await db.insert(companies).values({ id: companyId, name: "Retained preparation", issuePrefix: `R${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Retained preparation", role: "engineer", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted preparation", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, nativeIssueId: issueId,
+      status: "running", runtimeMode: "native", nativePhase: "observed", runnerInstanceId: randomUUID(), nativeSessionId: randomUUID() });
+    const retained = { controllerBootId: "previous-controller", leaseOwner: "previous-controller-lease", controllerGeneration: 1,
+      leaseExpiresAt: new Date(0), recoveryState: "awaiting_evidence", phase: "observed", failureCode: null };
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, ...retained });
+    const input = { activeRunIds: new Set<string>(), counters: () => idle };
+    try {
+      const savedRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const savedOwner = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: true, activeRuns: 0,
+        recoverableRuns: 0, blockingRuns: 0, retainedBlockedRuns: 1,
+        nativeControllerRecovery: { activeExecutionAdoption: { retainedBlockedRuns: 1 } } });
+      const [{ default: express }, { default: request }, { instanceSettingsRoutes }, { errorHandler }] = await Promise.all([
+        import("express"), import("supertest"), import("../../routes/instance-settings.js"), import("../../middleware/error-handler.js"),
+      ]);
+      const app = express();
+      let isInstanceAdmin = false;
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "readiness-test", source: "session", isInstanceAdmin };
+        next();
+      });
+      app.use("/api", instanceSettingsRoutes(db));
+      app.use(errorHandler);
+      await request(app).get("/api/instance/task-drain?upgradeReadiness=1").expect(403);
+      isInstanceAdmin = true;
+      const response = await request(app).get("/api/instance/task-drain?upgradeReadiness=1").expect(200);
+      expect(response.body.upgradeReadiness).toMatchObject({ ready: true, activeRuns: 0, blockingRuns: 0, retainedBlockedRuns: 1 });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).toEqual(savedRun);
+      expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).toEqual(savedOwner);
+      expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))
+        .toEqual([{ status: "running" }]);
+      expect(await db.select({ state: nativeRunFinalizations.recoveryState }).from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, runId))).toEqual([{ state: "awaiting_evidence" }]);
+      for (const patch of [
+        { controllerBootId: owner.bootId }, { controllerBootId: null }, { controllerBootId: "" },
+        { leaseExpiresAt: new Date(Date.now() + 60_000) }, { leaseExpiresAt: null },
+        { leaseOwner: null }, { controllerGeneration: 0 }, { failureCode: "uncertain" },
+        { recoveryState: null }, { phase: "workspace_finalizing" },
+      ]) {
+        await db.update(nativeRunFinalizations).set(patch).where(eq(nativeRunFinalizations.runId, runId));
+        expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: false, blockingRuns: 1, retainedBlockedRuns: 0 });
+        await db.update(nativeRunFinalizations).set(retained).where(eq(nativeRunFinalizations.runId, runId));
+      }
+      for (const patch of [{ runtimeMode: "legacy" }, { nativePhase: "running" }, { processPid: process.pid }, { processStartedAt: new Date() }]) {
+        await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, runId));
+        expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: false, blockingRuns: 1, retainedBlockedRuns: 0 });
+        await db.update(heartbeatRuns).set({ runtimeMode: "native", nativePhase: "observed", processPid: null, processStartedAt: null })
+          .where(eq(heartbeatRuns.id, runId));
+      }
+      await db.insert(nativeRunnerCheckpoints).values({ runId, companyId, issueId, part: "header", material: {} });
+      expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: false, blockingRuns: 1, retainedBlockedRuns: 0 });
+      await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, runId));
+      await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
+      expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: false, blockingRuns: 1, retainedBlockedRuns: 0 });
+      await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, agentId));
+      input.activeRunIds.add(runId);
+      expect(await readUpgradeReadiness(db, { ...input, counters: () => ({ ...idle, activeRuns: 1 }) }))
+        .toMatchObject({ ready: false, activeRuns: 1, blockingRuns: 1, retainedBlockedRuns: 0 });
+      input.activeRunIds.clear();
+      let reads = 0;
+      expect(await readUpgradeReadiness(db, { ...input, counters: () => {
+        if (reads++ > 0) input.activeRunIds.add(runId);
+        return { ...idle, activeRuns: input.activeRunIds.size };
+      } })).toMatchObject({ ready: false, blockingRuns: 1, retainedBlockedRuns: 0 });
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
   it("requires a bound checkpoint and current owner rather than a native label or live process alone", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const owner = await currentNativeControllerIdentity();
@@ -88,13 +173,14 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     finally { await core.stop(); await rm(root, { recursive: true, force: true }); }
     expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: true, recoverableRuns: 1 });
     const cipher = createLocalEncryptedCipher("write");
-    // Real staging headers contain retained launch metadata around 113 KiB.
-    const representativeHeader = JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(100_000) });
+    const parsedHeader = JSON.parse(header);
+    const representativeHeader = JSON.stringify({ ...parsedHeader, state: { ...parsedHeader.state,
+      runAttachTemplate: { provider: { instructions: "x".repeat(300_000) } } } });
     await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: representativeHeader })) })
       .where(eq(nativeRunnerCheckpoints.runId, runId));
     expect((await readUpgradeReadiness(db, input)).ready).toBe(true);
     for (const contents of ["{", "{}", JSON.stringify({ ...JSON.parse(header), schema: "paperclip.runner.controller-checkpoint.v1" }),
-      JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(400_000) }),
+      JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(1_100_000) }),
       JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state, identity: { ...JSON.parse(header).state.identity, runId: randomUUID() } } })]) {
       await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents })) })
         .where(eq(nativeRunnerCheckpoints.runId, runId));

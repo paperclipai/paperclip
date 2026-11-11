@@ -5,7 +5,9 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
+import type { LogActivityInput } from "../services/activity-log.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import { inboxBlockedActivity } from "../../../tests/runner-e2e/product-journeys/inbox-triage-fixture.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -55,7 +57,7 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 
 const mockBudgetService = vi.hoisted(() => ({
-  getInvocationBlock: vi.fn(async () => null),
+  getInvocationBlock: vi.fn(async (): Promise<unknown> => null),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -92,16 +94,20 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockIssueApprovalService = vi.hoisted(() => ({
   link: vi.fn(),
   unlink: vi.fn(),
-  listApprovalsForIssue: vi.fn(async () => []),
+  listApprovalsForIssue: vi.fn(async (): Promise<unknown[]> => []),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
-  getActiveForIssue: vi.fn(async () => null),
+  getActiveForIssue: vi.fn(async (): Promise<unknown> => null),
   listActiveForIssues: vi.fn(async () => new Map()),
-  resolveActiveForIssue: vi.fn(async () => null),
+  resolveActiveForIssue: vi.fn(async (): Promise<unknown> => null),
 }));
 const mockTaskWatchdogService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
-  revalidateMutationScope: vi.fn(async () => ({
+  revalidateMutationScope: vi.fn(async (): Promise<{
+    allowed: boolean;
+    reason?: string;
+    classification: { state: string; stopFingerprint?: string; liveIssueIds?: string[] };
+  }> => ({
     allowed: true,
     classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
   })),
@@ -117,9 +123,9 @@ const mockTaskWatchdogService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
+  getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
   resumeTaskRetry: vi.fn(async () => undefined),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
@@ -158,8 +164,8 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncDocumentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
-const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async () => null) }));
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async (): Promise<unknown> => null) }));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: LogActivityInput) => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
@@ -356,6 +362,7 @@ function createRunContextDb(
   runId: string = ownerRunId,
   chatBindings: Array<{ id: string; companyId: string; issueId: string; state: string }> = [],
   emptyWakeQueue = false,
+  humanInboxFixture?: { userId: string },
 ) {
   const chatBindingQueries: ReturnType<PgDialect["sqlToQuery"]>[] = [];
   const runRows = Array.isArray(runAgentOrRows)
@@ -385,24 +392,36 @@ function createRunContextDb(
     }
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
-  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
+  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false,
+    policyTable?: "issues" | "agents") => {
+    let selectedIds: string[] = [];
+    const selectedRows = async () => {
+      if (policyTable) {
+        const getById = policyTable === "issues" ? mockIssueService.getById : mockAgentService.getById;
+        return (await Promise.all(selectedIds.map(id => getById(id))))
+          .filter(row => row && selectedIds.includes(row.id));
+      }
+      return rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery);
+    };
     const whereResult = {
-      orderBy: vi.fn(async () => []),
+      orderBy: vi.fn((): unknown => policyTable ? whereResult : Promise.resolve([])),
       limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await selectedRows()),
         for: vi.fn(() => ({
-          then: async (resolve: (lockedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+          then: async (resolve: (lockedRows: unknown[]) => unknown) => resolve(await selectedRows()),
         })),
       })),
       for: vi.fn(() => ({
-        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (rows: unknown[]) => unknown) => resolve(await selectedRows()),
       })),
-      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+      then: async (resolve: (rows: unknown[]) => unknown) => resolve(await selectedRows()),
     };
     const query = {
       innerJoin: vi.fn(() => query),
       where: vi.fn((condition: SQL) => {
         if (chatBindingQuery) chatBindingQueries.push(new PgDialect().sqlToQuery(condition));
+        if (policyTable) selectedIds = [...new Set(new PgDialect().sqlToQuery(condition).params
+          .filter((value): value is string => typeof value === "string" && value !== companyId))];
         return whereResult;
       }),
     };
@@ -410,15 +429,32 @@ function createRunContextDb(
   };
   const dbStub = {
     chatBindingQueries,
-    transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+        if (humanInboxFixture && getTableName(table) === "issue_approvals") {
+          // This disposable human task has no pending approval. A generic
+          // selected-ID row would invent one and bypass the real route guard.
+          return { innerJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })) };
+        }
+        if (humanInboxFixture && getTableName(table) === "company_memberships") {
+          return { where: vi.fn((condition: SQL) => ({ limit: vi.fn(async () =>
+            new PgDialect().sqlToQuery(condition).params.includes(humanInboxFixture.userId)
+              ? [{ id: "inbox-member" }] : []),
+          })) };
+        }
         if (getTableName(table) === "case_handoffs") return emptyCaseHandoffQuery();
         if (emptyWakeQueue && getTableName(table) === "agent_wakeup_requests") {
           return buildQuery({}, false, true);
         }
         if (getTableName(table) === "issue_thread_interactions") {
           return { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) };
+        }
+        if (getTableName(table) === "issues" && "conversationAgentId" in selection) {
+          return buildQuery(selection, false, false, "issues");
+        }
+        if (getTableName(table) === "agents" && Object.keys(selection).sort().join(",") === "companyId,id,permissions") {
+          return buildQuery(selection, false, false, "agents");
         }
         return buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions");
       }),
@@ -1236,6 +1272,7 @@ describe("agent issue mutation checkout ownership", () => {
           changedFiles: 3,
         }),
       }),
+      ownerAgentId,
     );
   });
 
@@ -1265,6 +1302,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect.objectContaining({
         metadata: expect.objectContaining({ additions: 11, deletions: 3, changedFiles: 2 }),
       }),
+      ownerAgentId,
     );
   });
 
@@ -1689,7 +1727,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
-    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
+    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" }, ownerAgentId);
   });
 
   it("preserves board mutations on active checkouts", async () => {
@@ -1832,6 +1870,32 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     );
   });
+
+  it.each(["bare blocked update", "human-owned inbox fixture"] as const)(
+    "applies the production blocked contract to the %s", async kind => {
+      const actor = boardActor();
+      const existing = makeIssue({ status: "in_progress", assigneeAgentId: null, assigneeUserId: actor.userId });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...existing, ...patch }));
+      const db = createRunContextDb({}, ownerAgentId, ownerRunId, [], false, { userId: actor.userId });
+      const payload = kind === "bare blocked update" ? { status: "blocked" } : inboxBlockedActivity(actor.userId);
+
+      const res = await request(await createApp(actor, db)).patch(`/api/issues/${issueId}`).send(payload);
+
+      if (kind === "bare blocked update") {
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
+        expect(res.body.error).toBe("Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor");
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      } else {
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.body).toMatchObject({ status: "blocked", unblockDescriptor: {
+          owner: { userId: actor.userId }, action: "Review the QA inbox task before continuing.",
+        } });
+        expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining(payload));
+      }
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
     mockIssueService.getById.mockResolvedValue(
@@ -2798,7 +2862,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("uses the authorization decision path for assignment changes", async () => {
-    const decide = vi.fn(async () => ({
+    const decide = vi.fn(async (_input: { action: string }) => ({
       allowed: false,
       action: "tasks:assign",
       reason: "deny_policy_restricted",
@@ -2985,6 +3049,79 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  describe("board reassignment whose run stop settles after the request", () => {
+    const nativeRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "native",
+      status: "running",
+      contextSnapshot: { issueId },
+      resultJson: {},
+    };
+    const reassign = { assigneeAgentId: peerAgentId };
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, id: string) => ({
+        ambiguous: false,
+        agent: await mockAgentService.getById(id),
+      }));
+    });
+
+    it("applies the reassignment when the native stop is durably recorded but its owner has not settled yet", async () => {
+      const fenced = { ...nativeRun, resultJson: { reassignmentStopRequested: true } };
+      mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun).mockResolvedValue(fenced);
+      mockHeartbeatService.cancelRun.mockResolvedValue(fenced);
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }));
+      expect(mockHeartbeatService.getRun).toHaveBeenLastCalledWith(ownerRunId, { includeExecutionEvidence: true });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+
+    it("applies the reassignment when the native owner's acknowledgement is still pending", async () => {
+      const { HttpError: CurrentHttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun)
+        .mockResolvedValue({ ...nativeRun, resultJson: { reassignmentStopRequested: true } });
+      mockHeartbeatService.cancelRun.mockRejectedValue(new CurrentHttpError(409,
+        "Stop is recorded; the native session is still starting and will stop when it opens.",
+        { code: "native_stop_pending", runId: ownerRunId }));
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+    });
+
+    it("applies the reassignment when the run finished on its own before the stop landed", async () => {
+      mockHeartbeatService.getRun.mockResolvedValueOnce(nativeRun).mockResolvedValue({ ...nativeRun, status: "succeeded" });
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "succeeded" });
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+    });
+
+    it("still refuses the reassignment when no stop was recorded for a run that is still active", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue(nativeRun);
+      mockHeartbeatService.cancelRun.mockResolvedValue(nativeRun);
+
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send(reassign);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "runner_goal_reassignment_stop_unconfirmed", runId: ownerRunId });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe("native run changing its own task status", () => {
     const nativeRun = {
       id: ownerRunId,
@@ -3016,6 +3153,92 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.body.error).toContain("paperclip_finish");
       expect(mockIssueService.update).not.toHaveBeenCalled();
       expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
+    describe("as the active review participant", () => {
+      const reviewStage = (id: string) => ({ id, type: "review", approvalsNeeded: 1,
+        participants: [{ id: `${id.slice(0, -1)}f`, type: "agent", agentId: ownerAgentId, userId: null }] });
+      const reviewIssue = (stageIds: string[]) => makeIssue({
+        status: "in_review", executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+        executionPolicy: { mode: "normal", commentRequired: true, stages: stageIds.map(reviewStage) },
+        executionState: {
+          status: "pending", currentStageId: stageIds[0], currentStageIndex: 0, currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: ownerAgentId },
+          returnAssignee: { type: "agent", agentId: peerAgentId },
+          completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+        },
+      });
+      const finalStage = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", laterStage = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+      it("records its final-stage approval and leaves the final status to its finish report", async () => {
+        const issue = reviewIssue([finalStage]);
+        mockIssueService.getById.mockResolvedValue(issue);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
+        const db = createRunContextDb();
+        const inserted: Array<{ table: string; values: Record<string, unknown> }> = [];
+        db.insert = vi.fn((table: Parameters<typeof getTableName>[0]) => ({ values: vi.fn(async (values: Record<string, unknown>) => {
+          inserted.push({ table: getTableName(table), values });
+        }) })) as typeof db.insert;
+
+        const res = await request(createApp(runActor(), db)).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved: verified the heading and signup action." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+        // No status in the write: the service would otherwise release this
+        // run's execution lock before paperclip_finish reports the outcome.
+        expect(patch).not.toHaveProperty("status");
+        expect(patch.executionState).toMatchObject({ status: "completed", lastDecisionOutcome: "approved", lastDecisionId: expect.any(String) });
+        // The finalizer's completion authority reads exactly this row (executionStageApprovedByRun).
+        const decision = inserted.find(row => row.table === "issue_execution_decisions")?.values;
+        expect(decision).toMatchObject({ id: patch.executionState.lastDecisionId, companyId, issueId, stageId: finalStage, outcome: "approved",
+          actorAgentId: ownerAgentId, createdByRunId: ownerRunId, body: "Approved: verified the heading and signup action." });
+      });
+
+      it("rechecks the review policy under the issue lock for the deferred approval", async () => {
+        const issue = reviewIssue([finalStage]);
+        mockIssueService.getById.mockResolvedValue(issue);
+        // The policy becomes human-only after the first check, before the locked write.
+        mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, reviewPolicy: "human_only" });
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved: verified." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
+
+      it("still requires the decision comment", async () => {
+        mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage]));
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
+
+      it("keeps refusing an intermediate approval that would hand the task to the next participant", async () => {
+        mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage, laterStage]));
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: "done" });
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
+
+      it("keeps refusing the approval when this run is not the active participant", async () => {
+        const issue = reviewIssue([finalStage]);
+        mockIssueService.getById.mockResolvedValue({ ...issue,
+          executionState: { ...(issue.executionState as unknown as Record<string, unknown>), currentParticipant: { type: "agent", agentId: peerAgentId } } });
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      });
     });
 
     it("still lets the run edit other fields of its task", async () => {
@@ -3134,6 +3357,128 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  describe("agent status change on a task another run is executing", () => {
+    const liveRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "legacy",
+      status: "running",
+      contextSnapshot: { issueId },
+    };
+    // A manager (or CEO) holds tasks:manage_active_checkouts over its report's
+    // checked-out task. That grant lets it edit fields, not stop the report's run.
+    const grantActiveCheckoutManagement = () => {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed: ["issue:mutate", "issue:read", "tasks:manage_active_checkouts", "tasks:assign"].includes(input.action),
+        action: input.action,
+        reason: "allow_manager_chain",
+        explanation: "Allowed by test manager chain.",
+      }));
+    };
+
+    beforeEach(() => {
+      grantActiveCheckoutManagement();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue(liveRun);
+    });
+
+    it.each(["backlog", "todo", "blocked", "in_review", "done"])(
+      "refuses a lead moving a running report's task to %s, which would detach the live run",
+      async (status) => {
+        const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(res.body.details).toMatchObject({
+          code: "issue_status_change_live_run",
+          issueId,
+          runId: ownerRunId,
+          requestedStatus: status,
+          issuePath: "/PAP/issues/PAP-1649",
+        });
+        // The denial is final and names the person's controls and the task link.
+        expect(res.body.error).toContain("final");
+        expect(res.body.error).toContain("More task actions, then Pause subtree");
+        expect(res.body.error).toContain("Stop");
+        expect(res.body.error).toContain("[PAP-1649](/PAP/issues/PAP-1649)");
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it("refuses moving a todo task whose queued run holds the execution lock", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", executionRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: "queued" });
+
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "backlog" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "issue_status_change_live_run", runId: ownerRunId });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses repeating the current status, which also releases the lock", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", executionRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: "queued" });
+
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "issue_status_change_live_run", requestedStatus: "todo" });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("makes an allowed agent status change conditional on the lock it checked", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: "succeeded" });
+
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "backlog" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+        status: "backlog",
+        expectedExecutionLock: { executionRunId: ownerRunId, checkoutRunId: ownerRunId },
+      });
+    });
+
+    it("still lets the lead edit other fields of the running task", async () => {
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Renamed by lead" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("lets the run that holds the lock change its own task status", async () => {
+      const res = await request(createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("lets a board user change the status", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "todo" });
+    });
+
+    it("leaves cancellation to the path that cancels the run", async () => {
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "cancelled" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "cancelled" });
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId);
+    });
+
+    it.each(["succeeded", "failed", "cancelled"])("allows the change when the lock holder already %s", async (runStatus) => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: runStatus });
+
+      const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "backlog" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "backlog" });
+    });
+  });
+
   describe("task watchdog scope grants", () => {
     const watchdogRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
     const watchdogReportIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccd";
@@ -3157,6 +3502,7 @@ describe("agent issue mutation checkout ownership", () => {
       ancestryParentId?: string | null;
       watchdogRows?: Record<string, unknown>[];
     } = {}) {
+      const policyDb = createRunContextDb();
       const watchedIssueId = options.watchedIssueId ?? issueId;
       const runRows = [{
         id: watchdogRunId,
@@ -3205,8 +3551,13 @@ describe("agent issue mutation checkout ownership", () => {
       return {
         transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
-          from: vi.fn((table: Parameters<typeof getTableName>[0]) => getTableName(table) === "case_handoffs"
-            ? emptyCaseHandoffQuery() : buildQuery(selection)),
+          from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+            if ((getTableName(table) === "issues" && "conversationAgentId" in selection)
+              || (getTableName(table) === "agents" && Object.keys(selection).sort().join(",") === "companyId,id,permissions")) {
+              return policyDb.select(selection).from(table);
+            }
+            return getTableName(table) === "case_handoffs" ? emptyCaseHandoffQuery() : buildQuery(selection);
+          }),
         })),
       };
     }
@@ -3507,5 +3858,21 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
+  });
+
+  it.each(["owner-agent", "board-without-runtime-access"] as const)("denies original-host containment for %s before settlement", async actorKind => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+    const actor = actorKind === "owner-agent" ? ownerActor()
+      : { type: "board", userId: "board-user", source: "session", companyIds: [companyId] };
+    const response = await request(await createApp(actor)).post(`/api/issues/${issueId}/recovery-actions/resolve`).send({
+      actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "in_progress",
+      executionReconciliation: { runId: ownerRunId, controllerStopped: true, providerStopped: true,
+        controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "Original-host containment and external action outcomes were reviewed." },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    if (actorKind === "owner-agent") expect(response.body.error).toBe("Board access required");
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

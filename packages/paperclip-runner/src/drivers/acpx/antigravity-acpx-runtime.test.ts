@@ -168,5 +168,6 @@ it("rejects an unacknowledged thinking-level change after a native family model 
   const f = await fixture("family-change"), owner = await f.open();
   const result = await f.turn(owner);
   expect(result.status).toBe("failed");
+  if (result.status !== "failed") throw new Error("turn did not fail");
   expect(result.error?.message).toMatch(/admission/i);
 });

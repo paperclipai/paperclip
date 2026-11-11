@@ -1,3 +1,5 @@
+import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
+import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
@@ -6,6 +8,7 @@ import { resolveClaudeEffort } from "./claude-effort.js";
 import { resolveGrokEffort } from "./grok-effort.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
+import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -123,6 +126,12 @@ export interface AcpxRuntimeGoalSnapshot {
   updatedAt?: number | string | null;
 }
 
+/** A harness-native proposed plan captured for Paperclip's approval gate. */
+export interface AcpxPlanProposal {
+  toolCallId: string;
+  markdown: string;
+}
+
 export interface AcpxRuntimeTurnInput {
   text: string;
   requestId: string;
@@ -131,6 +140,12 @@ export interface AcpxRuntimeTurnInput {
   onPermissionRequest?: AcpRuntimeOptions["onPermissionRequest"];
   onExtensionRequest?: AcpRuntimeOptions["onExtensionRequest"];
   onExtensionNotification?: AcpRuntimeOptions["onExtensionNotification"];
+  /** Receives a harness-native proposed plan that Paperclip, not the harness, approves. */
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
+  /** Receives the typed AIR failure behind ACPX's generic terminal error. */
+  onTerminalSessionFailure?: (failure: AcpxTerminalSessionFailure) => void;
+  /** Records the turn start and the prompt dispatch durably (turn-dispatch-journal.ts). */
+  dispatchJournal?: AcpxTurnDispatchJournal;
 }
 
 export interface AcpxRuntimeTurn {
@@ -494,12 +509,17 @@ export class AcpxRuntimeHost {
       if (options.agent === "codex" && !preconfigured) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
-          acquire: () =>
-            (dependencies.stageCredential ?? stageManagedCodexCredential)({
+          acquire: async () => {
+            const lease = await (dependencies.stageCredential ?? stageManagedCodexCredential)({
               agentHomeDirectory: sandbox.agentHomeDirectory,
               environment: options.environment,
               sourcePath: options.managedCodexCredentialSourcePath,
-            }),
+            });
+            return retainAcpxCredentialRefresh({
+              lease, agentHomeDirectory: sandbox.agentHomeDirectory,
+              retainRefresh: () => admissionSucceeded && lease.mode !== "api_key",
+            });
+          },
           resource: "credential",
           releaseLate: (lateCredential) => lateCredential.close(),
           reportFailure: (failure) =>
@@ -914,6 +934,9 @@ export class AcpxRuntimeHost {
       ...(input.onPermissionRequest ? { onPermissionRequest: input.onPermissionRequest } : {}),
       ...(input.onExtensionRequest ? { onExtensionRequest: input.onExtensionRequest } : {}),
       ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
+      ...(input.onPlanProposal ? { onPlanProposal: input.onPlanProposal } : {}),
+      ...(input.onTerminalSessionFailure ? { onTerminalSessionFailure: input.onTerminalSessionFailure } : {}),
+      ...(input.dispatchJournal ? { dispatchJournal: input.dispatchJournal } : {}),
     });
     this.#activeTurn = turn;
     const managed = withAcpxTurnCancellation(turn, reason => this.close({ reason }), ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS);
