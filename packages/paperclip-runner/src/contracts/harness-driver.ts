@@ -532,6 +532,25 @@ export class NativeRunnerSourceReconciliationRequiredError extends Error {
   }
 }
 
+/** The Runner keeps no control-plane state for the saved session: none is
+ * live and no archived authority epoch matches it. A new sandbox whose
+ * harness backup was never saved has nothing to resume, and recovering again
+ * reads the same empty state. The driver classifies it only for a session
+ * with no turn or runtime request in flight. */
+export class NativeRunnerResumeStateUnavailableError extends Error {
+  readonly code = "native_runner_resume_state_unavailable";
+  constructor() {
+    super("PRP provider resume state is unavailable");
+    this.name = "NativeRunnerResumeStateUnavailableError";
+  }
+}
+
+export function isRunnerResumeStateUnavailable(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  if (error instanceof NativeRunnerResumeStateUnavailableError) return true;
+  return isRunnerResumeStateUnavailable((error as { cause?: unknown }).cause, depth + 1);
+}
+
 export interface HarnessSessionRecoveryResult {
   recovered: boolean;
   session?: HarnessSession;
