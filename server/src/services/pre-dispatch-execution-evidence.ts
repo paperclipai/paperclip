@@ -13,6 +13,15 @@ export function isPreDispatchResourceWait(run: Pick<typeof heartbeatRuns.$inferS
       evidence.kind === "ai_connection_wait");
 }
 
+export function isAgentDirectoryPreparationWait(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
+  const evidence = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  const cancellation = run.resultJson?.cancellation as Record<string, unknown> | undefined;
+  return run.runtimeMode === "legacy" && run.status === "cancelled" && run.errorCode === "agent_directory_busy"
+    && evidence?.kind === "agent_directory_wait" && evidence.providerWorkStarted === false
+    && cancellation?.source === "control_plane" && cancellation.expected === true;
+}
+
 export function executionStartedEventPredicate() {
   return or(isNotNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType,
     ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "harness.ready", "session.started",

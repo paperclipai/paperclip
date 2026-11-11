@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentWakeupRequests,
   agents,
   authUsers,
   companies,
@@ -9,6 +10,8 @@ import {
   createDb,
   closeRegisteredClients,
   heartbeatRuns,
+  issueComments,
+  issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -49,6 +52,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const executedRunIds: string[] = [];
+  const executedContexts = new Map<string, Record<string, unknown>>();
 
   beforeAll(async () => {
     if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
@@ -62,6 +66,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
       supportsInstructionsBundle: true,
       execute: async input => {
         executedRunIds.push(input.runId);
+        executedContexts.set(input.runId, input.context as Record<string, unknown>);
         return { exitCode: 0, signal: null, timedOut: false, resultJson: {} };
       },
       testEnvironment: async () => ({ adapterType: ADAPTER, status: "pass", checks: [], testedAt: new Date().toISOString() }),
@@ -75,8 +80,8 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     await tempDb?.cleanup();
   });
 
-  it("defers the first run of a task instead of failing it, then runs it", async () => {
-    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+  async function seedCompanyAndAgent() {
+    const companyId = randomUUID(), agentId = randomUUID();
     const now = new Date();
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "busy-directory-user" });
@@ -86,6 +91,54 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
       status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "BusyCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
       adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+    return { companyId, agentId };
+  }
+
+  it("keeps a user's continuation when its run waits for a busy agent directory", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID(), runId = randomUUID(), wakeupRequestId = randomUUID(), sourceRunId = randomUUID(), commentId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "failed",
+      createdAt: new Date("2020-01-01T00:00:00Z"), finishedAt: new Date("2020-01-01T00:00:01Z"), contextSnapshot: { issueId } });
+    await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_commented", payload: { issueId, commentId }, status: "queued", runId, requestedByActorType: "user",
+      requestedByActorId: "busy-directory-user" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "queued", wakeupRequestId, contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented", wakeCommentId: commentId,
+        previousRunId: sourceRunId, explicitUserContinuation: { previousRunId: sourceRunId, commentId } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continue repair", status: "in_progress", priority: "medium",
+      responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId, issueNumber: 2 });
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId }).where(eq(heartbeatRuns.id, runId));
+    const [comment] = await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user",
+      authorUserId: "busy-directory-user", body: "Continue the task." }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: sourceRunId, status: "resolved", outcome: "cancelled",
+      nextAction: "User continued.", evidence: { explicitUserContinuation: { runId, previousRunId: sourceRunId, commentId,
+        actorId: "busy-directory-user", recordedAt: new Date().toISOString(), commentUpdatedAt: comment!.updatedAt.toISOString(),
+        commentBodyHash: createHash("sha256").update(comment!.body).digest("hex") } } });
+    busyPrepares.remaining = 1;
+    busyPrepares.calls = 0;
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON,
+      contextSnapshot: { previousRunId: runId, wakeCommentId: commentId,
+        explicitUserContinuation: { previousRunId: runId, commentId } } });
+    const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);
+    expect((await heartbeat.promoteDueScheduledRetries(afterDue)).runIds).toContain(retry!.id);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(retry!.id))?.status).toBe("succeeded");
+    expect(executedContexts.get(retry!.id)).toMatchObject({ wakeCommentId: commentId,
+      explicitUserContinuation: { previousRunId: runId, commentId } });
+  });
+
+  it("defers the first run of a task instead of failing it, then runs it", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Daily repair", status: "in_progress", priority: "medium",
       responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, issueNumber: 1 });
     busyPrepares.remaining = 1;

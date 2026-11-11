@@ -1089,7 +1089,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
           const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
-            || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({
+            || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON) ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
             parentRunId: run.id, successorRunId: scheduledRunId, now,
           }) : null;
