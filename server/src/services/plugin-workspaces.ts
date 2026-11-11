@@ -104,6 +104,9 @@ export async function callWorkspaceProvider(
   if (!pluginId || !workspace.projectId)
     throw conflict("Workspace storage ownership is missing");
   const selectedProvider = await provider(db, workers, workspace.companyId, pluginId, true);
+  const verifyExisting = input.operation.kind === "prepare" && input.operation.verifyExisting === true;
+  if (verifyExisting && selectedProvider.manifestJson.workspaceProvider?.workspaceVerificationVersion !== 1)
+    throw conflict("Workspace verification is unavailable");
   if (input.operation.kind === "prepare" && input.operation.fresh && selectedProvider.manifestJson.workspaceProvider?.freshWorkspaceVersion !== 1)
     throw conflict("Fresh workspace preparation is unavailable");
   if (input.operation.kind === "finalize" &&
@@ -120,7 +123,7 @@ export async function callWorkspaceProvider(
     throw conflict("Workspace removal identity does not match its recorded payload");
   if ((operation.kind === "inspect" || operation.kind === "remove") && input.removalOperationId === undefined
     && selectedProvider.manifestJson.workspaceProvider?.recoveryPullRequestVersion !== 1) delete operation.recoveryPullRequest;
-  if (operation.kind === "prepare" && operation.fresh) {
+  if (operation.kind === "prepare" && operation.fresh && !verifyExisting) {
     if (!workspace.sourceIssueId) throw conflict("Fresh workspace task ownership is missing");
     operation.fresh = await stageProviderFreshWorkspace({ db, companyId: workspace.companyId,
       issueId: workspace.sourceIssueId, ...operation.fresh, existing: operation.fresh });
@@ -140,7 +143,7 @@ export async function callWorkspaceProvider(
             )
             .digest("hex")),
     generation: operationGeneration,
-    deadline: new Date(Date.now() + (operation.kind === "finalize" ? 30_000 : 300_000)).toISOString(),
+    deadline: new Date(Date.now() + (verifyExisting ? 10_000 : operation.kind === "finalize" ? 30_000 : 300_000)).toISOString(),
     runId: input.runId ?? null,
     agentId: input.agentId ?? null,
     operation,
@@ -151,7 +154,7 @@ export async function callWorkspaceProvider(
       pluginId,
       "workspaceOperation",
       params,
-      operation.kind === "finalize" ? 40_000 : 310_000,
+      verifyExisting ? 12_000 : operation.kind === "finalize" ? 40_000 : 310_000,
     );
   } catch (error) {
     // A worker that never received the call, a lost reply and a provider-reported
@@ -204,6 +207,7 @@ export async function preparePluginWorkspace(
     baseRef?: string | null;
     fresh?: PluginFreshWorkspace;
     expectedBindingRevision?: number;
+    verifyExisting?: true;
   },
 ) {
   const [previous] = input.existingWorkspaceId
@@ -223,6 +227,8 @@ export async function preparePluginWorkspace(
     sql`${executionWorkspaces.metadata}#>>'{workspaceProviderFresh,attemptId}' = ${input.fresh.attemptId}`,
   )).limit(1) : [];
   const existing = input.fresh ? reservation : previous;
+  if (input.verifyExisting && (!existing || existing.metadata?.workspaceProviderRemoved === true ||
+    existing.metadata?.workspaceProviderRestoration)) return null;
   const prior = existing ?? previous;
   if (
     existing?.metadata?.workspaceProviderRetired === true ||
@@ -430,6 +436,7 @@ export async function preparePluginWorkspace(
           status: "idle",
           metadata: {
             workspaceProviderOwner: pluginId,
+            workspaceProviderReservationRunId: input.runId,
             workspaceProviderSource: sourceInput,
             workspaceProviderBranchMode: input.fresh ? "create" : input.branchMode ?? "create",
             ...(input.fresh ? { workspaceProviderFresh: input.fresh } : {}),
@@ -492,11 +499,19 @@ export async function preparePluginWorkspace(
           "create",
         baseRef: workspace.baseRef,
         existing: saved,
+        ...(input.verifyExisting ? { verifyExisting: true } : {}),
         ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
       },
     });
     if (result.kind !== "prepared")
       throw conflict("Workspace preparation is incomplete");
+    const savedBase = workspace.metadata?.workspaceProviderBaseSha;
+    if (input.verifyExisting && (result.created || !result.baseSha ||
+        (saved && result.binding.workspaceRef !== saved.workspaceRef) ||
+        (workspace.branchName !== null && result.branchName !== workspace.branchName) ||
+        (typeof savedBase === "string" && result.baseSha !== savedBase))) {
+      throw conflict("The existing checkout could not be verified");
+    }
     await authorize();
     const [currentProject] = await tx
       .select()

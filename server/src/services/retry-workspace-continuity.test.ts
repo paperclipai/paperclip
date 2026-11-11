@@ -135,7 +135,7 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
       expect(readiness).toEqual({ mode: "reuse_issue_workspace", retryIntentId: requestId,
         sourceRunId: f.source.id, workspaceId: f.workspace.id, cwd: f.worktree });
       // The retained directory is the same worktree: git history, branch and pre-fault files are intact.
-      expect((await lstat(join(readiness!.mode === "reuse_issue_workspace" ? readiness!.cwd : "", ".git"))).isFile()).toBe(true);
+      expect((await lstat(join(readiness!.mode === "reuse_issue_workspace" ? (readiness!.cwd ?? "") : "", ".git"))).isFile()).toBe(true);
       expect(await git(f.worktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe(f.branchName);
       expect(await readFile(join(f.worktree, "NOTES.md"), "utf8")).toBe("untracked pre-fault work\n");
       expect(await readFile(join(f.worktree, "README.md"), "utf8")).toContain("edited before the fault");
