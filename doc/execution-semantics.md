@@ -2815,7 +2815,16 @@ export holds and restore holds alike. Once the source run is provably over (its
 run is terminal, no local execution remains, and neither its controller lease
 nor its finalizer lease is live), the recovery worker re-arms it with a new
 bounded system generation. A live lease defers the re-arm to that lease's
-expiry; the worker is not woken earlier. The new generation repeats the strict
+expiry; the worker is not woken earlier. A lease owner still recorded on the
+run's finished coordinator (committed, terminal failure or applied) after its
+lease lapsed, or recorded without an expiry by an older release, is not live:
+nothing runs under a finished coordinator, and no later claim or settlement
+would ever release it. The re-arm releases that owner in the same transaction
+(compare-and-swap on the owner it read) and records `releasedLapsedOwner`, so
+the new attempt's stop check does not refuse it; holds saved this way by
+earlier releases settle on the worker's next pass. A stale owner of an
+unfinished coordinator still waits for the abandoned-owner settlement, which
+proves its controller stopped first. The new generation repeats the strict
 stop proof (a provider stop receipt for every allocation of the run) and the
 save, then settles the hold exactly like any completed recovery, so other tasks
 on the workspace can start. Re-arms are bounded: at most four, the first at once
@@ -3397,7 +3406,23 @@ have no recovery receipt. When its saved reference names the exact snapshot
 that its own succeeded `remote_workspace_restore` loaded, at the same epoch, it
 left no unsaved files. A later continuation into another workspace skips that
 source instead of failing with `remote_workspace_recovery_receipt_invalid`. A
-source that saved any other snapshot still needs the canonical receipt.
+source that saved any other snapshot still needs the canonical receipt to be
+attached.
+
+A predecessor whose recovery receipt cannot be verified never stops a
+continuation or a Retry. Examples are a receipt on a run reference that was
+never saved, a receipt from another epoch or for another run, a saved
+reference without a receipt, a reference that the current release cannot read,
+and a receipt whose snapshot is gone. Preparation then attaches nothing from
+that source. The run starts from its workspace's newest verified save, as a run
+without a predecessor does. Preparation logs the skip with the code
+`remote_workspace_recovery_receipt_invalid` and a reason. The source keeps its
+saved snapshot, restore hold, receipts and recovery action, so workspace
+recovery can still settle it. A recovered copy that is already in the workspace
+but cannot be verified is not published again. Its files stay where they are.
+Before this rule, the refusal could not change the saved state, so every Retry
+failed in the same way. Rows that earlier releases saved follow the same rule
+with no migration. A foreign writer and a failed snapshot read still refuse.
 
 A queued turn for the same task that never started is not a workspace writer for
 automatic recovery. The hold gates its dispatch until the recovery receipt is
