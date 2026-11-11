@@ -2,6 +2,7 @@ import { forkNormalDotApp } from "./helpers/owned-linux/physical-app-owner.js";
 import { attachDotChild, type ChildSnapshot } from "./helpers/owned-linux/child-client.js";
 import { usefulAfterPhysicalRestart } from "./helpers/owned-linux/useful-after-physical-restart.js";
 import { nativeProviderRecoveryEvidence } from "../services/native-runtime/native-session-executor.js";
+import { loadNativeRunnerCheckpointHeader, NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES } from "../services/native-runtime/native-runner-checkpoint.js";
 import { stopCheckpointedOwnedRun } from "./helpers/owned-linux/checkpointed-fault.js";
 import { beginOwnedPrivateCA } from "./helpers/owned-linux/private-ca-scope.js";
 import { z } from "zod";
@@ -13,7 +14,7 @@ import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { idleWorkSnapshot, isIdleTaskDrainActive } from "../services/task-admission.js";
 import { readIdleMcpSleepProof } from "../services/public-mcp/idle-sleep-proof.js";
-import { externalOperationDigest } from "../vendor/paperclip-runner/index.js";
+import { externalOperationDigest, inspectDurablePrpCheckpointHeader, inspectStagedRunAttachmentHeader } from "../vendor/paperclip-runner/index.js";
 import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createServer, request as nodeRequest, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
@@ -678,11 +679,64 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     await vi.waitFor(async()=>{
       expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId))).toHaveLength(1);
     },{timeout:30_000,interval:50});
+    try {
     await vi.waitFor(async()=>{
       expect(await nativeProviderRecoveryEvidence({db,runId:failedRunId,
         sourceFailureCode:"native_session_interrupted",executionTargetKind:"remote"}))
         .toMatchObject({recoveryMode:"exact_checkpoint_resume",checkpointExists:true,providerSessionEstablished:true});
     },{timeout:30_000,interval:50});
+    } catch (primary) {
+      // Failure-only observation with the SAME live fixture key. Never grants
+      // recovery, polls a header, or changes the original checkpoint oracle.
+      let category="not_read",keyPresent=Boolean(process.env.PAPERCLIP_SECRETS_MASTER_KEY);
+      let rowPresent=false,companyMatches=false,issuePresent=false,sessionPresent=false,instancePresent=false;
+      let profileParsed=false,terminalStatePresent=false,terminalFailed=false,headerPresent=false,withinBound=false,directParsed=false,stagedParsed=false;
+      let directRun=false,directSession=false,directInstance=false,stagedRun=false,stagedSession=false,stagedInstance=false;
+      try {
+        if(!keyPresent)category="live_key_missing";
+        else if(activeCaseDeadline!==undefined&&performance.now()>=activeCaseDeadline)category="original_budget_exhausted";
+        else {
+          const [current]=await db.select({companyId:heartbeatRuns.companyId,issueId:heartbeatRuns.nativeIssueId,
+            sessionId:heartbeatRuns.nativeSessionId,instanceId:heartbeatRuns.runnerInstanceId,profile:heartbeatRuns.runnerProfileJson})
+            .from(heartbeatRuns).where(eq(heartbeatRuns.id,failedRunId)).limit(1);
+          rowPresent=Boolean(current);companyMatches=current?.companyId===companyId;
+          issuePresent=Boolean(current?.issueId);sessionPresent=Boolean(current?.sessionId);instancePresent=Boolean(current?.instanceId);
+          const terminal=z.object({sessionCheckpoint:z.object({terminal:z.object({runTerminalState:z.string().optional()}).passthrough().optional()}).passthrough().optional()})
+            .passthrough().safeParse(current?.profile);
+          profileParsed=terminal.success;terminalStatePresent=terminal.success&&terminal.data.sessionCheckpoint?.terminal?.runTerminalState!==undefined;
+          terminalFailed=terminal.success&&terminal.data.sessionCheckpoint?.terminal?.runTerminalState==="failed";
+          if(!current||!companyMatches||!current.issueId)category="run_binding_unavailable";
+          else if(activeCaseDeadline!==undefined&&performance.now()>=activeCaseDeadline)category="original_budget_exhausted";
+          else {
+            const header=await loadNativeRunnerCheckpointHeader(db,{companyId,issueId:current.issueId,runId:failedRunId});
+            headerPresent=header!==null;withinBound=header!==null&&Buffer.byteLength(header)<=NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES;
+            if(header===null)category="header_unavailable_missing_or_decrypt";
+            else if(!withinBound)category="header_oversize";
+            else {
+              const direct=inspectDurablePrpCheckpointHeader(header);
+              const staged=inspectStagedRunAttachmentHeader(header);
+              directParsed=direct!==null;stagedParsed=staged!==null;
+              directRun=direct?.runId===failedRunId;directSession=Boolean(current.sessionId)&&direct?.normalizedSessionId===current.sessionId;
+              directInstance=Boolean(current.instanceId)&&direct?.runnerInstanceId===current.instanceId;
+              stagedRun=staged?.attachment.targetIdentity.runId===failedRunId;
+              stagedSession=Boolean(current.sessionId)&&staged?.attachment.targetIdentity.normalizedSessionId===current.sessionId;
+              stagedInstance=Boolean(current.instanceId)&&staged?.attachment.targetIdentity.runnerInstanceId===current.instanceId;
+              category="observed";
+            }
+          }
+        }
+      }catch(observationError){category=observationError instanceof Error&&observationError.message==="native_runner_checkpoint_retired"?"header_retired":"normal_reader_failed";}
+      const destination=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
+      try {
+        if(!destination||!path.isAbsolute(destination))throw new Error("private_witness_destination_required");
+        await writeFile(destination+".checkpoint-frontier.json",JSON.stringify({scope:"ONE failure-only live-key normal header observation",category,
+          keyPresent,rowPresent,companyMatches,issuePresent,sessionPresent,instancePresent,profileParsed,terminalStatePresent,terminalFailed,headerPresent,withinBound,directParsed,stagedParsed,
+          directRun,directSession,directInstance,stagedRun,stagedSession,stagedInstance,
+          controllerCheckpointMatches:directRun&&directSession&&directInstance||stagedRun&&stagedSession&&stagedInstance,
+          noRawPayload:true,noPolling:true,originalFailureRethrown:true},null,2)+"\n",{flag:"wx",mode:0o600});
+      }catch{process.stderr.write("owned_checkpoint_frontier_witness_unwritten\n");}
+      throw primary;
+    }
     if(!childControl)throw new Error("Missing actual installed child provider owner");
     const fault=z.object({status:z.literal("stopped"),runId:z.literal(failedRunId),providerLeaseId:z.string(),containerId:z.string(),
       kernel:z.object({pid:z.number().int().positive(),fingerprint:z.string()}).passthrough(),checkpoint:z.object({recoveryMode:z.literal("exact_checkpoint_resume")}).passthrough(),
