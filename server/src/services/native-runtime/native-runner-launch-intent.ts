@@ -56,7 +56,7 @@ export async function recordNativeRunnerLaunchIntent(db: Db, input: Scope & {
     const replay = prior?.environmentLeaseId === input.environmentLeaseId && prior.taskId === input.taskId
       && isDeepStrictEqual(prior.operation, operation);
     if (prior) {
-      if (!replay || prior.bootId !== intent.bootId || prior.generation !== intent.generation || prior.leaseOwner !== intent.leaseOwner
+      if (!operation.launch || !replay || prior.bootId !== intent.bootId || prior.generation !== intent.generation || prior.leaseOwner !== intent.leaseOwner
         || operation.runner.runId !== input.runId || operation.runner.leaseId !== input.environmentLeaseId) {
         throw new Error("native_runner_launch_authority_unproven");
       }
