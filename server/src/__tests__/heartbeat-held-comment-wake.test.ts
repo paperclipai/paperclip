@@ -124,6 +124,12 @@ describePostgres("saved intents while another run's accounting is pending", () =
       action: "issue.updated", entityType: "issue", entityId: f.issueId,
       details: { source: "native_status_decision", fromStatus: "in_progress", toStatus: "done" } });
 
+  /** The comment route's `issue.comment_added` record, which carries the comment's own resume intent. */
+  const commentAdded = (f: { companyId: string; issueId: string }, agentId: string, commentId: string, resumeIntent: boolean) =>
+    db.insert(activityLog).values({ companyId: f.companyId, actorType: "agent", actorId: agentId, agentId,
+      action: "issue.comment_added", entityType: "issue", entityId: f.issueId,
+      details: { commentId, ...(resumeIntent ? { resumeIntent: true, followUpRequested: true } : {}) } });
+
   async function settle(f: { companyId: string }) {
     await heartbeat.resumeQueuedRuns();
     await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
@@ -503,6 +509,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
       contextSnapshot: {} }).returning();
     const [resume] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: parent!.id,
       createdByRunId: parentRun!.id, body: "Changed requirement for your next turn: revalidate the verdict." }).returning();
+    await commentAdded(f, parent!.id, resume!.id, true);
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
       triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "agent", requestedByActorId: parent!.id,
       payload: { issueId: f.issueId, commentId: resume!.id, mutation: "comment", resumeIntent: true, followUpRequested: true } }).returning();
@@ -527,31 +534,43 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(resume!.id)).toHaveLength(1);
   }, 180_000);
 
-  // Queued runs merge comments of several requesters. The resume intent is
-  // each comment's own: another agent's plain note on the same queued run is
-  // not promoted, and the resuming agent's comment is not lost.
-  it("keeps each merged comment's own resume intent when two agents share a stale queued run", async () => {
+  // Queued runs merge comments of several requesters, and the run's wake is
+  // rewritten as comments join. The resume intent is each comment's own (its
+  // `issue.comment_added` record): another agent's plain note on the same
+  // queued run is not promoted, and the resuming agent's comment is not lost,
+  // whichever comment came first.
+  it.each(["resume first", "resume second"] as const)("keeps each merged comment's own resume intent when two agents share a stale queued run (%s)", async order => {
     const f = await seedHeldComment();
     await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
     const [resumer] = await db.select().from(agents).where(and(eq(agents.companyId, f.companyId), eq(agents.name, "Earlier worker")));
     const [notifier] = await db.insert(agents).values({ companyId: f.companyId, name: "Notifier", adapterType, status: "idle",
       adapterConfig: {} }).returning();
-    const [note] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: notifier!.id,
-      body: "FYI: unrelated status note." }).returning();
-    const [resume] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: resumer!.id,
-      body: "Changed requirement for your next turn." }).returning();
-    // The note's wake owns the queued run; the resume comment's own wake coalesced into it.
+    const post = async (authorAgentId: string, body: string, resumeIntent: boolean) => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId, body }).returning();
+      await commentAdded(f, authorAgentId, comment!.id, resumeIntent);
+      return comment!;
+    };
+    const first = order === "resume first" ? await post(resumer!.id, "Changed requirement for your next turn.", true)
+      : await post(notifier!.id, "FYI: unrelated status note.", false);
+    const second = order === "resume first" ? await post(notifier!.id, "FYI: unrelated status note.", false)
+      : await post(resumer!.id, "Changed requirement for your next turn.", true);
+    const resume = order === "resume first" ? first : second, note = order === "resume first" ? second : first;
+    // The first comment's wake owns the queued run and now names the joining
+    // comment, as claiming a merged run rewrites it; the other wake coalesced.
+    const firstAuthor = order === "resume first" ? resumer! : notifier!, secondAuthor = order === "resume first" ? notifier! : resumer!;
     const [primary] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
-      triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "agent", requestedByActorId: notifier!.id,
-      payload: { issueId: f.issueId, commentId: note!.id, mutation: "comment" } }).returning();
+      triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "agent", requestedByActorId: firstAuthor.id,
+      payload: { issueId: f.issueId, commentId: second.id, mutation: "comment",
+        ...(order === "resume first" ? { resumeIntent: true, followUpRequested: true } : {}) } }).returning();
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
-      triggerDetail: "system", reason: "issue_commented", status: "coalesced", requestedByActorType: "agent", requestedByActorId: resumer!.id,
-      payload: { issueId: f.issueId, commentId: resume!.id, mutation: "comment", resumeIntent: true, followUpRequested: true } });
+      triggerDetail: "system", reason: "issue_commented", status: "coalesced", requestedByActorType: "agent", requestedByActorId: secondAuthor.id,
+      payload: { issueId: f.issueId, commentId: second.id, mutation: "comment",
+        ...(order === "resume second" ? { resumeIntent: true, followUpRequested: true } : {}) } });
     const [stale] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
       triggerDetail: "system", status: "queued", wakeupRequestId: primary!.id,
-      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: resume!.id, wakeCommentId: resume!.id,
-        wakeCommentIds: [note!.id, resume!.id], wakeReason: "issue_commented", source: "issue.comment",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: second.id, wakeCommentId: second.id,
+        wakeCommentIds: [first.id, second.id], wakeReason: "issue_commented", source: "issue.comment",
         resumeIntent: true, followUpRequested: true } }).returning();
     await db.update(agentWakeupRequests).set({ runId: stale!.id }).where(eq(agentWakeupRequests.id, primary!.id));
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
@@ -561,14 +580,14 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
       .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
     await settle(f); await settle(f);
-    expect(deliveries(resume!.id)).toHaveLength(1);
-    expect(deliveries(note!.id).filter(turn => !(turn.context.wakeCommentIds as string[]).includes(resume!.id))).toHaveLength(0);
+    expect(deliveries(resume.id)).toHaveLength(1);
+    expect(deliveries(note.id).filter(turn => !(turn.context.wakeCommentIds as string[]).includes(resume.id))).toHaveLength(0);
     const [saved] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
-      sql`${agentWakeupRequests.payload}->>'commentId' = ${resume!.id}`, eq(agentWakeupRequests.requestedByActorId, resumer!.id),
-      sql`${agentWakeupRequests.status} <> 'coalesced'`));
+      eq(agentWakeupRequests.requestedByActorId, resumer!.id), sql`${agentWakeupRequests.payload}->>'commentId' = ${resume.id}`,
+      sql`${agentWakeupRequests.payload}->'_paperclipWakeContext' is not null`));
     expect(saved?.payload).toMatchObject({ resumeIntent: true });
     expect((saved?.payload as { _paperclipWakeContext?: { wakeCommentIds?: string[] } })._paperclipWakeContext?.wakeCommentIds)
-      .toEqual([resume!.id]);
+      .toEqual([resume.id]);
   }, 180_000);
 
   // Without `resume: true` an agent's comment stays communicative: the closed
@@ -581,6 +600,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     const [parent] = await db.select().from(agents).where(and(eq(agents.companyId, f.companyId), eq(agents.name, "Earlier worker")));
     const [note] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: parent!.id,
       body: "FYI: the parent review finished." }).returning();
+    await commentAdded(f, parent!.id, note!.id, false);
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
       triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "agent", requestedByActorId: parent!.id,
       payload: { issueId: f.issueId, commentId: note!.id, mutation: "comment" } }).returning();
