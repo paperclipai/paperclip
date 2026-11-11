@@ -414,6 +414,53 @@ How the product saves the link itself (skip it, keep it, or record it) is not
 graded. F1 is meaningful with a remote workspace (`--env daytona`, with
 `--storage s3` as on staging). Locally it is a plain repository task.
 
+## Sandbox disk full (DF1)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters codex --workloads R1 --workspace-repo "$PWD" --faults DF1 --storage s3 --concurrency 2 --tasks 2 --seed 9412
+```
+
+On staging, saving a run's result back from its sandbox failed because the sandbox disk was full
+(census class F, `doc/plans/2026-11-11-staging-failures-vs-chaos-coverage.md`). The product then
+ends saved-work recovery at once with cause `sandbox_disk_full` and offers a Retry (#20758).
+
+A full disk cannot be made on demand, so DF1 uses a test-only hook in the server
+(`server/src/services/sandbox-disk-full-fault.ts`). The harness starts its server with
+`PAPERCLIP_DISK_FULL_FAULT_CONTROL=<file>` and `PAPERCLIP_DISK_FULL_FAULT_RECEIPT=<wave>/disk-full-faults.jsonl`.
+The hook reads the variable once at startup and ignores it when `NODE_ENV=production`. Without it the
+hook is one comparison and the save uses its own target.
+
+- **Armed**: when a DF1 task launches, the harness writes its issue id to the control file. Each
+  final workspace save of that task (finalization's copy-back and recovery's re-save) then gets what
+  a full sandbox returns: every capture command exits 1 with the product's disk-full message, and
+  the provider download fails with `No space left on device`. The product's own code does the rest.
+  The server appends one receipt per faulted save.
+- **Cleared**: when the task rests with the cause `sandbox_disk_full` (or is `done`), the harness
+  records what the board shows, removes the id, and then the observer clicks Retry, as a person who
+  freed space would. A board-owned recovery can look like a rest while it still checks the saved
+  source; the harness keeps waiting there for up to 10 minutes (`DISK_FULL_REST_SETTLE_MS`) before it
+  clears the fault anyway, so that recovery's own save cannot hide the disk-full rest.
+
+The task passes when:
+
+- the fault reached at least one save (a receipt for the task);
+- it rested with recovery cause `sandbox_disk_full` and a Retry offered (T check `disk_full_fault`);
+- exactly one Retry, after the fault cleared, finished the task (R3). A needed Retry is expected
+  here, so R3 passes on it. Whether that Retry starts a new run is not graded.
+
+The ledger line records `diskFull: { faultedSaves, restedDiskFull, retryOffered, retryWorked }`.
+
+DF1 restarts nothing and needs `--env daytona --storage s3`: only a remote workspace has a sandbox
+save, so the harness refuses other setups. Use R1 with `--workspace-repo`. With the chaoscli fixture
+(B1) on Daytona, the workspace is a local worktree synced into the sandbox, so no remote save runs
+and the task fails as `not_applied` (wave `w-20261111T131314-s9411`). An unchanged workspace also
+skips the capture.
+
+The observer clicks Retry in the board UI, as for every other cell. In waves `w-20261111T131941-s9412`
+and `w-20261111T134316-s9413` the disk-full rest showed "Recover saved files", not a Retry button, while the API reported
+`canRetry: true`; R3 records this as `ui_retry_button_missing`.
+
 ## Config faults (CF1–CF3, `config-wave.ts`)
 
 ```sh
@@ -1138,6 +1185,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
+| `disk-full-faults.ts` | DF1: the control file for the server's test-only disk-full hook, the rest evidence, and the `disk_full_fault` check and R3 rule. |
 | `provider-faults.ts`, `provider-shim/` | PV1–PV3: the resolve hook, the Codex stdio shim, per-task rules and the `provider_fault_applied` check. |
 | `acpx-provider-faults.ts`, `provider-shim/acpx-*` | PV1–PV3 for Claude (ACPX): the stand-in runner package, the server hook, the sidecar/provider tap, and `--provider-fault-restart`. |
 | `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |

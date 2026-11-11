@@ -13,6 +13,7 @@ import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
 import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
+import { DISK_FULL_FAULT_KINDS, isDiskFullFault, type DiskFullFaultKind } from "./disk-full-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
@@ -174,10 +175,12 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const adapters = list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]);
-  // `--faults` takes restart faults (K*) and provider message faults (PV*, provider-faults.ts).
-  const allFaults = list<FaultKind | ProviderFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS], "faults",
+  // `--faults` takes restart faults (K*), provider message faults (PV*, provider-faults.ts) and the
+  // sandbox disk-full fault (DF1, disk-full-faults.ts).
+  const allFaults = list<FaultKind | ProviderFaultKind | DiskFullFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS, ...DISK_FULL_FAULT_KINDS], "faults",
     stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]);
   const providerFaults = allFaults.filter(isProviderFault);
+  const diskFullFaults = allFaults.filter(isDiskFullFault);
   const options: WaveOptions = {
     env,
     adapters,
@@ -185,8 +188,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1"
       && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
+    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault)),
     ...(providerFaults.length ? { providerFaults } : {}),
+    ...(diskFullFaults.length ? { diskFullFaults } : {}),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -215,6 +219,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--fault-after-seconds fires faults by time; use it with --triggers time");
   }
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
+  if (diskFullFaults.length) {
+    if (stormMinutes) throw new Error("The disk-full fault (DF1) is planned per task; do not combine it with --storm-minutes");
+    // Only a remote sandbox workspace has a save the sandbox disk can refuse; a local run has none.
+    if (env !== "daytona" || values.storage !== "s3") throw new Error("The disk-full fault (DF1) needs a remote sandbox workspace save; run it with --env daytona --storage s3");
+    if (providerFaults.length) throw new Error("The disk-full fault (DF1) does not share a wave with provider message faults (PV*)");
+    // The matrix planner builds its cells from restart and provider faults only; DF1 would silently drop out.
+    if (values.matrix) throw new Error("The disk-full fault (DF1) is not a --matrix cell; run it as a planned wave");
+  }
   if (providerFaults.length) {
     if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
     if (env !== "local") throw new Error("Provider message faults (PV*) shim the local provider; run them with --env local");

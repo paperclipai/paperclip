@@ -1,4 +1,5 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
+import type { DiskFullFaultKind, DiskFullRecord } from "./disk-full-faults.js";
 import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage, ProviderRestartKind } from "./provider-faults.js";
 import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
 import type { RepeatedRestartRecord, RestartStep } from "./repeated-restarts.js";
@@ -20,8 +21,9 @@ export const K4_MIN_HOLD_MS = 120_000;
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
  * PV1–PV3 (provider message faults, provider-faults.ts) restart nothing: the task's rule is armed in the Codex shim.
  * "K0" is a `--matrix` baseline cell: the same journey with no fault.
+ * DF1 (disk-full-faults.ts) restarts nothing either: the task's final workspace saves find the sandbox disk full.
  */
-export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
+export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskFullFaultKind;
 
 /**
  * G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave).
@@ -117,6 +119,8 @@ export interface WaveOptions {
   workspaceGitUrl?: string;
   /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
   providerFaults?: ProviderFaultKind[];
+  /** Sandbox disk-full faults from `--faults` (DF1); see disk-full-faults.ts. */
+  diskFullFaults?: DiskFullFaultKind[];
   providerFaultMessage?: ProviderMessage;
   /** `--provider-fault-message S1=interrupt_ack,...`: a workload's own message, over `providerFaultMessage`. */
   providerFaultMessageByWorkload?: Partial<Record<WorkloadId, ProviderMessage>>;
@@ -419,6 +423,8 @@ export interface TaskRecord {
   journey?: import("./journeys.js").JourneyRecord;
   /** PV with `--provider-fault-restart`: when the shim logged the task's fault (arms the `provider` trigger). */
   providerFaultAppliedAt?: number;
+  /** DF1: when the fault was armed and cleared, and what the board showed at the disk-full rest. */
+  diskFull?: DiskFullRecord;
 }
 
 export interface TaskGrade {
