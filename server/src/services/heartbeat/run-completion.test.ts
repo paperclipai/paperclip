@@ -64,7 +64,11 @@ const diagnosticNativeFixture = vi.hoisted(() => ({
 }));
 vi.mock("../native-runtime/native-codex-runner.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../native-runtime/native-codex-runner.js")>();
-  return { ...actual, resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary() };
+  return {
+    ...actual,
+    resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary(),
+    resolvePaperclipRunnerBinaryAsync: async () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinaryAsync(),
+  };
 });
 vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
