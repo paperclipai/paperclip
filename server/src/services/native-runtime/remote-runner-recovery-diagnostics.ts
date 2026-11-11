@@ -23,6 +23,51 @@ export interface RemoteRunnerRecoveryDiagnostic {
   runnerSettled?: boolean;
   /** Present only as `false`: the controller journal proves no turn command was ever issued. */
   providerTurnIssued?: false;
+  /** process_not_running: the exited Runner's own recoverable-failure code from its durable state. */
+  runnerRecoverableFailure?: string;
+  /** process_not_running: the last durable state diagnostics, redacted and bounded. */
+  runnerDiagnostics?: string[];
+  /** process_not_running: a redacted tail of the Runner's sandbox-local stderr and exit diagnostic files. */
+  runnerExitEvidence?: string;
+}
+
+/** Bounds for the exit evidence a recovery event carries. */
+export const REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS = 4_096;
+const RUNNER_DIAGNOSTIC_MAX_CHARS = 500;
+const RUNNER_DIAGNOSTIC_COUNT = 4;
+const RECOVERABLE_FAILURE_PATTERN = /^[A-Za-z0-9_.:-]{1,120}$/;
+
+/**
+ * Prints a bounded tail of the exited Runner's sandbox-local exit evidence
+ * ($1 is its diagnostics directory): the bounded exit diagnostic runnerd writes
+ * itself (`runnerd.stderr.log`) and its redirected stderr
+ * (`runnerd.process-stderr.log`). Read-only; missing or unsafe files print nothing.
+ */
+export const REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT =
+  'directory=$1; test -d "$directory" && test ! -L "$directory" || exit 0; ' +
+  'for name in runnerd.stderr.log runnerd.process-stderr.log; do file="$directory/$name"; ' +
+  'if test -f "$file" && test ! -L "$file"; then printf "== %s\\n" "$name"; tail -c 4096 -- "$file"; printf "\\n"; fi; done';
+
+/** The durable reason an exited Runner recorded, redacted and bounded for a run event. */
+export function describeExitedRemoteRunnerReason(state: Record<string, unknown> | null, redact: (text: string) => string):
+  Pick<RemoteRunnerRecoveryDiagnostic, "runnerRecoverableFailure" | "runnerDiagnostics"> {
+  if (!state) return {};
+  const failure = typeof state.recoverableFailure === "string" ? state.recoverableFailure
+    : typeof state.recoverable_failure === "string" ? state.recoverable_failure : null;
+  const diagnostics = Array.isArray(state.diagnostics)
+    ? state.diagnostics.filter((value): value is string => typeof value === "string").slice(-RUNNER_DIAGNOSTIC_COUNT)
+      .map(value => redact(value).slice(-RUNNER_DIAGNOSTIC_MAX_CHARS))
+    : [];
+  return {
+    ...(failure && RECOVERABLE_FAILURE_PATTERN.test(failure) ? { runnerRecoverableFailure: failure } : {}),
+    ...(diagnostics.length ? { runnerDiagnostics: diagnostics } : {}),
+  };
+}
+
+/** The tail of the exit evidence script's output, redacted and bounded; null when there is none. */
+export function boundRemoteRunnerExitEvidence(output: string, redact: (text: string) => string): string | null {
+  const text = redact(output).trim();
+  return text ? text.slice(-REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS) : null;
 }
 
 export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick<RemoteRunnerRecoveryDiagnostic,
@@ -57,13 +102,23 @@ export class RemoteRunnerRecoveryError extends Error {
 export function readRemoteRunnerRecoveryDiagnostic(value: unknown): RemoteRunnerRecoveryDiagnostic | null {
   if (!value || typeof value !== "object") return null;
   try {
-    const { stage, reason, runnerLifecycle, runnerSettled, providerTurnIssued } = value as Record<string, unknown>;
+    const { stage, reason, runnerLifecycle, runnerSettled, providerTurnIssued, runnerRecoverableFailure, runnerDiagnostics,
+      runnerExitEvidence } = value as Record<string, unknown>;
     if (!stages.some(candidate => candidate === stage) || !reasons.some(candidate => candidate === reason)) return null;
+    const diagnostics = Array.isArray(runnerDiagnostics)
+      ? runnerDiagnostics.filter((entry): entry is string => typeof entry === "string").slice(-RUNNER_DIAGNOSTIC_COUNT)
+        .map(entry => entry.slice(-RUNNER_DIAGNOSTIC_MAX_CHARS))
+      : [];
     return {
       stage, reason,
       ...(runnerLifecycles.some(candidate => candidate === runnerLifecycle) ? { runnerLifecycle } : {}),
       ...(typeof runnerSettled === "boolean" ? { runnerSettled } : {}),
       ...(providerTurnIssued === false ? { providerTurnIssued } : {}),
+      ...(typeof runnerRecoverableFailure === "string" && RECOVERABLE_FAILURE_PATTERN.test(runnerRecoverableFailure)
+        ? { runnerRecoverableFailure } : {}),
+      ...(diagnostics.length ? { runnerDiagnostics: diagnostics } : {}),
+      ...(typeof runnerExitEvidence === "string" && runnerExitEvidence
+        ? { runnerExitEvidence: runnerExitEvidence.slice(-REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS) } : {}),
     } as RemoteRunnerRecoveryDiagnostic;
   } catch {
     return null;
