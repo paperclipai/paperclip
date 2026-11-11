@@ -93,7 +93,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
   async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool"
     | "failed-turn-start" | "rejected-turn-start" | "indeterminate-turn-start" | "unknown-outcome-turn-start"
     | "unsuperseded-unknown-outcome-turn-start" | "failed-suspend" = "settled",
-    options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode" } = {}) {
+    options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode";
+      lifecycle?: "warm" } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue after recovery", assigneeAgentId: agentId, status: "in_progress" });
     const [row] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
@@ -108,7 +109,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       taskPrompt: "Continue the conversation.",
       workspace: { id: workspaceId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
       normalizedSessionId: native.normalizedSessionId,
-      lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      lifecyclePolicy: options.lifecycle === "warm" ? { mode: "warm", idleTimeoutMs: 900_000 } : { mode: "per_turn", idleTimeoutMs: null },
       runtimeContext: nativeRuntimeContextFixture(),
       completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: contract.schemaVersion,
         contract: contract.contractJson as never },
@@ -138,8 +139,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         "unknown-outcome-turn-start": unknownOutcome,
       } as const;
       const answered = answers as Record<string, unknown>;
-      const commands = ["run.prepare", "session.open", ...(control in answered ? ["turn.start"] : []), "turn.start", "runner.suspend"]
-        .map(type => controller.queueCommand(type));
+      // A warm Runner stays ready after its turn: its controller sends no suspend.
+      const commands = ["run.prepare", "session.open", ...(control in answered ? ["turn.start"] : []), "turn.start",
+        ...(options.lifecycle === "warm" ? [] : ["runner.suspend"])].map(type => controller.queueCommand(type));
       for (const command of control === "pending-command" ? commands.slice(0, -1) : commands) {
         Object.assign(command, { status: "completed", result: { status: "completed" } });
       }
@@ -618,6 +620,47 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(await retry.start()).toBe(ADMITTED);
     expect(retry.selectedRunId).toBe(prior.runId);
     expect(await archivedOwners(await sessionRoot())).toEqual([prior.runId]);
+  }, 60_000);
+
+  // Staging shape: a warm Codex owner committed under a controller that a
+  // deploy then replaced. The next run got a newly created sandbox, so the
+  // prior Runner (left `ready` in its own retained sandbox) can never be
+  // adopted here. The follow-up failed with
+  // `prior_owner_terminal_state_indeterminate` and the task stayed blocked.
+  it.each(["created", "replacement"] as const)(
+    "retires a finished warm owner left behind by a restart when this run's sandbox is %s", async outcome => {
+      const prior = await seedRecoveredPriorRun("settled", { provider: "codex", lifecycle: "warm" });
+      const followUp = await admitFollowUp(prior);
+      expect(await followUp.start(outcome)).toBe(ADMITTED);
+      expect(await archivedOwners(await sessionRoot())).toEqual([prior.runId]);
+      expect(await quarantined()).toEqual([]);
+      expect(followUp.logs.join("")).toContain("finished without a saved runner checkpoint; starting a new runner");
+      expect(followUp.remoteExecute).not.toHaveBeenCalled();
+    }, 60_000);
+
+  it("keeps a finished warm owner for live adoption when this run resumed its sandbox", async () => {
+    const prior = await seedRecoveredPriorRun("settled", { provider: "codex", lifecycle: "warm" });
+    const followUp = await admitFollowUp(prior);
+    // A resumed sandbox still holds that Runner; its own recovery path reads it.
+    expect(await followUp.start("resumed")).not.toBe(ADMITTED);
+    expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+  }, 60_000);
+
+  it.each(["pending-command", "unanswered-tool"] as const)(
+    "keeps a warm owner held when its journal is unsettled (%s), even on a new sandbox", async control => {
+      const prior = await seedRecoveredPriorRun(control, { provider: "codex", lifecycle: "warm" });
+      const followUp = await admitFollowUp(prior);
+      expect(await followUp.start("created")).toMatch(/^runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; retirement_refused=journal_/);
+      expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+    }, 60_000);
+
+  it("keeps a warm owner held while its controller still holds the finalization lease", async () => {
+    const prior = await seedRecoveredPriorRun("settled", { provider: "codex", lifecycle: "warm" });
+    await db.update(nativeRunFinalizations).set({ leaseOwner: randomUUID(), leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, prior.runId));
+    const followUp = await admitFollowUp(prior);
+    expect(await followUp.start("created")).not.toBe(ADMITTED);
+    expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
   }, 60_000);
 
   it("skips every unstarted follow-up after repeated failed retries", async () => {

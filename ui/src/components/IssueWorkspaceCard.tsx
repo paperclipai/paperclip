@@ -165,6 +165,7 @@ interface IssueWorkspaceCardProps {
     currentExecutionWorkspace?: ExecutionWorkspace | null;
   };
   project: {
+    environmentId?: string | null;
     id: string;
     executionWorkspacePolicy?: {
       enabled?: boolean;
@@ -254,7 +255,7 @@ export function IssueWorkspaceCard({
   const [draftSelection, setDraftSelection] = useState(currentSelection);
   const [draftExecutionWorkspaceId, setDraftExecutionWorkspaceId] = useState(issue.executionWorkspaceId ?? "");
   const projectEnvironmentId = environmentsEnabled
-    ? project?.executionWorkspacePolicy?.environmentId ?? null
+    ? project?.environmentId ?? null
     : null;
   const currentReusableEnvironmentId = selectedReusableExecutionWorkspace?.config?.environmentId ?? null;
   const currentEnvironmentId = environmentsEnabled

@@ -4,7 +4,8 @@ import { beginIdleTrackedWork } from "../services/task-admission.js";
 export const LIVE_DELIVERY_MAX_ITEMS = 1_000;
 export const LIVE_DELIVERY_MAX_BYTES = 1024 * 1024;
 const CONGESTION_DEADLINE_MS = 5_000;
-const SHARED_READS_MAX_AGE_MS = 1_000;
+const SHARED_READS_MAX_AGE_MS = 250;
+const SHARED_READS_MAX_EVENTS = 100;
 export type LiveDeliveryReads = Map<string, Promise<unknown>>;
 export function sharedDeliveryRead<T>(reads: LiveDeliveryReads | undefined, key: string, read: () => Promise<T>): Promise<T> {
   if (!reads) return read();
@@ -39,11 +40,13 @@ export function createLiveEventDelivery(input: {
   let reads: LiveDeliveryReads = new Map();
   let readsCoverSeq = 0;
   let readsOpenedAt = 0;
+  let readsServed = 0;
   function readsFor(seq: number) {
     const now = Date.now();
-    if (seq > readsCoverSeq || now - readsOpenedAt >= SHARED_READS_MAX_AGE_MS) {
-      reads = new Map(); readsCoverSeq = enqueuedSeq; readsOpenedAt = now;
+    if (seq > readsCoverSeq || readsServed >= SHARED_READS_MAX_EVENTS || now - readsOpenedAt >= SHARED_READS_MAX_AGE_MS) {
+      reads = new Map(); readsCoverSeq = enqueuedSeq; readsOpenedAt = now; readsServed = 0;
     }
+    readsServed += 1;
     return reads;
   }
   function closeReads() { reads = new Map(); readsCoverSeq = 0; }

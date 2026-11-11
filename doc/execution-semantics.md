@@ -1754,10 +1754,45 @@ run's own saved checkpoint records a completed provider turn (for example, a
 same-run disposition recovery that the gate refused), the work is saved. If the
 task waits on unresolved blocker tasks, the task view shows that wait and no
 failure banner. Otherwise the missing task disposition stays visible with plain
-wording. Every quarantined run keeps Retry hidden, because the retry route refuses
-it; a new message continues once the previous session has stopped. These rules
+wording. A quarantined run hides Retry only while a live owner settles the gate:
+an unreleased remote environment, or a scheduled close in this server process.
+An operator-required gate, or one lost with a restarted process, has no owner, so
+the task offers Retry. Retry (like a new message) proves the previous runner and
+every recorded provider process stopped, then continues in a fresh session. When
+a local run's own close failed but the host has durably recorded that its exact
+runner process and group stopped and its recorded provider processes are gone,
+the run's own same-run recovery retires the gate before admission instead of
+being refused by it. These rules
 read only `errorCode` and `runnerProfileJson.sessionCheckpoint`, so runs that
 earlier releases quarantined are shown the same way without a migration.
+
+A server restart in the middle of a host-tool callback (for example an assigned
+app tool or `connections_search`) must not cause that gate. The replacement
+controller restores the old controller's journal and asks the tool authority for
+the call's durable receipt. A receipt is replayed. Without one, the callback's
+owner is provably gone when an earlier controller dispatched it and this server
+process is not running it: the earlier controller's journal writer is retired
+and its checkpoint fence is superseded, so it can never record a result. The
+callback then settles as `tool_call_interrupted_by_restart` with an unknown
+outcome, and the agent is told to check the current state before repeating it.
+The tool is never executed again. Close can then prove the drain and settles
+normally. A callback that this server process still runs, or that this
+controller dispatched and saw fail, stays pending as before. The saved journal
+shape does not change, so a session that an earlier release left with such a
+callback settles at its next adoption without a migration.
+
+Runs that earlier releases already failed this way kept no-replay holds
+(`preserve_without_replay_v1`, replay blocked, action outcome unknown) for a
+turn that had completed: one for the cleanup quarantine, and often one whose
+workspace recovery saved the files ("Saved work recovered. Send a message to
+continue." with no Retry). Nothing is left to replay. The shared ownership
+reconciler lists them as `native_completed_turn_cleanup_hold`. Once it proves
+the controller that closed the session gone (its in-process cleanup gate went
+with it), it settles each such hold as `restored` and removes its replay block.
+A hold that still protects files that are not verified as saved stays for
+workspace recovery. Settling starts no turn: the task keeps its own state (for
+example, waiting on a child task) and continues through normal admission when
+that wait ends. Saved user input is resumed through the ordinary resume path.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
@@ -2763,7 +2798,15 @@ reason. Transient reasons are checked again after five minutes, at most twelve
 times; new input, Retry or a new recovery generation reconsiders the hold. The
 recovery worker discovers these holds itself, so holds saved by earlier releases
 take the same path after deploy. An exhausted hold whose run's files a sibling
-recovery action already saved settles as recovered.
+recovery action already saved settles as recovered. This includes a no-replay
+hold recorded resolved-but-blocked: settling it removes its replay block, so it
+stops blocking the task, and starts no turn itself; the run's own result and
+any waiting input decide what continues. When that no-replay hold still owns
+the task's Blocked status (its recorded failure block names the current status
+version), the task returns to `todo`; a newer decision's Blocked status is kept.
+A settled hold is never selected for recovery again. The worker handles several
+holds of one run one after another in the same pass, so a hold that stays
+selectable (for example while saved input waits) cannot starve a later one.
 
 An exhausted save whose last failure was `agent_stop_unconfirmed` is not a
 refusal of the saved files: its recovery window ran out before the agent's stop
@@ -2772,7 +2815,16 @@ export holds and restore holds alike. Once the source run is provably over (its
 run is terminal, no local execution remains, and neither its controller lease
 nor its finalizer lease is live), the recovery worker re-arms it with a new
 bounded system generation. A live lease defers the re-arm to that lease's
-expiry; the worker is not woken earlier. The new generation repeats the strict
+expiry; the worker is not woken earlier. A lease owner still recorded on the
+run's finished coordinator (committed, terminal failure or applied) after its
+lease lapsed, or recorded without an expiry by an older release, is not live:
+nothing runs under a finished coordinator, and no later claim or settlement
+would ever release it. The re-arm releases that owner in the same transaction
+(compare-and-swap on the owner it read) and records `releasedLapsedOwner`, so
+the new attempt's stop check does not refuse it; holds saved this way by
+earlier releases settle on the worker's next pass. A stale owner of an
+unfinished coordinator still waits for the abandoned-owner settlement, which
+proves its controller stopped first. The new generation repeats the strict
 stop proof (a provider stop receipt for every allocation of the run) and the
 save, then settles the hold exactly like any completed recovery, so other tasks
 on the workspace can start. Re-arms are bounded: at most four, the first at once
@@ -3099,8 +3151,33 @@ backup source when all of these are true: the lease is `released` with policy
 `retain_on_failure`, it has a `workspaceRestoreRecovery` marker for its own
 run, it has a confirmed stop-and-retain receipt with state `stopped`, and no
 unsaved writer or pending native workspace export is bound to it. The backup
-stamp, single-owner, and later-provider-work checks above still apply. A
-stopped lease that is still `reuse_by_environment` remains ambiguous and fails
+stamp, single-owner, and later-provider-work checks above still apply.
+
+Reuse also skips a warm sandbox while its previous run's workspace export is
+still saving. A run that starts in that window gets a new sandbox, waits for
+the export, and realizes the saved files there. By the time it prepares the
+harness, the warm source is idle. An idle warm source also counts as a retired
+backup source when all of these are true: the lease is `released` or
+`retained` with policy `reuse_by_environment`, its own run is terminal and is
+not the current run, no cleanup is in flight, and no unsaved writer or pending
+native workspace export is bound to the allocation. The backup stamp,
+single-owner, and later-provider-work checks above still apply. With no
+provider work after the backup, the idle sandbox holds exactly the checkpointed
+state, so the restore continues the same session and never runs two owners.
+Before restoring, Paperclip claims the idle source with a compare-and-swap on
+the checked row. The claim moves the source's reusable-lease scope into a
+`reusableSandboxLeaseSuperseded` receipt, so reuse never resumes that older
+state again. The next acquisition for the workspace treats the source as
+obsolete and destroys it. If a run resumed or changed the source first, the
+claim matches no row and the backup is not restored.
+
+The same proof covers a resumed lease that never held this session's harness
+state, for example the new sandbox of a run that failed before it restored the
+backup. When the resumed sandbox has no harness state at all and the backup
+came from a different allocation, Paperclip restores the backup into it. State
+saved by earlier releases recovers this way after deploy, with no migration. A
+resumed allocation whose own state is missing, a source whose run is still
+active, and a source with an export still pending remain ambiguous and fail
 closed.
 
 A Runner close can also fail to prove suspension after the control plane
@@ -3150,8 +3227,17 @@ these differences:
   cannot be compared keeps the rejection, for example
   `retirement_refused=runner_process_alive`. A later Retry checks again.
 
+A warm sandbox owner gets the same retirement when the next run starts in a
+new or replacement sandbox. A warm Runner stays `ready` in its own sandbox
+after its turn, so that the next turn can adopt it live. When a restart or
+deploy replaces its controller and the next run receives a different sandbox,
+nothing can adopt that Runner any more. Live adoption then steps aside, and
+admission applies the same checks as for a per-turn owner. The journal of a
+warm owner has no `runner.suspend` command. A local warm Runner and a resumed
+sandbox that still holds the Runner keep the live adoption path.
+
 The provider session then follows the normal resume-or-replace policy. A
-resumed sandbox, a warm session, a plugin task, a restart claim, or any
+resumed sandbox, a local warm session, a plugin task, a restart claim, or any
 missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
 rejection. When admission attempted the retirement, the error names the first
 proof that failed, for example
@@ -3233,6 +3319,18 @@ results, intentional stops, and historical unmarked failures keep their existing
 terminal behavior. This continuation uses the already charged restart attempt and
 does not reset the provider-attempt budget.
 
+The same continuation applies when the runner is lost without a server restart and
+the run resumes itself after the retry delay (a local same-run exact-checkpoint
+resume). Three durable records must hold. First, the latest process record of the
+run is a verified stop of the previous runner (`native.local_process_stopped`) and
+that process is gone. Second, the resume claimed a provider attempt within the
+three-attempt budget from a `retryable_failure` coordinator. Third, that failure
+saved `recoveryMode: "exact_checkpoint_resume"`, `recoverable`,
+`providerSessionEstablished` and `checkpointExists`, with no replacement recorded,
+and the runner restores that same checkpointed conversation. A remote run, a
+bootstrap retry, an ambiguous state, a missing or superseded stop record, an
+exhausted budget, or a replacement session keeps the existing failure.
+
 A restart can also land after the agent proposed its result but before the
 provider turn ended. When the restored runner proves that turn ended with the
 result Paperclip accepted, it records a reconciliation and the run terminal,
@@ -3301,6 +3399,30 @@ no native result, no provider outcome
 is unknown. The completed copyback receipt then releases the hold for the stopped
 run's own agent as well, so the user's redirect continues once. The hold row and
 its evidence are unchanged.
+
+A run can restore a committed save and then fail before it saves anything else,
+for example before provider work after a restart. Its restore hold then may
+have no recovery receipt. When its saved reference names the exact snapshot
+that its own succeeded `remote_workspace_restore` loaded, at the same epoch, it
+left no unsaved files. A later continuation into another workspace skips that
+source instead of failing with `remote_workspace_recovery_receipt_invalid`. A
+source that saved any other snapshot still needs the canonical receipt to be
+attached.
+
+A predecessor whose recovery receipt cannot be verified never stops a
+continuation or a Retry. Examples are a receipt on a run reference that was
+never saved, a receipt from another epoch or for another run, a saved
+reference without a receipt, a reference that the current release cannot read,
+and a receipt whose snapshot is gone. Preparation then attaches nothing from
+that source. The run starts from its workspace's newest verified save, as a run
+without a predecessor does. Preparation logs the skip with the code
+`remote_workspace_recovery_receipt_invalid` and a reason. The source keeps its
+saved snapshot, restore hold, receipts and recovery action, so workspace
+recovery can still settle it. A recovered copy that is already in the workspace
+but cannot be verified is not published again. Its files stay where they are.
+Before this rule, the refusal could not change the saved state, so every Retry
+failed in the same way. Rows that earlier releases saved follow the same rule
+with no migration. A foreign writer and a failed snapshot read still refuse.
 
 A queued turn for the same task that never started is not a workspace writer for
 automatic recovery. The hold gates its dispatch until the recovery receipt is
@@ -4173,6 +4295,14 @@ its normalized current run ID does not prove that the current controller attache
 Fenced remote Runner recovery requires a matching database controller checkpoint
 or a valid staged attachment for the target run before selecting exact-checkpoint
 resume. Local Runner recovery keeps its existing local controller checks.
+A follow-up run that a restart interrupted before its remote Runner launched
+carries only that copied checkpoint. Restart recovery does not treat the copied
+provider session as this run's provider work. When the run saved no controller
+checkpoint, or its controller checkpoint records no provider turn, and no Runner
+process identity or Runner-sent event exists for the run, recovery bootstraps
+the run again instead of attempting to reattach a Runner that never started. A
+copied session counts only when a settled earlier run of the same session saved
+that exact provider session.
 If the first attachment finds the retained runner gone, or replacement cannot
 archive its remote state before the new turn starts, ordinary failure settlement
 requests one normal Retry under the
@@ -4548,7 +4678,18 @@ backup verification and provider resume checks still run; this refresh does
 not start a new provider session or declare a continuity break. A marker that
 already names the exact selected identity only rehydrates its own controller
 state. The existing retained-sandbox binding and suspended Runner read still
-govern that same-source resume. A current-run marker rehydrates only that run's
+govern that same-source resume.
+
+The Runner saves `suspended` and a terminal fence for its `runner.suspend`
+result before it sends that result. When a restart stops the controller first,
+the fence stays in the Runner state although the suspension finished. The
+suspended Runner read accepts this one fence: the fence names
+`runner.suspend` with lifecycle `suspended`, it is the Runner's last controller
+command, and the restored journal holds that exact command once and no later
+command. A
+later authorized Runner process reconciles the receipt. Any other fence, a
+provider cleanup, unsent events or a warm transition still fail with
+`native_controller_recovery_missing_evidence:runner_not_settled`. A current-run marker rehydrates only that run's
 own checkpoint before the existing bootstrap retry checks. A missing current
 checkpoint never selects an older turn instead.
 

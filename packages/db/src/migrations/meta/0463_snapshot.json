@@ -1,5 +1,5 @@
 {
-  "id": "11e5e539-b39c-4f33-ba24-35e11da353e0",
+  "id": "aaf06ddb-56bd-4455-b2d1-fdb0254445e7",
   "prevId": "0287d884-1fee-4e8d-9ae0-2be0aac45b71",
   "version": "7",
   "dialect": "postgresql",
@@ -16353,12 +16353,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
@@ -51094,12 +51088,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "archived_at": {
           "name": "archived_at",
           "type": "timestamp with time zone",
@@ -59614,6 +59602,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
+        },
+        "pending_reveal": {
+          "name": "pending_reveal",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "allowed_actions": {
           "name": "allowed_actions",

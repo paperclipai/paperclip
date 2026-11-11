@@ -17,6 +17,11 @@ vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () =>
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
+const taskPrefetch = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("@/lib/issueDetailCache", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/issueDetailCache")>(),
+  prefetchIssueDetailForNavigation: taskPrefetch,
+}));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
@@ -293,5 +298,10 @@ describe("Coordinator task status glyphs (BUG-07)", () => {
     expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ projectId: "project-1", projection: "rows" }));
     expect(glyph("/issues/ONB-1")?.style.color).toBe("var(--status-task-icon-in_queue)");
     expect(glyph("/issues/ONB-3")?.getAttribute("aria-label")).toBe("Idle");
+    // A press on a project task warms its chat like a task list row does.
+    const link = container.querySelector<HTMLAnchorElement>('a[href="/issues/ONB-3"]');
+    taskPrefetch.mockClear();
+    await act(async () => link!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })));
+    expect(taskPrefetch).toHaveBeenCalledWith(expect.anything(), "ONB-3", expect.objectContaining({ history: true }));
   });
 });
