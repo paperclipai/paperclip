@@ -660,7 +660,7 @@ export interface HarnessSession {
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
-  close(input: { reason: string; force?: boolean }): Promise<void>;
+  close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void>;
 }
 
 /** A local harness implementation hidden behind the runner daemon boundary. */

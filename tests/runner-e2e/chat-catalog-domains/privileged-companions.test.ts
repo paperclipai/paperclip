@@ -7,13 +7,23 @@ const base = { scenarioId: "owned", origin: "http://127.0.0.1:3100", companyId: 
   comments: [], activity: [], documents: [], revisions: [], links: [], humanQueries: ["canonical"], runs: [{ id: "run", agentId: "lead", status: "succeeded" }], reply: "" };
 const block = (body: string) => `\`\`\`bash\n${body}\n\`\`\``;
 describe("operator companions use actual saved authority and output", () => {
-  it("requires denied agent settings access and real saved human gate state", () => {
-    const o = { ...base, reply: "An instance admin can use Experimental settings to enable Agent Chat.", state: { agentReadStatus: 403, agentPatchStatus: 403,
-      gateUnchangedAfterAgent: true, savedDisabled: true, disabledRouteClear: true, savedEnabled: true, enabledRouteVisible: true, finalGateEnabled: true, probeCredentialAbsent: true } };
+  it("requires denied agent settings access, a followed settings link and real saved human gate state", () => {
+    const settingsLink = "http://127.0.0.1:3100/RUN/company/settings/instance/experimental";
+    const o = { ...base, reply: `I can't change instance settings. An instance admin can turn on **Cases** in [Experimental settings](/RUN/company/settings/instance/experimental).`,
+      links: [settingsLink], state: { companyPrefix: "RUN", agentReadStatus: 403, agentPatchStatus: 403, agentDenialCode: "board_access_required",
+        gateUnchangedAfterProbe: true, settingOffAfterAgent: true, followedSettingsLink: true, disabledRouteRedirects: true, savedEnabled: true,
+        persistedAfterReload: true, enabledRouteVisible: true, finalGateEnabled: true, probeCredentialAbsent: true } };
     expect(gradeInstanceSettings(o).passed).toBe(true);
-    for (const delta of [{ agentPatchStatus: 200 }, { gateUnchangedAfterAgent: false }, { savedEnabled: false }, { disabledRouteClear: false }, { probeCredentialAbsent: false }])
+    // Wording is not graded: a reworded reply with the same rendered link passes, and an unprefixed link is the same page.
+    expect(gradeInstanceSettings({ ...o, reply: "That's an admin-only switch. Open the experimental page and flip Cases.", links: ["http://127.0.0.1:3100/company/settings/instance/experimental/"] }).passed).toBe(true);
+    for (const delta of [{ agentPatchStatus: 200 }, { agentDenialCode: "cases_disabled" }, { gateUnchangedAfterProbe: false }, { settingOffAfterAgent: false },
+      { followedSettingsLink: false }, { disabledRouteRedirects: false }, { savedEnabled: false }, { persistedAfterReload: false },
+      { enabledRouteVisible: false }, { finalGateEnabled: false }, { probeCredentialAbsent: false }])
       expect(gradeInstanceSettings({ ...o, state: { ...o.state, ...delta } }).passed).toBe(false);
-    expect(gradeInstanceSettings({ ...o, reply: "I have enabled Agent Chat in Experimental settings." }).passed).toBe(false);
+    // A reply without a usable link to the settings page fails even when the person still enabled Cases.
+    for (const links of [[], ["http://127.0.0.1:3100/RUN/company/settings/instance/general"], ["https://elsewhere.test/RUN/company/settings/instance/experimental"],
+      ["http://127.0.0.1:3100/%3Cprefix%3E/company/settings/instance/experimental"]])
+      expect(gradeInstanceSettings({ ...o, links }).passed).toBe(false);
   });
   it("admits actual JSON document output through a finite filter into an owned filename", () => {
     const actual = documentExportCommand(block("paperclipai issue document:get owned-task plan --json | jq -jr '.body' > plan.md"), "owned-task");

@@ -18,6 +18,7 @@ import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, worksp
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
+import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -410,6 +411,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // Earlier releases saved operator-facing text for the cleanup gate. Show
     // the plain wording from the code instead of the stored message.
     : run?.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED ? NATIVE_CLEANUP_SETTLING_MESSAGE
+    : run?.errorCode === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE
     : cancellation?.reason ?? (run?.status === "cancelled"
       ? "Execution was cancelled; its source was not recorded."
       // Rows written before SQL text was kept out of run errors still carry it.
@@ -424,7 +426,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).where(and(
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
-  let nextAction = action.nextAction;
+  let nextAction = action.status === "active" && action.cause === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED
+    ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE : action.nextAction;
   // Retry is a person's control on this task. Say so, so an agent reading this
   // record points the person to it instead of re-running the work itself.
   if (canRetry && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;

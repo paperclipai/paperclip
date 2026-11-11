@@ -1,4 +1,5 @@
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { canSelectFreshWorkspace, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
@@ -112,6 +113,7 @@ export async function undeliveredLegacyUserCommentIds(
     sql`not coalesce(${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.errorCode} = 'workspace_busy'
       and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'workspace_wait'
       and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb, false)`,
+    sql`not coalesce(${agentDirectoryPreparationWaitPredicate()}, false)`,
     or(...commentIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
@@ -799,7 +801,7 @@ export async function admitExplicitContinuationRetry(input: {
   )).for("update");
   if (!task || task.assigneeAgentId !== agentId || task.executionRunId !== input.parentRunId ||
       ["done", "cancelled"].includes(task.status) || !parent ||
-      !["failed", "timed_out"].includes(parent.status) || !parent.finishedAt ||
+      (!["failed", "timed_out"].includes(parent.status) && !isAgentDirectoryPreparationWait(parent)) || !parent.finishedAt ||
       parent.runtimeMode !== "legacy" || parent.contextSnapshot?.issueId !== issueId ||
       (parent.nativeIssueId !== null && parent.nativeIssueId !== issueId) ||
       adapterExecutionControls.has(parent.id) ||

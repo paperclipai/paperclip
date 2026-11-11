@@ -19,7 +19,7 @@ import { decodeAcpxRuntimeHandleState } from "acpx/runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
-import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openCodexAcpxRuntime, resetAbandonedBootstrapRecord } from "./codex-runtime-adapter.js";
+import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openCodexAcpxRuntime, resetAbandonedBootstrapRecord } from "./acpx-runtime-adapter.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
