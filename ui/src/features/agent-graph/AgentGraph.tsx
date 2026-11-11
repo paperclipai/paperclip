@@ -35,6 +35,8 @@ import { useAgentGraphDocument } from "./useAgentGraphDocument";
 const SNAP_GRID: [number, number] = [16, 16];
 const FIT_VIEW_OPTIONS = { padding: 0.15, maxZoom: 1.25 };
 const EMPTY_LIVE_IDS: ReadonlySet<string> = new Set();
+const NO_NODES: GraphFlowNode[] = [];
+const NO_EDGES: Edge[] = [];
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -107,7 +109,11 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
   companyAgentIdsRef.current = companyAgentIds;
 
   useEffect(() => {
-    if (!layout) return;
+    if (!layout) {
+      setNodes((current) => (current.length === 0 ? current : NO_NODES));
+      setEdges((current) => (current.length === 0 ? current : NO_EDGES));
+      return;
+    }
     const input = { agents: graphAgents, layout, autoPositions, liveAgentIds };
     setNodes((current) => syncNodes(current, input));
     setEdges((current) => syncEdges(current, input));
@@ -211,8 +217,8 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
       onKeyUp={onKeyUp}
     >
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={layout ? nodes : NO_NODES}
+        edges={layout ? edges : NO_EDGES}
         nodeTypes={AGENT_GRAPH_NODE_TYPES}
         colorMode={theme === "dark" ? "dark" : "light"}
         onNodesChange={onNodesChange}
