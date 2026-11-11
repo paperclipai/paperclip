@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { isValidIanaTimeZone } from "@paperclipai/shared";
+import { isValidIanaTimeZone, type WorkspacePreference } from "@paperclipai/shared";
 import { workspacePreferencesApi } from "@/api/workspacePreferences";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -35,7 +35,10 @@ export function useBrowserTimeZoneSync(companyId: string | null | undefined, use
     attempted.add(key);
     workspacePreferencesApi.update(companyId, { timeZone: zone })
       .then(result => {
-        if (result.userId === userId) client.setQueryData(queryKeys.workspacePreferences.mine(userId), result);
+        if (result.userId !== userId) return;
+        // Merge only the zone: a newer workspace-choice response may already be cached.
+        client.setQueryData<WorkspacePreference>(queryKeys.workspacePreferences.mine(userId),
+          current => current && current.userId === userId ? { ...current, timeZone: result.timeZone } : current);
       })
       .catch(() => {
         // Best-effort: the agent falls back to asking or naming its assumption.

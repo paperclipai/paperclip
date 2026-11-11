@@ -49,6 +49,18 @@ describe("useBrowserTimeZoneSync", () => {
     expect(mocks.update).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a newer workspace choice when the zone save answers late", async () => {
+    mocks.get.mockResolvedValue(preference("a", null));
+    let answer!: (value: ReturnType<typeof preference>) => void;
+    mocks.update.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    await mount("company", "a");
+    client.setQueryData(queryKeys.workspacePreferences.mine("a"), { ...preference("a", null), coordinatorWorkspaceEnabled: false });
+    answer(preference("a", "America/Chicago"));
+    await flush();
+    expect(client.getQueryData(queryKeys.workspacePreferences.mine("a")))
+      .toMatchObject({ coordinatorWorkspaceEnabled: false, timeZone: "America/Chicago" });
+  });
+
   it("does not write when the zone already matches, without a company, or when signed out", async () => {
     mocks.get.mockResolvedValue(preference("a", "America/Chicago"));
     await mount("company", "a");
