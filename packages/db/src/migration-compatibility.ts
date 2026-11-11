@@ -193,11 +193,18 @@ function parseStatements(sql: string): Statement[] {
       i += 1;
       text += "'?'";
     } else if (char === '"') {
-      const end = sql.indexOf('"', i + 1);
-      const name = sql.slice(i + 1, end === -1 ? sql.length : end);
-      // Plain lowercase names are equivalent quoted or not.
-      text += /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name}"`;
-      i = end === -1 ? sql.length : end + 1;
+      // A doubled quote is a literal quote inside the identifier.
+      let name = "";
+      i += 1;
+      while (i < sql.length) {
+        if (sql[i] === '"' && sql[i + 1] === '"') { name += '"'; i += 2; }
+        else if (sql[i] === '"') break;
+        else { name += sql[i]; i += 1; }
+      }
+      i += 1;
+      // Plain lowercase names are equivalent quoted or not. Any other name
+      // stays quoted, with its own quotes encoded so it remains one token.
+      text += /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replaceAll("%", "%25").replaceAll('"', "%22")}"`;
     } else if (char === "$" && dollarTagAt(sql, i)) {
       const tag = dollarTagAt(sql, i)!;
       const end = sql.indexOf(tag, i + tag.length);

@@ -152,6 +152,16 @@ describe("classifyMigrationSql", () => {
     expect(classifyMigrationSql(`COMMENT ON TABLE "issues" IS 'it''s';\nDROP TABLE "issues";`).compatibility).toBe("requires_staging");
   });
 
+  it("keeps a quoted identifier with an escaped quote distinct from other names", () => {
+    // "iss""ues" is a table named iss"ues, not issues.
+    const sql = `CREATE TABLE "iss""ues" (id uuid);${BP}DROP TABLE "issues";${BP}ALTER TABLE issues DROP COLUMN title;`;
+    expect(codes(sql)).toEqual(["create_table", "drop_table", "drop_column"]);
+    expect(classifyMigrationSql(sql).compatibility).toBe("requires_staging");
+    expect(collectCreatedTables(sql)).toEqual(['"iss%22ues"']);
+    expect(classifyMigrationSql(`CREATE TABLE "iss""ues" (id uuid);${BP}CREATE INDEX i ON "iss""ues" (id);`).compatibility).toBe("online_compatible");
+    expect(classifyMigrationSql(`CREATE TABLE "Issues" (id uuid);${BP}DROP TABLE issues;`).compatibility).toBe("requires_staging");
+  });
+
   it("treats quoted, unquoted and schema-qualified names of a new table alike", () => {
     expect(classifyMigrationSql(`CREATE TABLE public.widgets (id uuid);${BP}CREATE INDEX "w" ON "widgets" (id);${BP}ALTER TABLE "public"."widgets" ADD COLUMN a text NOT NULL;`).compatibility)
       .toBe("online_compatible");
