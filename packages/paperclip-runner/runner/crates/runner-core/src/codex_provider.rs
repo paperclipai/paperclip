@@ -126,6 +126,12 @@ const TRUSTED_OPENCODE_EXECUTABLE_ARG: &str = "--paperclip-trusted-opencode-exec
 const MAX_PROVIDER_STDERR_LINES: usize = 32;
 const MAX_PROVIDER_STDERR_BYTES: usize = 8 * 1024;
 const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
+const MAX_CODEX_ARGS: usize = 64;
+/// One `-c permissions.<profile>.filesystem={...}` value carries a read root
+/// per assigned skill, so it grows with the agent's skill set. Half of Linux
+/// `MAX_ARG_STRLEN` (128 KiB) leaves room for the runner's own launch rules.
+const MAX_CODEX_ARG_BYTES: usize = 64 * 1024;
+const MAX_CODEX_ARGS_TOTAL_BYTES: usize = 256 * 1024;
 const MAX_PENDING_TOOL_REQUESTS: usize = 4_096;
 const MAX_PENDING_TOOL_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMPLETED_TOOL_CALL_IDS: usize = 4_096;
@@ -632,10 +638,12 @@ impl CodexProviderConfig {
                 "Codex cwd must be an existing absolute directory",
             ));
         }
-        if self.args.len() > 64
-            || self.args.iter().any(|argument| {
-                argument.len() > 4096 || argument.chars().any(|character| character == '\0')
-            })
+        if self.args.len() > MAX_CODEX_ARGS
+            || self.args.iter().map(String::len).sum::<usize>() > MAX_CODEX_ARGS_TOTAL_BYTES
+            || self
+                .args
+                .iter()
+                .any(|argument| argument.len() > MAX_CODEX_ARG_BYTES || argument.contains('\0'))
         {
             return Err(LocalRunnerError::invalid(
                 "Codex arguments exceed the bounded launch contract",
@@ -6200,6 +6208,103 @@ done
             serde_json::to_value(restored).unwrap()["conversationMode"],
             "prepared"
         );
+    }
+
+    /// The filesystem rule the TypeScript launcher emits for a sandboxed run,
+    /// with one read root per assigned skill under the remote session root.
+    fn sandboxed_filesystem_rule(skills: usize) -> String {
+        let cwd = "/home/agent/workspace";
+        let root = format!(
+            "{cwd}/.paperclip-runtime/paperclip-runner/sessions/{}/filesystem",
+            "0".repeat(64)
+        );
+        let mut rules = vec![
+            r#"":root"="none""#.to_owned(),
+            r#"":minimal"="read""#.to_owned(),
+            r#"":tmpdir"="none""#.to_owned(),
+            format!(r#""{root}/codex-home"="none""#),
+            format!(r#""{root}/codex-home/skills"="read""#),
+            format!(r#""{root}/context/instructions"="read""#),
+        ];
+        rules.extend((0..skills).map(|index| {
+            format!(
+                r#""{root}/context/skills/{index}-{}"="read""#,
+                "a".repeat(12)
+            )
+        }));
+        rules.extend([
+            format!(
+                r#""/nix/store/{}-nodejs-slim-24.21.0/bin/node"="read""#,
+                "0".repeat(32)
+            ),
+            format!(r#""{root}/launcher"="read""#),
+            format!(r#""{root}/codex-home/generated_images"="read""#),
+            format!(r#""{cwd}/.git"="write""#),
+            format!(r#""{root}/context/instructions-working-copy"="write""#),
+            r#"":workspace_roots"={"."="write"}"#.to_owned(),
+        ]);
+        format!(
+            "permissions.paperclip-runner-workspace-only.filesystem={{{}}}",
+            rules.join(",")
+        )
+    }
+
+    #[test]
+    fn admits_the_filesystem_rule_of_every_explicit_skill_set() {
+        let sixteen_skills = sandboxed_filesystem_rule(16);
+        assert!(
+            sixteen_skills.len() > 4096,
+            "fixture must reproduce a filesystem rule past the former per-argument bound"
+        );
+        let mut config = CodexProviderConfig {
+            provider: "codex".to_owned(),
+            driver: "codex_app_server".to_owned(),
+            provider_version: "codex-app-server-v1".to_owned(),
+            command: PathBuf::from("codex"),
+            args: vec!["-c".to_owned(), sixteen_skills, "app-server".to_owned()],
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            model: None,
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+            read_only: false,
+            include_skill_instructions: None,
+            conversation_mode: None,
+        };
+        config.validate().unwrap();
+
+        // A turn admits at most 64 explicit skills; their launch rules must fit.
+        let all_skills = sandboxed_filesystem_rule(64);
+        config.args = vec![
+            "-c".to_owned(),
+            all_skills.clone(),
+            "-c".to_owned(),
+            all_skills,
+        ];
+        config.validate().unwrap();
+
+        let rejects = |args: Vec<String>| {
+            let mut config = config.clone();
+            config.args = args;
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("bounded launch contract")
+        };
+        assert!(rejects(vec!["x".repeat(MAX_CODEX_ARG_BYTES + 1)]));
+        assert!(rejects(vec![
+            "x".repeat(MAX_CODEX_ARG_BYTES);
+            MAX_CODEX_ARGS_TOTAL_BYTES
+                / MAX_CODEX_ARG_BYTES
+                + 1
+        ]));
+        assert!(rejects(vec!["-c".to_owned(); MAX_CODEX_ARGS + 1]));
+        assert!(rejects(vec!["a\0b".to_owned()]));
     }
 
     #[test]
