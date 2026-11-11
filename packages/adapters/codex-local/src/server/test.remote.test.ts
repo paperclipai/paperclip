@@ -254,9 +254,6 @@ describe("codex remote environment diagnostics", () => {
   });
 
   it("probes in a throwaway workspace when the local agent has no configured cwd", async () => {
-    // A launchd-managed service starts in /; resolving process.cwd() there made
-    // the hello probe fail Codex's trust check. With no config.cwd the probe
-    // must run in a temporary workspace, not the server process directory.
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "codex_local",
@@ -272,7 +269,23 @@ describe("codex remote environment diagnostics", () => {
     expect(probeCwd).toContain("paperclip-codex-envtest-");
     expect(probeCwd).not.toBe(process.cwd());
     expect(probeCall?.[3]).toContain("--skip-git-repo-check");
-    // The throwaway workspace is removed after the probe.
+    await expect(fs.stat(probeCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes the throwaway workspace when the probe process rejects", async () => {
+    runAdapterExecutionTargetProcess.mockRejectedValueOnce(new Error("spawn failed"));
+    await expect(
+      testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: { engine: "cli", command: "codex" },
+      }),
+    ).rejects.toThrow("spawn failed");
+    const probeCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, AdapterExecutionTarget | null, string, string[], { cwd: string }]
+      | undefined;
+    const probeCwd = probeCall?.[4].cwd ?? "";
+    expect(probeCwd).toContain("paperclip-codex-envtest-");
     await expect(fs.stat(probeCwd)).rejects.toMatchObject({ code: "ENOENT" });
   });
 

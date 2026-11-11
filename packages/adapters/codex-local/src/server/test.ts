@@ -252,6 +252,25 @@ async function prepareCodexHelloProbe(input: {
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  const target = ctx.executionTarget ?? null;
+  const config = parseObject(ctx.config);
+  const probeWorkspaceLocalDir =
+    asString(config.cwd, "").trim().length === 0 && target?.kind !== "remote"
+      ? await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}-`))
+      : null;
+  try {
+    return await testEnvironmentImpl(ctx, probeWorkspaceLocalDir);
+  } finally {
+    if (probeWorkspaceLocalDir) {
+      await fs.rm(probeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+async function testEnvironmentImpl(
+  ctx: AdapterEnvironmentTestContext,
+  probeWorkspaceLocalDir: string | null,
+): Promise<AdapterEnvironmentTestResult> {
   const engineSelection = await resolveCodexExecutionEngineForRun({
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
@@ -283,14 +302,6 @@ export async function testEnvironment(
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const configuredCwd = asString(config.cwd, "");
   const runId = `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  // A local probe without an agent cwd must not depend on the server process's
-  // launch directory: a launchd-managed service starts in /, which Codex
-  // refuses without --skip-git-repo-check. Probe in a throwaway workspace
-  // instead; task execution resolves the project workspace separately.
-  const probeWorkspaceLocalDir =
-    configuredCwd.trim().length === 0 && !targetIsRemote
-      ? await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-codex-envtest-${runId}-`))
-      : null;
   const cwd = resolveAdapterExecutionTargetCwd(target, configuredCwd, probeWorkspaceLocalDir ?? process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -600,10 +611,6 @@ export async function testEnvironment(
         await preparedProbe.cleanup();
       }
     }
-  }
-
-  if (probeWorkspaceLocalDir) {
-    await fs.rm(probeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
   }
 
   return {
