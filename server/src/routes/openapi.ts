@@ -7158,7 +7158,7 @@ for (const method of ["get", "put", "delete"] as const) {
     path: "/api/companies/{companyId}/ui-layouts/{surface}/me",
     tags: ["ui-layouts"],
     summary: uiLayoutSummaries[method],
-    description: "Uses the authenticated board user's personal layout for one company surface (agent_graph or dashboard). Every active company member, viewers included, may read, save and reset their own layout only. Agent credentials cannot access it. A save validates the layout against the strict schema of the surface and rejects a serialized layout above 262,144 bytes. A reset removes the saved layout and returns layout null. Saves and resets write no company activity entry.",
+    description: "Uses the authenticated board user's personal layout for one company surface (agent_graph or dashboard). Every active company member, viewers included, may read, save and reset their own layout only. Agent credentials cannot access it. A save validates the layout against the strict schema of the surface and rejects a serialized layout above 262,144 bytes. A reset removes the saved layout and returns layout null. The first save of a layout and a reset that removes one each write one company activity entry (ui_layout.created, ui_layout.reset) with the user id and the surface; later saves write none.",
     request: {
       params: z.object({ companyId: z.string(), surface: uiLayoutSurfaceSchema }),
       ...(method === "put" ? { body: jsonBody(z.object({ layout: uiLayoutDocumentSchema }).strict()) } : {}),

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companyUserUiLayouts } from "@paperclipai/db";
 import type { UiLayoutPreference, UiLayoutSurface } from "@paperclipai/shared";
@@ -33,7 +33,7 @@ export function uiLayoutService(db: Db) {
       userId: string,
       surface: UiLayoutSurface,
       input: { layout: Record<string, unknown>; schemaVersion: number },
-    ): Promise<UiLayoutPreference> {
+    ): Promise<{ preference: UiLayoutPreference; created: boolean }> {
       const now = new Date();
       const [row] = await db
         .insert(companyUserUiLayouts)
@@ -57,19 +57,24 @@ export function uiLayoutService(db: Db) {
             updatedAt: now,
           },
         })
-        .returning();
-      return toPreference(surface, row);
+        .returning({ ...getTableColumns(companyUserUiLayouts), created: sql<boolean>`(xmax = 0)` });
+      return { preference: toPreference(surface, row), created: row?.created === true };
     },
 
-    async remove(companyId: string, userId: string, surface: UiLayoutSurface): Promise<UiLayoutPreference> {
-      await db
+    async remove(
+      companyId: string,
+      userId: string,
+      surface: UiLayoutSurface,
+    ): Promise<{ preference: UiLayoutPreference; removed: boolean }> {
+      const removed = await db
         .delete(companyUserUiLayouts)
         .where(and(
           eq(companyUserUiLayouts.companyId, companyId),
           eq(companyUserUiLayouts.userId, userId),
           eq(companyUserUiLayouts.surface, surface),
-        ));
-      return toPreference(surface, undefined);
+        ))
+        .returning({ id: companyUserUiLayouts.id });
+      return { preference: toPreference(surface, undefined), removed: removed.length > 0 };
     },
   };
 }

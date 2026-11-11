@@ -110,7 +110,7 @@ Both schemas are strict. Version handling lives in `packages/shared/src/validato
 - Authorization: a layout is a personal preference, so the routes follow `workspace-preferences` and `primary-agent`. They use `assertBoard` with a user id, `hasCompanyAccess`, and an active company membership. Every active member, viewers included, can read and write their own row and no other row. Agent keys get 403.
 - Validation: unknown surface is 404. A layout that fails the surface schema or exceeds 256 KiB is 400. Sticky note ids and hire draft ids must be unique within their list, like dashboard widget instance ids.
 - OpenAPI: the three operations are registered in `server/src/routes/openapi.ts` with their request and response schemas and board-only access.
-- Activity: none. A layout is a personal view preference, like the workspace presentation preference, which also writes nothing to the company activity log. The table keeps `updated_at`.
+- Activity: the first save of a layout (the insert of its row) writes `ui_layout.created`, and a reset that removes a row writes `ui_layout.reset`. Later saves write nothing, because the apps autosave after every drag, resize and note edit, and one entry for each of them would fill the activity feed and make every open client refetch. An entry holds the user id and the surface, never the layout content. The table keeps `updated_at`.
 
 No existing route changed. The graph uses `PATCH /agents/:id` for reporting lines and `POST /companies/:id/agent-hires` for hires, exactly as the existing pages do.
 
@@ -158,7 +158,7 @@ Governance summary:
 | Layer | Coverage |
 | --- | --- |
 | Shared | Layout schemas, byte and count limits, rejection of unknown keys (including `adapterConfig` and `env` on drafts), version migration, fallback to `null` |
-| Server | Route authorization (other company, agent caller), validation, no company activity entry, reset. Service against embedded PostgreSQL: upsert, isolation between users and companies, cascade on company delete. This also runs the new migration |
+| Server | Route authorization (other company, agent caller, viewer), validation, one activity entry for the first save and for a reset and none for later saves. Service against embedded PostgreSQL: upsert, isolation between users and companies, cascade on company delete. This also runs the new migration |
 | Graph logic | Cycle detection (including already-broken data and a 5,000-deep chain), layout (no overlaps for 250 agents in both directions, wrapping, cycles, deep chains), clipboard (allowlist, round trip, tampered payloads, capacity, name uniqueness), history |
 | Graph component | 250 agents in jsdom: all render; a status change re-renders exactly one node; a refetch with equal data re-renders none; paste creates a draft and no agent; hire needs confirmation and sends only allowlisted fields. A render counter throws above its limit |
 | Dashboard logic | Layout operations, limits, normalization, settings bounds, contextual rule resolution, pinning, signals |
@@ -194,7 +194,7 @@ Before PR 1: post the issue draft and raise it in Discord `#dev`, as `CONTRIBUTI
 
 ## 13. Open questions for maintainers
 
-1. Per-user layout saves and resets write no company activity entry, following `workspace-preferences`. The route rule asks for an entry for each mutation of company data. Is this exemption acceptable, or should the first save of a layout be logged?
+1. Resolved after review: the first save of a layout and a reset each write one activity entry, and later autosaves write none. The route rule asks for an entry for each mutation. Is one entry per stored layout enough, or do maintainers want an entry for every save?
 2. Is `@xyflow/react` acceptable as a UI dependency? It loads in its own chunk, only when the flag is on.
 3. Is a core feature the right home, or should the dashboard grid start as a plugin surface?
 
