@@ -28,7 +28,7 @@ async function verifyLiveRunnerAdoption(
   uncertainAtClose = false,
   semanticRecoveryMode?: "denied-before-cancel" | "cleanup-only",
   stopExitProofFault?: "missing" | "false",
-  livenessUnverifiedWhileConnected = false,
+  livenessUnverifiedWhileConnected?: "within-grace" | "past-grace" | "reset-by-success",
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const pendingCompletion = toolHandlerOrder?.startsWith("completion-") === true;
@@ -215,7 +215,7 @@ async function verifyLiveRunnerAdoption(
       ...options,
       ...(preparedTask && !adoptionAuthorization.startsWith("legacy") ? { authorizeRunnerAdoption } : {}),
       ...(uncertainAtClose ? { closeGraceMs: 2_000 } : {}),
-      ...(livenessUnverifiedWhileConnected ? { runnerReconnectGraceMs: 60_000 } : {}),
+      ...(livenessUnverifiedWhileConnected ? { runnerReconnectGraceMs: livenessUnverifiedWhileConnected === "within-grace" ? 60_000 : 2_000 } : {}),
       ...(semanticRecoveryMode === "cleanup-only" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
       // Hash different stable bytes without replacing the real runner artifact
       // used by concurrent tests. Adoption must never execute this path.
@@ -314,15 +314,29 @@ async function verifyLiveRunnerAdoption(
     );
     if (toolHandlerOrder?.endsWith("after")) adopted.transport.setServerRequestHandler(redispatchedTool);
     if (livenessUnverifiedWhileConnected) {
+      const pause = (ms: number) => new Promise(resolveWait => setTimeout(resolveWait, ms));
       expect(authority?.activeRunnerConnectionCount()).toBe(1);
       rejectLiveness = true;
-      await new Promise(resolveWait => setTimeout(resolveWait, 1_500));
+      if (livenessUnverifiedWhileConnected === "reset-by-success") {
+        await pause(1_400);
+        rejectLiveness = false;
+        await pause(500);
+        rejectLiveness = true;
+        await pause(1_400);
+      } else {
+        await pause(livenessUnverifiedWhileConnected === "within-grace" ? 1_500 : 3_000);
+      }
       rejectLiveness = false;
-      await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
-        expect.objectContaining({ thread: expect.objectContaining({ id: "codex-thread-1" }) }));
-      expect(adopted.evidence().diagnostics.join("\n")).not.toContain("native_adopted_runner_identity_unverifiable");
+      if (livenessUnverifiedWhileConnected === "past-grace") {
+        await expect(adopted.transport.request("thread/read", {})).rejects.toThrow("native_adopted_runner_identity_unverifiable");
+      } else {
+        await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
+          expect.objectContaining({ thread: expect.objectContaining({ id: "codex-thread-1" }) }));
+        expect(adopted.evidence().diagnostics.join("\n")).not.toContain("native_adopted_runner_identity_unverifiable");
+      }
       expect(() => process.kill(runnerPid!, 0)).not.toThrow();
       expect(signal).not.toHaveBeenCalled();
+      if (livenessUnverifiedWhileConnected === "past-grace") return;
     }
     if (semanticRecoveryMode) {
       const retained = authority as DurablePrpControlPlane | null;
@@ -533,8 +547,9 @@ it("adopts a prepared runner after losing its controller launch cache without pr
 it.each(["deny", "legacy", "legacy-missing", "missing-binding"] as const)("preserves adoption authorization with %s",
   mode => verifyLiveRunnerAdoption(false, false, false, false, false, true, mode), 30_000);
 
-it("keeps an adopted runner whose liveness probe rejects while it holds its authenticated connection",
-  () => verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", undefined, false, undefined, undefined, true), 30_000);
+it.each(["within-grace", "past-grace", "reset-by-success"] as const)(
+  "bounds a rejected liveness probe of a connected adopted runner by the reconnect grace (%s)",
+  mode => verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", undefined, false, undefined, undefined, mode), 30_000);
 
 it("retains authenticated adopted-runner ownership when a close probe rejects", () => verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", undefined, true), 30_000);
 
