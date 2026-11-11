@@ -107,8 +107,9 @@ Both schemas are strict. Version handling lives in `packages/shared/src/validato
 | `PUT /api/companies/:companyId/ui-layouts/:surface/me` | Validate and upsert. Body `{ layout }` |
 | `DELETE /api/companies/:companyId/ui-layouts/:surface/me` | Remove the caller's layout (restore default) |
 
-- Authorization: `assertCompanyAccess`, then `assertBoard` with a user id. Agent keys get 403. A user can only read and write their own row.
-- Validation: unknown surface is 404. A layout that fails the surface schema or exceeds 256 KiB is 400.
+- Authorization: a layout is a personal preference, so the routes follow `workspace-preferences` and `primary-agent`. They use `assertBoard` with a user id, `hasCompanyAccess`, and an active company membership. Every active member, viewers included, can read and write their own row and no other row. Agent keys get 403.
+- Validation: unknown surface is 404. A layout that fails the surface schema or exceeds 256 KiB is 400. Sticky note ids and hire draft ids must be unique within their list, like dashboard widget instance ids.
+- OpenAPI: the three operations are registered in `server/src/routes/openapi.ts` with their request and response schemas and board-only access.
 - Activity: none. A layout is a personal view preference, like the workspace presentation preference, which also writes nothing to the company activity log. The table keeps `updated_at`.
 
 No existing route changed. The graph uses `PATCH /agents/:id` for reporting lines and `POST /companies/:id/agent-hires` for hires, exactly as the existing pages do.
