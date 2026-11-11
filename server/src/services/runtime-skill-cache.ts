@@ -3,7 +3,8 @@ import { constants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { CompanySkill } from "@paperclipai/shared";
-import { controllerProcessExited, currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
+import { currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
+import { proveOwnerGone } from "./owner-proof.js";
 
 const FORMAT = 1;
 const inFlight = new Map<string, Promise<string>>();
@@ -114,16 +115,25 @@ async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
 }
 
 /**
- * True only when a lock holder's recorded server process has provably exited
- * in this PID space. Lock age is never proof. A holder on another host or PID
- * namespace, an unreadable space, or a lock written before holders recorded
- * their process identity stays held.
+ * True only when the shared owner prover shows that a lock holder's recorded
+ * server process is gone. Lock age is never proof. In this PID space the PID
+ * decides. A holder in another process space (for example before a redeploy)
+ * is gone only when the platform replaced its deployment on the same exclusive
+ * volume, or when its server boot stopped or was fenced. A lock written before
+ * holders recorded their process identity stays held.
  */
 export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer): Promise<boolean> {
   let holder: unknown;
   try { holder = JSON.parse(lockContent.toString("utf8")); } catch { return false; }
   const controller = readControllerProcess((holder as { controller?: unknown } | null)?.controller);
-  return controller !== null && await controllerProcessExited(controller);
+  if (!controller) return false;
+  const proof = await proveOwnerGone({
+    kind: "local", scope: "runtime_skill_cache_lock", generation: null, host: null, processSpace: controller.hostHash,
+    bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt, processGroupId: null,
+    ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
+      volumeId: controller.deployment.volumeId } : {}),
+  });
+  return proof.verdict === "gone";
 }
 
 const OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

@@ -187,6 +187,32 @@ describe("runtime skill revision cache", () => {
     expect(await runtimeSkillCacheLockHolderExited(Buffer.from("not json"))).toBe(false);
   });
 
+  it("releases a lock whose holder ran in a deployment the platform replaced", async () => {
+    // A Railway redeploy starts the server in a new process space, so a PID
+    // proof never applies. The platform stopped the earlier deployment, which
+    // held the same exclusive volume, before it started this one.
+    const railway = { RAILWAY_PROJECT_ID: "project", RAILWAY_ENVIRONMENT_ID: "environment", RAILWAY_SERVICE_ID: "service",
+      RAILWAY_DEPLOYMENT_ID: "deployment-new", RAILWAY_VOLUME_ID: "volume", RAILWAY_VOLUME_MOUNT_PATH: "/data" };
+    for (const [key, value] of Object.entries(railway)) vi.stubEnv(key, value);
+    try {
+      const worker = { provider: "railway", projectId: "project", environmentId: "environment", serviceId: "service" };
+      const holder = { bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null,
+        deployment: { worker: { ...worker, deploymentId: "deployment-old" }, exclusiveVolume: true, volumeId: "volume" } };
+      expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder))).toBe(true);
+      // Only a replaced deployment on the same exclusive volume is proof.
+      const deployment = holder.deployment;
+      for (const changed of [{ ...deployment, worker: { ...worker, deploymentId: "deployment-new" } },
+        { ...deployment, volumeId: "another-volume" }, { ...deployment, exclusiveVolume: false },
+        { ...deployment, worker: { ...worker, serviceId: "another-service", deploymentId: "deployment-old" } }]) {
+        expect(await runtimeSkillCacheLockHolderExited(lockStamp({ ...holder, deployment: changed }))).toBe(false);
+      }
+      const { deployment: _omitted, ...withoutDeployment } = holder;
+      expect(await runtimeSkillCacheLockHolderExited(lockStamp(withoutDeployment))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("fingerprints installed content and ownership, excluding cosmetic metadata", async () => {
     const spec = runtimeSkillCacheSpec(root, skill)!;
     expect(runtimeSkillCacheSpec(root, { ...skill, name: "Renamed", updatedAt: new Date(), metadata: { ...skill.metadata, starred: true, ref: "new-branch" } })!.fingerprint).toBe(spec.fingerprint);
