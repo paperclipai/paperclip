@@ -1437,6 +1437,56 @@ describe("Daytona sandbox provider plugin", () => {
       expect(found!.delete).not.toHaveBeenCalled();
     });
 
+    it("never adopts a sandbox whose failed create already started its cleanup", async () => {
+      const createError = new MockDaytonaTimeoutError("SDK wait ended");
+      mockCreate.mockImplementation(() => new Promise((_resolve, reject) => setTimeout(() => reject(createError), 91_000)));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(found ??= ownedCreation("started")), 3_000)))
+        .mockImplementation(async () => (found ??= ownedCreation("started")));
+      let settled = false;
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).then(
+        lease => { settled = true; return lease; }, error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(95_000);
+      expect(settled).toBe(true);
+      expect(await pending).toBe(createError);
+      expect(found!.delete).toHaveBeenCalledOnce();
+      expect(found!.getWorkDir).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["missing", () => undefined],
+      ["expired", () => new Date(Date.now() - 1_000).toISOString()],
+      ["too distant", () => new Date(Date.now() + 120 * 60_000).toISOString()],
+    ])("rejects and deletes an adopted sandbox whose creation TTL is %s", async (_label, autoDestroyAt) => {
+      mockCreate.mockImplementation(() => new Promise(() => {}));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => {
+        if (!found) { found = ownedCreation("started"); found.autoDestroyAt = autoDestroyAt(); }
+        return found;
+      });
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, ttlMinutes: 30 } })
+        .catch(error => error);
+      await vi.advanceTimersByTimeAsync(91_000);
+      const error = await pending;
+      expect(error.message).toBe("Daytona did not confirm the configured creation TTL.");
+      expect(found!.refreshData).toHaveBeenCalled();
+      expect(found!.getWorkDir).not.toHaveBeenCalled();
+      expect(found!.delete).toHaveBeenCalledOnce();
+    });
+
+    it("admits an adopted sandbox whose creation TTL is confirmed", async () => {
+      mockCreate.mockImplementation(() => new Promise(() => {}));
+      let found: ReturnType<typeof ownedCreation> | undefined;
+      mockGet.mockImplementation(async () => {
+        if (!found) { found = ownedCreation("started"); found.autoDestroyAt = new Date(Date.now() + 20 * 60_000).toISOString(); }
+        return found;
+      });
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, ttlMinutes: 30 } });
+      await vi.advanceTimersByTimeAsync(91_000);
+      expect(await pending).toMatchObject({ providerLeaseId: found!.id });
+      expect(found!.delete).not.toHaveBeenCalled();
+    });
+
     it("keeps waiting for a create that is still preparing its snapshot at 90 seconds", async () => {
       const sandbox = createMockSandbox();
       mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 120_000)));

@@ -1221,7 +1221,7 @@ async function createSandbox(
     onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
     onCreateFailure?: () => PluginEnvironmentAcquisitionDiagnostic;
     onSnapshotIdentity?: (identity: SnapshotIdentity) => void;
-    keepAllocation?: () => boolean;
+    claimCleanup?: () => boolean;
   } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateCreationTtl(config) ?? validateRuntimeResourceRequest(config);
@@ -1276,16 +1276,11 @@ async function createSandbox(
     idleActivity.observe(allocation, providerActivityKey(params, config, sandbox.id));
     if (config.ttlMinutes != null) {
       cleanup.observedProviderLeaseId = sandbox.id;
-      await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
-      const expiry = Date.parse(sandbox.autoDestroyAt ?? "");
-      const nowMs = Date.now();
-      if (!Number.isFinite(expiry) || expiry <= nowMs || expiry > nowMs + config.ttlMinutes * 60_000) {
-        throw new Error("Daytona did not confirm the configured creation TTL.");
-      }
+      await confirmCreationTtl(sandbox, config);
     }
     return sandbox;
   } catch (createError) {
-    if (options.keepAllocation?.()) throw createError;
+    if (options.claimCleanup && !options.claimCleanup()) throw createError;
     // Observe the create failure before compensating deletion can stall or fail.
     const diagnostic = options.onCreateFailure?.();
     try {
@@ -1299,6 +1294,16 @@ async function createSandbox(
         `Daytona sandbox creation failed${status === undefined ? "" : ` (HTTP ${status})`}; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
+  }
+}
+
+async function confirmCreationTtl(sandbox: Sandbox, config: DaytonaDriverConfig): Promise<void> {
+  if (config.ttlMinutes == null) return;
+  await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
+  const expiry = Date.parse(sandbox.autoDestroyAt ?? "");
+  const nowMs = Date.now();
+  if (!Number.isFinite(expiry) || expiry <= nowMs || expiry > nowMs + config.ttlMinutes * 60_000) {
+    throw new Error("Daytona did not confirm the configured creation TTL.");
   }
 }
 
@@ -2977,7 +2982,7 @@ const plugin = definePlugin(trackDaytonaHooks({
     const budgetMs = Math.min(config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
       DAYTONA_ACQUIRE_ATTEMPT_BUDGET_MS);
     const createCapMs = Math.min(DAYTONA_CREATE_ATTEMPT_MS, budgetMs);
-    let adopted = false;
+    let allocationClaim: "adopted" | "cleanup" | undefined;
     const startedAt = Date.now();
     const deadline = startedAt + budgetMs;
     let expired = false;
@@ -3025,9 +3030,9 @@ const plugin = definePlugin(trackDaytonaHooks({
       if (!capReached || !cleanup || expired || phase !== "create" || firstFailure) return creating;
       const elapsedMs = Math.max(createCapMs, Date.now() - startedAt);
       const observed = await lookupCreation(config, cleanup);
-      if (expired) return creating;
+      if (expired || allocationClaim === "cleanup" || firstFailure) return creating;
       if (observed.state === "started" && observed.sandbox) {
-        adopted = true;
+        allocationClaim = "adopted";
         cleanup.observedProviderLeaseId = observed.sandbox.id;
         idleActivity.observe(idleActivity.resource(providerActivityKey(params, config, cleanup.providerLeaseId), true),
           providerActivityKey(params, config, observed.sandbox.id));
@@ -3043,10 +3048,15 @@ const plugin = definePlugin(trackDaytonaHooks({
         onCreateAttempt: (attempt) => { assertActive(); cleanup = attempt; },
         onCreateFailure: observeFailure,
         onSnapshotIdentity: identity => { snapshotIdentity = identity; },
-        keepAllocation: () => adopted,
+        claimCleanup: () => {
+          if (allocationClaim === "adopted") return false;
+          allocationClaim = "cleanup";
+          return true;
+        },
       }));
       const sandbox = createCapMs < budgetMs ? await createWithinCap(creating) : await creating;
       try {
+        if (allocationClaim === "adopted") await confirmCreationTtl(sandbox, config);
         assertActive();
         if (cleanup) cleanup.observedProviderLeaseId = sandbox.id;
         phase = "workspace";
