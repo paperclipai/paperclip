@@ -86,6 +86,42 @@ function delivery(state: PhotonExternalState, sequence = 3, previousSequence: nu
     payload: { version: 1, binding: state.binding, sequence, previousSequence, acceptedAt: createdAt, rawFrame: raw.toString("base64") } };
 }
 describe("Photon normal external-owner handoff (controlled owner ports, not real SQL or gRPC)", () => {
+  it.each(["enrolling", "joining"] as const)("recovers the original %s binding after only the authorized admission cutoff advances", async (phase) => {
+    const f = fixture();
+    if (phase === "enrolling") f.loseReply();
+    else f.loseCloseCommit();
+    await expect(f.reconcile()).rejects.toThrow();
+    const original = await f.read();
+    expect(original?.phase).toBe(phase);
+    if (!original) throw new Error("Original handoff absent");
+    const priorRequests = structuredClone(f.requests);
+    const accepted = await f.create().reconcile({ identity, config: { ...config, intakeAfter: config.intakeAfter + 5_000 },
+      lease: { token: "lease" }, localResourceId: f.resourceId });
+    expect(accepted).toMatchObject({ phase: "external", handoffId: original.handoffId, binding: original.binding, identity: original.identity });
+    expect(accepted.binding.intakeAfter).toBe(original.binding.intakeAfter);
+    expect(f.counts().joins).toBe(1);
+    if (phase === "enrolling") expect(f.requests[1]).toEqual(priorRequests[0]);
+    else expect(f.requests).toEqual(priorRequests);
+  });
+  it.each(["generation", "lease", "revocation", "identity", "credentials", "line"] as const)(
+    "does not reuse an unfinished cutoff binding after %s authority changes", async (change) => {
+      const f = fixture(); f.loseReply(); await expect(f.reconcile()).rejects.toThrow();
+      const original = await f.read();
+      const requests = structuredClone(f.requests);
+      if (change === "generation") f.replaceGeneration();
+      if (change === "lease") f.replaceLease();
+      if (change === "revocation") f.revoke();
+      const selected = change === "identity" ? { ...identity, connectionId: "other-connection" } : identity;
+      const credentials = { ...config.credentials,
+        ...(change === "credentials" ? { projectSecret: "replacement-project-secret" } : {}),
+        ...(change === "line" ? { lineId: "other-line" } : {}) };
+      await expect(f.create().reconcile({ identity: selected, config: { ...config, credentials, intakeAfter: config.intakeAfter + 5_000 },
+        lease: { token: "lease" }, localResourceId: f.resourceId })).rejects.toThrow();
+      expect(await f.read()).toEqual(original);
+      expect(f.requests).toEqual(requests);
+      expect(f.counts().joins).toBe(0);
+    },
+  );
   it("stages the exact enrollment before broker use and joins before external placement", async () => {
     const f = fixture(), accepted = await f.reconcile();
     expect(accepted.phase).toBe("external"); expect(accepted.joinedSequence).toBe(2);

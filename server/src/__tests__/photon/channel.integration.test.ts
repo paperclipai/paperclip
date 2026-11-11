@@ -8,7 +8,7 @@ import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coor
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { Readable } from "node:stream";
 import type { StorageService } from "../../storage/types.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -72,6 +72,10 @@ import { PhotonChatAdapter } from "../../services/photon/adapter.js";
 import { PhotonReceiver } from "../../services/photon/receiver.js";
 import { PhotonCloudClient, PhotonError } from "../../services/photon/cloud.js";
 import { photonFixture, photonEvent as livePhotonEvent, photonChat, stream } from "./fixture.js";
+import * as cloudConnectors from "../../services/paperclip-cloud-connector.js";
+import * as photonExternalRuntime from "../../services/chat-channels/imessage-photon/external-runtime.js";
+import { PHOTON_EXTERNAL_STATE, photonStateFor } from "../../services/chat-channels/imessage-photon/external-store.js";
+import { readPhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
 
 // The fixture always builds a message event. Its declared return type is the wider LiveEvent.
 const photonEvent = (...args: Parameters<typeof livePhotonEvent>) =>
@@ -680,6 +684,77 @@ describe("iMessage Photon channel control plane", () => {
     const secretSafe = JSON.stringify(await t.service.get(t.endpoint.id));
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
+  }, 30_000);
+  it.each(["enrolling", "joining"] as const)("resumes normal Photon configuration with its original %s custody and the new admission cutoff", async (phase) => {
+    const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+    const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
+      signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      sealPrivateKey: sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+    const connector = cloudConnectors.createPaperclipCloudConnector({ config: connectorConfig,
+      request: async () => Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } }) });
+    vi.spyOn(cloudConnectors, "paperclipCloudConnectorConfigFromEnv").mockReturnValue(connectorConfig);
+    vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockReturnValue(connector);
+    const createOwner = photonExternalRuntime.createPhotonExternalRuntimeOwner;
+    let observedOwner: ReturnType<typeof createOwner> | undefined;
+    vi.spyOn(photonExternalRuntime, "createPhotonExternalRuntimeOwner").mockImplementation((...args) => {
+      observedOwner = createOwner(...args);
+      return observedOwner;
+    });
+    const requests: Record<string, unknown>[] = [];
+    let endpointId: string | undefined, companyId: string | undefined;
+    vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation }) => {
+      requests.push(structuredClone(operation));
+      if (!endpointId || !companyId || operation.kind !== "enroll") throw new Error("Unexpected controlled broker operation");
+      const retained = readPhotonExternalState(await photonStateFor(db, { companyId, endpointId }).read(PHOTON_EXTERNAL_STATE));
+      if (!retained) throw new Error("Normal staged enrollment absent");
+      return { binding: retained.binding };
+    });
+    const t = await setup(); endpointId = t.endpoint.id; companyId = t.companyId;
+    await t.start(); await t.qualify();
+    const owner = observedOwner;
+    if (!owner) throw new Error("Normal external Runtime owner absent");
+    const state = photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id });
+    if (phase === "joining") {
+      const local = t.service.runtime.get(t.endpoint.id);
+      if (!local) throw new Error("Normal local receiver absent");
+      vi.spyOn(local, "shutdown").mockRejectedValueOnce(new Error("Controlled original local join pending"));
+      await expect(owner.reconcile(t.endpoint.id)).rejects.toThrow("Controlled original local join pending");
+    }
+    const original = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(original?.phase).toBe(phase);
+    if (!original) throw new Error("Normal unfinished handoff absent");
+    const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    expect(before.status).toBe("active");
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    expect(paused.status).toBe("paused");
+    expect(Reflect.get(paused.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+    expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
+      .toMatchObject({ phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+    const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId)
+      .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
+    const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    const recovered = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(Reflect.get(resumed.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+    expect(resumed.connectionId).toBe(before.connectionId);
+    expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+    const cutoff = Date.parse(String(Reflect.get(resumed.setup, "photonIntakeAfter")));
+    expect(Number.isFinite(cutoff)).toBe(true);
+    expect(cutoff).toBeGreaterThan(Date.parse(original.binding.intakeAfter));
+    expect(outcome.error, "normal resume must finish original custody under unchanged authority").toBeNull();
+    expect(outcome.snapshot).toMatchObject({ status: "active" });
+    expect(recovered).toMatchObject({ phase: "external", identity: original.identity, binding: original.binding, handoffId: original.handoffId });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].enrollment).toMatchObject({ intakeAfter: original.binding.intakeAfter, handoffId: original.handoffId });
+    const wakeups = t.wakeup.mock.calls.length;
+    await t.deliver({ ...photonEvent(3), occurredAt: new Date(cutoff - 1) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+    await t.deliver({ ...photonEvent(4), occurredAt: new Date(cutoff) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await t.deliver({ ...photonEvent(4), occurredAt: new Date(cutoff) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
   }, 30_000);
   it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
     const t = await setup();
