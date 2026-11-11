@@ -1317,6 +1317,64 @@ When you change the data model:
 Then update every layer that the change affects: `packages/shared` types and
 validators, `server` routes and services, and `ui` API clients and pages.
 
+### Migration compatibility with the running release
+
+Paperclip Cloud starts a new release while the previous one is still serving
+against the same database. Every migration is therefore classified by
+`packages/db/src/migration-compatibility.ts` as one of:
+
+| Class | Meaning | Examples |
+| --- | --- | --- |
+| `online_compatible` | The previous release keeps working and no lock is held for long. A deployer applies it without a pause. | `CREATE TABLE` and anything on a table created in the same migration, `CREATE INDEX CONCURRENTLY`, `ADD COLUMN` that is nullable or has a constant default, `ADD CONSTRAINT ... NOT VALID`, `CREATE TYPE`, `ALTER TYPE ... ADD VALUE` |
+| `requires_staging` | The previous release breaks or its writes are rejected. Ship it in two releases: expand first, contract later. | `DROP TABLE`/`DROP COLUMN`, renames, `ALTER COLUMN ... TYPE`, `SET NOT NULL`, `DROP DEFAULT`, a `NOT NULL` column without a default, a validated `CHECK`, a `UNIQUE` constraint or unique index on an existing table, `TRUNCATE`, `DELETE` |
+| `unknown` | The classifier cannot prove either. This includes every statement it does not recognize and every lock or duration hazard (reason codes starting with `lock_hazard_`). | plain `CREATE INDEX` on an existing table, a validated foreign key on an existing table, `VALIDATE CONSTRAINT`, `UPDATE` backfills, procedural `DO` blocks, `CREATE OR REPLACE FUNCTION`, triggers on existing tables, `DROP INDEX`, `DROP CONSTRAINT` |
+
+A migration takes the worst class of its statements. Lock and duration hazards
+are `unknown`, not compatible with a warning.
+
+`drizzle-kit` emits validated foreign keys and plain indexes. For an existing
+table, edit the generated SQL: append `NOT VALID` to the foreign key, and use
+`CREATE INDEX CONCURRENTLY` (see the checklist below for running a migration
+outside a transaction).
+
+**The rule for a new migration.** A pull request fails when a migration it adds
+is `unknown`. Rewrite the migration, split it into expand and contract
+migrations, or, when you have verified the migration yourself, state the class
+in the first lines of the migration file:
+
+```sql
+-- paperclip:migration-compat online_compatible: <why the previous release keeps working and no lock is held long>
+```
+
+Use `requires_staging` in place of `online_compatible` when the previous
+release cannot run against the migration. The justification is mandatory. The
+override is read only from the migration file, so it is reviewed with the SQL
+and travels with it. A contract migration (for example the `DROP COLUMN` that
+follows an expand release) always classifies as `requires_staging`; mark it
+`online_compatible` this way once no running release uses the column.
+`requires_staging` does not fail the pull request yet; it prints a notice.
+
+Check a migration locally:
+
+```sh
+pnpm --filter @paperclipai/db migration-compat src/migrations/0468_busy_wendell_rand.sql
+pnpm --filter @paperclipai/db migration-compat            # distribution over all migrations
+pnpm --filter @paperclipai/db migration-compat --check    # the pull-request guard
+```
+
+The guard runs in `check:migrations` (so in the `@paperclipai/db` typecheck and
+build) against the merge base with `origin/master`, and in the pull-request
+policy job through `.github/scripts/check-pr-migration-order.mjs`. Migrations
+that were already on `master` when the classifier shipped are not annotated.
+
+Deployers read the result from the cloud migrator manifest
+(`cloud-migrators/v1/<sha>/manifest.json`, built by
+`scripts/cloud-migrator-artifacts.mjs`). Its `migrationCompatibility.migrations`
+array lists every packed migration in journal order with `idx`, `tag`,
+`sqlSha256` (the hash the migrator records in the migration history),
+`compatibility`, `classified` (the classifier's verdict before an override),
+`override`, `overrideJustification`, and `reasons`.
+
 ## Migration authoring checklist
 
 Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on

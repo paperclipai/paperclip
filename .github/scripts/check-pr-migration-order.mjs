@@ -65,6 +65,20 @@ export function checkMigrationOrder(baseMigrationFiles, prMigrationFiles) {
   };
 }
 
+/**
+ * Judges whether the migrations a PR adds can be applied while the previous
+ * release is still running. `unknown` without an in-file override fails;
+ * `requires_staging` only produces a notice.
+ */
+export async function checkMigrationCompatibility(migrations) {
+  // Type-stripped by Node: the policy job runs before dependencies are installed.
+  const { checkNewMigrationCompatibility } = await import(
+    new URL('../../packages/db/src/migration-compatibility.ts', import.meta.url).href
+  );
+  const { passed, errors, notices } = checkNewMigrationCompatibility(migrations);
+  return { passed, errors, notices };
+}
+
 function gitPaths(args) {
   return execFileSync('git', args, { encoding: 'utf8' })
     .split('\0')
@@ -78,7 +92,7 @@ function escapeWorkflowCommand(message) {
     .replaceAll('\n', '%0A');
 }
 
-function main() {
+async function main() {
   const [baseSha, headSha] = process.argv.slice(2);
   const shaPattern = /^[0-9a-f]{40}$/i;
   if (!shaPattern.test(baseSha ?? '') || !shaPattern.test(headSha ?? '')) {
@@ -95,18 +109,35 @@ function main() {
   ]).filter((file) => file.endsWith('.sql'));
   const result = checkMigrationOrder(baseMigrationFiles, prMigrationFiles);
 
-  if (result.passed) {
-    console.log(result.message);
-    return;
+  if (!result.passed) {
+    console.error(
+      `::error title=Migration numbers must follow the target branch::${escapeWorkflowCommand(result.message)}`,
+    );
+    console.error(result.message);
+    process.exit(1);
   }
+  console.log(result.message);
 
-  console.error(
-    `::error title=Migration numbers must follow the target branch::${escapeWorkflowCommand(result.message)}`,
-  );
-  console.error(result.message);
-  process.exit(1);
+  const compatibility = await checkMigrationCompatibility(prMigrationFiles.map((file) => ({
+    fileName: file,
+    sql: execFileSync('git', ['show', `${headSha}:${file}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+  })));
+  for (const notice of compatibility.notices) {
+    console.log(`::notice title=Migration compatibility::${escapeWorkflowCommand(notice)}`);
+    console.log(notice);
+  }
+  for (const error of compatibility.errors) {
+    console.error(
+      `::error title=Migration is not classified as safe under the running release::${escapeWorkflowCommand(error)}`,
+    );
+    console.error(error);
+  }
+  if (!compatibility.passed) process.exit(1);
+  if (prMigrationFiles.length > 0) {
+    console.log('Every new migration is classified for application under the running release.');
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main();
+  await main();
 }
