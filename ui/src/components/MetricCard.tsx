@@ -12,7 +12,6 @@ interface MetricCardProps {
   onClick?: () => void;
   /** Use the shared bordered Card surface instead of an unframed metric. */
   appearance?: "plain" | "card";
-  /** Fit a short fixed-height tile: one line per text, cut with an ellipsis, full text in the tooltip. */
   density?: "default" | "compact";
 }
 
