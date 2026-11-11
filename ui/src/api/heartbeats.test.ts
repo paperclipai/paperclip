@@ -55,9 +55,6 @@ describe("heartbeatsApi.activeRunForIssue", () => {
     expect(mockApi.get).toHaveBeenCalledWith("/issues/issue-1/active-run");
   });
 
-  // The server answers "no active run" with 204, which the shared client resolves as
-  // `undefined`. React Query rejects a queryFn that resolves `undefined`, so the absent
-  // run has to reach callers as an explicit `null`.
   it("normalizes the 204 no-active-run response to null", async () => {
     mockApi.get.mockResolvedValue(undefined);
 

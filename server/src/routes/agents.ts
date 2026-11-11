@@ -7885,7 +7885,6 @@ export function agentRoutes(
     );
     if (!issue) return;
     const activeRun = await issueRunPresence.activeRun(issue);
-    // 204 keeps "no active run" distinct from 404 "no such issue".
     if (!activeRun) {
       res.status(204).end();
       return;

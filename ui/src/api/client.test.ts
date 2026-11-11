@@ -326,7 +326,6 @@ describe("Muse operator request isolation", () => {
 });
 
 describe("204 responses", () => {
-  // activeRunForIssue builds its null on this undefined.
   it("resolves undefined without reading the empty body", async () => {
     const json = vi.fn(async () => {
       throw new SyntaxError("Unexpected end of JSON input");

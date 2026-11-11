@@ -686,9 +686,7 @@ describe("agent live run routes", () => {
     expect(res.body).toMatchObject({ error: "Issue not found" });
   });
 
-  // 204 must not become an existence oracle for cross-tenant issues.
   it("answers a cross-tenant issue with no active run identically to a missing issue", async () => {
-    // local_implicit actors have blanket company access.
     const sessionActor = {
       type: "board",
       userId: "session-user",
