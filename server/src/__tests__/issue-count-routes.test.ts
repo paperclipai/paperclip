@@ -50,6 +50,10 @@ describeEmbeddedPostgres("issue totals without card pagination", () => {
     }
     await request(app).get(`${path}/count`).query({ updatedSince: "invalid" }).expect(400);
     await request(app).get(`${path}/count`).query({ status: "done", limit: 200 }).expect(400);
+    for (const query of [{ ids: randomUUID() }, { parentIds: randomUUID() }, { oneChildPerParent: "true" }]) {
+      const listOnly = await request(app).get(`${path}/count`).query({ status: "done", ...query }).expect(400);
+      expect(listOnly.body.error).toBe("issues/count does not accept ids, parentIds or oneChildPerParent");
+    }
     await request(app).get(`${path}/count`).query({ attention: "invalid" }).expect(400);
   });
 

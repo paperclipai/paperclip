@@ -192,6 +192,12 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+/** Filters the count endpoint applies; list-only paging, projection and enrichment flags are excluded. */
+export type IssueCountFilters = Omit<IssueListFilters,
+  | "ids" | "parentIds" | "oneChildPerParent" | "projection"
+  | "includeBlockedBy" | "includeBlockedInboxAttention" | "includeLiveDescendantSummary"
+  | "limit" | "offset" | "sortField" | "sortDir" | "afterId">;
+
 export type IssueListFilters = {
   ids?: readonly string[];
   parentIds?: readonly string[];
@@ -352,7 +358,7 @@ export const issuesApi = {
   },
   count: (
     companyId: string,
-    filters?: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId">,
+    filters?: IssueCountFilters,
     options?: RequestOptions,
   ) => {
     const params = issueListSearchParams(filters);

@@ -31,6 +31,21 @@ endpoint for its instruction and related content. Company and private-task acces
 checks apply before results are returned. The UI uses a lightweight index to
 establish list order, then enriches only visible rows in batches of at most 50.
 
+## Count Issues
+
+```
+GET /api/companies/{companyId}/issues/count
+```
+
+Returns `{ "count": <number> }`: the number of readable issues that match the filters. There is no pagination.
+
+The count applies the same company, visibility, creation, and search conditions as List Issues. It accepts the list filters, for example `status`, `displayStatus`, `assigneeAgentId`, `assigneeUserId`, `touchedByUserId`, `inboxArchivedByUserId`, `unreadForUserId`, `projectId`, `parentId`, `labelId`, `q`, `updatedSince`, `includeAgentCreatedTasks`, and `includeParticipatedTasks`.
+
+- The user filters accept `me` only with board authentication. Other callers get `403`.
+- `includeParticipatedTasks=true` requires board authentication, the same as List Issues.
+- `attention` is optional. When present, it must be `blocked`.
+- `limit`, `offset`, `ids`, `parentIds`, and `oneChildPerParent` are rejected with `400`.
+
 ## Get Issue
 
 ```

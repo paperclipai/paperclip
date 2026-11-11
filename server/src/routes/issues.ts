@@ -9307,6 +9307,10 @@ export function issueRoutes(
         .json({ error: "issues/count does not accept limit or offset" });
       return;
     }
+    if (req.query.ids !== undefined || req.query.parentIds !== undefined || req.query.oneChildPerParent !== undefined) {
+      res.status(400).json({ error: "issues/count does not accept ids, parentIds or oneChildPerParent" });
+      return;
+    }
     if (hasPlanDocument === null) {
       res
         .status(400)
