@@ -10816,6 +10816,47 @@ describe("native warm session supervision", () => {
     }
   });
 
+  // Staging: instruction preparation retires the previous
+  // run's warm owner before runtime selection. Its close failed, and the run
+  // failed with no provider work and no way back.
+  it("instruction preparation reports an unretired predecessor and a fresh sandbox skips it", async () => {
+    const identity = "warm-instruction-unretirable";
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    const drain = new Error("Controller journal drain timed out; preserve the session before replacing its writer.");
+    let closing: Promise<void> | undefined;
+    const close = vi.fn(() => closing ??= Promise.reject(drain));
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const copy = (runId: string) => ({ runId, root: `/tmp/${identity}`, preparationKey: "before", hasChanges: async () => false,
+      collectStopped: async () => undefined });
+    const target = (providerLeaseId: string, outcome: "created" | "resumed" | "replacement") => ({ kind: "remote" as const,
+      transport: "sandbox" as const, environmentId: identity, remoteCwd: `/tmp/${identity}`, sandboxLeaseAcquisition: { outcome, providerLeaseId } });
+    const claim = (runId: string, claimTarget: ReturnType<typeof target>) => claimWarmNativeInstructionCopy({ priorExecution: warmExecution,
+      companyId: warmExecution.binding.companyId, agentId: warmExecution.binding.agentId,
+      executionWorkspaceId: warmExecution.binding.executionWorkspaceId, workspace: warmExecution.workspace,
+      environmentId: identity, target: claimTarget, runId, preparationKey: "changed", adopt: async () => copy(runId) });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: target("sandbox-a", "created"), instructionWorkingCopy: copy(identity) });
+      await expect(claim(`${identity}-reused`, target("sandbox-a", "resumed")))
+        .rejects.toMatchObject({ code: "native_predecessor_retirement_unproven", predecessorRunId: identity, providerLeaseId: "sandbox-a" });
+      const closes = close.mock.calls.length;
+      expect(closes).toBeGreaterThan(0);
+      // The retry on a fresh sandbox prepares normally; the old owner stays with its sandbox.
+      expect(await claim(`${identity}-fresh`, target("sandbox-b", "replacement"))).toBeNull();
+      expect(close).toHaveBeenCalledTimes(closes);
+    } finally {
+      close.mockImplementation(async () => undefined);
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }).catch(() => undefined);
+    }
+  });
+
   it.each(["idle", "edit", "add", "remove", "projectless"])("retains the actual agent_files copy across warm turns, then retires for %s", async ending => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "warm-agent-files-")));
     const localRoot = join(root, "run", "live");
@@ -12012,6 +12053,41 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
     });
 
+    // Staging: the follow-up on the reused sandbox failed
+    // before provider work because the previous controller's journal drain
+    // outlived the close grace. Nothing could ever start the task again.
+    it("sends the follow-up to a fresh sandbox when its predecessor cannot be retired", async () => {
+      const { base, next } = fixture("identity-unretirable");
+      const drain = new Error("Controller journal drain timed out; preserve the session before replacing its writer.");
+      let closing: Promise<void> | undefined;
+      const close = vi.fn(() => closing ??= Promise.reject(drain));
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      }).mockResolvedValue(result);
+      const target = (providerLeaseId: string, outcome: "created" | "resumed" | "replacement") => ({
+        kind: "remote" as const, transport: "sandbox" as const, environmentId: "identity-unretirable",
+        remoteCwd: "/tmp/identity-unretirable", sandboxLeaseAcquisition: { outcome, providerLeaseId } });
+      const run = (input: NativeExecutionInputV1, runId: string, runnerExecutionTarget: ReturnType<typeof target>) => {
+        const execution = { ...input, binding: { ...input.binding, runId } };
+        return executePaperclipNativeSession({ db: leaseDb(execution), execution, runnerInstanceId: "runner", runnerExecutionTarget });
+      };
+      await run(base, base.binding.runId, target("sandbox-a", "created"));
+      const failure = await run(next, `${next.binding.runId}-reused`, target("sandbox-a", "resumed")).catch(error => error);
+      expect(failure).toMatchObject({ code: "native_predecessor_retirement_unproven",
+        predecessorRunId: base.binding.runId, providerLeaseId: "sandbox-a" });
+      expect(String(failure.message)).toContain(drain.message);
+      // The same sandbox still holds that Runner: never launch over it.
+      await expect(run(next, `${next.binding.runId}-same-sandbox`, target("sandbox-a", "resumed")))
+        .rejects.toMatchObject({ code: "native_predecessor_retirement_unproven" });
+      expect(state.execute).toHaveBeenCalledTimes(1);
+      const closes = close.mock.calls.length;
+      // A fresh sandbox cannot meet it. The retry starts without replaying the rejected close.
+      await run(next, `${next.binding.runId}-fresh`, target("sandbox-b", "replacement"));
+      expect(state.execute).toHaveBeenCalledTimes(2);
+      expect(state.execute.mock.calls.at(-1)?.[0].existingSession).toBeUndefined();
+      expect(close).toHaveBeenCalledTimes(closes);
+    });
+
     it.each(["companyId", "agentId", "issueId", "executionWorkspaceId"] as const)(
       "does not retire an unrelated %s owner", async field => {
         const { base, next, run } = fixture(`identity-isolation-${field}`);
@@ -12151,8 +12227,9 @@ describe("native warm session supervision", () => {
       }
       expect(readNativeSessionIdleWork()).toBe("present");
       const next = { ...warmExecution, binding: { ...warmExecution.binding, runId: "run-retirement-retry-next" } };
+      // A new run reports the unretired predecessor as its typed pre-provider failure.
       await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "runner" }))
-        .rejects.toBe(failure);
+        .rejects.toMatchObject({ code: "native_predecessor_retirement_unproven", cause: failure });
       expect(state.execute).toHaveBeenCalledOnce();
       expect(readNativeSessionIdleWork()).toBe("present");
       close.mockResolvedValue(undefined);
