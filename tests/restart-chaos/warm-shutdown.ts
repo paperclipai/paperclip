@@ -18,6 +18,10 @@ const SHUTDOWN_CLOSE_FAILURE = /idle native session cleanup failed before contro
 const IDLE_CLOSE_FAILURE = /idle warm native session (close|detach) failed|warm native session close did not settle|warm native session's sandbox was already destroyed/;
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
+export function controllerLogNames(names: readonly string[]): string[] {
+  return names.filter(name => /^server(-[a-z0-9]+)?\.log$/.test(name)).sort();
+}
+
 export function isWarmWave(options: { lifecycle?: string; daytonaWarm?: boolean }): boolean {
   return options.lifecycle === "warm" || options.daytonaWarm === true;
 }

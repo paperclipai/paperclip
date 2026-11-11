@@ -8,7 +8,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -53,7 +53,7 @@ import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timelin
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
 import { sessionFaultServerEnvironment } from "./session-faults.js";
-import { gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
+import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -919,7 +919,9 @@ async function main(): Promise<number> {
       }
     }
     if (isWarmWave(plan.options)) {
-      const serverLog = await readFile(supervisor.paths.serverLogPath, "utf8").catch(() => "");
+      const logDir = path.dirname(supervisor.paths.serverLogPath);
+      const controllerLogs = controllerLogNames(await readdir(logDir).catch(() => [] as string[]));
+      const serverLog = (await Promise.all(controllerLogs.map(name => readFile(path.join(logDir, name), "utf8").catch(() => "")))).join("\n");
       const warmShutdown = gradeWarmShutdown({ cleanup: daytonaCleanup, serverLog });
       timeline.add("warm_shutdown", { ...warmShutdown });
       if (warmShutdown.verdict === "fail") anyFailure = true;

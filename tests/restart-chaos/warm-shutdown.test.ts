@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradeWarmShutdown, isWarmWave, warmShutdownMarkdown } from "./warm-shutdown.js";
+import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown } from "./warm-shutdown.js";
 
 const esc = String.fromCharCode(27);
 const clean = { environmentDeleted: true, environmentDeleteBlocked: null, remainingSandboxes: [] };
@@ -10,6 +10,11 @@ describe("clean warm shutdown check", () => {
     expect(isWarmWave({ daytonaWarm: true })).toBe(true);
     expect(isWarmWave({ lifecycle: "per_turn" })).toBe(false);
     expect(isWarmWave({})).toBe(false);
+  });
+
+  it("grades every controller's log, including the second controller of a multi-server wave", () => {
+    expect(controllerLogNames(["timeline.jsonl", "server-b.log", "server.log", "speed.json", "server.log.bak"]))
+      .toEqual(["server-b.log", "server.log"]);
   });
 
   it("passes a deleted environment with no sandboxes left and no unclosed session", () => {
