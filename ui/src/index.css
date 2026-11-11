@@ -5148,6 +5148,12 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 }
 /* Reuse proposal geometry locally; the Coordinator navigation and conversation
    hierarchy remain independent of the global Design Proposals theme. */
+.coordinator-workspace .sidebar-shell-panel {
+  border-inline-end: var(--task-row-rule-width) solid var(--design-sidebar-border);
+  background: var(--primary-sidebar-background);
+  background-clip: padding-box;
+}
+.coordinator-workspace .sidebar-shell-panel .coordinator-sidebar { border-inline-end: 0; }
 html:not(.dark) .coordinator-workspace [data-sidebar-account] { background: var(--primary-sidebar-background); }
 html.dark .coordinator-workspace [data-sidebar-account] { background: var(--primary-sidebar-background); }
 .coordinator-sidebar, .coordinator-task-list {
@@ -5185,13 +5191,32 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-workspace .task-chat-composer-dock > :last-child { border-radius: var(--coordinator-card-radius); }
 .coordinator-workspace [cmdk-root] { height: auto; flex: none; }
 .coordinator-workspace [cmdk-list] { flex: none; }
-.coordinator-decision-card { border: 1px solid var(--border); border-radius: var(--coordinator-card-radius, var(--radius-xl)); padding: var(--coordinator-card-inset, calc(var(--spacing) * 6)); background: var(--card); box-shadow: var(--coordinator-card-shadow); }
+/* PAP-775 (Paper "A · Compact cards"): a 20px card with a type label, the ask,
+   an inset context panel and a footer of 32px actions. */
+.coordinator-decision-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: calc(var(--spacing) * 5); background: var(--card); box-shadow: var(--coordinator-card-shadow); }
 .coordinator-decision-card > .rounded-lg { border: 0; padding: 0; background: transparent; box-shadow: none; }
 .coordinator-decision-card [data-testid="interaction-status-badge"], .coordinator-decision-card [data-testid="interaction-addressee-badge"] { display: none; }
-.coordinator-decision-card :is(h2,h3) { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
+.coordinator-decision-card :is(h2,h3) { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-medium); }
 .coordinator-decision-card :is(p, label) { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
-.coordinator-decision-card [data-decision-prompt] { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
+.coordinator-decision-card [data-attention-context] :is(p, span, button, time) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.coordinator-decision-card [data-decision-prompt] { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-medium); }
+/* The Needs You toolbar fits one row: the search takes what the filters leave. */
+.coordinator-needs-you [data-toolbar-search] { width: 100%; min-width: 0; }
+.coordinator-needs-you [data-toolbar-search] input { flex: 1; width: auto; }
+.coordinator-decision-card [data-needs-you-panel] :is(p, label) { font-size: var(--text-compact); line-height: calc(var(--spacing) * 5); }
+.coordinator-decision-card [data-needs-you-panel] :is(p, label, span).text-xs { font-size: var(--text-xs); line-height: calc(var(--spacing) * 4.5); }
+.coordinator-decision-card [data-decision-actions] :is(button, a):is([data-slot="button"], [data-variant]) { height: calc(var(--spacing) * 8); padding-inline: calc(var(--spacing) * 2.5); font-size: var(--text-compact); }
+/* The footer owns its top spacing; nested stacks and empty live regions must
+   not add margins around it. Match the card's bottom and right inset. */
+.coordinator-decision-card [data-decision-footer] { margin-block: 0; padding-block-start: calc(var(--spacing) * 5); row-gap: calc(var(--spacing) * 5); }
+.coordinator-decision-card :has(+ [data-decision-footer]),
+.coordinator-decision-card :has(+ [data-decision-action-row]),
+.coordinator-decision-card :has(+ [aria-live]:empty) { margin-block-end: 0; }
 .coordinator-decision-card [id^="interaction-"]:focus { outline-color: var(--ring); }
+/* Focus review panel (PAP-770): the artifact is the context, so the pinned
+   footer keeps only the card's actions — not its summary, audience or prompt. */
+.coordinator-review-actions [data-presentation] > :not(:last-child),
+.coordinator-review-actions [data-presentation] > :last-child > div > :first-child:has([data-decision-prompt]) { display: none; }
 @media (max-width: 767px) {
   .coordinator-workspace { --coordinator-card-inset: calc(var(--spacing) * 5); }
 }
@@ -5217,8 +5242,12 @@ html:not(.dark) .coordinator-sidebar {
   background: var(--card);
 }
 .coordinator-task-commitment-content { position: relative; min-width: 0; }
-.coordinator-decision-motion { border-radius: var(--coordinator-card-radius, var(--radius-xl)); box-shadow: var(--coordinator-card-shadow); }
+.coordinator-decision-motion { border-radius: var(--radius-lg); box-shadow: var(--coordinator-card-shadow); }
+/* The motion shell owns the single 1px border and shadow. */
 .coordinator-decision-motion > .coordinator-task-commitment-content > :is(.coordinator-decision-card, .coordinator-decision-receipt) { border: 0; box-shadow: none; }
+/* Highlight the existing border when its artifact is open, keeping the same width. */
+.coordinator-decision-card[data-reviewing],
+.coordinator-decision-motion:has(.coordinator-decision-card[data-reviewing]) { border-color: var(--ring); }
 .coordinator-task-commitment[data-motion="arrive"] { animation: coordinator-task-arrive var(--coordinator-task-arrive-duration) var(--coordinator-task-ease) both; }
 .coordinator-task-light { display: none; position: absolute; inset: 1px; border-radius: inherit; overflow: hidden; pointer-events: none; }
 .coordinator-task-commitment[data-motion="gather"] > .coordinator-task-light { display: block; background: radial-gradient(ellipse at 25% 20%, color-mix(in oklab, var(--foreground) 8%, transparent), transparent 75%); animation: coordinator-task-gather var(--coordinator-task-light-duration) var(--coordinator-task-ease) both; }

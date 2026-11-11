@@ -107,6 +107,29 @@ historical preparation sentence as a fallback. Authored progress text stays visi
 
 ## Contextual feedback
 
+The Coordinator inbox follows the Paper **A · Compact cards · All 15 types**
+reference. Cards have 20px padding, 12px spacing, a 16px medium ask, an inset
+context panel, and 32px actions, expressed through the existing tokens. The
+header puts the imperative at the left and the requester, time, and menu at the
+right. Prefix another assignee's name before the imperative; omit the viewer's
+own name. Keep the task status icon and link at the footer's left and the primary
+action at its far right. Keep 20px above, below, and to the right of the primary
+action, including on cards with nested forms. Decisions stay neutral; problem
+context uses the shared error icon and semantic destructive color. Opening an
+artifact highlights its
+card and uses the task-detail sidebar tabs. Render prompts with the canonical
+Markdown renderer, including reference images, lists, and links.
+
+Ask-user-question cards in the inbox, task thread, and composer use the same
+choice control for **Other** as for the listed answers, within their selection
+group. Selecting it reveals the custom-answer field. In single-select questions,
+it stays selected until another option is picked.
+
+The inbox title appears once in the header bar. Put one line of decision,
+problem, and update counts below the toolbar, directly above the cards. Later
+sections keep their labels without repeating counts or explanatory hints. Omit
+the requester avatar and line for the viewer's own requests, matched by user ID.
+
 Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted

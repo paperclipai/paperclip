@@ -55,6 +55,7 @@ function act<T>(cb: () => T): T {
 
 let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
+let queryClient: QueryClient | null = null;
 
 afterEach(() => {
   if (root) act(() => root?.unmount());
@@ -69,6 +70,7 @@ function render(element: ReactElement) {
   document.body.appendChild(container);
   root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = client;
   act(() =>
     root?.render(
       <ToastProvider>
@@ -115,6 +117,13 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     detail: null,
     dismissal: null,
     ...overrides,
+    audience: overrides.audience ?? { kind: "pool", userId: null, reason: "none" },
+    stale: overrides.stale ?? null,
+    changeFingerprint: overrides.changeFingerprint ?? "fixture.other",
+    closeModes: overrides.closeModes ?? ["archive", "snooze"],
+    obligationKey: overrides.obligationKey ?? null,
+    obligationLeadId: overrides.obligationLeadId ?? null,
+    required: overrides.required ?? false,
     expiresAt: overrides.expiresAt ?? null,
     ruleKey: overrides.ruleKey ?? null,
     originAgentName: overrides.originAgentName ?? null,
@@ -292,7 +301,26 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).not.toContain("Send back to work");
   });
 
-  it("fires onDismiss from the row menu action", () => {
+  it("folds the rest of its obligation into the row as evidence (PAP-749 task 2d)", () => {
+    const lead = buildItem({ obligationKey: "approval:approval-1", obligationLeadId: "a1" });
+    const review = buildItem({
+      id: "review:t1",
+      sourceKind: "review",
+      subject: { kind: "issue", id: "t1", companyId: "c1", title: "Launch page", identifier: "PAP-8", status: "in_review", href: "/PAP/issues/PAP-8" },
+      whyNow: "Issue is in review with a linked pending approval.",
+      obligationKey: "approval:approval-1",
+      obligationLeadId: "a1",
+    });
+    const el = render(
+      <AttentionQueueRow item={lead} companyId="c1" expanded={false} onToggleExpand={noop} onDismiss={noop} evidence={[review]} />,
+    );
+    const list = el.querySelector('[data-attention-obligation="approval:approval-1"]');
+    expect(list?.getAttribute("aria-label")).toBe("Part of this request");
+    expect(list?.querySelector('[data-attention-evidence="review:t1"]')?.textContent)
+      .toBe("Task waiting on this approval: PAP-8 Launch page — Issue is in review with a linked pending approval.");
+  });
+
+  it("puts Archive for me in the Close… menu", () => {
     const onDismiss = vi.fn();
     const item = buildItem();
     render(
@@ -304,11 +332,11 @@ describe("AttentionQueueRow", () => {
         onDismiss={onDismiss}
       />,
     );
-    // The dropdown trigger + item live in a portal; invoke the handler contract
-    // directly via the rendered menu after opening is environment-flaky in
-    // jsdom, so assert the wiring by locating the trigger exists.
-    const trigger = container?.querySelector('[aria-label="Row actions"]');
-    expect(trigger).toBeTruthy();
+    // The Close… menu replaces the old row menu (PAP-749 Rule 6). Its items
+    // live in a portal and opening is environment-flaky in jsdom, so assert the
+    // wiring by locating the trigger; AttentionCloseMenu.test covers the verbs.
+    const trigger = container?.querySelector("[data-attention-close-menu]");
+    expect(trigger?.getAttribute("aria-label")).toBe("Close…");
   });
 
   it("toggles expand when the collapsed header of an inline row is clicked", () => {
@@ -526,7 +554,7 @@ describe("AttentionQueueRow", () => {
     expect(actionArea?.getAttribute("class")).toContain("justify-between");
     expect(decisionActions?.parentElement?.getAttribute("class")).toContain("@xl:justify-end");
 
-    const rowMenu = container?.querySelector('[aria-label="Row actions"]');
+    const rowMenu = container?.querySelector("[data-attention-close-menu]");
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
     expect(rowMenu?.closest('[data-attention-actions="true"]')).toBeNull();
 
@@ -557,12 +585,16 @@ describe("AttentionQueueRow", () => {
     const approve = Array.from(container?.querySelectorAll("button") ?? []).find(
       (button) => button.textContent === "Approve",
     );
+    const invalidate = vi.spyOn(queryClient!, "invalidateQueries");
     act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(approvalsApi.approve).toHaveBeenCalledWith("approval-1");
     expect(onToggleExpand).not.toHaveBeenCalled();
     expect(container?.textContent).toContain("Approval approved");
+    // An open approval page refreshes too (PAP-771).
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["approvals", "detail", "approval-1"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["approvals", "c1"] });
   });
 
   it("renders configured confirmation labels and accepts from the compact action area", async () => {
@@ -603,11 +635,17 @@ describe("AttentionQueueRow", () => {
     const approve = Array.from(decisionActions?.querySelectorAll("button") ?? []).find(
       (button) => button.textContent === "Approve plan",
     );
+    const invalidate = vi.spyOn(queryClient!, "invalidateQueries");
     act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(issuesApi.acceptInteraction).toHaveBeenCalledWith("issue-1", "interaction-1");
     expect(onToggleExpand).not.toHaveBeenCalled();
+    // One record, many views (PAP-771): task detail and chat refresh too.
+    for (const queryKey of [["attention", "c1"], ["issues", "interactions", "issue-1"], ["issues", "pending-questions"], ["issues", "decision-receipts"]]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["access", "join-requests", "c1", "pending_approval"] });
   });
 
   it("opens the matching confirmation form when requesting changes from a compact action", () => {
@@ -934,6 +972,28 @@ describe("AttentionQueueRow", () => {
     const summary = audience?.querySelector('[data-testid="interaction-audience-summary"]');
     expect(summary?.textContent).toBe(`Only ${addresseeName} or the board can respond`);
     expect(summary?.parentElement?.className).toContain("break-words");
+  });
+
+  it("says who may answer once, in the audience line, when it knows the viewer (PAP-767)", () => {
+    render(
+      <AttentionQueueRow
+        item={{
+          ...interactionItem({ ...openAudience, addresseeAgentId: "agent-nap", addresseeName: "Napping Agent" }),
+          audience: { kind: "pool", userId: null, reason: "none" },
+        }}
+        companyId="c1"
+        currentUserId="scott"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const line = container?.querySelector('[data-attention-audience="pool"]');
+    expect(line?.textContent).toContain("No owner yet. Napping Agent or any board member can answer it.");
+    expect(container?.textContent).not.toContain("Any board member can answer it.");
+    // No second, contradicting clause beside the buttons.
+    expect(container?.querySelector('[data-testid="interaction-audience"]')).toBeNull();
   });
 
   it("renders no audience line when the feed carries no resolver metadata", () => {
