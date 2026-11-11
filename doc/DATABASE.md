@@ -1,5 +1,28 @@
 # Database
 
+### Better Auth 1.7.16 upgrade
+
+Better Auth 1.7.3 and later identify accounts by `provider_id` and `account_id`.
+They no longer write the `issuer` column that 1.7.0–1.7.2 required. Apply the
+schema migration before starting the updated server. It makes `issuer` nullable,
+keeps its existing values, removes the old issuer index, and adds a unique index
+on the provider/account pair. This permits new credential signups and preserves
+existing accounts.
+
+Before the upgrade, check for duplicate provider/account pairs:
+
+```sql
+SELECT provider_id, account_id, count(*)
+FROM account
+GROUP BY provider_id, account_id
+HAVING count(*) > 1;
+```
+
+Resolve any duplicates before migration. Keep different users separate. A duplicate
+causes index creation to fail rather than leaving an ambiguous login identity.
+Do not restore the issuer `NOT NULL` constraint on rollback while new rows have
+null issuers. See the [Better Auth upgrade guide](https://better-auth.com/docs/guides/1-7-upgrade-guide).
+
 ### Durable native provider backups
 
 `native_harness_backups` journals encrypted provider-session archives in object

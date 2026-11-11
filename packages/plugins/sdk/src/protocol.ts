@@ -26,6 +26,7 @@ import type {
   PluginLauncherRenderContextSnapshot,
   PluginLauncherRenderEnvironment,
   PluginStateScopeKind,
+  PluginEntityQuery,
   Company,
   Project,
   Issue,
@@ -70,6 +71,7 @@ import type {
   PluginJobContext,
   PluginExecutionWorkspaceMetadata,
   PluginWorkspace,
+  PluginProjectSnapshot,
   ToolRunContext,
   ToolResult,
   PluginLocalFolderListing,
@@ -308,6 +310,15 @@ export interface PluginInvocationContext {
    * forge a parent.
    */
   traceparent?: string;
+}
+
+export function validateProjectSnapshotRequest(projectIds: unknown, entityType: unknown): void {
+  if (!Array.isArray(projectIds) || !projectIds.length || projectIds.length > 64 ||
+      new Set(projectIds).size !== projectIds.length ||
+      projectIds.some(id => typeof id !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)) ||
+      typeof entityType !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(entityType)) {
+    throw new Error("Invalid project snapshot scope");
+  }
 }
 
 /**
@@ -1734,14 +1745,7 @@ export interface WorkerToHostMethods {
     },
   ];
   "entities.list": [
-    params: {
-      entityType?: string;
-      scopeKind?: PluginStateScopeKind;
-      scopeId?: string;
-      externalId?: string;
-      limit?: number;
-      offset?: number;
-    },
+    params: PluginEntityQuery,
     result: Array<{
       id: string;
       entityType: string;
@@ -1854,6 +1858,10 @@ export interface WorkerToHostMethods {
   "projects.getInstanceSecrets": [
     params: { projectId: string; companyId: string },
     result: Record<string, string>,
+  ];
+  "projects.readSnapshots": [
+    params: { projectIds: string[]; companyId: string; entityType: string },
+    result: PluginProjectSnapshot[],
   ];
   "projects.get": [
     params: { projectId: string; companyId: string },

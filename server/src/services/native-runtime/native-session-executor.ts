@@ -347,6 +347,7 @@ import {
   NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT,
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
+  carriesSettledPredecessorSession,
 } from "./native-restart-recovery.js";
 
 type ActiveNativeSession = {
@@ -8426,6 +8427,7 @@ export function nativeSessionFailureDisposition(
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
 ) {
   const permanentFailure =
+    sourceFailureCode === "runner_task_admission_rejected" ||
     sourceFailureCode === "runner_ingress_access_rejected" ||
     sourceFailureCode === "native_provider_runtime_missing" ||
     sourceFailureCode === "native_provider_model_rejected" ||
@@ -8441,7 +8443,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
     sourceFailureCode === "native_provider_usage_limit" ||
-    sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED;
+    sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED ||
+    sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -8494,6 +8497,26 @@ export const NATIVE_PROVIDER_SESSION_CLOSED_ACTION =
   "The provider session closed after a turn start that may have reached the provider, and this run cannot reopen it. Retry starts a new run with a fresh provider conversation and the saved task context.";
 const RUNNER_PROVIDER_SESSION_CLOSED = "provider_session_closed";
 
+export const NATIVE_PROVIDER_STARTUP_REJECTED = "native_provider_startup_rejected";
+export const NATIVE_PROVIDER_STARTUP_REJECTED_ACTION =
+  "The provider refused to start a session, so no provider work began. Read the provider message and fix its cause in the agent's environment or AI connection if needed, then Retry. Retry starts a new run with a fresh provider session.";
+
+function deterministicProviderStartupFailure(error: unknown): boolean {
+  const failure = providerFailureFromError(error);
+  return failure?.phase === "startup" && failure.retryability === "requires_action"
+    && ["authentication", "permission", "invalid_request"].includes(failure.category);
+}
+
+export function nativeRemoteStartupRejectionCode<Code extends string>(
+  sourceFailureCode: Code,
+  error: unknown,
+  remoteTarget: boolean,
+): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED {
+  return remoteTarget && sourceFailureCode === "provider_session_open_rejected"
+    && providerFailureFromError(error)?.phase === "startup"
+    ? NATIVE_PROVIDER_STARTUP_REJECTED : sourceFailureCode;
+}
+
 /** Reads the Runner's closed class from an authenticated turn.start failure. */
 function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
   if (!error || typeof error !== "object" || depth > 5) return false;
@@ -8520,6 +8543,7 @@ export function nativeSessionFailureSourceCode(
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
   | typeof NATIVE_PROVIDER_SESSION_CLOSED
+  | typeof NATIVE_PROVIDER_STARTUP_REJECTED
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
@@ -8543,6 +8567,7 @@ export function nativeSessionFailureSourceCode(
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ
   | "provider_session_open_rejected"
   | "provider_session_open_timeout"
+  | "runner_task_admission_rejected"
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
   | "local_runtime_api_listener_unavailable"
@@ -8583,6 +8608,9 @@ export function nativeSessionFailureSourceCode(
   }
   if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
+  if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
+    return "runner_task_admission_rejected";
+  }
   if (/classification=runtime_package_missing\)/.test(message))
     return "native_provider_runtime_missing";
   if (/native_provider_model_rejected/i.test(message))
@@ -8657,6 +8685,7 @@ export function nativeSessionFailureSourceCode(
     if (/classification=(?:requested_model_unsupported|grok_model_mismatch)\)/.test(message)) {
       return "native_provider_model_rejected";
     }
+    if (deterministicProviderStartupFailure(error)) return NATIVE_PROVIDER_STARTUP_REJECTED;
     return "provider_session_open_rejected";
   }
   // The controller stopped waiting for session.open while runner startup was
@@ -8678,6 +8707,9 @@ export function nativeSessionFailureSourceCode(
 
 const NATIVE_PROVIDER_SIDE_EFFECT_PENDING_ACTION =
   "The saved provider session has an unfinished provider turn, or a tool call whose result never reached the runner, so Paperclip did not replace the session or retry it. Reconcile the action: check whether it ran and record the outcome. The task then continues in a fresh provider session in the same workspace. The saved session and workspace are unchanged.";
+
+const RUNNER_TASK_ADMISSION_REJECTED_ACTION =
+  "The execution provider refused to start this task. Review the admission reason before retrying. Automatic retries are stopped.";
 
 const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
   "The current runner cannot restore this task's saved provider session, so retrying this run cannot succeed. Retry the task to continue in a fresh provider session with the same workspace. The earlier provider conversation is not carried over.";
@@ -8723,7 +8755,7 @@ export async function nativeProviderRecoveryEvidence(input: {
   const run = await input.db
     .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, nativeSessionId: heartbeatRuns.nativeSessionId,
-      runnerInstanceId: heartbeatRuns.runnerInstanceId })
+      runnerInstanceId: heartbeatRuns.runnerInstanceId, id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -8757,6 +8789,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     ? await loadNativeUnclaimedBootstrapCheckpoint(input.db, input.bootstrap.binding, input.bootstrap.identity)
     : null;
   let controllerCheckpointMatches = true;
+  let controllerCheckpointAbsent = false;
   if (input.executionTargetKind === "remote" && checkpointRecord.backendKind === "runner"
     && record(run?.runnerProfileJson).nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION) {
     controllerCheckpointMatches = false;
@@ -8764,6 +8797,7 @@ export async function nativeProviderRecoveryEvidence(input: {
       const header = await loadNativeRunnerCheckpointHeader(input.db, {
         companyId: run.companyId, issueId: run.nativeIssueId, runId: input.runId,
       });
+      controllerCheckpointAbsent = !header;
       if (header && Buffer.byteLength(header) <= NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES) {
         const identity = inspectDurablePrpCheckpointHeader(header);
         const staged = inspectStagedRunAttachmentHeader(header);
@@ -8800,9 +8834,34 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_request_protocol_error",
     "native_runner_process_exited",
     "provider_session_open_rejected",
+    NATIVE_PROVIDER_STARTUP_REJECTED,
     "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode);
+  // A closed runtime API listener means this server stopped serving (a
+  // graceful drain) before the attempt could reach its remote runner. A
+  // follow-up may still carry its settled predecessor's provider session,
+  // rebound at admission with no cursor, turn, result or request of its own.
+  // With no runner checkpoint and no provider event for this run, that
+  // carried session is not this run's provider work: retry its startup on the
+  // same run instead of holding the task for a manual Retry.
+  const carriedAdmissionCheckpointOnly = checkpointExists && !providerEventsExist
+    && input.sourceFailureCode === "local_runtime_api_listener_unavailable"
+    && controllerCheckpointAbsent && !!run
+    && checkpointRecord.cursor == null && checkpointRecord.activeTurnId == null
+    && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null
+    && (!Array.isArray(checkpointRecord.terminalTurns) || checkpointRecord.terminalTurns.length === 0)
+    && (checkpointRecord.pendingRuntimeRequests == null || (Array.isArray(checkpointRecord.pendingRuntimeRequests)
+      && checkpointRecord.pendingRuntimeRequests.length === 0))
+    && await carriesSettledPredecessorSession(input.db, run, checkpointRecord.providerSessionId);
+  if (carriedAdmissionCheckpointOnly) {
+    return {
+      recoveryMode: "bootstrap_retry",
+      providerSessionEstablished: false,
+      providerEventsExist: false,
+      checkpointExists: true,
+    };
+  }
   if (!checkpointExists && !providerEventsExist && (definitelyPreSession
     || unclaimedBootstrap && input.bootstrap?.transientIngressFailure)) {
     return {
@@ -12262,7 +12321,7 @@ async function executePaperclipNativeSessionAttempt(
           ? classifiedFailureCode
           : providerUsageLimitObserved
             ? "native_provider_usage_limit"
-            : classifiedFailureCode;
+            : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote");
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
           && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
           ? {
@@ -12421,10 +12480,14 @@ async function executePaperclipNativeSessionAttempt(
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
                   : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
                   ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
+                  : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
+                  ? NATIVE_PROVIDER_STARTUP_REJECTED_ACTION
                   : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
                     ? "Provider files could not be verified after two read attempts. Inspect the retained workspace and command transport before retrying the original run."
+                  : sourceFailureCode === "runner_task_admission_rejected"
+                    ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
                   : sourceFailureCode === "runner_ingress_access_rejected"
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
                   : sourceFailureCode === "native_provider_terminal_failed"
@@ -12453,7 +12516,9 @@ async function executePaperclipNativeSessionAttempt(
                               ? "Inspect the persisted native session after its bounded resume budget was exhausted."
                               : recoveryEvidence.recoveryMode ===
                                   "bootstrap_retry"
-                                ? `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves no provider session or provider event was created.`
+                                ? recoveryEvidence.checkpointExists
+                                  ? `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves this run did no provider work of its own, and it resumes the provider session carried from its settled predecessor.`
+                                  : `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves no provider session or provider event was created.`
                                 : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
             }),
             nextAttemptAt,
@@ -12692,8 +12757,12 @@ async function executePaperclipNativeSessionAttempt(
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
               : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
               ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
+              : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
+              ? NATIVE_PROVIDER_STARTUP_REJECTED_ACTION
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? nativeCleanupRefusalAction(completedTurnCleanup)
+              : sourceFailureCode === "runner_task_admission_rejected"
+                ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
               : sourceFailureCode === "runner_ingress_access_rejected"
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === "native_provider_terminal_failed"

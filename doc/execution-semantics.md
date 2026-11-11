@@ -842,6 +842,8 @@ Use it for:
 
 Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
 
+Once the last blocker is resolved, the dependency sweep wakes the assignee once for that blocked cycle, whether the blocker cleared by reaching `done` or by settling its workspace finalize (including a "Recover saved files" finalize that has no workspace). The sweep normally skips an issue that its assignee agent blocked itself while its blockers were already resolved, because that agent is waiting on something outside the blocker graph. A native completion that Paperclip refused because dependencies were unresolved (`durable_dependency_blocker_bound`) is not such a wait: the dependency owns its wake, so the sweep wakes it once readiness holds, including for issues already sitting `blocked` when a release that changes readiness is deployed.
+
 `cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
@@ -1353,8 +1355,15 @@ provider cannot run the selected model (`requested_model_unsupported`,
 `grok_model_mismatch`) is a model rejection, not a startup interruption. It
 stops on its first attempt as `native_provider_model_rejected`, with no
 same-run bootstrap retry, and leaves an active board recovery action that asks
-for a supported model. Other `session.open` rejections keep the bounded
-startup retry. An indeterminate `session.open` outcome stays unclassified.
+for a supported model. A definite rejection whose startup `providerFailure`
+is `requires_action` for `authentication`, `permission` or `invalid_request`
+stops on its first attempt as `native_provider_startup_rejected`. On a remote
+execution target, any definite rejection with a startup `providerFailure` stops
+the same way, because a remote same-run bootstrap cannot prove ownership. No
+provider work began, so the board offers Retry, which starts a new run with a
+fresh provider session. Other local `session.open` rejections keep the bounded
+startup retry and end with Retry when it is spent. An
+indeterminate `session.open` outcome stays unclassified.
 
 ### Workspace scan failures before provider startup
 
