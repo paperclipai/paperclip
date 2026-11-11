@@ -255,6 +255,7 @@ export class TaskObserver {
     for (;;) {
       try {
         await this.api.patch(`/api/issues/${this.record.issueId}`, { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id });
+        await this.postStartComment();
         break;
       } catch (error) {
         const transient = error instanceof ChaosApiError && (error.status === null || error.status >= 500);
@@ -272,6 +273,11 @@ export class TaskObserver {
     this.timeline.add("task_released", { taskId: this.plan.taskId, issueId: this.record.issueId });
   }
 
+  private async postStartComment(): Promise<void> {
+    if (!this.definition.startComment || !this.record.issueId) return;
+    await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: this.definition.startComment(this.plan.nonce) });
+  }
+
   async launch(options: { assign?: boolean } = {}): Promise<void> {
     const definition = this.definition;
     const assign = options.assign !== false;
@@ -282,14 +288,14 @@ export class TaskObserver {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
         description: definition.description(this.plan.nonce, this.workloadAgents()),
-        status: assign && definition.startComment ? "backlog" : "todo",
+        status: definition.startComment ? "backlog" : "todo",
         priority: "medium",
         ...(assign ? { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id } : {}),
         ...(definition.usesRepository ? { projectId: this.lab.projectId } : {}),
       });
       this.record.issueId = String(issue.id);
       this.record.identifier = issue.identifier ?? null;
-      if (assign && definition.startComment) await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.startComment(this.plan.nonce) });
+      if (assign) await this.postStartComment();
       // K14: which build launched the task, so a replay starts it on the same one.
       if (this.supervisor.serverBuild) this.record.serverBuildAtLaunch = this.supervisor.serverBuild;
       this.record.createdAt = Date.now();
