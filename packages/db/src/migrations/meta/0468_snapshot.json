@@ -1,5 +1,5 @@
 {
-  "id": "958a7490-7c65-42c0-bc4a-9d099a10d837",
+  "id": "c06d4653-b3df-4e3e-bbf9-6de9b37cf806",
   "prevId": "426d1f42-0983-4c6b-bb8d-5c798eee915a",
   "version": "7",
   "dialect": "postgresql",
@@ -62996,6 +62996,12 @@
           "notNull": true,
           "default": false
         },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -65163,12 +65169,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",

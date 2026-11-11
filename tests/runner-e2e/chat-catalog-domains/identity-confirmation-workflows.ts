@@ -10,6 +10,7 @@ import { identityDefinition, identityObservation, identityWorker, observeIdentit
 interface SourceComment extends Entity { authorType?: string }
 const tabs = new WeakMap<ChatCatalogContext, Page>();
 const sources = ["chat-catalog-domains/identity-confirmation-workflows.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"];
+export const repeatedProposalAcceptance = 'Yes, go ahead with the "Create Acorn launch checklist" request.';
 function savedProductAnswerMatches(o: IdentityObservation): boolean {
   const original = o.state.original as Interaction | undefined;
   const current = o.interactions.find(row => row.id === original?.id), answers = current?.result?.answers;
@@ -67,7 +68,8 @@ export function gradeConfirmationWorkflow(value: unknown) {
       && o.activity.filter(row => row.action === "issue.created" && row.entityId === first.id && row.agentId === o.leadId).length === 1
       && o.state.afterReloadTaskId === first.id, "Acceptance is credited only when the named backlog task actually exists once, remains the same after repeat/reload and has a rendered result link.");
     c.add("repeat-did-not-replace-decision", o.state.afterRepeatResolvedCommentId === o.state.canonicalCommentId && o.humanQueries.length === 2
-      && o.humanQueries.every(query => query.trim() === "Yes, go ahead with that."), "Repeating the actual human reply does not replace the saved decision or create a duplicate instruction side effect.");
+      && o.humanQueries[0]?.trim() === "Yes, go ahead with that." && o.humanQueries[1]?.trim() === repeatedProposalAcceptance,
+      "Repeating acceptance of the same named proposal does not replace the saved decision or create a duplicate instruction side effect.");
   } else if (o.scenarioId === "questions-and-approvals.duplicate-answer") {
     c.add("one-real-human-answer", savedProductAnswerMatches(o), "Both real browser tabs target the same original company/task question and only one saved human answer exists.");
     c.add("real-simultaneous-conflict", o.state.actualSubmitRequests === 2 && Array.isArray(o.state.submitStatuses) && [...o.state.submitStatuses].sort().join(",") === "200,409"
@@ -126,7 +128,7 @@ export const confirmationWorkflowIdentityCases: readonly ChatCatalogCase[] = [
     }));
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); return { original, taskTitle };
   }, gradeConfirmationWorkflow, {
-    authentication: "human-session", sourceFiles: sources, expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.accept-one-proposal.v2", expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     observe: observeWorkflow,
     async act(ctx, state) {
       const remaining = () => remainingIdentityObservationBudget(ctx);
@@ -139,8 +141,8 @@ export const confirmationWorkflowIdentityCases: readonly ChatCatalogCase[] = [
       const comments = await ctx.input.api.get<SourceComment[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`, { timeout: remaining() }); state.canonicalCommentId = comments.find(row => row.authorUserId && row.body?.trim() === ctx.scenario.query)?.id;
       await ctx.input.page.reload({ waitUntil: "domcontentloaded", timeout: remaining() });
       state.afterReloadTaskId = (await ctx.input.api.get<Entity>(`/api/issues/${first[0]!.id}`, { timeout: remaining() })).id;
-      await sendChatMessage(ctx.input.page, ctx.scenario.query, remaining);
-      await ctx.input.evidence("identity-repeat-original-confirmation.json", { requestId: entity(state, "original").id, firstTaskId: first[0]!.id, canonicalCommentId: state.canonicalCommentId, repeatedOriginalReply: true });
+      await sendChatMessage(ctx.input.page, repeatedProposalAcceptance, remaining);
+      await ctx.input.evidence("identity-repeat-original-confirmation.json", { requestId: entity(state, "original").id, firstTaskId: first[0]!.id, canonicalCommentId: state.canonicalCommentId, repeatedAcceptance: repeatedProposalAcceptance });
       remaining();
     },
     async verifyResult(ctx, state, value) {

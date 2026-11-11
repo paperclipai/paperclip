@@ -2892,7 +2892,7 @@ export * from "./prompt-injection-prevention.js";
 
 export * from "./workspace-provider.js";
 export * from "./workflows.js";
-export { updateWorkspacePreferenceSchema, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
+export { isValidIanaTimeZone, updateWorkspacePreferenceSchema, WORKSPACE_PREFERENCE_TIME_ZONE_MAX_LENGTH, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
 export * from "./agent-configuration.js";
 export {
   remoteWorkspaceSourceSchema,

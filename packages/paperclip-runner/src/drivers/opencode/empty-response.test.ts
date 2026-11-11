@@ -82,7 +82,7 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
       return result;
     };
     const collected = collect();
-    const { turnId } = await session.startTurn({ message: { role: "user", text: "Answer the current request." }, reasoningMode: "disabled" });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Answer the current request." }, reasoningMode: mode === "empty-again" || mode === "reply" ? "default" : "disabled" });
     const completed = guard(collected, mode.endsWith("idle-stall") || mode === "slow-native-tool" ? 26_000 : 5_000);
     await vi.advanceTimersByTimeAsync(0);
     if (mode === "slow-native-tool") {
@@ -99,6 +99,7 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
     expect(final.map(event => event.payload.text)).toEqual(succeeds ? ["Here is the actual final answer."] : []);
     expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool"].includes(mode) ? 1 : 2);
     if (prompts.length === 2) {
+      expect(prompts[0]!.variant).toBe(mode === "empty-again" || mode === "reply" ? "paperclip-default" : "paperclip-no-reasoning");
       expect(prompts[1]).toMatchObject({ providerID: prompts[0]!.providerID, modelID: prompts[0]!.modelID, system: prompts[0]!.system, variant: "paperclip-no-reasoning" });
       expect(JSON.stringify(prompts[1]!.parts)).toContain("Do not repeat completed actions");
     }

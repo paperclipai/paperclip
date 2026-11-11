@@ -758,7 +758,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     return { turnId };
   }
 
-  async #submitPrompt(prompt: string): Promise<void> {
+  async #submitPrompt(prompt: string, reasoningMode: OpenCodeReasoningMode = this.#turnReasoningMode): Promise<void> {
     const [providerID, ...modelParts] = this.#model.split("/");
     const modelID = modelParts.join("/");
     await api(
@@ -780,7 +780,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           // Always select the empty default variant on an ordinary turn so a
           // previous disabled turn cannot change this turn's provider defaults.
           ...(providerID === "openrouter"
-            ? { variant: this.#turnReasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
+            ? { variant: reasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
             : {}),
           // Keep question enabled in the isolated config. OpenCode 1.18.32
           // turns a prompt's deprecated `tools` map into replacement session
@@ -854,7 +854,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     const opening = this.#turnHitOutputLimit(turnId)
       ? "Your previous response reached the output limit and was discarded as incomplete."
       : "Your response ended without a user-visible final answer or an accepted completion report.";
-    void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`)
+    void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`, "disabled")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
     return true;
   }

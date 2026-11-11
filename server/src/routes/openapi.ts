@@ -1,4 +1,4 @@
-import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
+import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -5422,12 +5422,21 @@ const PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE =
   + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
   + "reply now that the hosting operator controls this plugin's settings, with the routine's page link.";
 
-/** Picks the plugin-managed routine guidance that matches plugin settings visibility. */
+/** Picks the plugin-managed routine and experimental settings guidance that matches settings visibility. */
 export function applyPluginSettingsVisibility(document: any, hidden: ReadonlySet<string> = getHiddenSettings()): any {
-  if (!hidden.has("instance.plugins")) return document;
-  for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
-    if (typeof operation?.description === "string") {
-      operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+  if (hidden.has("instance.plugins")) {
+    for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
+      if (typeof operation?.description === "string") {
+        operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+      }
+    }
+  }
+  if (hidden.has("instance.experimental")) {
+    const experimental = document.paths?.["/api/instance/settings/experimental"];
+    for (const operation of [experimental?.get, experimental?.patch]) {
+      if (typeof operation?.description === "string") {
+        operation.description = operation.description.replace(EXPERIMENTAL_SETTINGS_PAGE, EXPERIMENTAL_SETTINGS_OPERATOR_GUIDANCE);
+      }
     }
   }
   return document;
@@ -7061,8 +7070,8 @@ registerCurrentRoute({
   method: "put",
   path: "/api/companies/{companyId}/workspace-preferences/me",
   tags: ["workspace-preferences"],
-  summary: "Update your personal workspace; active company membership provides audit context",
-  body: z.object({ coordinatorWorkspaceEnabled: z.boolean() }).strict(),
+  summary: "Update your personal workspace or time zone; active company membership provides audit context",
+  body: updateWorkspacePreferenceSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
@@ -7261,6 +7270,15 @@ registry.registerPath({
 
 // ─── Instance settings ────────────────────────────────────────────────────────
 
+// Agents cannot read or write experimental settings; the person turns a feature on in the UI.
+const EXPERIMENTAL_SETTINGS_PAGE = "Instance experimental features (for example Cases via enableCases) are turned on or off by an instance admin in "
+  + "Experimental settings at /<prefix>/company/settings/instance/experimental. Agent credentials cannot read or change these settings, "
+  + "so do not claim a change: link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental), name the feature's setting, and reply.";
+// When the hosting operator hides the Experimental page, it redirects away, so name the operator instead.
+const EXPERIMENTAL_SETTINGS_OPERATOR_GUIDANCE = "Instance experimental features (for example Cases via enableCases) are controlled by the hosting operator on this instance, "
+  + "so no Paperclip page offers that change. Agent credentials cannot read or change these settings, "
+  + "so do not claim a change or search for another route: reply that the hosting operator controls it.";
+
 registry.registerPath({
   method: "get",
   path: "/api/instance/settings",
@@ -7300,7 +7318,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Get experimental instance settings",
-  description: "Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
+  description: `${EXPERIMENTAL_SETTINGS_PAGE} Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.`,
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7309,7 +7327,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Update experimental instance settings",
-  description: "Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations. Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.",
+  description: `${EXPERIMENTAL_SETTINGS_PAGE} Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations. Agent Chat is always on for every person on every instance and needs no setup. enableAgentChat is a retired compatibility key: it always reads true and written values are ignored. If someone asks to enable Agent Chat, tell them it is already on, since they are using it now; do not send them to a settings toggle.`,
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
