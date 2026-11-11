@@ -39,7 +39,7 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
     checkpointExists: true, originalFailureCode: "native_session_recovery_failed" };
 
   async function resumeOnce(options: { failureDetail: Record<string, unknown>; stopRecorded: boolean; viaReconciler?: boolean;
-    failedRelaunch?: boolean; liveRunnerForRun?: boolean }) {
+    failedRelaunch?: boolean; unidentifiedStopRecorded?: boolean; liveRunnerForRun?: boolean }) {
     const issueId = randomUUID();
     const runId = randomUUID();
     const [issue] = await db.insert(issues).values({ id: issueId, companyId, title: "Resume the lost turn",
@@ -77,6 +77,8 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
       ...(options.stopRecorded ? [{ eventType: "native.local_process_stopped", payload: identity }] : []),
       ...(options.failedRelaunch ? [{ eventType: "native.process_start_requested",
         payload: { hostname: hostname(), providerAttempt: 1, requestedAt: new Date().toISOString() } }] : []),
+      ...(options.unidentifiedStopRecorded ? [{ eventType: "native.local_process_stopped",
+        payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "unidentified_runner_absent" } }] : []),
     ];
     const [last] = await db.select({ seq: sql<number>`coalesce(max(${heartbeatRunEvents.seq}), 0)::int` })
       .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
@@ -118,6 +120,12 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
     const { passed, coordinator } = await resumeOnce({ failureDetail: exactResume, stopRecorded: true, failedRelaunch: true });
     expect(passed).toEqual([true]);
     expect(coordinator.attempt).toBe(2);
+  });
+
+  it.each([false, true])("reuses the saved failed-relaunch stop on a later scheduled attempt (runner alive: %s)", async (liveRunnerForRun) => {
+    const { passed } = await resumeOnce({ failureDetail: exactResume, stopRecorded: true, failedRelaunch: true,
+      unidentifiedStopRecorded: true, liveRunnerForRun });
+    expect(passed).toEqual([!liveRunnerForRun]);
   });
 
   it("keeps the lost turn failing after a failed relaunch while a runner for the run is still alive", async () => {

@@ -1,7 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns } from "@paperclipai/db";
-import { readNativeLocalProcessStop, recordUnidentifiedLocalRunnerStop } from "../native-local-process-stop.js";
+import { readNativeLocalProcessStop, readUnidentifiedLocalRunnerStop, recordUnidentifiedLocalRunnerStop } from "../native-local-process-stop.js";
 import { NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT } from "./native-restart-recovery.js";
 
 export const SAME_RUN_RESUME_DISPOSITION = "same_run_resume";
@@ -83,6 +83,8 @@ export async function scheduledResumeContinuationAllowed(
     ? null : await readNativeLocalProcessStop(db, companyId, runId);
   const decision = decideScheduledResumeContinuation({ ...evidence, localStop });
   if (decision.allowed || decision.reason !== "local_stop_unverified") return decision;
+  if (await readUnidentifiedLocalRunnerStop(db, companyId, runId))
+    return decideScheduledResumeContinuation({ ...evidence, localStop: { processPid: null } });
   const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
     runtimeMode: heartbeatRuns.runtimeMode, processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
     runnerProfileJson: heartbeatRuns.runnerProfileJson })
