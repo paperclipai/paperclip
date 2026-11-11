@@ -138,6 +138,7 @@ describe("company cost reads and task summaries bound to the repaired run", () =
   it("accepts an unranged company report and the task summary including the task", () => {
     expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/by-agent-model", { pathParams: { companyId: company } })], "final", { companyId: company })).toBe(true);
     expect(readSavedAccounting([read("GET /api/issues/{id}/cost-summary", { pathParams: { id: task.identifier } })], "final", { task })).toBe(true);
+    for (const period of ["all", "month"]) expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: company }, query: { period } })], "final", { companyId: company })).toBe(true);
   });
   it("rejects a ranged company report, another company, and a children-only task summary", () => {
     expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: company }, query: { from: "2020-01-01", to: "2020-01-02" } })], "final", { companyId: company })).toBe(false);
