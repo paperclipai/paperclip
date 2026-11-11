@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { hostname } from "node:os";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -96,6 +97,7 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
     });
     const liveRunner = options.liveRunnerForRun
       ? spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)", "--", "--run-id", runId], { stdio: "ignore" }) : null;
+    if (liveRunner) await once(liveRunner, "spawn");
     let leaseOwner: string | undefined;
     if (options.viaReconciler) {
       const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: native.runnerInstanceId, runIds: [runId] });
