@@ -110,12 +110,23 @@ type Outcome =
   | { requested: false; waitUntil: Date }
   | { requested: false; reason: string };
 
-async function settle(db: Db, actionId: string, state: Record<string, unknown>) {
+async function settle(db: Db, actionId: string, state: Record<string, unknown>, nextAction?: string) {
   await db.update(issueRecoveryActions).set({
     evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResume', ${JSON.stringify(state)}::jsonb)`,
+    ...(nextAction ? { nextAction } : {}),
     updatedAt: new Date(),
   }).where(and(eq(issueRecoveryActions.id, actionId), sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`));
 }
+
+/** Why Paperclip did not retry after a reset it announced; the Retry stays. */
+const NOT_RETRIED: Record<string, string> = {
+  task_changed: "the task changed",
+  no_accountable_user: "no user is accountable for the run",
+  automatic_retry_budget_used: "three automatic Retries in a row did not restore usage",
+  retry_stale: "a newer run exists",
+  retry_refused: "Retry was not allowed for the accountable user",
+  reset_stale: "the reset passed more than a day ago",
+};
 
 /**
  * Requests the task's Retry for one usage-limit hold once its reset has
@@ -131,7 +142,11 @@ export async function requestProviderLimitResumeRetry(db: Db, input: { companyId
   const [run] = runId ? await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text = ${runId}`)) : [];
   const done = async (reason: string, extra: Record<string, unknown> = {}) => {
-    await settle(db, action.id, { state: "not_requested", reason, decidedAt: now.toISOString(), ...extra });
+    // Replace a promise to retry with what the user can do now.
+    const nextAction = NOT_RETRIED[reason] && action.evidence?.providerLimitResetAt
+      ? `Paperclip did not retry this task after the provider usage limit reset because ${NOT_RETRIED[reason]}. Retry the task when usage capacity is available.`
+      : undefined;
+    await settle(db, action.id, { state: "not_requested", reason, decidedAt: now.toISOString(), ...extra }, nextAction);
     return { requested: false as const, reason };
   };
   // The failure that created the hold may still be settling its run.

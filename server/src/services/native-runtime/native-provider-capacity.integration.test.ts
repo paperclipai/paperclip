@@ -435,5 +435,7 @@ describe("native provider capacity failure persistence", () => {
     const outcome = await requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id },
       new Date(resetAt.getTime() + 1000));
     expect(outcome).toEqual({ requested: false, reason: "no_accountable_user" });
+    expect((await holdFor(issueId)).nextAction).toBe("Paperclip did not retry this task after the provider usage limit "
+      + "reset because no user is accountable for the run. Retry the task when usage capacity is available.");
   });
 });
