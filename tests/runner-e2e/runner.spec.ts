@@ -58,6 +58,7 @@ import { ownedActiveCleanupRunIds, mayAllocateRemoteResources, runCleanupWithObs
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
+import { CODEX_PLANNING_READ_ONLY_SUITE, gradePlanningWriteRefusal } from "./codex-planning-read-only.js";
 import { artifactTransferDescription, gradeApiArtifactTransfer, readArtifactTransferSource, usesApiResponseProof } from "./api-artifact-transfer.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
@@ -2395,6 +2396,11 @@ for (const execution of executions) {
         }
       }
 
+      if (execution.suite.id === CODEX_PLANNING_READ_ONLY_SUITE) {
+        const refusal = gradePlanningWriteRefusal(runEventsByRun.flatMap(captured => captured.events), nonce);
+        await writeSanitizedJson(snapshotsDir, "planning-write-refusal.json", refusal, secrets);
+        if (!refusal.passed) invariantFailures.push(`Planning write refusal was not proven: ${refusal.failure}`);
+      }
       if (execution.suite.id === "api-response-reading") {
         const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);

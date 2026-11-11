@@ -317,7 +317,11 @@ export function createIsolatedCodexAppServerArgs(
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="write"}`,
   ].join(",");
-  const planningFilesystemRules = [
+  const planningFilesystemRules = externalRunnerSandbox ? [
+    `":root"="read"`,
+    ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
+      ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
+  ].join(",") : [
     `":root"="none"`,
     `":minimal"="read"`,
     `":tmpdir"="none"`,
@@ -356,7 +360,7 @@ export function createIsolatedCodexAppServerArgs(
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
-    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
+    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess || externalRunnerSandbox}`,
     "-c",
     `shell_environment_policy.inherit=${tomlString(hasProjectedEnvironment ? "all" : "none")}`,
     "-c",
