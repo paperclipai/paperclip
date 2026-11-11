@@ -37,7 +37,7 @@ export function uiLayoutRoutes(db: Db) {
     companyId: string,
     userId: string,
     surface: UiLayoutSurface,
-    action: "ui_layout.created" | "ui_layout.reset",
+    action: "ui_layout.created" | "ui_layout.updated" | "ui_layout.reset",
   ) {
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -77,7 +77,7 @@ export function uiLayoutRoutes(db: Db) {
         layout: parsed.layout as Record<string, unknown>,
         schemaVersion: parsed.schemaVersion,
       });
-      if (created) await logLayoutActivity(req, companyId, userId, surface, "ui_layout.created");
+      await logLayoutActivity(req, companyId, userId, surface, created ? "ui_layout.created" : "ui_layout.updated");
       res.json(preference);
     },
   );

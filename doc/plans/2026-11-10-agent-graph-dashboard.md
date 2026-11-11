@@ -160,7 +160,7 @@ Governance summary:
 | Layer | Coverage |
 | --- | --- |
 | Shared | Layout schemas, byte and count limits, rejection of unknown keys (including `adapterConfig` and `env` on drafts), version migration, fallback to `null` |
-| Server | Route authorization (other company, agent caller, viewer), validation, one activity entry for the first save and for a reset and none for later saves. Service against embedded PostgreSQL: upsert, isolation between users and companies, cascade on company delete. This also runs the new migration |
+| Server | Route authorization (other company, agent caller, viewer), validation, one activity entry for every save and for a reset that removes a layout, without private layout content. Service against embedded PostgreSQL: upsert, isolation between users and companies, cascade on company delete. This also runs the new migration |
 | Graph logic | Cycle detection (including already-broken data and a 5,000-deep chain), layout (no overlaps for 250 agents in both directions, wrapping, cycles, deep chains), clipboard (allowlist, round trip, tampered payloads, capacity, name uniqueness), history |
 | Graph component | 250 agents in jsdom: all render; a status change re-renders exactly one node; a refetch with equal data re-renders none; paste creates a draft and no agent; hire needs confirmation and sends only allowlisted fields. A render counter throws above its limit |
 | Dashboard logic | Layout operations, limits, normalization, settings bounds, contextual rule resolution, pinning, signals |
@@ -196,7 +196,7 @@ Before PR 1: post the issue draft and raise it in Discord `#dev`, as `CONTRIBUTI
 
 ## 13. Open questions for maintainers
 
-1. Resolved after review: the first save of a layout and a reset each write one activity entry, and later autosaves write none. The route rule asks for an entry for each mutation. Is one entry per stored layout enough, or do maintainers want an entry for every save?
+1. Resolved in the final fork review: every save writes an activity entry (`ui_layout.created` or `ui_layout.updated`), and a reset that removes a layout writes `ui_layout.reset`. This follows the route rule requiring an entry for each mutation. Entries contain only actor/workspace metadata and the surface, never private layout content.
 2. Is `@xyflow/react` acceptable as a UI dependency? It loads in its own chunk, only when the flag is on.
 3. Is a core feature the right home, or should the dashboard grid start as a plugin surface?
 

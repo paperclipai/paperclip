@@ -46,4 +46,4 @@ Dashboard (`schemaVersion: 1`): `widgets` (ordered, each with `instanceId`, `wid
 
 ## Activity Log
 
-The first save of a layout creates the stored row and writes one `ui_layout.created` entry to the company activity log. A reset that removes a stored layout writes one `ui_layout.reset` entry. The saves that follow the first one write no entry, because the apps save automatically after every change. An entry holds the user id and the surface, and never the layout content.
+The first save of a layout creates the stored row and writes one `ui_layout.created` entry to the company activity log. Each subsequent save writes one `ui_layout.updated` entry. A reset that removes a stored layout writes one `ui_layout.reset` entry; resetting an absent layout writes no entry because it changes nothing. Entries hold the user id and the surface, and never the layout content, notes, drafts or widget settings.

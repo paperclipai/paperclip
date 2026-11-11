@@ -102,7 +102,7 @@ describe("ui layout routes", () => {
     expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
   });
 
-  it("saves a valid layout for the caller only and writes no activity entry when the layout already exists", async () => {
+  it("saves a valid layout for the caller only and audits the update without private layout content", async () => {
     const app = await createApp(BOARD_ACTOR);
     const res = await request(app)
       .put("/api/companies/company-1/ui-layouts/dashboard/me")
@@ -112,7 +112,16 @@ describe("ui layout routes", () => {
       layout: DASHBOARD_LAYOUT,
       schemaVersion: 1,
     });
-    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    const entry = mockLogActivity.mock.calls[0]![1];
+    expect(entry).toMatchObject({
+      companyId: "company-1",
+      actorType: "user",
+      actorId: "user-1",
+      action: "ui_layout.updated",
+    });
+    expect(entry.details).toEqual({ userId: "user-1", surface: "dashboard" });
+    expect(JSON.stringify(entry)).not.toContain("widgets");
   });
 
   it("rejects a layout that does not match the surface schema", async () => {
@@ -185,7 +194,13 @@ describe("ui layout routes", () => {
       schemaVersion: 1,
     });
     expect(mockUiLayoutService.remove).toHaveBeenCalledWith("company-1", "viewer-1", "dashboard");
-    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity.mock.calls[0]![1]).toMatchObject({
+      companyId: "company-1",
+      actorId: "viewer-1",
+      action: "ui_layout.updated",
+      details: { userId: "viewer-1", surface: "dashboard" },
+    });
   });
 
   it("rejects a viewer of another company and a member whose access is not active", async () => {
@@ -232,7 +247,7 @@ describe("ui layout routes", () => {
     expect(mockUiLayoutService.remove).not.toHaveBeenCalled();
   });
 
-  it("writes one activity entry for the first save of a layout and none for the saves that follow", async () => {
+  it("distinguishes layout creation from subsequent updates in the activity log", async () => {
     const app = await createApp(BOARD_ACTOR);
     mockUiLayoutService.upsert.mockResolvedValueOnce({
       created: true,
@@ -258,7 +273,13 @@ describe("ui layout routes", () => {
       .put("/api/companies/company-1/ui-layouts/dashboard/me")
       .send({ layout: DASHBOARD_LAYOUT });
     expect(second.status).toBe(200);
-    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+    expect(mockLogActivity.mock.calls[1]![1]).toMatchObject({
+      companyId: "company-1",
+      actorId: "user-1",
+      action: "ui_layout.updated",
+    });
+    expect(mockLogActivity.mock.calls[1]![1].details).toEqual({ userId: "user-1", surface: "dashboard" });
   });
 
   it("writes one activity entry for a reset that removes a layout and none when nothing was saved", async () => {
