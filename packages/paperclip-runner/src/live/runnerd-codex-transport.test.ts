@@ -6798,6 +6798,11 @@ describe("admission waits do not count time this process was stopped", () => {
     clock.now();
     clock.now();
     expect(clock.creditedMs).toBe(6_000 - RUNNER_STALL_THRESHOLD_MS);
+    // A wall-clock grace taken now moves onto the clock without the earlier
+    // credit, so it keeps exactly its own running-time budget.
+    const wallGrace = wall + 5_000;
+    const onClock = wallGrace - clock.creditedMs;
+    expect(onClock - clock.now()).toBe(5_000);
   });
 });
 

@@ -6225,7 +6225,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.resume", work) : work();
   }
 
-  /** One stopped-time clock per admission; a nested startup keeps the outer one. */
+  /**
+   * One stopped-time clock per admission; a nested startup keeps the outer one.
+   * It covers the Runner command barriers and the provider-identity wait. The
+   * warm-transition and source-attachment reconnect polls keep their own
+   * wall-clock grace deadlines.
+   */
   async #withAdmissionClock<T>(work: () => Promise<T>): Promise<T> {
     if (this.#admissionClock !== null) return work();
     const clock = new RunnerStallLedger();
@@ -6242,6 +6247,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   /** Wall time, or the admission clock while a startup or recovery runs. */
   #waitNow(): number {
     return this.#admissionClock?.now() ?? Date.now();
+  }
+
+  /** Moves a wall-clock deadline onto the admission clock, without the stops already credited. */
+  #onWaitClock(wallDeadline: number): number {
+    const clock = this.#admissionClock;
+    if (clock === null) return wallDeadline;
+    clock.now();
+    return wallDeadline - clock.creditedMs;
   }
 
   async #resumeWork(): Promise<void> {
@@ -6964,7 +6977,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#assertStartupOpen();
     const admissionDeadline = this.#sourceAttachmentDeadline === null
       ? this.#coldAdmissionDeadline(adoptedRunner === undefined)
-      : Math.min(this.#waitNow() + 30_000, this.#sourceAttachmentDeadline);
+      : Math.min(this.#waitNow() + 30_000, this.#onWaitClock(this.#sourceAttachmentDeadline));
     // An adopted runner is already live: no launch step (a launch span means a fresh process).
     if (adoptedRunner) this.#startupSteps?.end();
     else this.#startupSteps?.begin("runner.process.launch");
