@@ -169,6 +169,10 @@ function resolveAgentEnvironment(
     : describeMissingEnvironment(environmentId);
 }
 
+export function orgTreeAgentIds(nodes: OrgNode[]): string[] {
+  return nodes.flatMap((node) => [node.id, ...orgTreeAgentIds(node.reports)]);
+}
+
 export function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<string>, matchingIds?: Set<string>): OrgNode[] {
   return nodes
     .reduce<OrgNode[]>((acc, node) => {
@@ -354,7 +358,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query).filter(rosterFilters.matches);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, query.trim() || rosterFilters.activeCount ? new Set(filtered.map(agent => agent.id)) : undefined);
   const showAgentGraph = agentGraph.enabled && effectiveView === "org";
-  const graphAgentIdsKey = showAgentGraph ? filtered.map(agent => agent.id).join(",") : "";
+  const graphAgentIdsKey = showAgentGraph ? orgTreeAgentIds(filteredOrg).join(",") : "";
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (

@@ -116,6 +116,7 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
   const clipboardRef = useRef<string | null>(null);
   const pasteCountRef = useRef(0);
   const fittedRef = useRef(false);
+  const viewportRestoreRef = useRef(-1);
 
   const liveRunsQuery = useQuery({
     queryKey: queryKeys.liveRuns(companyId),
@@ -170,11 +171,12 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
   }, [graphAgents, layout, autoPositions, liveAgentIds, managerNames]);
 
   useEffect(() => {
-    if (fittedRef.current || !nodesInitialized || !layout) return;
+    if (viewportRestoreRef.current === document.restoreCount || !nodesInitialized || !layout) return;
+    viewportRestoreRef.current = document.restoreCount;
     fittedRef.current = true;
     if (layout.viewport) void flow.setViewport(layout.viewport);
     else void flow.fitView(FIT_VIEW_OPTIONS);
-  }, [nodesInitialized, layout, flow]);
+  }, [nodesInitialized, layout, flow, document.restoreCount]);
 
   useEffect(() => {
     if (panelAgentId && !agentsById.has(panelAgentId)) setPanelAgentId(null);
@@ -588,6 +590,8 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
               subject="graph"
               onRetry={document.retryLoad}
               onOverwrite={document.allowOverwrite}
+              saveError={document.saveError}
+              onRetrySave={document.retrySave}
             />
             <AgentGraphToolbar
               direction={direction}

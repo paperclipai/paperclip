@@ -107,8 +107,9 @@ Both schemas are strict. Version handling lives in `packages/shared/src/validato
 | `PUT /api/companies/:companyId/ui-layouts/:surface/me` | Validate and upsert. Body `{ layout }` |
 | `DELETE /api/companies/:companyId/ui-layouts/:surface/me` | Remove the caller's layout (restore default) |
 
-- Authorization: `assertCompanyAccess`, then `assertBoard` with a user id. Agent keys get 403. A user can only read and write their own row.
-- Validation: unknown surface is 404. A layout that fails the surface schema or exceeds 256 KiB is 400.
+- Authorization: a layout is a personal preference, so the routes follow `workspace-preferences` and `primary-agent`. They use `assertBoard` with a user id, `hasCompanyAccess`, and an active company membership. Every active member, viewers included, can read and write their own row and no other row. Agent keys get 403.
+- Validation: unknown surface is 404. A layout that fails the surface schema or exceeds 256 KiB is 400. Sticky note ids and hire draft ids must be unique within their list, like dashboard widget instance ids.
+- OpenAPI: the three operations are registered in `server/src/routes/openapi.ts` with their request and response schemas and board-only access.
 - Activity: none. A layout is a personal view preference, like the workspace presentation preference, which also writes nothing to the company activity log. The table keeps `updated_at`.
 
 No existing route changed. The graph uses `PATCH /agents/:id` for reporting lines and `POST /companies/:id/agent-hires` for hires, exactly as the existing pages do.
@@ -120,7 +121,8 @@ No existing route changed. The graph uses `PATCH /agents/:id` for reporting line
 - Edges: reporting lines. An edge animates while the report has a live run. Dragging from a manager's handle to an agent, or dragging the manager end of an edge to another agent, proposes a reporting-line change.
 - Side panel: status, adapter, manager, report count, budget, the five most recent runs, links, "Duplicate as draft", "Hide from graph".
 - Editing: drag, Shift-drag box selection, Ctrl or Cmd click, group move, snap to a 16 px grid, Tidy up, direction toggle, "Keep manual positions", undo and redo (100 steps), a shortcut list in the toolbar.
-- Persistence: saves are debounced by 1.5 s, skipped when nothing changed, and flushed on page hide.
+- Persistence: saves are debounced by 1.5 s and skipped when nothing changed. Only one write is in flight at a time. On page hide the newest layout is sent with `keepalive`, and the save that is still running is cancelled first, so the older request does not race the newer one. A save that fails stays pending: it is retried up to three times when the error is transient, the notice shows the error, and the user can retry from the notice.
+- Search and filters: the graph shows the same filtered tree as the classic org chart, so the managers above a matching agent stay visible with their reporting lines.
 - Performance: `syncNodes` and `syncEdges` return the previous node and edge objects when their inputs did not change. React Flow then skips those nodes. Viewport virtualization is on.
 - Accessibility: nodes are focusable and labelled, arrow keys move a focused node, every pointer action has a button or key path except box selection and connecting by drag (reporting lines can be changed on the agent page).
 - Dark mode: the canvas reads the app tokens through React Flow's CSS variables.

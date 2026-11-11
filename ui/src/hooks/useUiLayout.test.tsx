@@ -4,8 +4,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
-import { useUiLayout } from "./useUiLayout";
+import { UI_LAYOUT_SAVE_RETRY_DELAYS_MS, useUiLayout } from "./useUiLayout";
 
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
 
@@ -79,6 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   act(() => root.unmount());
   host.remove();
   queryClient.clear();
@@ -155,12 +157,110 @@ describe("useUiLayout", () => {
     });
     expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
     expect(uiLayoutsApi.save.mock.calls[1]).toEqual(["company-1", "dashboard", { name: "latest" }, { keepalive: true }]);
+    expect(uiLayoutsApi.save.mock.calls[0]![3].signal.aborted).toBe(true);
 
-    await act(async () => {
-      releaseSave[0]!();
-      releaseSave[1]!();
-    });
+    await act(async () => releaseSave[1]!());
+    await settle();
+    await act(async () => releaseSave[0]!());
     await settle();
     expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(current.stored).toEqual({ name: "latest" });
+    expect(current.saveState).toBe("saved");
+
+    await startSave("after");
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(3);
+    expect(uiLayoutsApi.save.mock.calls[2]![2]).toEqual({ name: "after" });
+  });
+
+  it("sends a debounced or staged layout with keepalive on pagehide when no save is in flight", async () => {
+    await render();
+    await act(async () => current.save({ name: "edited" }));
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(uiLayoutsApi.save.mock.calls).toEqual([["company-1", "dashboard", { name: "edited" }, { keepalive: true }]]);
+    await act(async () => releaseSave[0]!());
+    await settle();
+    expect(current.stored).toEqual({ name: "edited" });
+    expect(current.saveState).toBe("saved");
+
+    await act(async () => current.stage({ name: "viewport" }));
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]).toEqual(["company-1", "dashboard", { name: "viewport" }, { keepalive: true }]);
+  });
+
+  it("sends the save in flight again with keepalive on pagehide", async () => {
+    await render();
+    await startSave("only");
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[0]![3].signal.aborted).toBe(true);
+    expect(uiLayoutsApi.save.mock.calls[1]).toEqual(["company-1", "dashboard", { name: "only" }, { keepalive: true }]);
+  });
+
+  it("keeps a failed save pending, reports the error and saves it on a manual retry", async () => {
+    const rejected = new ApiError("Layout is not valid", 400, { error: "Layout is not valid" });
+    uiLayoutsApi.save.mockRejectedValueOnce(rejected);
+    await render();
+    await startSave("kept");
+    expect(current.saveState).toBe("error");
+    expect(current.saveError).toBe(rejected);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+
+    await act(async () => current.retrySave());
+    await settle();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]![2]).toEqual({ name: "kept" });
+    await act(async () => releaseSave[0]!());
+    await settle();
+    expect(current.stored).toEqual({ name: "kept" });
+    expect(current.saveState).toBe("saved");
+    expect(current.saveError).toBeNull();
+  });
+
+  it("retries a save that failed for a transient reason a limited number of times", async () => {
+    vi.useFakeTimers();
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    };
+    uiLayoutsApi.save.mockRejectedValue(new ApiError("Service unavailable", 503, null));
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>);
+    });
+    await advance(0);
+    await act(async () => {
+      current.save({ name: "offline" });
+      current.flush();
+    });
+    await advance(0);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(current.saveState).toBe("error");
+
+    let expected = 1;
+    for (const delay of UI_LAYOUT_SAVE_RETRY_DELAYS_MS) {
+      await advance(delay - 1);
+      expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected);
+      await advance(1);
+      expected += 1;
+      expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected);
+      expect(uiLayoutsApi.save.mock.calls[expected - 1]![2]).toEqual({ name: "offline" });
+    }
+    await advance(10 * 60_000);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected);
+    expect(current.saveState).toBe("error");
+
+    uiLayoutsApi.save.mockResolvedValue({ surface: "dashboard", schemaVersion: 1, layout: { name: "offline" }, updatedAt: null });
+    await act(async () => current.retrySave());
+    await advance(0);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected + 1);
+    expect(current.saveState).toBe("saved");
+    expect(current.stored).toEqual({ name: "offline" });
   });
 });
