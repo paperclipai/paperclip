@@ -3557,6 +3557,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["an assignment", {}],
+    ["a due monitor", { wakeReason: "issue_monitor_due" }],
+  ] as const)("retries %s run whose lease this process lost before adapter dispatch", async (_label, contextSnapshot) => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "paperclip_runner", agentStatus: "idle", runtimeMode: "legacy", contextSnapshot,
+    });
+    await db.update(heartbeatRuns).set({
+      controllerBootId: controllerLeases.legacyControllerBootId,
+      controllerProcess: currentControllerProcessStamp(),
+      controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+      executionStage: "preparing",
+      runnerProfileJson: {
+        adapterDispatch: { adapterType: "paperclip_runner" },
+        remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", epoch: 6, state: "prepared",
+          leaseId: randomUUID(), providerLeaseId: randomUUID(), workspaceId: randomUUID(),
+          remoteCwd: "/home/daytona/paperclip-workspace", snapshotId: randomUUID() },
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost",
+      error: "Process lost -- server may have restarted; retrying once" });
+    expect(reaped?.resultJson).toMatchObject({
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true },
+    });
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId),
+    ))).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+    await heartbeat.reapOrphanedRuns();
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("keeps a run this process dispatched held for reconciliation after its lease lapses", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "paperclip_runner", agentStatus: "idle", runtimeMode: "legacy",
+    });
+    await db.update(heartbeatRuns).set({
+      controllerBootId: controllerLeases.legacyControllerBootId,
+      controllerProcess: currentControllerProcessStamp(),
+      controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+      executionStage: "dispatching",
+    }).where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(reaped?.resultJson).not.toHaveProperty("executionRecovery");
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId),
+    ))).toEqual([]);
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([
+      expect.objectContaining({ cause: "legacy_execution_requires_reconciliation" }),
+    ]);
+  });
+
   it("keeps a lost preparation from an older build without a controller stamp in the charged lane", async () => {
     const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
     await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } })
