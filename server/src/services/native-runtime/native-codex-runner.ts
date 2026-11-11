@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants, mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { accessSync, chmodSync, constants, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
 
@@ -13,12 +14,14 @@ import { agentSessionGoalActions, agentTaskSessions } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
 import {
+  bundledRemoteProviderPackManifestPath,
   createPaperclipRunnerAuthorizedToolSet,
   defaultCapabilityRunnerdBinary,
   runnerBinaryTarget,
   type PaperclipSemanticToolDefinition,
 } from "../../vendor/paperclip-runner/index.js";
 import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
+import { binaryTargetFromHeader, cachedFileSha256 } from "./off-loop-file-work.js";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const RUNNER_VERSION = "paperclip-runner-v1";
@@ -238,11 +241,35 @@ export async function resolveRemotePaperclipRunnerBinary(input: {
   const binary = configured || (controllerOverride
     ? resolvePaperclipRunnerBinary(controllerOverride)
     : defaultCapabilityRunnerdBinary(platform, architecture));
-  let bytes: Buffer;
-  try { bytes = readFileSync(binary); }
+  // The header names the target; reading the whole daemon here blocked the
+  // event loop on every remote run.
+  let target: string | null;
+  try { target = await binaryTargetFromHeader(binary, runnerBinaryTarget); }
   catch (cause) { throw new Error(`runner_remote_artifact_unavailable: install the Paperclip release containing the ${platform}-${architecture} daemon or configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH`, { cause }); }
-  if (runnerBinaryTarget(bytes) !== `${platform}-${architecture}`) {
+  if (target !== `${platform}-${architecture}`) {
     throw new Error(`runner_remote_artifact_platform_mismatch: the selected daemon does not match ${platform}-${architecture}; install the matching Paperclip release or configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH`);
+  }
+  return binary;
+}
+
+/**
+ * `bundledRemoteRunnerBinary()` without blocking the event loop: the same
+ * release-manifest, target and digest checks and errors, with the digest
+ * streamed once per boot (it is cached while the file is unchanged).
+ */
+export async function verifiedBundledRemoteRunnerBinary(
+  target: "linux-x64" | "linux-arm64" = "linux-x64",
+): Promise<string> {
+  const outputRoot = resolve(dirname(bundledRemoteProviderPackManifestPath(undefined, target)), "../..");
+  const release = JSON.parse(await readFile(join(outputRoot, "bin/release-manifest.json"), "utf8"));
+  const artifact = release?.platforms?.[target];
+  if (release?.schema !== "paperclip.runner.release-binaries.v1" || !/^[a-f0-9]{40}$/.test(release.sourceRevision ?? "") ||
+      artifact?.path !== `${target}/paperclip-runnerd` || !/^sha256:[a-f0-9]{64}$/.test(artifact.sha256 ?? "")) {
+    throw new Error("runner_remote_artifact_unavailable: install the complete Paperclip release with its Linux daemon");
+  }
+  const binary = join(outputRoot, "bin", artifact.path);
+  if (await binaryTargetFromHeader(binary, runnerBinaryTarget) !== target || await cachedFileSha256(binary) !== artifact.sha256) {
+    throw new Error("runner_remote_artifact_incompatible: packaged Linux daemon identity mismatch");
   }
   return binary;
 }
@@ -364,7 +391,7 @@ export async function executeNativeCodexRunner(input: {
   }) => Promise<void>;
 }): Promise<AdapterExecutionResult> {
   const binary = input.runnerBinary ?? resolvePaperclipRunnerBinary();
-  const runnerDigest = `sha256:${createHash("sha256").update(readFileSync(binary)).digest("hex")}`;
+  const runnerDigest = await cachedFileSha256(binary);
   const runtimeRoot = input.runtimeRoot
     ? resolve(input.runtimeRoot)
     : resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner");

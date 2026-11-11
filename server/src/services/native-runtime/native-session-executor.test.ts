@@ -391,6 +391,9 @@ vi.mock("../issue-recovery-actions.js", () => ({
 vi.mock("./native-codex-runner.js", () => ({
   resolvePaperclipRunnerBinary: state.resolveRunnerBinary,
   resolveRemotePaperclipRunnerBinary: state.resolveRemoteRunnerBinary,
+  // Resolves through the (mocked) vendor bundle, like the production checks.
+  verifiedBundledRemoteRunnerBinary: async () =>
+    (await import("../../vendor/paperclip-runner/index.js")).bundledRemoteRunnerBinary(),
 }));
 
 import {
@@ -398,6 +401,7 @@ import {
   buildNativeProviderEnvironment,
   resolveNativeProviderEnvironment,
   buildNativeHarnessBackupManifest,
+  buildNativeHarnessBackupManifestStreamed,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
   claimWarmNativeInstructionCopy,
@@ -447,6 +451,7 @@ import {
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
   readRemoteProviderPackManifest,
+  verifyRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
   resolveRemoteProviderPackSource,
   readBundledRemoteProviderPackManifest,
@@ -473,6 +478,7 @@ import {
   remoteProviderStateUnreadable,
   retryTransientRemoteCheckpointRead,
   verifyNativeHarnessBackup,
+  verifyNativeHarnessBackupStreamed,
   shouldRestoreNativeHarnessBackupIntoSandbox,
   remoteProviderStateNeverOpened,
 } from "./native-session-executor.js";
@@ -2919,6 +2925,8 @@ describe("remote provider pack manifest", () => {
     Object.assign(payload, { providers: { cursor } });
     await writeManifest();
     expect(readRemoteProviderPackManifest(root).payload.providers?.cursor?.version).toBe(QUALIFIED_ACPX_PROFILES.cursor.agentServerVersion);
+    // The run path streams the same checks off the event loop.
+    await expect(verifyRemoteProviderPackManifest(root)).resolves.toEqual(readRemoteProviderPackManifest(root));
     const releaseMetadata = await mkdtemp(join(tmpdir(), "paperclip-image-identity-"));
     const manifestPath = join(releaseMetadata, "provider-pack.json");
     await cp(join(root, "provider-pack.json"), manifestPath);
@@ -2943,6 +2951,7 @@ describe("remote provider pack manifest", () => {
     await rm(releaseMetadata, { recursive: true, force: true });
     await writeFile(join(root, cursorPath, "runtime"), "substitute Cursor runtime");
     expect(() => readRemoteProviderPackManifest(root)).toThrow("asset tree digest mismatch");
+    await expect(verifyRemoteProviderPackManifest(root)).rejects.toThrow("asset tree digest mismatch");
     await writeFile(join(root, cursorPath, "runtime"), "pinned Cursor runtime");
     const kimiPath = "provider-assets/kimi/linux-x64";
     await mkdir(join(root, kimiPath), { recursive: true });
@@ -3506,7 +3515,22 @@ describe("verified native harness backups", () => {
         sourceProviderLeaseId: "sandbox-1",
         completedAt: "2026-08-26T00:00:00.000Z",
       });
+      // The run path builds and verifies the same manifest by streaming.
+      await expect(buildNativeHarnessBackupManifestStreamed({
+        backupRoot: current,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+        completedAt: "2026-08-26T00:00:00.000Z",
+      })).resolves.toEqual(manifest);
       await writeFile(join(current, "manifest.json"), JSON.stringify(manifest));
+      await expect(verifyNativeHarnessBackupStreamed({ root, execution: backupExecution, runnerInstanceId: "runner-1" }))
+        .resolves.toEqual(verifyNativeHarnessBackup({ root, execution: backupExecution, runnerInstanceId: "runner-1" }));
 
       expect(
         verifyNativeHarnessBackup({
@@ -3552,6 +3576,8 @@ describe("verified native harness backups", () => {
           runnerInstanceId: "runner-1",
         }),
       ).toBeNull();
+      await expect(verifyNativeHarnessBackupStreamed({ root, execution: backupExecution, runnerInstanceId: "runner-1" }))
+        .resolves.toBeNull();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
