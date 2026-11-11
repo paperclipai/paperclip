@@ -22,27 +22,9 @@ import {
   useEmbeddedPostgres,
 } from "./helpers/route-test-harness.js";
 
-/**
- * `PATCH /api/issues/:id` advertises `executionWorkspaceId`,
- * `executionWorkspacePreference` and `executionWorkspaceSettings`, but
- * `issueService.update` deletes all three while the `enableIsolatedWorkspaces`
- * instance gate is off. The request used to answer 200 with an empty `changes`
- * receipt, which reads as success — a caller only discovers the value never
- * landed by re-reading the record.
- *
- * These tests pin the two halves of the contract: a request that the gate
- * cannot honour is refused and names the field, and a request the gate *can*
- * honour still persists. Every "refused" case re-reads the row, because
- * asserting on the response status alone is exactly the check that passed while
- * the behaviour was broken.
- */
 describeEmbeddedPostgres("issue execution-workspace fields under the isolated-workspaces gate", () => {
   const ctx = useEmbeddedPostgres("paperclip-issues-execution-workspace-gate-", {
     resetEach: async (db) => {
-      // `resetCompanyIssueFixtures` covers only issues/grants/memberships/
-      // companies. This suite also seeds projects, an execution workspace and
-      // the instance settings row, and every PATCH writes an activity row that
-      // holds a company reference — so the shared helper cannot be reused.
       await db.delete(activityLog);
       await db.delete(issues);
       await db.delete(executionWorkspaces);
@@ -59,23 +41,9 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     isolatedWorkspaces: boolean;
     storeWorkspaceBinding?: boolean;
     storeIsolatedSettings?: boolean;
-    /**
-     * A settings blob written straight to the issue row, for the cases that
-     * assert a patch does not *destroy* stored settings. `storeIsolatedSettings`
-     * cannot serve those: it writes a blob the gate refuses to change, so the
-     * request never reaches the write being tested.
-     */
     storeSettings?: Record<string, unknown>;
-    /** Leaves the row in the shape `bindRuntimeSharedWorkspace` writes. */
     storeRuntimeBinding?: boolean;
-    /** Config on the bound workspace's own row, which the issue patch can reach. */
     workspaceConfig?: Record<string, unknown>;
-    /**
-     * Seeds a real environment and returns its id. Without one, an
-     * environment-carrying patch is refused by `assertEnvironmentSelectionForCompany`
-     * before it ever reaches the write under test, and the assertion would pass
-     * for the wrong reason.
-     */
     seedEnvironment?: boolean;
   }) {
     await instanceSettingsService(ctx.db).updateExperimental({
@@ -93,8 +61,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       await ctx.db.insert(environments).values({
         id: environmentId,
         name: `Env ${environmentId}`,
-        // `assertEnvironmentSelectionForCompany` allows local/ssh/sandbox, and
-        // "local" carries a unique index that would collide across cases.
         driver: "ssh",
         status: "active",
       });
@@ -122,20 +88,13 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       title: "Target the right repository",
       status: "todo",
       priority: "medium",
-      // Written straight to the row, so a row can already carry the fields the
-      // gate refuses to *change* — the state left behind by an instance that
-      // once ran with the gate on.
       ...(options.storeWorkspaceBinding ? { executionWorkspaceId: workspaceId } : {}),
-      // The state an instance is left in when the gate is switched off after
-      // tasks were already configured under it.
       ...(options.storeIsolatedSettings
         ? {
           executionWorkspacePreference: "isolated_workspace" as const,
           executionWorkspaceSettings: { mode: "isolated_workspace" as const },
         }
         : {}),
-      // The shape `bindRuntimeSharedWorkspace` leaves behind: the runtime writes
-      // these past the gate, so any task that has run once holds them.
       ...(options.storeRuntimeBinding
         ? {
           executionWorkspaceId: workspaceId,
@@ -159,7 +118,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       .send(body);
   }
 
-  /** Reads straight from the row, so no route-layer shaping can mask a drop. */
   async function storedWorkspaceFields(seeded: Seeded) {
     const [row] = await ctx.db.select().from(issues).where(eq(issues.id, seeded.issueId));
     return {
@@ -169,7 +127,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     };
   }
 
-  /** Reads the bound workspace's own config, which an issue patch can reach. */
   async function storedWorkspaceConfig(seeded: Seeded) {
     const [row] = await ctx.db
       .select({ metadata: executionWorkspaces.metadata })
@@ -179,19 +136,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     return (metadata?.config ?? null) as Record<string, unknown> | null;
   }
 
-  /**
-   * Persisting a gate-baseline settings value must not become a way to erase
-   * configuration the gate never governed.
-   *
-   * `{ environmentId }` is issue environment selection — a different feature
-   * behind a different flag. `parseIssueExecutionWorkspaceSettings` drops
-   * `environmentId` when called the way `update()` calls it, so the blob
-   * normalizes to nothing and reads as a baseline value. If that is written, the
-   * column is overwritten with `{}` and whatever it held — `networkEgress` here,
-   * which is honoured with the gate off — is gone. So the service does not write
-   * it, and because it does not, the route must not answer 200 for it either:
-   * that would be the accepted-and-discarded behaviour this suite exists for.
-   */
   it("refuses an environment-only settings payload rather than erase stored settings", async () => {
     const seeded = await seed({
       isolatedWorkspaces: false,
@@ -210,14 +154,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * The case finding `ebf0a695b149920f` named, through the one shape the
-   * downgrade fix left open. `{}` normalizes to nothing, so the service leaves
-   * the column alone rather than blanking it; with the gate on the same request
-   * writes `{}` and the isolated posture is gone. Answering 200 here would leave
-   * `isolated_workspace` stored behind a success, ready to take effect again when
-   * the gate is switched back on. `null` is the spelling that clears.
-   */
   it("refuses an empty settings blob over a stored isolated posture", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
 
@@ -230,7 +166,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /** Against an empty column the same blob asks for what is already there. */
   it("accepts an empty settings blob when the column already holds nothing", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
@@ -242,20 +177,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * The same rule, one layer further out. On a row the runtime bound
-   * (`executionWorkspaceId` + `reuse_existing`), a settings write is propagated
-   * to the bound workspace's own config row. The patch builder emits an explicit
-   * `null` for every config key it knows, so propagating a *baseline* settings
-   * value erases the workspace's `provisionCommand`, `teardownCommand`,
-   * `environmentId` and `workspaceRuntime` — configuration that belongs to the
-   * workspace and that the caller never mentioned.
-   *
-   * Any task that has run once holds this row shape, so this is the common case,
-   * not a corner. `cleanupCommand` is deliberately asserted too: the builder
-   * omits it, so it survives, and its survival is what distinguishes "the sync
-   * fired and erased the rest" from "the workspace was never touched".
-   */
   it("does not let a cleared settings payload erase the bound workspace's config", async () => {
     const seeded = await seed({
       isolatedWorkspaces: false,
@@ -270,8 +191,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     const res = await patch(seeded, { executionWorkspaceSettings: null });
 
     expect(res.status).toBe(200);
-    // The clear itself still takes — the suppression is of the sync, not of the
-    // write, so this is not the accepted-and-discarded behaviour in disguise.
     expect(await storedWorkspaceFields(seeded)).toMatchObject({
       executionWorkspaceSettings: null,
     });
@@ -331,15 +250,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(JSON.stringify(res.body)).toContain("executionWorkspacePreference");
   });
 
-  /**
-   * The regression guard for the refusal's blast radius. The project picker
-   * posts all three keys on *every* project change, not just when a workspace is
-   * being chosen, and for a project with no execution-workspace policy
-   * `defaultExecutionWorkspaceModeForProject` falls through to
-   * `shared_workspace`. Refusing that body would make moving a task between
-   * projects fail with a 422 on a default-configured instance — a far worse
-   * regression than the bug being fixed.
-   */
   it("accepts the project picker's body, and the project move takes", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
@@ -354,12 +264,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(res.body.projectId).toBe(seeded.otherProjectId);
   });
 
-  /**
-   * `{}` is what a settings builder produces when every field is left unset.
-   * `parseIssueExecutionWorkspaceSettings` collapses it to `null`, so it would
-   * store exactly what is already there — comparing the raw body instead would
-   * refuse a write that changes nothing.
-   */
   it("accepts a settings payload that normalizes to what is already stored", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
@@ -369,13 +273,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(res.body.title).toBe("Renamed");
   });
 
-  /**
-   * The round-trip shape: a client GETs an issue, changes one unrelated field
-   * and PATCHes the whole object back, so all three keys ride along carrying the
-   * values already in the row. Nothing is being asked to change, so the strip
-   * swallows nothing and the request is an honest 200 — refusing it would break
-   * every full-object client on a default-configured instance.
-   */
   it("accepts re-sent stored values, and applies the rest of the body", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
@@ -390,13 +287,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(res.body.projectId).toBe(seeded.otherProjectId);
   });
 
-  /**
-   * A bare `{ mode: "shared_workspace" }` is the gate's own posture expressed in
-   * the settings blob, and the picker posts exactly it for a project that has an
-   * execution-workspace policy configured. It is honoured — but only bare: the
-   * next case shows the same mode stops being honourable the moment the blob
-   * also carries something the gate cannot deliver.
-   */
   it("accepts a bare shared_workspace settings blob", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
@@ -409,11 +299,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(res.body.projectId).toBe(seeded.otherProjectId);
   });
 
-  /**
-   * The same round-trip against a row that already carries a workspace binding —
-   * the state an instance is left in after the gate is switched back off. The
-   * value is unchanged, so it is honourable even though it is non-null.
-   */
   it("accepts a re-sent non-null workspace id the row already holds", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
 
@@ -429,16 +314,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * The picker again, but against a row that already carries a workspace the
-   * runtime bound past the strip — `heartbeat.ts` patches `executionWorkspaceId`
-   * through `issuesSvc.update` with `bindRuntimeSharedWorkspace`, so *any* task
-   * that has run once holds one, gate or no gate. An earlier revision of this
-   * guard refused `executionWorkspaceId: null` whenever the row held an id,
-   * which meant a task could be moved between projects only until the first
-   * time it ran. Null is the gate's baseline and is honoured regardless of what
-   * the row holds.
-   */
   it("accepts the picker's body against a row the runtime already bound", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
 
@@ -453,19 +328,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(res.body.title).toBe("Renamed");
   });
 
-  /**
-   * The picker's full body against a runtime-bound row, which used to be
-   * unmovable. The blanket strip deleted the `executionWorkspaceId: null`, so
-   * `update()` fell back to the id already in the row
-   * (`issueData.executionWorkspaceId !== undefined ? … : existing.…`) and
-   * `assertValidExecutionWorkspace` refused the move with "Execution workspace
-   * must belong to the selected project" — a workspace of the *old* project.
-   * Any task that had run once was stuck in its project.
-   *
-   * Letting the baseline null survive the strip clears the binding in the same
-   * patch, so the ownership check has nothing stale to object to. The re-read
-   * proves both halves: the project moved *and* the binding is gone.
-   */
   it("lets a runtime-bound task move project, clearing the stale binding", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
 
@@ -484,20 +346,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * A downgrade is a real change, and the row is left holding isolated values
-   * whenever the gate is switched off after tasks were configured under it. The
-   * blanket strip swallowed the downgrade and answered 200, so the task kept
-   * running isolated with the feature supposedly disabled and the API insisting
-   * the change had been accepted.
-   *
-   * Refusing it instead would be no better: the project picker posts exactly
-   * this body on every project change. So both fields — each of which only ever
-   * *removes* configuration — are written, and the re-read proves it. Leaving
-   * `executionWorkspaceSettings` behind would leave the task holding
-   * `isolated_workspace` in one of the three sibling fields the ticket named,
-   * ready to take effect again the moment the gate is switched back on.
-   */
   it("persists a downgrade of both the preference and the settings blob", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
 
@@ -514,11 +362,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * The clearing direction of the same field. `null` is the one settings value
-   * that unambiguously says "clear the column", as distinct from a blob that
-   * merely normalizes away to nothing, and it must reach the row.
-   */
   it("persists a cleared settings blob over a stored isolated posture", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
 
@@ -530,13 +373,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * `networkEgress` travels in the gated blob but is not gated content:
-   * `selectEnvironmentExecutionWorkspaceSettings` keeps exactly that key when the
-   * feature is off, so it is the one setting a gated instance still honours.
-   * Refusing a blob for carrying it, or accepting and dropping it, would leave no
-   * way to set it at all.
-   */
   it("persists a network-egress settings blob the gate still honours", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
@@ -554,12 +390,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * The two halves that used to be in tension, now asserted in one request: a
-   * baseline settings blob against a runtime-bound row both lands on the issue
-   * *and* leaves the bound workspace's own config alone. The blob names none of
-   * the keys the config sync writes, so syncing it would only erase them.
-   */
   it("persists a settings downgrade without touching the bound workspace's config", async () => {
     const seeded = await seed({
       isolatedWorkspaces: false,
@@ -584,13 +414,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * The clearing direction, against the binding the runtime writes past the gate
-   * (`bindRuntimeSharedWorkspace`). Clearing it never worked: the strip dropped
-   * the null, so the task stayed pointed at a workspace — after a project move,
-   * one belonging to the *previous* project — while the response reported
-   * success. The re-read is the whole point of this test.
-   */
   it("persists a cleared workspace binding instead of dropping the null", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
 
@@ -602,18 +425,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
-  /**
-   * Selecting an issue environment travels inside the settings blob and is a
-   * different feature behind a different flag. The parse drops `environmentId`
-   * (the service does not pass `includeEnvironmentId`) and returns `{}` rather
-   * than `null`, so an earlier revision compared `{}` against a stored `null`,
-   * decided they differed, and refused environment selection as an
-   * isolated-workspaces violation.
-   *
-   * The id here is not seeded, so the request still fails on "Environment not
-   * found" — which is the point: the refusal must come from environment
-   * validation downstream, never from this guard.
-   */
   it("does not refuse an environment-only settings payload as a gate violation", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
@@ -634,11 +445,6 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(res.body.title).toBe("Renamed");
   });
 
-  /**
-   * The half that proves the refusal is scoped to the gate rather than being a
-   * blanket ban: with the feature on, the same request persists and the change
-   * receipt reports it.
-   */
   it("persists the workspace id when the gate is on, and reports it in changes", async () => {
     const seeded = await seed({ isolatedWorkspaces: true });
 
