@@ -15550,18 +15550,17 @@ export function issueRoutes(
           agentId: existing.assigneeAgentId,
         });
         const runToStopForReassignment = await resolveActiveIssueRun(existing);
-        const isHumanSelfHandoff =
+        const isOwnRunSelfHandoff =
           req.actor.type === "agent" &&
           req.actor.source === "agent_jwt" &&
-          nextAssigneeAgentId === null &&
-          typeof nextAssigneeUserId === "string" &&
+          (nextAssigneeAgentId !== null || typeof nextAssigneeUserId === "string") &&
           req.actor.agentId === existing.assigneeAgentId &&
           runToStopForReassignment?.runtimeMode === "legacy" &&
           runToStopForReassignment.id === req.actor.runId &&
           runToStopForReassignment.agentId === req.actor.agentId &&
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
-        if (runToStopForReassignment && !isHumanSelfHandoff) {
+        if (runToStopForReassignment && !isOwnRunSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {
             cancelled = await heartbeat.cancelRun(
