@@ -6515,10 +6515,10 @@ rl.on("line", (line) => {
 
   describe.each([undefined, "on_demand"] as const)("assigned plugin tools for the native Runner (%s)", (delivery) => {
     it.each([
-      { result: { data: { ok: true } } },
-      { result: { error: "plugin refused the call" } },
-      { result: { error: "", content: "ignored on failure" } },
-    ])("delivers plugin results through the assigned gateway: $result", async ({ result }) => {
+      { result: { data: { ok: true } }, errorMessage: undefined },
+      { result: { error: "plugin refused the call" }, errorMessage: "plugin refused the call" },
+      { result: { error: "", content: "ignored on failure" }, errorMessage: "The assigned tool returned an error." },
+    ])("delivers plugin results through the assigned gateway: $result", async ({ result, errorMessage }) => {
       const company = await createCompany(db);
       const agent = await createAgent(db, company.id);
       const { run } = await createIssueAndRun(db, company.id, agent.id);
@@ -6559,7 +6559,7 @@ rl.on("line", (line) => {
         : { tool: name, arguments: {} };
 
       if (typeof result.error === "string") {
-        await expect(assigned.execute(call)).rejects.toMatchObject({ reasonCode: "tool_error", status: 502 });
+        await expect(assigned.execute(call)).rejects.toMatchObject({ reasonCode: "tool_error", status: 502, message: errorMessage });
       } else {
         await expect(assigned.execute(call)).resolves.toEqual({ data: { ok: true } });
       }

@@ -220,7 +220,10 @@ export async function createAssignedMcpTools(input: {
         ("isError" in toolResult && toolResult.isError === true) ||
         ("error" in toolResult && typeof toolResult.error === "string")
       )) {
-        throw new ToolGatewayHttpError(502, "The assigned tool returned an error.", "tool_error");
+        const message = "error" in toolResult && typeof toolResult.error === "string" && toolResult.error.length > 0
+          ? toolResult.error
+          : "The assigned tool returned an error.";
+        throw new ToolGatewayHttpError(502, message, "tool_error");
       }
       return result.result;
     },
