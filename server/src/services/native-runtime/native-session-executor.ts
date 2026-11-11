@@ -15435,6 +15435,10 @@ async function createRunnerdBackendWithinSessionClaim(
   let expectedProviderPackManifest: RemoteProviderPackManifest | null = providerPackAuthority?.manifest
     ?? providerArtifacts?.manifest as RemoteProviderPackManifest ?? null;
   let providerPackVerified = false;
+  // Set when a persisted-runner reattachment finds that runner settled and
+  // exited. The transport then relaunches it from durable state, which needs
+  // the admitted provider pack's launch inputs that adoption does not.
+  let relaunchesSettledRemoteRunner = false;
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
   if (explicitRemoteCodex && remoteCodexNpmSpec) {
@@ -15595,7 +15599,7 @@ async function createRunnerdBackendWithinSessionClaim(
       return;
     selectedRemoteMode = requiredMode;
     if (input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery) {
-      if (input.controllerPersistence?.runnerArtifact) {
+      if (input.controllerPersistence?.runnerArtifact && !relaunchesSettledRemoteRunner) {
         remotePrepared = true;
         return;
       }
@@ -16690,6 +16694,13 @@ async function createRunnerdBackendWithinSessionClaim(
               signalVerifiedRecoveryProcess(localRecoveryProcess, signal),
           }
         : undefined;
+  if (adoptingPersistedRemoteRunner && !adoptedProcess && requiresRemoteProviderPack) {
+    // Bind the relaunch to the pack this session was admitted with (the saved
+    // authority, verified as an exact installed identity), never a newer one.
+    relaunchesSettledRemoteRunner = true;
+    providerPackAuthority = selectProviderPackAuthority(true);
+    expectedProviderPackManifest = providerPackAuthority?.manifest ?? expectedProviderPackManifest;
+  }
   if (adoptedProcess && remoteTarget) {
     const markSpawned = resolveRemoteRunnerProcessSpawned as (() => void) | null;
     markSpawned?.();
