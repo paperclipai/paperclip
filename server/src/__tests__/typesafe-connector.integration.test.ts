@@ -8,6 +8,9 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
+  connectionGrantMembers,
+  connectionGrants,
   createDb,
   heartbeatRuns,
   toolAccessAuditEvents,
@@ -457,6 +460,85 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
         provider() as unknown as typeof fetch,
       ),
     ).resolves.toEqual(ANSWER);
+  });
+
+  async function runFor(companyId: string, agentId: string, responsibleUserId: string) {
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId, invocationSource: "assignment", status: "running", contextSnapshot: {}, responsibleUserId })
+      .returning();
+    return run!;
+  }
+
+  async function organizationGrantId(connectionId: string) {
+    const [grant] = await db
+      .select({ id: connectionGrants.id })
+      .from(connectionGrants)
+      .where(and(eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.kind, "organization")));
+    return grant!.id;
+  }
+
+  it("refuses a run whose responsible user is outside the identity's audience", async () => {
+    const { companyId, first, connectionId } = await fixture("all_agents");
+    const insider = `user-${randomUUID()}`;
+    const outsider = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values([
+      { companyId, principalType: "user", principalId: insider, status: "active", membershipRole: "member" },
+      { companyId, principalType: "user", principalId: outsider, status: "active", membershipRole: "member" },
+    ]);
+    await db.insert(connectionGrantMembers).values({
+      companyId,
+      grantId: await organizationGrantId(connectionId),
+      subjectType: "user",
+      subjectId: insider,
+    });
+    const outsiderRun = await runFor(companyId, first.id, outsider);
+    const fetcher = provider();
+    expect(
+      await assignedTypesafeConnections(db, { companyId, agentId: first.id, runId: outsiderRun.id }),
+    ).toEqual([]);
+    await expect(
+      executeTypesafeAsk(
+        db,
+        { companyId, agentId: first.id, runId: outsiderRun.id, issueId: null },
+        ask(),
+        fetcher as unknown as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetcher).not.toHaveBeenCalled();
+    const insiderRun = await runFor(companyId, first.id, insider);
+    await expect(
+      executeTypesafeAsk(
+        db,
+        { companyId, agentId: first.id, runId: insiderRun.id, issueId: null },
+        ask(),
+        provider() as unknown as typeof fetch,
+      ),
+    ).resolves.toEqual(ANSWER);
+  });
+
+  it("refuses a run whose responsible user is no longer an active member", async () => {
+    const { companyId, first } = await fixture("all_agents");
+    const former = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: former,
+      status: "suspended",
+      membershipRole: "member",
+    });
+    const run = await runFor(companyId, first.id, former);
+    const fetcher = provider();
+    expect(await assignedTypesafeConnections(db, { companyId, agentId: first.id, runId: run.id })).toEqual([]);
+    await expect(
+      executeTypesafeAsk(
+        db,
+        { companyId, agentId: first.id, runId: run.id, issueId: null },
+        ask(),
+        fetcher as unknown as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("keeps working after its installs are changed", async () => {

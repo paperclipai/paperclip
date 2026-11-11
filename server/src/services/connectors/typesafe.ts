@@ -1,12 +1,13 @@
 import { and, eq, exists, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, heartbeatRuns, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { companyMemberships, connectionGrantMembers, connectionGrants, heartbeatRuns, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { typesafeAskSchema, type TypesafeAskResult } from "@paperclipai/shared";
 import { HttpError, badRequest, forbidden, unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
 import { isRestrictedChatRunSnapshot } from "../restricted-chat-run.js";
 import { secretService } from "../secrets.js";
 import { toolAccessPolicyService } from "../tool-access-policy.js";
+import { isConnectionGrantAudienceAllowed } from "../tool-gateway.js";
 import {
   TypesafeApiError,
   isTypesafeConnection,
@@ -61,9 +62,13 @@ export const TYPESAFE_TOOLS = [
   },
 ] as const;
 
-type AgentBinding = { companyId: string; agentId: string };
-type AskBinding = AgentBinding & {
+type AgentBinding = {
+  companyId: string;
+  agentId: string;
   runId?: string | null;
+  responsibleUserId?: string | null;
+};
+type AskBinding = AgentBinding & {
   issueId?: string | null;
 };
 
@@ -115,10 +120,73 @@ export async function assignedTypesafeConnections(
         ),
       ),
     );
-  return rows
-    .map((row) => row.connection)
-    .filter(isTypesafeConnection)
+  const candidates = rows.map((row) => row.connection).filter(isTypesafeConnection);
+  if (!candidates.length) return [];
+  const actingUserId = await responsibleUserFor(db, binding);
+  const activeMember = actingUserId
+    ? (
+        await db
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.companyId, binding.companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, actingUserId),
+              eq(companyMemberships.status, "active"),
+            ),
+          )
+          .limit(1)
+      ).length > 0
+    : false;
+  const grants = await db
+    .select({ id: connectionGrants.id, connectionId: connectionGrants.connectionId })
+    .from(connectionGrants)
+    .where(
+      and(
+        eq(connectionGrants.companyId, binding.companyId),
+        inArray(connectionGrants.connectionId, candidates.map((connection) => connection.id)),
+        eq(connectionGrants.kind, "organization"),
+        eq(connectionGrants.status, "active"),
+      ),
+    );
+  const members = grants.length
+    ? await db
+        .select({ grantId: connectionGrantMembers.grantId, subjectId: connectionGrantMembers.subjectId })
+        .from(connectionGrantMembers)
+        .where(
+          and(
+            eq(connectionGrantMembers.companyId, binding.companyId),
+            inArray(connectionGrantMembers.grantId, grants.map((grant) => grant.id)),
+            eq(connectionGrantMembers.subjectType, "user"),
+          ),
+        )
+    : [];
+  const allowed = new Set(
+    grants
+      .filter((grant) =>
+        isConnectionGrantAudienceAllowed(
+          members.filter((member) => member.grantId === grant.id).map((member) => member.subjectId),
+          actingUserId,
+          activeMember,
+        ),
+      )
+      .map((grant) => grant.connectionId),
+  );
+  return candidates
+    .filter((connection) => allowed.has(connection.id))
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+async function responsibleUserFor(db: Db, binding: AgentBinding) {
+  if (binding.responsibleUserId !== undefined) return binding.responsibleUserId;
+  if (!binding.runId) return null;
+  const [run] = await db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId)))
+    .limit(1);
+  return run?.responsibleUserId ?? null;
 }
 
 function configuredModel(connection: { config: Record<string, unknown> }) {

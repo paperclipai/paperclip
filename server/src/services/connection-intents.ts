@@ -374,7 +374,7 @@ export function connectionIntentService(db: Db) {
     );
     if (matching.length === 0) return null;
     if (input.serviceSlug === TYPESAFE_GALLERY_KEY) {
-      const usable = await typesafeUsableConnections(db, { companyId: input.companyId, agentId: input.agentId, issueId: input.issueId });
+      const usable = await typesafeUsableConnections(db, { companyId: input.companyId, agentId: input.agentId, issueId: input.issueId, responsibleUserId: input.responsibleUserId });
       return usable.length === 1 ? access.getConnection(usable[0]!.id, input.companyId) : null;
     }
     const effective = await access.getConnectionAssignmentsForAgent(input.companyId, input.agentId, matching.map(connection => connection.id));
