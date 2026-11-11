@@ -38,7 +38,10 @@ async function ownedSecrets(o: OwnedDev) {
   return normalizedSecrets([...CREDENTIAL_NAMES, "BRAINTRUST_API_KEY", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_DECISION_SIGNING_SECRET", "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "BETTER_AUTH_SECRET", "PAPERCLIP_E2E_GATEWAY_TOKEN"].map(name => process.env[name]).concat(generated));
 }
 async function ownedReason(o: OwnedDev) {
-  const output = await readFile(o.log, "utf8").catch(() => "");
+  // Only the log tail is read: a crash-looping or verbose child must not make the diagnostic costly.
+  const output = await (async () => { const file = await open(o.log, "r").catch(() => null); if (!file) return "";
+    try { const { size } = await file.stat(), length = Math.min(size, 65_536), buffer = Buffer.alloc(length);
+      await file.read(buffer, 0, length, size - length); return buffer.toString("utf8"); } finally { await file.close(); } })();
   return output ? boundedOwnedDevReason(output, await ownedSecrets(o)) : "no CLI output";
 }
 async function command(o: OwnedDev, args: string[]) {
@@ -93,7 +96,8 @@ export function reportsTarget(reply: unknown, targetUrl: unknown) {
   if (typeof reply !== "string" || typeof targetUrl !== "string") return false;
   let host: string; try { host = new URL(targetUrl).host; } catch { return false; }
   // Exact host:port token (bare, linked or with scheme); a longer port or address is a different target.
-  return new RegExp(`(?<![\\w.])${host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\d])`).test(reply);
+  // The token must end the address: no longer port, no userinfo "@", no further host label or port.
+  return new RegExp(`(?<![\\w.@])${host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w@-]|[.:][\\w-])`).test(reply);
 }
 export function gradeOwnedDev(value: unknown) {
   const c = checks(), o = privilegedObservation(value); c.add("actual-dev-instance-evidence", !!o, "Actual supported owned checkout initialization, seeding, server readiness and cleanup are required."); if (!o) return c.result();
