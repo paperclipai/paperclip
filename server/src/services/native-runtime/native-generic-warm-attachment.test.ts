@@ -33,7 +33,7 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
   it.each(["preparing", "transition"] as const)("recovers a new ACPX turn from committed %s with the same remote Runner and no second launch", async (boundary) => {
     const f = await environment.seedRun(`GENERIC-WARM-${boundary}`), shared = environment.current;
     const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
-    const root = join(shared.runtimeRoot, "generic"), remote = join(root, "remote"), oldRoot = join(root, "old"), newRoot = join(root, "new");
+    const root = join(shared.runtimeRoot, `generic-${boundary}`), remote = join(root, "remote"), oldRoot = join(root, "old"), newRoot = join(root, "new");
     await mkdir(remote, { recursive: true });
     await mkdir(join(remote, "diagnostics"), { recursive: true });
     const journal = join(remote, "calls"), wrapper = join(remote, "sidecar"), script = join(remote, "sidecar-entry");
