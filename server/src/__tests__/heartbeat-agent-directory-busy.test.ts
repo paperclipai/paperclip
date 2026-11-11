@@ -20,6 +20,7 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { AgentDirectoryOperationBusyError } from "../services/agent-directory-working-copies.js";
 import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../services/heartbeat/agent-directory-busy.js";
 import { undeliveredLegacyUserCommentIds } from "../services/explicit-native-continuation.js";
+import { isResolvedInteractionContinuationWakeContext } from "../modules/run-dispatch/index.js";
 
 const busyPrepares = vi.hoisted(() => ({ remaining: 0, calls: 0 }));
 vi.mock("../services/agent-instruction-working-copies.js", async importOriginal => {
@@ -155,6 +156,47 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     await db.update(heartbeatRuns).set({ errorCode: "operator_cancelled",
       resultJson: { cancellation: { source: "operator", expected: true } } }).where(eq(heartbeatRuns.id, runId));
     expect(await undeliveredLegacyUserCommentIds(db, companyId, issueId, agentId, [commentId])).toEqual([]);
+  });
+
+  it.each(["parked", "reassigned"] as const)("keeps an accepted interaction continuation's gates across a directory wait: %s", async change => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId, name: "OtherCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+    const issueId = randomUUID(), runId = randomUUID(), wakeupRequestId = randomUUID(), interactionId = randomUUID();
+    const context = { issueId, taskId: issueId, wakeReason: "issue_commented", mutation: "interaction", interactionId,
+      interactionKind: "request_confirmation", interactionStatus: "accepted" };
+    await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_commented", payload: { issueId }, status: "queued", runId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "queued", wakeupRequestId, contextSnapshot: context });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Approved plan", status: "in_progress", priority: "medium",
+      responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, executionRunId: runId, issueNumber: 4 });
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId }).where(eq(heartbeatRuns.id, runId));
+    busyPrepares.remaining = 1;
+    busyPrepares.calls = 0;
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON,
+      contextSnapshot: { mutation: "interaction", interactionId, interactionKind: "request_confirmation", interactionStatus: "accepted" } });
+    expect(isResolvedInteractionContinuationWakeContext(retry!.contextSnapshot)).toBe(true);
+
+    if (change === "parked") await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+    else await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, issueId));
+    const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);
+    await heartbeat.promoteDueScheduledRetries(afterDue);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(retry!.id))?.status).not.toBe("succeeded");
+    expect(executedRunIds).not.toContain(retry!.id);
+    const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(task!.status).toBe(change === "parked" ? "todo" : "in_progress");
+    expect(task!.assigneeAgentId).toBe(change === "parked" ? agentId : otherAgentId);
   });
 
   it("defers the first run of a task instead of failing it, then runs it", async () => {

@@ -79,6 +79,7 @@ import {
   type WorkspaceBusyWait,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
+  isPreparationWaitRetryReason,
 } from "../../modules/run-dispatch/index.js";
 
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
@@ -697,8 +698,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const interactionRunnerWait = (retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
-      || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON)
+    const interactionRunnerWait = isPreparationWaitRetryReason(retryReason)
       && isResolvedInteractionContinuationWakeContext(run.contextSnapshot);
     const interactionContinuationPayload =
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON || interactionRunnerWait
@@ -1088,8 +1088,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
-          const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
-            || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON) ? await admitExplicitContinuationRetry({
+          const continuation = issueId && (retryReason === "transient_failure" || isPreparationWaitRetryReason(retryReason))
+            ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
             parentRunId: run.id, successorRunId: scheduledRunId, now,
           }) : null;

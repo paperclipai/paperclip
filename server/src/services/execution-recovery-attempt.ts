@@ -1,6 +1,7 @@
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
+import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/domain/wake-context.js";
 
 /**
  * A preparation that a restart interrupted before any provider work started
@@ -11,7 +12,7 @@ import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provi
  */
 export const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
 export const INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
-export const AGENT_DIRECTORY_WAIT_RETRY_REASON = "agent_directory_busy";
+export const AGENT_DIRECTORY_WAIT_RETRY_REASON = AGENT_DIRECTORY_BUSY_RETRY_REASON;
 
 /** Retry lanes that keep their own counter and never spend failures. */
 const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
