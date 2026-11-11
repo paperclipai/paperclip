@@ -145,6 +145,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "k15-overlap-seconds": { type: "string" },
       "k15-fresh-home": { type: "boolean" },
       "ephemeral-server": { type: "boolean" },
+      "runner-bind-fault": { type: "boolean" },
       "tm1-hold-seconds": { type: "string" },
       "fail-recovery-step": { type: "string" },
       "long-turn-minutes": { type: "string" },
@@ -158,7 +159,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "ephemeral-server", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes", "cr1-hold-seconds", "cr2-hold-seconds", "cr3-stall-seconds", "sandbox-watch-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "ephemeral-server", "runner-bind-fault", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes", "cr1-hold-seconds", "cr2-hold-seconds", "cr3-stall-seconds", "sandbox-watch-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -395,6 +396,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     const repository = options.workloads.filter(workload => workloadDefinitions[workload].usesRepository);
     if (repository.length) throw new Error(`${flag} cannot run ${repository.join(", ")}: the fixture repository is a local_path project source, which a volume-free server refuses; pick other --workloads`);
     options.ephemeralServer = true;
+  }
+  if (values["runner-bind-fault"]) {
+    if (env !== "daytona") throw new Error("--runner-bind-fault holds a port inside a remote sandbox: run it with --env daytona");
+    options.runnerBindFault = true;
   }
   if (values["storage-faults"] !== undefined) {
     if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
