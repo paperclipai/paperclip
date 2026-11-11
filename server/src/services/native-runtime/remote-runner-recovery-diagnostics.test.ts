@@ -117,7 +117,19 @@ describe("exited remote runner evidence", () => {
       expect(output).toContain("== runnerd.stderr.log\npaperclip-runnerd: transport reconnect grace exceeded");
       expect(output).toContain("== runnerd.process-stderr.log\n");
       expect(output).toContain("last stderr line");
-      expect(output.length).toBeLessThan(8_400);
+      expect(output.length).toBeLessThan(4_200);
+      // Each file keeps its share: a long stderr tail cannot crowd out the exit diagnostic.
+      const bounded = boundRemoteRunnerExitEvidence(output, text => text)!;
+      expect(bounded.length).toBeLessThanOrEqual(REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS);
+      expect(bounded).toContain("paperclip-runnerd: transport reconnect grace exceeded");
+      expect(bounded).toContain("last stderr line");
+      // The first candidate directory with evidence wins; a later shared directory is read only when it has none.
+      const shared = join(root, "shared");
+      await mkdir(shared);
+      await writeFile(join(shared, "runnerd.stderr.log"), "shared runner exit");
+      expect(execFileSync("sh", ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "t", directory, shared], { encoding: "utf8" })).not.toContain("shared runner exit");
+      expect(execFileSync("sh", ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "t", join(root, "missing"), shared], { encoding: "utf8" }))
+        .toBe("== runnerd.stderr.log\nshared runner exit\n");
       await writeFile(join(root, "secret"), "private");
       await rm(join(directory, "runnerd.stderr.log"));
       await symlink(join(root, "secret"), join(directory, "runnerd.stderr.log"));
@@ -133,7 +145,7 @@ describe("exited remote runner evidence", () => {
     expect(describeExitedRemoteRunnerReason({ recoverableFailure: "free text with spaces" }, redact)).toEqual({});
     expect(describeExitedRemoteRunnerReason(null, redact)).toEqual({});
     expect(boundRemoteRunnerExitEvidence("  ", redact)).toBeNull();
-    expect(boundRemoteRunnerExitEvidence("y".repeat(9_000), redact)).toHaveLength(REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS);
+    expect(boundRemoteRunnerExitEvidence("y".repeat(9_000), redact)!.length).toBeLessThanOrEqual(REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS);
   });
 
   it("keeps the exit reason through the recorded event payload", () => {

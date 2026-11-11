@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT, REMOTE_RUNNER_PROCESS_STDERR_FILE, REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES,
+  REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES,
 } from "./native-session-executor.js";
 
 /** Runs the launch writer as the remote launcher does, with a Node child standing in for runnerd. */
@@ -49,9 +50,10 @@ describe("remote runnerd stderr evidence", () => {
       // The trimmer checks every 15 s in production; check it quickly here.
       const fast = REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT.replace("sleep 15", "sleep 0.2");
       expect(fast).not.toBe(REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT);
-      await launch(root, `process.stderr.write("z".repeat(${REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES + 4096}) + "\\nend\\n"); setTimeout(() => {}, 1500)`, fast);
+      await launch(root, `process.stderr.write("z".repeat(${REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES + 4096}) + "\\nend\\n"); setTimeout(() => {}, 1500)`, fast);
       const size = (await stat(file)).size;
-      expect(size).toBeLessThanOrEqual(REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES);
+      // Past the 8 MiB backstop the trimmer keeps the last 1 MiB, the most recent lines included.
+      expect(size).toBeLessThanOrEqual(REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES + 4096);
       expect((await readFile(file, "utf8")).endsWith("end\n")).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });

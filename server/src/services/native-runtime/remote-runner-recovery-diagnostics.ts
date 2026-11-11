@@ -38,15 +38,17 @@ const RUNNER_DIAGNOSTIC_COUNT = 4;
 const RECOVERABLE_FAILURE_PATTERN = /^[A-Za-z0-9_.:-]{1,120}$/;
 
 /**
- * Prints a bounded tail of the exited Runner's sandbox-local exit evidence
- * ($1 is its diagnostics directory): the bounded exit diagnostic runnerd writes
- * itself (`runnerd.stderr.log`) and its redirected stderr
- * (`runnerd.process-stderr.log`). Read-only; missing or unsafe files print nothing.
+ * Prints a bounded tail of the exited Runner's sandbox-local exit evidence: the
+ * bounded exit diagnostic runnerd writes itself (`runnerd.stderr.log`) and its
+ * redirected stderr (`runnerd.process-stderr.log`). Each argument is a candidate
+ * diagnostics directory, most specific first; the first that holds either file
+ * is the one read. Read-only; missing or unsafe files print nothing.
  */
 export const REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT =
-  'directory=$1; test -d "$directory" && test ! -L "$directory" || exit 0; ' +
+  'for directory in "$@"; do test -d "$directory" && test ! -L "$directory" || continue; found=""; ' +
   'for name in runnerd.stderr.log runnerd.process-stderr.log; do file="$directory/$name"; ' +
-  'if test -f "$file" && test ! -L "$file"; then printf "== %s\\n" "$name"; tail -c 4096 -- "$file"; printf "\\n"; fi; done';
+  'if test -f "$file" && test ! -L "$file"; then found=1; printf "== %s\\n" "$name"; tail -c 2048 -- "$file"; printf "\\n"; fi; done; ' +
+  'test -z "$found" || exit 0; done; exit 0';
 
 /** The durable reason an exited Runner recorded, redacted and bounded for a run event. */
 export function describeExitedRemoteRunnerReason(state: Record<string, unknown> | null, redact: (text: string) => string):
@@ -66,8 +68,15 @@ export function describeExitedRemoteRunnerReason(state: Record<string, unknown> 
 
 /** The tail of the exit evidence script's output, redacted and bounded; null when there is none. */
 export function boundRemoteRunnerExitEvidence(output: string, redact: (text: string) => string): string | null {
-  const text = redact(output).trim();
-  return text ? text.slice(-REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS) : null;
+  // Each file gets its own share of the budget, so a long stderr tail cannot crowd out the exit diagnostic.
+  const sections = redact(output).split(/^(?=== runnerd\.)/m).map(section => section.trim()).filter(Boolean);
+  if (!sections.length) return null;
+  const share = Math.floor(REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS / sections.length) - 1;
+  return sections.map(section => {
+    if (section.length <= share) return section;
+    const header = section.slice(0, section.indexOf("\n") + 1);
+    return header + section.slice(-(share - header.length));
+  }).join("\n");
 }
 
 export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick<RemoteRunnerRecoveryDiagnostic,

@@ -14563,18 +14563,23 @@ export const REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT =
  * never leaves the sandbox on its own; recovery reads a short redacted tail.
  */
 export const REMOTE_RUNNER_PROCESS_STDERR_FILE = "runnerd.process-stderr.log";
-/** Above this size the file is rotated at launch and trimmed while runnerd runs. */
+/** Above this size the file is rotated once at launch, so each runnerd starts with a fresh file. */
 export const REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES = 1_048_576;
-const REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES = 262_144;
+/** The disk backstop for one runnerd's lifetime: above this size the trimmer keeps the last 1 MiB. */
+export const REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES = 8_388_608;
+const REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES = 1_048_576;
 
 /**
- * The trimmer for a running runnerd's stderr file ($1 pid, $2 file). runnerd
- * appends (O_APPEND), so rewriting the kept tail in place is safe. It runs
- * detached from runnerd (double fork) with its own argv, and ends with runnerd.
+ * The disk backstop for a running runnerd's stderr file ($1 pid, $2 file). It
+ * runs detached from runnerd (double fork) with its own argv and ends with
+ * runnerd. Rewriting the kept tail can drop a line runnerd appends between the
+ * copy and the rewrite, so it acts only past 8 MiB, which ordinary stderr
+ * volume never reaches. runnerd's own exit reason is not on this stream: it
+ * writes that to `runnerd.stderr.log` itself, which no trimmer touches.
  */
 const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
   `pid=$1; log=$2; while kill -0 "$pid" 2>/dev/null; do sleep 15; size=$(wc -c 2>/dev/null < "$log" | tr -d " "); ` +
-  `if test "\${size:-0}" -gt ${REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES} && test -f "$log" && test ! -L "$log"; then ` +
+  `if test "\${size:-0}" -gt ${REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES} && test -f "$log" && test ! -L "$log"; then ` +
   `tail -c ${REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES} -- "$log" > "$log.trim" && cat -- "$log.trim" > "$log"; rm -f -- "$log.trim"; fi; done`;
 
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
@@ -14737,7 +14742,9 @@ export async function verifyRemoteRunnerReattachment(input: {
         ...describeExitedRemoteRunner(runnerState),
         // Why the Runner exited, from its own durable state and sandbox-local files, so the run log names it.
         ...describeExitedRemoteRunnerReason(runnerState, redactSensitiveText),
-        ...await readRemoteRunnerExitEvidence(runner, posix.join(posix.dirname(stateDirectory), "diagnostics"),
+        // A session Runner logs beside its state; external (Dot, Muse, grok_bot) Runners log in the shared runtime root.
+        ...await readRemoteRunnerExitEvidence(runner, [posix.join(posix.dirname(stateDirectory), "diagnostics"),
+          posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner", "diagnostics")],
           Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY, Date.now() + 10_000)),
       } : {}) });
   }
@@ -14752,12 +14759,12 @@ export async function verifyRemoteRunnerReattachment(input: {
 }
 
 /** Best effort: a missing, slow or unreadable file leaves the recovery outcome unchanged. */
-async function readRemoteRunnerExitEvidence(runner: CommandManagedRuntimeRunner, diagnosticsDirectory: string, deadline: number):
+async function readRemoteRunnerExitEvidence(runner: CommandManagedRuntimeRunner, diagnosticsDirectories: string[], deadline: number):
   Promise<{ runnerExitEvidence?: string }> {
   try {
     const result = await readRemoteRunnerRecoveryProbe({
       runner, stage: "process_verification", deadline, readOnly: true,
-      request: { command: "sh", args: ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "paperclip-runner-exit-evidence", diagnosticsDirectory],
+      request: { command: "sh", args: ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "paperclip-runner-exit-evidence", ...diagnosticsDirectories],
         bypassSession: true },
     });
     if (result.exitCode !== 0 || result.timedOut) return {};
