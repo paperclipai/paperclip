@@ -1,3 +1,5 @@
+import { SCREENSHOT_PRIVACY_REASONS } from "./screenshot-privacy.js";
+import { POSTGRES_IMAGE, POSTGRES_IMAGE_ID, POSTGRES_AMD64_IMAGE, POSTGRES_AMD64_IMAGE_IDS, reviewedPostgresReceiptIdentity } from "./docker-postgres.js";
 import { agentJourneyRuns, agentJourneyRunCountValid, journeyRequiredChecks } from "./product-journeys/success-contract.js";
 import { validateWorkerTiming } from "./worker-timing.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
@@ -228,6 +230,14 @@ const matcher: Rule = (value, at) => {
   rule(value, at);
 };
 const fields = {
+  databaseIdentity: optional((value, at) => { closedShape({
+    lane: oneOf("owned-docker-postgres"), image: oneOf(POSTGRES_IMAGE, POSTGRES_AMD64_IMAGE), imageId: oneOf(POSTGRES_IMAGE_ID, ...POSTGRES_AMD64_IMAGE_IDS), architecture: optional(oneOf("amd64")), imageVersion: oneOf("18.6-1.pgdg13+2"),
+    artifactVerified: boolean, contextSha256: nullable(matching(/^[a-f0-9]{64}$/)), engineSha256: nullable(matching(/^[a-f0-9]{64}$/)), containerId: nullable(matching(/^[a-f0-9]{64}$/)),
+    cluster: optional(closedShape({ version: matching(/^18\.6(?:\s|$)/), systemIdentifier: matching(/^[0-9]+$/) })),
+    status: oneOf("creating", "ready", "failed", "removed", "cleanup-failed", "startup-unconfirmed"),
+  })(value, at);
+    if (!reviewedPostgresReceiptIdentity(value as { image: string; imageId: string; architecture?: string })) invalid(at);
+  }),
   accountingIdentity: optional(shape({ campaignId: string, attemptId: string })),
   publicMcp: optional(assistant),
   schema: oneOf(
@@ -326,6 +336,7 @@ const fields = {
   matcherResults: optional(
     array(shape({ matcher, passed: boolean, detail: string })),
   ),
+  screenshotPrivacy: optional(closedShape({ withheld: (value, at) => { if (value !== true) invalid(at); }, reasons: (value, at) => { array(oneOf(...SCREENSHOT_PRIVACY_REASONS))(value, at); if (!(value as unknown[]).length) invalid(at); } })),
   screenshots: optional(
     array(
       shape({
@@ -353,7 +364,7 @@ const fields = {
     source: optional(shape({ sha: string, ref: string, dirty: boolean })),
     initialTaskIds: array(string), configuredModel: nullable(string), observedModels: array(string), runtimeSettings: optional(object),
     instructions: array(shape({ path: string, content: string, sha256: string, contentSha256: optional(string), redacted: optional(boolean) })),
-    checkpoints: array(shape({ id: string, at: date, phase: oneOf("opening", "response", "clarified", "revised", "accepted", "rejected", "finished"), issueId: string,
+    checkpoints: array(shape({ id: string, at: date, phase: oneOf("opening", "response", "clarified", "revised", "plan-accepted", "hiring-proposed", "hiring-accepted", "execution-proposed", "accepted", "rejected", "finished"), issueId: string,
       tasks: array(object), agents: array(object), comments: array(object), interactions: array(object), documents: array(object), attachments: optional(array(object)), runs: array(object) })),
     checks: array(shape({ id: string, passed: boolean, notReached: optional(string), evidence: array(string), detail: string })),
   })),
@@ -420,6 +431,7 @@ export function validateRetainedRunnerResult(
 ): asserts value is RunnerE2EResult {
   result(value, "result");
   const checked = value as RunnerE2EResult;
+  if (checked.databaseIdentity && checked.status === "passed" && (!checked.databaseIdentity.artifactVerified || !checked.databaseIdentity.contextSha256 || !checked.databaseIdentity.engineSha256 || !checked.databaseIdentity.containerId || !checked.databaseIdentity.cluster || !["ready", "removed"].includes(checked.databaseIdentity.status))) invalid("result.databaseIdentity");
   const artifact = checked.productJourney?.artifact;
   if (checked.productJourney?.onboardingPreAcceptance && (checked.suiteId !== "product-journeys" || checked.caseId !== "cloud-onboarding" ||
     checked.status !== "failed" || checked.productJourney.outcome !== "failed" ||
@@ -434,7 +446,8 @@ export function validateRetainedRunnerResult(
     if (!evidence) return invalid("result.productJourney");
     const required = journeyRequiredChecks[checked.caseId];
     if (evidence.outcome !== "passed" || !evidence.deployment || !required || !required.every(id => evidence.checks.some(c => c.id === id && c.passed)) || evidence.checks.some(check => !check.passed) || evidence.phases.some(p => p.outcome !== "passed") || checked.cleanup !== "passed") invalid("result.productJourney");
-    if (["task-properties", "task-create", "project-task-context", "task-document-persistence", "task-search-filter"].includes(checked.caseId) && (checked.runtimeMode !== "none" || checked.provider !== null || checked.model !== null || checked.runIds?.length)) invalid("result.browserOnly");
+    if (["task-edit-lifecycle", "inbox-triage", "task-properties", "task-create", "project-task-context", "task-document-persistence", "task-search-filter", "company-access-isolation"].includes(checked.caseId) && (checked.runtimeMode !== "none" || checked.provider !== null || checked.model !== null || checked.runIds?.length)) invalid("result.browserOnly");
+    if (["company-access-isolation", "task-edit-lifecycle"].includes(checked.caseId) && checked.usage != null && Object.entries(checked.usage).some(([key, value]) => key !== "runs" || !Array.isArray(value) || value.length > 0)) invalid("result.browserOnly");
     if (Object.hasOwn(agentJourneyRuns, checked.caseId) && (!agentJourneyRunCountValid(checked.caseId, checked.runIds?.length)
       || !checked.model || !checked.provider || checked.runtimeMode !== "native")) invalid("result.agentJourneyRun");
     if (checked.caseId === "cloud-onboarding" && (!checked.runIds?.length || !evidence.operations || !evidence.operations.requestCount || !evidence.operations.traceIds.length || evidence.operations.campaignId !== evidence.campaignId || evidence.operations.attemptId !== evidence.attemptId)) invalid("result.paidJourneyReceipt");

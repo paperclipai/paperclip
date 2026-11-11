@@ -169,7 +169,7 @@ describe("Antigravity managed Runner credentials", () => {
     expect(await readFile(destination, "utf8")).toBe(credential("fixture-refreshed"));
     await expect(access(source)).rejects.toMatchObject({ code: "ENOENT" });
   });
-  it("settles the retained runtime refresh before preparing another launch for the same account", async () => {
+  it("settles the retained runtime refresh before reusing its original home", async () => {
     const managedHome = await home(), runtimeHome = await home();
     const release = bindRetainedGoogleCredentialHome(managedHome, { companyId: "company", accountKey: managedHome });
     const destination = join(managedHome, "antigravity-acp", "acp_token.json");
@@ -182,7 +182,7 @@ describe("Antigravity managed Runner credentials", () => {
     try {
       await expect(completeManagedNativeCredentialTurn(session)).rejects.toThrow("destination is invalid");
       await expect(prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} }))
-        .rejects.toThrow("still completing credential cleanup");
+        .rejects.toMatchObject({ details: { code: "ai_credential_cleanup_pending" } });
       expect(await readFile(source, "utf8")).toBe(credential("fixture-refreshed"));
       await chmod(destination, 0o600);
       expect((await prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} })).credential)
@@ -191,7 +191,7 @@ describe("Antigravity managed Runner credentials", () => {
       await expect(access(source)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { release(); }
   });
-  it.each(["turn completion", "direct close"])("retries original process proof after rejected %s before account reuse, without clearing session failure", async origin => {
+  it.each(["turn completion", "direct close"])("retries original process proof after rejected %s before reusing the original home, without clearing session failure", async origin => {
     const managedHome = await home(), runtimeHome = await home();
     const release = bindRetainedGoogleCredentialHome(managedHome, { companyId: "company-retirement", accountKey: managedHome });
     const destination = join(managedHome, "antigravity-acp", "acp_token.json"), source = join(runtimeHome, "antigravity-acp", "auth-refresh.json");
@@ -212,7 +212,7 @@ describe("Antigravity managed Runner credentials", () => {
     try {
       await expect(origin === "turn completion" ? completeManagedNativeCredentialTurn(session) : session.close({ reason: "direct close" })).rejects.toBe(terminal);
       await expect(prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} }))
-        .rejects.toThrow("still completing credential cleanup");
+        .rejects.toMatchObject({ details: { code: "ai_credential_cleanup_pending" } });
       expect(proof).toHaveBeenCalledOnce();
       expect(await readFile(source, "utf8")).toBe(credential("fixture-refreshed"));
       expect(await readFile(destination, "utf8")).toBe(credential("fixture-original"));

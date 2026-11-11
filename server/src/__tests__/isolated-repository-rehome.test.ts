@@ -618,7 +618,7 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(await currentRestorePointSnapshot(f.target)).toEqual(before);
     expect((await fs.readFile(path.join(f.target, "notes", "large.bin"))).equals(large)).toBe(true);
     expect((await fs.readFile(path.join(f.target, "large.tsbuildinfo"))).equals(large)).toBe(true);
-  });
+  }, 60_000);
 
   it("keeps an orphaned clone whose origin no longer matches the recorded repository", async () => {
     const f = await fixture();

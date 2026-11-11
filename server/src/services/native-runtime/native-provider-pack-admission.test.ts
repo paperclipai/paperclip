@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -225,5 +225,65 @@ describe("provider pack admission PostgreSQL fencing", () => {
       expect((await read(f.identity.runId)).runnerProfileJson).toEqual(pending);
     } finally { release(); await owner; }
     await expect(recordNativeProviderPackAdmission(db, f)).resolves.toBe(true);
+  });
+  it.each([false, true])("waits for a concurrent run-event append's run-row lock instead of losing the admission (waitForClaim: %s)", async waitForClaim => {
+    // Staging failure: a run-event append locks the run row
+    // (FOR NO KEY UPDATE, as appendHeartbeatRunEvent does) for milliseconds. A
+    // NOWAIT admission write failed, left the state pending, and artifact
+    // retention then failed the run as native_provider_artifacts_admission_unverified.
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const append = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)).for("no key update");
+      acquired(); await gate;
+    });
+    await holding;
+    let settled = false;
+    const recording = recordNativeProviderPackAdmission(db, { ...f, waitForClaim } as Parameters<typeof recordNativeProviderPackAdmission>[1])
+      .then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+    try {
+      // Release only after the admission is proven to wait on the run row, so
+      // the old NOWAIT code cannot pass by running after the append commits.
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ waiting: boolean }>(sql`select exists(select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and state = 'active'
+            and query like '%heartbeat_runs%') as waiting`);
+        expect(settled || row.waiting).toBe(true);
+      }, { timeout: 800 });
+    } finally { release(); await append; }
+    expect(await recording).toEqual({ value: true });
+    expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState)
+      .toEqual({ ...f.profile.nativeProviderPackAdmissionState, state: "verified" });
+  });
+  it.each([false, true])("waits within the durable-capture bound and rechecks the claim after its lock (revoked: %s)", async revoked => {
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const owner = db.transaction(async tx => {
+      await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.identity.runId)).for("update");
+      acquired(); await gate;
+      if (revoked) await tx.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1000) })
+        .where(eq(nativeRunFinalizations.runId, f.identity.runId));
+    });
+    let settled = false;
+    await holding;
+    const recording = recordNativeProviderPackAdmission(db, { ...f, waitForClaim: true } as Parameters<typeof recordNativeProviderPackAdmission>[1])
+      .then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+    try {
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ waiting: boolean }>(sql`select exists(select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and state = 'active'
+            and query like '%native_run_finalizations%') as waiting`);
+        expect(settled || row.waiting).toBe(true);
+      }, { timeout: 800 });
+      expect(settled).toBe(false);
+    } finally { release(); await owner; }
+    if (revoked) {
+      expect(await recording).toHaveProperty("error");
+      expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState).toEqual(f.profile.nativeProviderPackAdmissionState);
+    } else expect(await recording).toEqual({ value: true });
   });
 });

@@ -26,18 +26,18 @@ const support = await getEmbeddedPostgresTestSupport();
         : { stages: [{ type: "review", participants: [{ type: "user", userId: "board-reviewer" }] }] }),
     });
     await db.insert(companies).values({ id: companyId, name: "Policy fixture", issuePrefix: `P${companyId.slice(0, 6)}` });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Review limit fixture", executionPolicy: original });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Review limit fixture", executionPolicy: original as Record<string, unknown> | null });
     const edited = buildExecutionPolicy({ existingPolicy: original, reviewerValues: [], approverValues: [] })!;
     // The monitor editor removes this key after building the unchanged stages.
     const { monitor: _removedMonitor, ...withoutMonitor } = edited;
     const normalized = normalizeIssueExecutionPolicy(removed === "monitor" ? withoutMonitor : edited);
     const service = issueService(db);
-    await service.update(issueId, { executionPolicy: normalized, companyGuard: companyId });
+    await service.update(issueId, { executionPolicy: normalized as Record<string, unknown> | null, companyGuard: companyId });
     const saved = await service.getById(issueId);
     expect(saved?.executionPolicy).toEqual({ mode: "normal", commentRequired: true, stages: [], maxReviewRounds: 4 });
 
     const restored = normalizeIssueExecutionPolicy(buildExecutionPolicy({
-      existingPolicy: saved?.executionPolicy,
+      existingPolicy: normalizeIssueExecutionPolicy(saved?.executionPolicy),
       reviewerValues: ["user:board-reviewer"], approverValues: [],
     }));
     expect(restored).toMatchObject({ maxReviewRounds: 4, stages: [{ type: "review" }] });

@@ -27,7 +27,7 @@ const responses: Record<string, unknown> = {
     user: { id: "user", name: "Operator", email: "operator@example.com", image: null },
     sentryDsn: null,
   },
-  "/api/cli-auth/me": { isInstanceAdmin: false, companyIds: ["company"] },
+  "/api/cli-auth/me": { userId: "user", isInstanceAdmin: false, companyIds: ["company"] },
 };
 const checks = [
   ["/api/health", queryKeys.health],
@@ -103,6 +103,50 @@ describe("CloudAccessGate restart recovery", () => {
     await vi.advanceTimersByTimeAsync(16_000);
     await flushReact();
   }
+
+  it("opens from same-session board access without another startup request", async () => {
+    const previous = responses["/api/auth/get-session"];
+    responses["/api/auth/get-session"] = { ...(previous as object), boardBootstrap: {
+      userId: "user", companies: [], boardAccess: { userId: "user", isInstanceAdmin: false, companyIds: ["company"] },
+    } };
+    try {
+      await render();
+      expect(container.querySelector("textarea")).not.toBeNull();
+      expect(callsTo("/api/cli-auth/me")).toBe(0);
+      void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+      await flushReact();
+      expect(callsTo("/api/cli-auth/me")).toBe(1);
+    } finally { responses["/api/auth/get-session"] = previous; }
+  });
+
+  it("revokes cached board access when returning to an account with a new session snapshot", async () => {
+    const previous = responses["/api/auth/get-session"];
+    const boot = (userId: string, companyIds: string[]) => ({
+      session: { id: `session-${userId}`, userId },
+      user: { id: userId, name: "Operator", email: `${userId}@example.com`, image: null },
+      sentryDsn: null,
+      boardBootstrap: { userId, companies: [], boardAccess: { userId, isInstanceAdmin: false, companyIds } },
+    });
+    responses["/api/auth/get-session"] = boot("user", ["revoked-company"]);
+    try {
+      await render();
+      expect(container.querySelector("textarea")).not.toBeNull();
+      client.setQueryData(queryKeys.auth.session, boot("other", ["other-company"]));
+      await flushReact();
+      expect(container.querySelector("textarea")).not.toBeNull();
+      client.setQueryData(queryKeys.auth.session, boot("user", []));
+      await flushReact();
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(client.getQueryData([...queryKeys.access.currentBoardAccess, "user"])).toMatchObject({ companyIds: [] });
+      expect(callsTo("/api/cli-auth/me")).toBe(0);
+
+      // An ordinary post-bootstrap grant is allowed to replace that snapshot.
+      void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+      await flushReact();
+      expect(callsTo("/api/cli-auth/me")).toBe(1);
+      expect(container.querySelector("textarea")).not.toBeNull();
+    } finally { responses["/api/auth/get-session"] = previous; }
+  });
 
   it.each(checks)("recovers from an HTML response on %s without navigating", async (path) => {
     failingPath = path;

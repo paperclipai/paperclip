@@ -152,7 +152,14 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
         : null,
     };
   const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata(sessionConfigMetadataInput);
-  let compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
+  const compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
+  const importedManagedInstructions = Boolean(taskSession && sessionConfigMetadataInput.managedInstructions?.contentHash
+    && readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint);
+  if (importedManagedInstructions) {
+    compatibleConfigMetadata.push(await buildEffectiveRunSessionConfigMetadata({
+      ...sessionConfigMetadataInput, retainManagedInstructionPaths: true,
+    }));
+  }
   if (managedAiRuntime && aiBinding && taskSession &&
     readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint) {
     const revisions = requestedAiBinding?.mode === "router"
@@ -166,7 +173,12 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       storedIdentity: taskSession.sessionParamsJson?.paperclipAiCredentialIdentity,
       sessionIdentity: managedAiRuntime.sessionIdentity, credentialIdentity: managedAiRuntime.identity, revisions,
     });
-    compatibleConfigMetadata = await Promise.all(candidates.map(candidate => buildEffectiveRunSessionConfigMetadata({ ...sessionConfigMetadataInput, ...candidate })));
+    compatibleConfigMetadata.push(...await Promise.all(candidates.flatMap(candidate => [
+      buildEffectiveRunSessionConfigMetadata({ ...sessionConfigMetadataInput, ...candidate }),
+      ...(importedManagedInstructions ? [buildEffectiveRunSessionConfigMetadata({
+        ...sessionConfigMetadataInput, ...candidate, retainManagedInstructionPaths: true,
+      })] : []),
+    ])));
   }
   const configuredModel =
     readConfiguredModelFromAdapterConfig(runtimeConfig);

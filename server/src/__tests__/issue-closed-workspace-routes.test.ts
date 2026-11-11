@@ -343,6 +343,7 @@ describe("closed isolated workspace issue routes", () => {
       ok: false,
       code: "rebuild_failed",
       message,
+      diagnostic: { step: "saved_commit", kind: "commit_unavailable" },
     });
 
     const app = request(createApp());
@@ -351,7 +352,7 @@ describe("closed isolated workspace issue routes", () => {
       : await app.patch(`/api/issues/${issueId}`).send({ comment: "continue" });
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe(message);
+    expect(res.body).toEqual({ error: message, diagnostic: { step: "saved_commit", kind: "commit_unavailable" } });
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });

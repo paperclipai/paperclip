@@ -341,7 +341,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -360,7 +360,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -472,13 +472,15 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       cachedInputTokens: 2_632_998,
       outputTokens: 32_644,
       costCents: 0,
-      occurredAt: new Date("2026-07-13T14:22:54.000Z"),
+      occurredAt: new Date(),
     });
 
     expect(event.costStatus).toBe("unpriced");
     expect(event.inputTokens).toBe(2_732_577);
-    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-    expect(agent?.spentMonthlyCents).toBe(0);
+    expect(await costs.summary(companyId)).toMatchObject({ eventCount: 1, spendCents: 0, spendCentsExact: "0.0000000" });
+    const [usage] = await costs.byAgent(companyId);
+    expect(usage).toMatchObject({ agentId, costCents: 0, inputTokens: 2_732_577,
+      cachedInputTokens: 2_632_998, outputTokens: 32_644 });
   });
 
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {

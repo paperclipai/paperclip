@@ -3,11 +3,15 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hasPendingWrites, subscribePendingWrites } from "@/lib/reload-safety";
+import { startServiceWorkerUpdates } from "@/lib/service-worker-updates";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { useSignOut } from "./useSignOut";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { markCachedSession } from "@/lib/cached-session";
+import { startPersistedQueryCache } from "@/lib/persisted-query-cache";
 import {
   ConnectivityProvider,
   createConnectivityStore,
@@ -62,6 +66,160 @@ describe("useDurableAutosave", () => {
 
   const advance = (ms: number) => act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+  });
+
+  it("defers a hidden-tab update across online autosave retries until the document is saved", async () => {
+    let reject!: (error: unknown) => void;
+    const save = vi.fn().mockImplementationOnce(() => new Promise((_, no) => { reject = no; }))
+      .mockRejectedValueOnce(new ApiError("Try again", 429, null)).mockResolvedValue(undefined);
+    render({ save });
+    let pending!: ReturnType<typeof current.run>;
+    act(() => { pending = current.run("Keep this document"); });
+    const worker = Object.assign(new EventTarget(), { controller: {}, register: vi.fn().mockResolvedValue({ update: vi.fn() }) });
+    const doc = Object.assign(new EventTarget(), { visibilityState: "hidden" });
+    const reload = vi.fn();
+    const stop = startServiceWorkerUpdates({ container: worker as unknown as ServiceWorkerContainer,
+      documentRef: doc as unknown as Document, reload,
+      canReload: () => store.getSnapshot().pendingWrites === 0 && !hasPendingWrites(),
+      subscribeReloadSafety: listener => {
+        const cleanups = [store.subscribe(listener), subscribePendingWrites(listener)];
+        return () => cleanups.forEach(cleanup => cleanup());
+      } });
+    try {
+      worker.dispatchEvent(new Event("controllerchange"));
+      await act(async () => { reject(new ApiError("Try again", 429, null)); await pending; });
+      expect(store.getSnapshot().status).toBe("online");
+      expect(reload).not.toHaveBeenCalled();
+      await advance(1_000);
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(reload).not.toHaveBeenCalled();
+      await advance(2_000);
+      expect(save).toHaveBeenCalledTimes(3);
+      expect(current.status).toBe("saved");
+      expect(reload).toHaveBeenCalledOnce();
+    } finally { stop(); }
+  });
+
+  it("cancels a restored write if the account changes during its fresh-base check", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let finish!: () => void;
+    const beforeSave = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const save = vi.fn().mockResolvedValue(undefined);
+    act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}><Harness sourceId="base-check" save={save} /></ConnectivityProvider></QueryClientProvider>));
+    let pending!: ReturnType<typeof current.run>;
+    act(() => { pending = current.run("Old account draft", { beforeSave }); });
+    expect(beforeSave).toHaveBeenCalledOnce();
+    await act(async () => { client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }); finish(); await pending; });
+    expect(save).not.toHaveBeenCalled();
+    client.clear();
+  });
+
+  it("rechecks the saved base before retrying a restored write", async () => {
+    const beforeSave = vi.fn<() => Promise<void>>().mockResolvedValueOnce(undefined).mockRejectedValue(conflict());
+    const save = vi.fn().mockRejectedValue(outage());
+    render({ save });
+    await act(async () => { expect(await current.run("Restored draft", { beforeSave })).toEqual({ kind: "waiting" }); });
+    await advance(1_000);
+    expect(beforeSave).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledOnce();
+    expect(current.status).toBe("error");
+  });
+
+  it("blocks background reload during debounce and until the newest edit is saved", async () => {
+    let complete!: () => void;
+    const save = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; })).mockResolvedValue(undefined);
+    render({ save });
+    act(() => current.markDirty());
+    expect(hasPendingWrites()).toBe(true);
+    let saving!: ReturnType<typeof current.run>;
+    act(() => { saving = current.run("First draft"); });
+    act(() => current.markDirty());
+    await act(async () => { complete(); await saving; });
+    expect(hasPendingWrites()).toBe(true);
+    await act(async () => { await current.run("Second draft"); });
+    expect(hasPendingWrites()).toBe(false);
+    act(() => current.markDirty());
+    act(() => current.reset());
+    expect(hasPendingWrites()).toBe(false);
+  });
+
+  it.each(["draft", "saving", "waiting"] as const)("releases a departed target's dirty token while preserving %s work", async mode => {
+    let finish!: () => void;
+    const save = vi.fn<() => Promise<void>>();
+    if (mode === "saving") save.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    else if (mode === "waiting") save.mockRejectedValueOnce(outage());
+    save.mockResolvedValue(undefined);
+    render({ targetKey: "task-a:description", save });
+    act(() => current.markDirty());
+    let pending: ReturnType<typeof current.run> | undefined;
+    if (mode === "saving") act(() => { pending = current.run("Admitted A draft"); });
+    if (mode === "waiting") await act(async () => { await current.run("Admitted A draft"); });
+    render({ targetKey: "task-b:description", save });
+    expect(current.status).toBe("idle");
+    expect(hasPendingWrites()).toBe(mode === "saving");
+    expect(store.getSnapshot().pendingWrites).toBe(mode === "draft" ? 0 : 1);
+    if (mode === "saving") await act(async () => { finish(); await pending; });
+    if (mode === "waiting") await act(async () => { current.resendNow(); });
+    expect(hasPendingWrites()).toBe(false);
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+    expect(current.status).toBe("idle");
+    expect(save).toHaveBeenCalledTimes(mode === "draft" ? 0 : mode === "saving" ? 1 : 2);
+    if (mode !== "draft") expect(save).toHaveBeenCalledWith("Admitted A draft");
+  });
+
+  it.each(["user-1", "user-2"])("verifies a restored identity before a mounted plain autosave (%s)", async verifiedUser => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    let complete!: (id: string) => void;
+    const lookup = vi.spyOn(authApi, "getSession").mockReturnValue(new Promise(resolve => {
+      complete = id => resolve({ user: { id } } as never);
+    }));
+    const save = vi.fn().mockResolvedValue(undefined);
+    try {
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="cached-document" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      let saving!: ReturnType<typeof current.run>;
+      act(() => { saving = current.run("Private text"); });
+      expect(lookup).toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      await act(async () => { complete(verifiedUser); await saving; });
+      expect(save).toHaveBeenCalledTimes(verifiedUser === "user-1" ? 1 : 0);
+    } finally {
+      act(() => root.unmount()); root = createRoot(container);
+      cache.dispose(); client.clear(); lookup.mockRestore();
+    }
+  });
+
+  it("shows waiting after restored-session verification fails without sending the edit", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    const lookup = vi.spyOn(authApi, "getSession").mockRejectedValue(new ApiError("session_lookup_failed", 500, null));
+    const save = vi.fn().mockResolvedValue(undefined);
+    try {
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="waiting-for-session" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      let saving!: ReturnType<typeof current.run>;
+      act(() => { saving = current.run("Retained edit"); });
+      await advance(750);
+      await act(async () => { expect(await saving).toEqual({ kind: "waiting" }); });
+      await advance(200);
+      expect(current.status).toBe("waiting");
+      expect(current.label).toBe("Will save when reconnected");
+      expect(save).not.toHaveBeenCalled();
+      lookup.mockResolvedValue({ user: { id: "user-1" } } as never);
+      await advance(2_000);
+      expect(save).toHaveBeenCalledExactlyOnceWith("Retained edit");
+    } finally {
+      act(() => root.unmount()); root = createRoot(container);
+      cache.dispose(); client.clear(); lookup.mockRestore();
+    }
   });
 
   it("keeps a conflict verification read pending through an outage", async () => {

@@ -161,10 +161,14 @@ describe("New agent setup", () => {
     expect(state.navigate).toHaveBeenCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
     expect(api.hire).not.toHaveBeenCalled();
     expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    expect([...container.querySelectorAll("summary")].some(summary => summary.textContent === "Advanced")).toBe(false);
     await click("OpenAIAPI key");
     await fill("API key", "setup-test-key");
     await click("Connect");
     expect(api.testEnvironment.mock.calls[0][2].agentId).toBe(setupId);
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    expect([...container.querySelectorAll("summary")].some(summary => summary.textContent === "Advanced")).toBe(false);
     expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: expect.anything() }) }), "company-1");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].setupAgentId).toBe(setupId);
@@ -475,7 +479,7 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
   });
 
-  it("records an explicit legacy choice when it matches the Windows default, then preserves it on Linux", async () => {
+  it("restores a legacy setup link and preserves it when changing environments", async () => {
     settings.get.mockResolvedValue({ defaultEnvironmentId: "local-1" });
     envApi.list.mockResolvedValue([
       { id: "local-1", name: "Windows", driver: "local", status: "active", config: {} },
@@ -483,12 +487,9 @@ describe("New agent setup", () => {
     ]);
     adapterApi.list.mockImplementation(async (context?: { environmentId?: string | null }) => state.adapters.map((adapter: any) =>
       adapter.type === "codex_local" ? { ...adapter, supportedRunners: context?.environmentId === "linux-ssh" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: context?.environmentId === "linux-ssh" ? "paperclip" : "legacy" } : adapter));
-    await render("codex_local");
-    await act(async () => (container.querySelector("summary") as HTMLElement).click());
-    const runner = container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!;
-    expect(runner.textContent).toBe("Legacy runner (default)");
-    await act(async () => runner.click());
-    await act(async () => document.querySelector<HTMLButtonElement>('[role="option"][data-value="legacy"]')!.click());
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", runner: "legacy" });
+    await renderCurrentParams();
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
     await connect("OpenAI");
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "legacy" }));
     const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
@@ -523,8 +524,8 @@ describe("New agent setup", () => {
     adapterApi.list.mockImplementation(async (context?: { companyId: string; environmentId?: string | null }) => state.adapters.map((adapter: any) =>
       adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: context?.environmentId === "linux-ssh" ? "paperclip" : "legacy" } : adapter));
     await render("codex_local");
-    await act(async () => (container.querySelector("summary") as HTMLElement).click());
-    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Paperclip Runner (default)");
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    expect(container.querySelector("summary")).toBeNull();
     expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "linux-ssh" });
     await connect("OpenAI");
     expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe("linux-ssh");
@@ -534,40 +535,42 @@ describe("New agent setup", () => {
       environment.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await settle();
-    await act(async () => (container.querySelector("summary") as HTMLElement).click());
-    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Legacy runner (default)");
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    expect(container.querySelector("summary")).toBeNull();
     expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "local-1" });
     await click("Finish setup");
     expect(api.testEnvironment).toHaveBeenCalledTimes(2);
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ environmentId: "local-1" }));
     expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
   });
-  it("surfaces failed target discovery without guessing a default and permits explicit legacy recovery", async () => {
+  it("surfaces failed target discovery and retries automatic selection without a runner dropdown", async () => {
     adapterApi.list.mockImplementation(async (context?: object) => {
       if (context) throw new Error("SSH target is unavailable. Check its connection.");
       return state.adapters;
     });
     await render("codex_local");
     await settle();
-    await act(async () => (container.querySelector("summary") as HTMLElement).click());
-    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Automatic selection unavailable");
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    expect(container.querySelector("summary")).toBeNull();
     expect(container.textContent).toContain("SSH target is unavailable. Check its connection.");
     expect(container.textContent).not.toContain("Legacy runner (default)");
-    expect(container.textContent).toContain("Retry runner discovery");
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
-    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Legacy runner")!.click());
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    adapterApi.list.mockResolvedValue(state.adapters);
+    await click("Retry");
+    expect(container.textContent).not.toContain("SSH target is unavailable. Check its connection.");
     await connect("OpenAI");
     await click("Finish setup");
-    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({ runner: "legacy" });
-    expect(api.hire.mock.calls[0][1]).toMatchObject({ runner: "legacy" });
+    expect(api.testEnvironment.mock.calls[0][2]).not.toHaveProperty("runner");
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
   });
   it.each(["Linux x64", "Mac arm64", "Mac x64"])("uses automatic Codex resolution through setup and hire without the experimental gate (%s)", async name => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     envApi.list.mockResolvedValue([{ id: "local-1", name, driver: "local", status: "active", config: {} }]);
     state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
     await render("codex_local");
-    await act(async () => (container.querySelector("summary") as HTMLElement).click());
-    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Paperclip Runner (default)");
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    expect(container.querySelector("summary")).toBeNull();
     await connect("OpenAI");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].adapterType).toBe("codex_local");
@@ -577,21 +580,6 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].adapterConfig.dangerouslyBypassApprovalsAndSandbox).not.toBe(true);
   });
 
-  it("allows the explicit legacy override before authentication and rechecks it after a runner change", async () => {
-    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
-    await render("codex_local");
-    await act(async () => (container.querySelector("summary") as HTMLElement).click());
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
-    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Legacy runner")!.click());
-    await connect("OpenAI");
-    expect(api.testEnvironment.mock.calls[0][2].runner).toBe("legacy");
-    await act(async () => (container.querySelector("summary") as HTMLElement).click());
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
-    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Paperclip Runner (default)")!.click());
-    await click("Finish setup");
-    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "paperclip" }));
-    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "paperclip" });
-  });
   it("opens pending Antigravity configuration without creating or admitting a native agent", async () => {
     await render("paperclip_runner", "antigravity");
     expect(api.create).not.toHaveBeenCalled();
@@ -898,7 +886,8 @@ describe("New agent setup", () => {
     await render("paperclip_runner", "claude");
     expect(container.textContent).not.toContain("This adapter is unavailable");
     expect(container.textContent).toContain("Claude Code");
-    expect(container.textContent).toContain("Paperclip Runner");
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    expect(container.querySelector("summary")).toBeNull();
     expect(container.textContent).toContain("Connect a model");
     expect(api.hire).not.toHaveBeenCalled();
   });
@@ -987,6 +976,43 @@ describe("New agent setup", () => {
     expect(config).not.toHaveProperty("branch");
     expect(JSON.stringify(config)).not.toContain("cursor-test-key");
     expect(secrets.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ value: "cursor-test-key" }));
+  });
+  it("configures native Cursor Cloud with an exact model and a saved cloud key through ordinary setup", async () => {
+    await render("paperclip_runner", "cursor_cloud");
+    expect(container.querySelector('[aria-label="Model"]')).toBeTruthy();
+    await fill("GitHub repository", "https://github.com/acme/repo");
+    await fill("Branch", "feature");
+    await fill("CURSOR_API_KEY", "native-cursor-test-key");
+    await fill("Model", "caller-custom-model");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      adapterConfig: expect.objectContaining({ provider: "cursor_cloud", model: "caller-custom-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature" }),
+      testCredentials: { CURSOR_API_KEY: "native-cursor-test-key" },
+    }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "paperclip_runner",
+      adapterConfig: expect.objectContaining({ provider: "cursor_cloud", model: "caller-custom-model", env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "org-secret-1", version: "latest" } } }),
+    }));
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("native-cursor-test-key");
+  });
+  it("preserves a saved Cursor Cloud runner choice through test and finish", async () => {
+    adapterApi.list.mockImplementation(async () => state.adapters.map((adapter: any) => adapter.type === "cursor_cloud"
+      ? { ...adapter, supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" } : adapter));
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "cursor_cloud", runner: "paperclip" });
+    await renderCurrentParams();
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
+    await settle();
+    await fill("GitHub repository", "https://github.com/acme/repo");
+    await fill("Branch", "feature");
+    await fill("CURSOR_API_KEY", "ordinary-cursor-test-key");
+    await fill("Model", "caller-custom-model");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "cursor_cloud", expect.objectContaining({
+      runner: "paperclip", adapterConfig: expect.objectContaining({ model: "caller-custom-model" }),
+    }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "cursor_cloud", runner: "paperclip" }));
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("ordinary-cursor-test-key");
   });
   it("requires a new Cursor Cloud key even when organization and personal keys exist", async () => {
     secrets.list.mockResolvedValue([{ id: "existing", key: "CURSOR_API_KEY", name: "Cursor", status: "active" }]);
@@ -1441,15 +1467,11 @@ describe("New agent setup", () => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     state.adapters = state.adapters.map((adapter: any) => adapter.type === "opencode_local"
       ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
-    await render("opencode_local");
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "opencode_local", ...(runner === "legacy" ? { runner } : {}) });
+    await renderCurrentParams();
     const model = "openrouter/anthropic/claude-sonnet-4.6";
     await fill("Model", model);
-    const select = container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!;
-    expect(select.textContent).toContain("Paperclip Runner");
-    if (runner === "legacy") {
-      await act(async () => select.click());
-      await act(async () => document.querySelector<HTMLButtonElement>('[role="option"][data-value="legacy"]')!.click());
-    }
+    expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
     await click("Run test");
     await click("Finish setup");
     expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "opencode_local", expect.objectContaining({ adapterConfig: expect.objectContaining({ model }), ...(runner === "legacy" ? { runner } : {}) }));

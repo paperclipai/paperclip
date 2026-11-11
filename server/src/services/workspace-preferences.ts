@@ -11,7 +11,7 @@ export function workspacePreferenceService(db: Db) {
     });
     return {
       userId,
-      coordinatorWorkspaceEnabled: row?.coordinatorWorkspaceEnabled ?? false,
+      coordinatorWorkspaceEnabled: !(row?.classicWorkspaceEnabled ?? false),
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -20,10 +20,10 @@ export function workspacePreferenceService(db: Db) {
     async set(companyId: string, userId: string, enabled: boolean): Promise<WorkspacePreference> {
       const result = await db.transaction(async tx => {
         const txDb = tx as unknown as Db;
-        await tx.insert(userWorkspacePreferences).values({ userId, coordinatorWorkspaceEnabled: enabled })
+        await tx.insert(userWorkspacePreferences).values({ userId, coordinatorWorkspaceEnabled: enabled, classicWorkspaceEnabled: !enabled })
           .onConflictDoUpdate({
             target: userWorkspacePreferences.userId,
-            set: { coordinatorWorkspaceEnabled: enabled, updatedAt: new Date() },
+            set: { coordinatorWorkspaceEnabled: enabled, classicWorkspaceEnabled: !enabled, updatedAt: new Date() },
           });
         const { publication } = await persistActivity(txDb, {
           companyId, actorType: "user", actorId: userId,

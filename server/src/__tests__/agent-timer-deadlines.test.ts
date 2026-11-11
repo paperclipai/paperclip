@@ -44,7 +44,7 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
   beforeAll(async () => {
     if (external) await applyPendingMigrations(external);
     else temporary = await startEmbeddedPostgresTestDatabase("agent-timer-deadlines-");
-    db = createDb(external ?? temporary!.connectionString, { idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 30_000);
   beforeEach(async () => {
 

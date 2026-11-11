@@ -4,8 +4,15 @@ import type { Config } from "../config.js";
 import { isValidLocalEncryptedMasterKey } from "../secrets/local-encrypted-provider.js";
 import { agentInstructionsBundleMode } from "./agent-instructions.js";
 import { skillInstallationMaintenance } from "./skill-installation-maintenance.js";
+import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
+import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
+import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
+import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
+import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
 
-export const ephemeralServerEnabled = () => process.env.PAPERCLIP_EPHEMERAL_SERVER === "true";
+import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
+
+export { ephemeralServerEnabled };
 
 /** Validate before consumers can generate a replacement local identity. Error
  * messages name settings only, never credential values or connection URLs. */
@@ -47,14 +54,13 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
     and(eq(agentFileRoots.companyId, agents.companyId), eq(agentFileRoots.agentId, agents.id)))
     .where(isNull(agentFileRoots.agentId)).limit(1);
   if (missingFiles) blockers.push("agent_files_require_migration");
+  if (await hasUnsettledLocalInstructionCopies(db)) blockers.push("local_instruction_copies_require_settlement");
   // Only inspect configuration here; filesystem reads must never adopt an
   // empty directory on the replacement machine as the old server's content.
   const configured = await db.select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig }).from(agents);
   if (configured.some(agent => agentInstructionsBundleMode(agent) === "external")) blockers.push("external_agent_instructions");
-  const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
-    isNotNull(executionWorkspaces.cwd), sql`${executionWorkspaces.providerType} <> 'plugin'`,
-    sql`coalesce(${executionWorkspaces.metadata}->'remoteWorkspace'->>'schema', '') <> 'paperclip.remote-workspace.v1'`,
-  )).limit(1);
+  const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+    .where(localWorkspaceDependencyWhere(db)).limit(1);
   if (localWorkspace) blockers.push("workspaces_require_migration");
   const [localLog] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.logStore, "local_file"), isNotNull(heartbeatRuns.logRef),
@@ -64,6 +70,9 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
     isNull(providerTraceRecords.deletedAt), sql`${providerTraceRecords.traceRef} not like 's3-segments-v1:%'`,
   )).limit(1);
   if (localTrace) blockers.push("provider_traces_require_migration");
+  if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
+  if (await hasLocalNativeControllerObligations(db)) blockers.push("native_controllers_require_migration");
+  if (await hasLocalRuntimeSkillObligations(db)) blockers.push("runtime_skill_assets_require_migration");
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
   for (;;) {

@@ -452,6 +452,8 @@ function AccountIssueDocumentsSection({
   }, [documentSubject, queryClient]);
 
   const syncDocumentCaches = useCallback((document: IssueDocument) => {
+    // Only a complete document can replace a list row; the refetch fills the gap.
+    if (typeof document?.key !== "string") return;
     if (documentSubject.hideSystemDocuments && isSystemIssueDocumentKey(document.key)) return;
     queryClient.setQueryData<IssueDocument[] | undefined>(
       documentSubject.documentsQueryKey,
@@ -527,8 +529,10 @@ function AccountIssueDocumentsSection({
   });
 
   const sortedDocuments = useMemo(() => {
+    // A keyless row cannot be rendered or edited; skip it instead of failing the whole page.
     return (documents ?? []).filter((doc) =>
-      (!generalDocumentsOnly || isGeneralTaskDocumentKey(doc.key))
+      typeof doc?.key === "string"
+      && (!generalDocumentsOnly || isGeneralTaskDocumentKey(doc.key))
       && (!documentSubject.hideSystemDocuments || !isSystemIssueDocumentKey(doc.key)),
     ).sort((a, b) => {
       if (a.key === "plan" && b.key !== "plan") return -1;

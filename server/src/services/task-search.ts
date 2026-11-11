@@ -1,3 +1,4 @@
+import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { sql, type SQL } from "drizzle-orm";
 import { COMPANY_SEARCH_MAX_QUERY_LENGTH, COMPANY_SEARCH_MAX_TOKENS } from "@paperclipai/shared";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -134,7 +135,7 @@ export function taskSearchCtes(companyId: string, search: TaskSearch, includeCon
   // The search page fetches descriptions only for its result window.
   const flags = (fuzzyMatch: SQL) => sql`
       SELECT issues.id, issues.identifier, issues.title,
-        issues.status, issues.priority, issues.assignee_agent_id, issues.assignee_user_id,
+        issues.status, ${issueDisplayStatusSql()} AS display_status, issues.priority, issues.assignee_agent_id, issues.assignee_user_id,
         issues.project_id, issues.created_at, issues.updated_at,
         ${identExact} AS ident_exact, ${identStarts} AS ident_starts,
         ${phraseMatch(sql`issues.identifier`)} AS ident_phrase,

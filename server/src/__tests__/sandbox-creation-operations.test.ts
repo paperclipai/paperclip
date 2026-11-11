@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -8,32 +8,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, builtInManagedResources, companies, companySecretVersions, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
+import { agents, builtInManagedResources, companies, companySecretVersions, createDb, environmentLeases, environments, heartbeatRuns, issues, plugins, sandboxCreationOperations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
 import { HttpError } from "../errors.js";
 import * as secretOwner from "../services/secrets.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
+import { readProcessStartedAt } from "../services/hot-restart.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 describe("durable sandbox creation through the runtime entry point", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let companyId: string, environmentId: string, pluginId: string, runId: string, spool: string;
-  let creates: number, destroys: number, loseReply: boolean, failDestroy: boolean;
+  let creates: number, destroys: number, loseReply: boolean, failDestroy: boolean, pluginLogin: boolean, generatedLoginId: boolean, foreignReceipt: boolean;
   let beforeReply: (() => Promise<void>) | undefined;
   const resources = new Map<string, string>();
   let workers: PluginWorkerManager;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("sandbox-creation-operations-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("sandbox-creation-operations-");
+    db = createDb(external ?? database!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 90_000);
   beforeEach(async () => {
     await db.execute(sql`truncate sandbox_creation_operations, companies, environments, plugins cascade`);
     companyId = randomUUID(); environmentId = randomUUID(); pluginId = randomUUID(); runId = randomUUID();
-    const agentId = randomUUID(); creates = 0; destroys = 0; loseReply = false; failDestroy = false; beforeReply = undefined; resources.clear();
+    const agentId = randomUUID(); creates = 0; destroys = 0; loseReply = false; failDestroy = false; pluginLogin = false; generatedLoginId = false; foreignReceipt = false; beforeReply = undefined; resources.clear();
     spool = await mkdtemp(join(tmpdir(), "empty-sandbox-web-"));
     await db.insert(companies).values({ id: companyId, name: "Creation fixture", issuePrefix: "CRT" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", role: "engineer", adapterType: "codex_local" });
@@ -52,7 +55,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
         if (method === "environmentAcquireLease") {
           expect(await db.select().from(sandboxCreationOperations)).toContainEqual(expect.objectContaining({ id: input.creationOperationId, state: "pending" }));
           creates++;
-          const resource = `provider-${input.creationOperationId}`;
+          const resource = pluginLogin && !generatedLoginId ? input.creationOperationId : `provider-${input.creationOperationId}`;
           resources.set(input.creationOperationId, resource);
           await beforeReply?.();
           if (loseReply) throw new Error("Lost provider reply");
@@ -61,12 +64,15 @@ describe("durable sandbox creation through the runtime entry point", () => {
         if (method === "environmentInspectLease") {
           const id = input.creationOperation.id;
           const resource = resources.get(id);
+          if (pluginLogin) return resource
+            ? { providerLeaseId: resource, state: "unknown", creationLease: { providerLeaseId: foreignReceipt ? "foreign-resource" : resource, metadata: { purpose: "login", loginCommandKey: "codex" } } }
+            : { providerLeaseId: id, state: "destroyed" };
           if (!resource) return { providerLeaseId: id, state: "unknown" };
           return { providerLeaseId: resource, state: "active", creationCleanup: { providerLeaseId: resource,
             observedProviderLeaseId: resource, companyId, environmentId, runId: input.creationOperation.runId, attemptId: id,
             accountFingerprint: "a".repeat(64), labels: { "paperclip-create-attempt": id } } };
         }
-        if (method === "environmentDestroyLease") {
+        if (method === "environmentDestroyLease" || (pluginLogin && method === "environmentReleaseLease")) {
           destroys++;
           if (failDestroy) throw new Error("Fixture teardown failed");
           resources.delete(input.leaseMetadata.creationOperationId);
@@ -92,6 +98,61 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await db.execute(sql`create or replace function reject_fixture_write() returns trigger language plpgsql as $$ begin raise exception 'Fixture database write unavailable'; end $$`);
     await db.execute(sql.raw(`create trigger ${trigger} before insert on ${table} for each row execute function reject_fixture_write()`));
   }
+  async function acquirePluginLogin(heartbeatRunId: string | null = null) {
+    pluginLogin = true;
+    await db.update(environments).set({ driver: "plugin", config: { pluginKey: "paperclip.creation-fixture", driverKey: "creation-fixture", driverConfig: {} } }).where(eq(environments.id, environmentId));
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, pluginId));
+    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, environmentDrivers: [{ driverKey: "creation-fixture", kind: "environment_driver", displayName: "Computer", creationOperationVersion: 1, configSchema: { type: "object" } }] } }).where(eq(plugins.id, pluginId));
+    return runtime().acquireRunLease({ companyId, environment: (await environmentService(db).getById(environmentId))!, heartbeatRunId,
+      issueId: null, persistedExecutionWorkspace: null, purpose: "login", loginCommandKey: "codex", requestedExpiresAt: new Date(Date.now() + 300000) });
+  }
+  it.each([false, true])("recovers an interrupted login using its exact receipt (provider-generated ID: %s)", async generated => {
+    generatedLoginId = generated;
+    loseReply = true; await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply");
+    const [intent] = await db.select().from(sandboxCreationOperations);
+    expect(intent.metadata).toMatchObject({ purpose: "login", loginCommandKey: "codex", creationHeartbeatRunId: null });
+    expect(intent.runId).not.toBe(runId);
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
+    expect(lease).toMatchObject({ status: "pending_cleanup", heartbeatRunId: null, providerLeaseId: generated ? `provider-${intent.id}` : intent.id, metadata: { purpose: "login", loginCommandKey: "codex" } });
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it.each([false, true])("preserves an actual heartbeat reference during recovery (legacy intent: %s)", async legacy => {
+    loseReply = true;
+    await expect(acquirePluginLogin(runId)).rejects.toThrow("Lost provider reply");
+    const [intent] = await db.select().from(sandboxCreationOperations);
+    expect(intent.metadata.creationHeartbeatRunId).toBe(runId);
+    if (legacy) await db.update(sandboxCreationOperations).set({ metadata: sql`metadata - 'creationHeartbeatRunId'` });
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
+    expect(lease.heartbeatRunId).toBe(runId);
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it("retains ownership when the inspected lease and its receipt disagree", async () => {
+    generatedLoginId = true; foreignReceipt = true; loseReply = true;
+    await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply");
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect(await db.select().from(environmentLeases)).toEqual([]);
+    expect((await db.select().from(sandboxCreationOperations))[0].state).toBe("pending");
+    expect(resources.size).toBe(1); expect(destroys).toBe(0);
+    foreignReceipt = false;
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it("resolves a never-created login only after its materialization window", async () => {
+    loseReply = true; await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply"); resources.clear();
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect((await db.select().from(sandboxCreationOperations))[0].state).toBe("pending");
+    await db.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(0), metadata: sql`metadata || '{"creationSettleAt":"2000-01-01T00:00:00Z"}'::jsonb` });
+    await runtime().flushDeferredOrphanCleanups();
+    expect((await db.select().from(sandboxCreationOperations))[0].state).toBe("resolved");
+    expect(destroys).toBe(0);
+  });
+
   it("can reapply the creation migration without losing a committed intent", async () => {
     loseReply = true; await expect(acquire()).rejects.toThrow("Lost provider reply");
     const [before] = await db.select().from(sandboxCreationOperations);
@@ -152,7 +213,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
       const result = await promisify(execFile)(process.execPath, ["--import", fileURLToPath(import.meta.resolve("tsx")), fixture], {
         cwd: fileURLToPath(new URL("../../..", import.meta.url)), timeout: 60_000,
         env: { ...process.env, CREATION_FIXTURE_ACTION: action, CREATION_FIXTURE_EMPTY_DISK: disk,
-          CREATION_FIXTURE_DATABASE_URL: database.connectionString, CREATION_FIXTURE_PROVIDER_URL: `http://127.0.0.1:${address.port}`,
+          CREATION_FIXTURE_DATABASE_URL: external ?? database!.connectionString, CREATION_FIXTURE_PROVIDER_URL: `http://127.0.0.1:${address.port}`,
           CREATION_FIXTURE_COMPANY_ID: companyId, CREATION_FIXTURE_ENVIRONMENT_ID: environmentId, CREATION_FIXTURE_RUN_ID: runId },
       });
       return result.stdout;
@@ -267,7 +328,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
     return secret;
   }
   it.each(["deleted", "disabled", "archived", "version-disabled", "vault-disabled", "vault-coming-soon"] as const)(
-    "retains a %s creation credential as quiet manual reconciliation across restart", async state => {
+    "retains a %s creation credential with a quiet worker while sleep remains blocked across restart", async state => {
     const secrets = secretOwner.secretService(db);
     const vault = state.startsWith("vault-") ? await secrets.createProviderConfig(companyId, {
       provider: "local_encrypted", displayName: "Creation vault", status: "ready", config: {},
@@ -281,8 +342,10 @@ describe("durable sandbox creation through the runtime entry point", () => {
     const inspectCalls = () => vi.mocked(workers.call).mock.calls.filter(value => value[1] === "environmentInspectLease").length;
     await due(); await runtime().flushDeferredOrphanCleanups();
     expect(await db.select().from(sandboxCreationOperations)).toEqual([
-      expect.objectContaining({ state: "needs_reconciliation" }),
+      expect.objectContaining({ companyId, state: "needs_reconciliation",
+        metadata: expect.objectContaining({ creationReconciliationReason: "creation_identity_unavailable" }) }),
     ]);
+    expect(resources.size).toBe(1);
     expect(await db.select().from(environmentLeases)).toEqual([]);
     expect(inspectCalls()).toBe(0);
     expect(await nextEnvironmentCleanupAt(db)).toBeNull();
@@ -293,12 +356,12 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
     const ownerId = randomUUID();
     const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000), expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
-    // An installed plugin is a separate blocker until its worker proves quiet.
+    // A quiet plugin worker cannot discharge the retained creation uncertainty.
     expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none"))
       .toEqual({ version: 1, backgroundWork: "present" });
     expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none",
       async () => ({ backgroundWork: "none", pluginIds: [pluginId] })))
-      .toEqual({ version: 1, backgroundWork: "none" });
+      .toEqual({ version: 1, backgroundWork: "present" });
     expect(await readdir(spool)).toEqual([]);
   });
   it("retries a temporary creation credential resolution failure without losing ownership", async () => {
@@ -329,5 +392,132 @@ describe("durable sandbox creation through the runtime entry point", () => {
     expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "needs_reconciliation" })]);
     expect(await nextEnvironmentCleanupAt(db)).toBeNull();
     await expect(acquire()).rejects.toThrow("requires reconciliation"); expect(creates).toBe(1);
+  });
+
+  describe("after the creating server exits mid-acquire", () => {
+    async function exitedPid(): Promise<number> {
+      const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+      await new Promise(resolve => child.once("exit", resolve));
+      return child.pid!;
+    }
+    // The provider allocated the sandbox; the server exited before committing the lease.
+    async function interruptedCreation(controller: (current: Record<string, unknown>) => Promise<Record<string, unknown>>) {
+      loseReply = true;
+      await expect(acquire()).rejects.toThrow("Lost provider reply");
+      const [operation] = await db.select().from(sandboxCreationOperations);
+      expect(operation).toMatchObject({ state: "pending" });
+      expect(operation!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 25 * 60_000);
+      const current = operation!.metadata.creationController as Record<string, unknown>;
+      await db.update(sandboxCreationOperations).set({ metadata: { ...operation!.metadata, creationController: await controller(current) } })
+        .where(eq(sandboxCreationOperations.id, operation!.id));
+      return operation!;
+    }
+    const inspections = () => vi.mocked(workers.call).mock.calls.filter(value => value[1] === "environmentInspectLease");
+
+    it("destroys the sandbox on the next sweep instead of waiting for the settle deadline", async () => {
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      await runtime().flushDeferredOrphanCleanups();
+      const [lease] = await db.select().from(environmentLeases);
+      expect(lease).toMatchObject({ status: "pending_cleanup", companyId, providerLeaseId: resources.get(operation.id),
+        failureReason: "interrupted_sandbox_creation" });
+      expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "cleanup_pending", leaseId: lease!.id })]);
+      await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease!.id))! });
+      expect(resources.size).toBe(0); expect(destroys).toBe(1); expect(creates).toBe(1);
+    });
+    it("pages past more unprovable creations than one settle page (200) to find an abandoned one", async () => {
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      const { id: _id, runId: _runId, ...row } = operation;
+      // Sorted ahead of the abandoned intent: creators on another host cannot be judged.
+      await db.insert(sandboxCreationOperations).values(Array.from({ length: 205 }, (_, index) => ({ ...row,
+        id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, runId: randomUUID(),
+        metadata: { ...row.metadata, creationController: { ...(row.metadata.creationController as object), bootId: randomUUID(), pid, hostHash: "f".repeat(32) } } })));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup",
+        providerLeaseId: resources.get(operation.id) })]);
+    });
+    it("reclaims an issue-bound creation after its run failed and the issue finished on a later run", async () => {
+      // Mirrors a kept chaos database: the server was SIGKILLed 0.5 s after the
+      // intent committed, the run ended process_lost, and a later run finished
+      // the task. The intent stayed pending with no lease.
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: "Restart-crossing task", status: "done" });
+      await db.update(sandboxCreationOperations).set({ issueId }).where(eq(sandboxCreationOperations.id, operation.id));
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId));
+      await db.insert(heartbeatRuns).values({ ...run!, id: randomUUID(), status: "succeeded", finishedAt: new Date() });
+      expect(await db.select().from(sandboxCreationOperations)).toEqual([
+        expect.objectContaining({ state: "pending", leaseId: null, issueId, runId }),
+      ]);
+
+      await runtime().flushDeferredOrphanCleanups();
+
+      const [lease] = await db.select().from(environmentLeases);
+      expect(lease).toMatchObject({ status: "pending_cleanup", companyId, providerLeaseId: resources.get(operation.id) });
+      await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease!.id))! });
+      expect(resources.size).toBe(0); expect(destroys).toBe(1); expect(creates).toBe(1);
+    });
+    it("treats a restarted server that reused the creator PID as a different process", async () => {
+      await interruptedCreation(async current => ({ ...current, bootId: randomUUID(),
+        processStartedAt: new Date(Date.parse(String(current.processStartedAt)) - 60_000).toISOString() }));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup" })]);
+    });
+    it("leaves a creation owned by this live server untouched until its deadline", async () => {
+      await interruptedCreation(async current => current);
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await db.select().from(environmentLeases)).toEqual([]);
+      expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "pending" })]);
+      expect(resources.size).toBe(1); expect(destroys).toBe(0);
+    });
+    it("leaves a creation owned by another live server process untouched", async () => {
+      const pid = process.ppid;
+      const startedAt = await readProcessStartedAt(pid);
+      await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid, processStartedAt: startedAt }));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await db.select().from(environmentLeases)).toEqual([]);
+      expect(resources.size).toBe(1);
+    });
+    it("does not judge a creator on another host", async () => {
+      const pid = await exitedPid();
+      await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid, hostHash: "f".repeat(32) }));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await db.select().from(environmentLeases)).toEqual([]);
+      expect(resources.size).toBe(1);
+    });
+    it("keeps ownership when an early lookup finds no sandbox yet", async () => {
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      const resource = resources.get(operation.id)!;
+      resources.delete(operation.id); // Not materialized at the provider yet.
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(1);
+      const [pending] = await db.select().from(sandboxCreationOperations);
+      expect(pending).toMatchObject({ state: "pending" });
+      expect(pending!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+      // A late allocation is still found and removed by the retained owner.
+      resources.set(operation.id, resource);
+      await due(); await runtime().flushDeferredOrphanCleanups();
+      expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup", providerLeaseId: resource })]);
+    });
+    it("never touches a sandbox whose lease was committed", async () => {
+      const { lease } = await acquire();
+      const pid = await exitedPid();
+      const [operation] = await db.select().from(sandboxCreationOperations);
+      expect(operation).toMatchObject({ state: "attached" });
+      await db.update(sandboxCreationOperations).set({ metadata: { ...operation!.metadata,
+        creationController: { ...(operation!.metadata.creationController as object), bootId: randomUUID(), pid } } });
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "active" });
+      expect(resources.size).toBe(1); expect(destroys).toBe(0);
+    });
   });
 });

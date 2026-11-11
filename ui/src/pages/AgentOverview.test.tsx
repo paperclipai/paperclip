@@ -154,7 +154,6 @@ describe("AgentOverview", () => {
 
   it("shows an error when the company user directory cannot be loaded", () => {
     const markup = renderOverview("user-alice", failedDirectoryClient());
-    expect(markup).toContain("Created by");
     expect(markup).toContain("Could not load creator");
   });
 

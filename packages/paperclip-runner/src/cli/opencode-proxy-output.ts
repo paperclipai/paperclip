@@ -23,8 +23,18 @@ function streamedText(value: unknown) {
   return { frame, params, item, key, text: params.delta };
 }
 
+export interface OpenCodeProxyFrameOptions {
+  /**
+   * Abandons the frame while it is still queued in this process. Only a
+   * request whose sender can tolerate never being delivered may pass one.
+   */
+  signal?: AbortSignal;
+  /** Called once when the frame is dropped before reaching the stream. */
+  onAbandoned?: () => void;
+}
+
 /** Avoid making an MCP call wait behind a durable write for every text token. */
-export function createOpenCodeProxyOutput(write: (frame: unknown) => void) {
+export function createOpenCodeProxyOutput(write: (frame: unknown, options?: OpenCodeProxyFrameOptions) => void) {
   let pending: ReturnType<typeof streamedText> = null;
   let bytes = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -38,11 +48,11 @@ export function createOpenCodeProxyOutput(write: (frame: unknown) => void) {
       text: current.text, delta: current.text, item: { ...current.item, text: current.text } } });
   };
   return {
-    send(frame: unknown): void {
+    send(frame: unknown, options?: OpenCodeProxyFrameOptions): void {
       const text = streamedText(frame);
       if (!text) {
         flush();
-        write(frame);
+        write(frame, options);
         return;
       }
       const size = Buffer.byteLength(text.text);
@@ -60,5 +70,86 @@ export function createOpenCodeProxyOutput(write: (frame: unknown) => void) {
       }
     },
     flush,
+  };
+}
+
+export interface OpenCodeProxyFrameSink {
+  write(chunk: string): boolean;
+  once(event: "drain", listener: () => void): unknown;
+}
+
+type QueuedFrame = { line: string; options?: OpenCodeProxyFrameOptions; onAbort?: () => void };
+
+/**
+ * Writes newline-delimited frames to a stream without handing it more than its
+ * own buffer accepts.
+ *
+ * runnerd reads this stream only as fast as its controller acknowledges earlier
+ * events, so a backlog can build here while OpenCode keeps working. Node would
+ * otherwise buffer that backlog itself, and every frame in it would eventually
+ * be delivered. Holding the backlog in this queue instead lets a request whose
+ * MCP client has already given up (for example a timed-out tool call) be
+ * dropped before runnerd can dispatch it. Order of delivered frames is kept.
+ */
+export function createBackpressuredFrameWriter(sink: OpenCodeProxyFrameSink) {
+  const queue: QueuedFrame[] = [];
+  let waitingForDrain = false;
+  const release = (entry: QueuedFrame) => {
+    if (entry.onAbort) entry.options?.signal?.removeEventListener("abort", entry.onAbort);
+    entry.onAbort = undefined;
+  };
+  const abandon = (entry: QueuedFrame) => {
+    release(entry);
+    try { entry.options?.onAbandoned?.(); } catch { /* A sender callback never blocks later frames. */ }
+  };
+  const writeEntry = (entry: QueuedFrame): boolean => {
+    release(entry);
+    return sink.write(entry.line);
+  };
+  const pump = () => {
+    while (!waitingForDrain && queue.length > 0) {
+      const entry = queue.shift()!;
+      if (entry.options?.signal?.aborted) {
+        abandon(entry);
+        continue;
+      }
+      if (!writeEntry(entry)) {
+        waitingForDrain = true;
+        sink.once("drain", () => {
+          waitingForDrain = false;
+          pump();
+        });
+      }
+    }
+  };
+  return {
+    write(frame: unknown, options?: OpenCodeProxyFrameOptions): void {
+      if (options?.signal?.aborted) {
+        try { options.onAbandoned?.(); } catch { /* See abandon(). */ }
+        return;
+      }
+      const entry: QueuedFrame = { line: `${JSON.stringify(frame)}\n`, options };
+      if (options?.signal) {
+        entry.onAbort = () => {
+          const index = queue.indexOf(entry);
+          if (index < 0) return;
+          queue.splice(index, 1);
+          abandon(entry);
+        };
+        options.signal.addEventListener("abort", entry.onAbort, { once: true });
+      }
+      queue.push(entry);
+      pump();
+    },
+    /** Hands every remaining live frame to the stream, ignoring backpressure. */
+    drain(): void {
+      for (const entry of queue.splice(0)) {
+        if (entry.options?.signal?.aborted) abandon(entry);
+        else writeEntry(entry);
+      }
+    },
+    get queuedFrames(): number {
+      return queue.length;
+    },
   };
 }

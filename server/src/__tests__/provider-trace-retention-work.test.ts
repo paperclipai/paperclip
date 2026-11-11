@@ -1,4 +1,6 @@
 import type { Db } from "@paperclipai/db";
+import type { IdleLocalWorkOptions } from "../services/idle-local-work.js";
+import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-capability.js";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -7,14 +9,14 @@ import { registerProviderTraceRetentionWork } from "../services/provider-trace-r
 const state = vi.hoisted(() => ({
   cleanup: vi.fn(async () => []),
   next: vi.fn<() => Promise<number | null>>(),
-  probe: undefined as undefined | (() => string),
+  probe: undefined as undefined | ((options?: IdleLocalWorkOptions) => string),
   unregister: vi.fn(),
 }));
 vi.mock("../services/provider-trace-store.js", () => ({
   providerTraceStore: () => ({ cleanupExpired: state.cleanup, nextRetentionDeadline: state.next }),
 }));
 vi.mock("../services/idle-local-work.js", () => ({
-  registerIdleLocalWorkProbe: (probe: () => string) => {
+  registerIdleLocalWorkProbe: (probe: (options?: IdleLocalWorkOptions) => string) => {
     state.probe = probe;
     return state.unregister;
   },
@@ -28,7 +30,7 @@ afterEach(async () => {
 
 it("reconstructs trace deadlines, stays quiet between obligations, and discharges the sleep blocker", async () => {
   vi.useFakeTimers();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   const onError = vi.fn();
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
   state.next.mockResolvedValue(null);
@@ -51,6 +53,12 @@ it("reconstructs trace deadlines, stays quiet between obligations, and discharge
   worker.wake();
   await vi.advanceTimersByTimeAsync(0);
   expect(state.probe!()).toBe("present");
+  expect(state.probe!({})).toBe("present");
+  const negotiated = { deadlineCapability: { deadlineCatalog: "domain_deadlines_v1" } as VerifiedIdleCapabilities };
+  expect(state.probe!(negotiated)).toBe("none");
+  vi.setSystemTime(deadline);
+  expect(state.probe!(negotiated)).toBe("present");
+  vi.setSystemTime(deadline - 60_000);
   expect(coordinator.nextWakeAt()).toBe(deadline);
   const scheduled = state.cleanup.mock.calls.length;
   await vi.advanceTimersByTimeAsync(59_999);

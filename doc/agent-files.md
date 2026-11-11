@@ -151,6 +151,12 @@ provider; restart recovery preserves files until retirement is proven.
    the host. Retry an unstable checkpoint up to three times; if it cannot be
    validated, close the owned provider and perform the stopped collector. Other
    execution paths retain their stopped-provider collection boundary.
+
+   File preparation uses the same admitted lifecycle policy as native execution.
+   An inherited environment policy can use the agent's warm default. For a new
+   admission, an explicit per-turn environment policy still wins. A persisted
+   admission keeps its pinned policy. A policy change does not mark an old
+   pending copy saved or grant access to a stopped or replaced lease.
 4. Recheck the responsible user's current authorization. Under the same agent
    lock used by editor writes, apply only files changed or deleted relative to
    the last acknowledged baseline. For a competing edit or deletion of the same
@@ -333,12 +339,12 @@ unit or matcher results; a passing matcher does not prove a live run.
 
 Run `server/src/maintenance/agent-files.ts` with the instance's database,
 storage, secrets and original `PAPERCLIP_HOME`. The default migration phase is
-read-only. Before applying, stop ingress and execution writers on that instance
-and set `PAPERCLIP_DURABLE_AGENT_FILES=true`:
+read-only. Set `PAPERCLIP_DURABLE_AGENT_FILES=true` before applying on the original
+host. Migration uses the same agent row lock as file edits and admission:
 
 ```sh
 pnpm exec tsx server/src/maintenance/agent-files.ts --phase=migration
-pnpm exec tsx server/src/maintenance/agent-files.ts --phase=migration --apply --writers-stopped
+pnpm exec tsx server/src/maintenance/agent-files.ts --phase=migration --apply
 ```
 
 The production runtime build includes the same command without a TypeScript
@@ -349,8 +355,11 @@ Eligibility is a point-in-time check; keep writers stopped through volume remova
 
 Follow each returned `next` cursor with `--after=<cursor>`. All pages must report
 `pageReady: true` before removing the volume. A missing legacy directory, external
-instructions or active execution prevents migration; resolve that condition on
-the original host. Repeating apply verifies/restores the committed projection.
+instructions, active execution without a durable head, or an unsettled private
+local working copy prevents first adoption. An existing durable head needs no
+local rewrite while its agent is active. Migration keeps copy recovery states
+and retained provider references. The live eligibility gate separately refuses
+unsettled local instruction copies, even after canonical agent files are durable.
 This migrates agent files only; other storage families have their own eligibility
 checks. Keep the original volume until the deployment migration is qualified.
 

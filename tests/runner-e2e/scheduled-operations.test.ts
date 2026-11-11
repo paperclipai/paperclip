@@ -26,10 +26,12 @@ it.each(["daily", "weekly"] as const)("runs the exact %s selection through one s
   expect(manifest.models.every(model => Number(evalRequestReservation({ ...model, mode: "braintrust", apiKey: "fixture" })) <= Number(manifest.limits.maxUsd))).toBe(true);
 });
 
-it("does not reduce Codex's verified context ceiling to fit the daily allowance", () => {
+it("keeps Codex's verified context ceiling and long-context reservation without joining the daily selection", () => {
   const codex = scheduledManifest({ ...input, cadence: "weekly" }).models.find(row => row.provider === "openai")!;
+  expect(codex.price.model).toBe("gpt-6.1-sol");
   expect(codex.maximumInputTokens).toBe(1_050_000);
-  expect(Number(evalRequestReservation({ ...codex, mode: "braintrust", apiKey: "fixture" }))).toBeGreaterThan(20);
+  // The full 1.05M-token request reserves at the long-context rates; gpt-6.1-sol halves the gpt-5.6-sol hold.
+  expect(Number(evalRequestReservation({ ...codex, mode: "braintrust", apiKey: "fixture" }))).toBeCloseTo(10.74576, 5);
   expect(scheduledManifest(input).models.map(model => model.provider)).toEqual(["anthropic"]);
 });
 

@@ -129,8 +129,9 @@ async onResourceLifecycle(event) {
 ```
 
 Core delivers events to ready plugins with a configuration row for that company,
-unless the plugin is disabled there. Each invocation has the event's company
-scope. The dispatcher wakes after the mutation's outer transaction settles,
+unless the plugin is disabled there. A workspace storage provider receives project
+events only for projects attached to it, plus events for deleted projects. Each
+invocation has the event's company scope. The dispatcher wakes after the mutation's outer transaction settles,
 on host startup, plugin activation/worker start, and company configuration or
 enablement changes. Successful worker `onConfigChanged` completion wakes delivery
 again, so a callback that deferred while configuration was still applying is

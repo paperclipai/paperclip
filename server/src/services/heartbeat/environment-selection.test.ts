@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, environments, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environments, environmentLeases, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -13,6 +13,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "./environment-selection.js";
+import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
 
 const restoration = vi.hoisted(() => ({ removed: false }));
 vi.mock("../git-workspace-restoration.js", async importOriginal => {
@@ -81,6 +82,48 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     return { input, issue, project, workspace, recover };
   }
 
+  it("uses each project's saved environment before the shared agent and instance defaults", async () => {
+    const f = await fixture();
+    const local = await environmentService(db).ensureLocalEnvironment(f.input.agent.companyId);
+    const [target] = await db.insert(environments).values({ name: `Project host ${randomUUID()}`, driver: "ssh", config: { host: "project.example.test" } }).returning();
+    const [other] = await db.insert(projects).values({ companyId: f.input.agent.companyId, name: "Other project", environmentId: local.id }).returning();
+    await db.update(projects).set({ environmentId: target.id }).where(eq(projects.id, f.project.id));
+    f.input.agent.defaultEnvironmentId = local.id;
+    f.input.policy.isolatedWorkspacesEnabled = false;
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: target.id, source: "project" });
+    f.input.task.executionProjectId = other.id;
+    f.input.task.issueRef!.projectId = other.id;
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "project" });
+    f.input.task.executionProjectId = f.project.id;
+    f.input.task.issueRef!.projectId = f.project.id;
+    await db.update(projects).set({ environmentId: null }).where(eq(projects.id, f.project.id));
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "agent" });
+  });
+
+  it("keeps task project placement when files come from another project", async () => {
+    const f = await fixture();
+    const local = await environmentService(db).ensureLocalEnvironment(f.input.agent.companyId);
+    const [source] = await db.insert(projects).values({ companyId: f.project.companyId, name: "File source" }).returning();
+    await db.update(projects).set({ environmentId: local.id }).where(eq(projects.id, f.project.id));
+    f.input.task.executionProjectId = source.id;
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "project" });
+  });
+
+  it("restores the admitted environment after a project edit and rejects a foreign lease", async () => {
+    const f = await fixture();
+    const local = await environmentService(db).ensureLocalEnvironment(f.input.agent.companyId);
+    const [next] = await db.insert(environments).values({ name: `Next target ${randomUUID()}`, driver: "ssh", config: { host: "next.example.test" } }).returning();
+    const saved = await f.workspace();
+    f.recover(saved.id);
+    await db.update(projects).set({ environmentId: next.id }).where(eq(projects.id, f.project.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.project.companyId, environmentId: local.id,
+      heartbeatRunId: f.input.run.id, issueId: f.issue.id, executionWorkspaceId: saved.id, metadata: { agentId: f.input.agent.id } }).returning();
+    f.input.run.contextSnapshot = { paperclipEnvironment: { id: local.id, leaseId: lease.id } };
+    expect((await selectHeartbeatEnvironment(db, f.input)).environmentResolution).toEqual({ environmentId: local.id, source: "run" });
+    await db.update(environmentLeases).set({ metadata: { agentId: randomUUID() } }).where(eq(environmentLeases.id, lease.id));
+    await expect(selectHeartbeatEnvironment(db, f.input)).rejects.toThrow("Cannot restore the admitted execution environment");
+  });
+
   it("keeps the admitted workspace binding when the issue points at a newer workspace", async () => {
     const { input, workspace, recover } = await fixture();
     const original = await workspace();
@@ -95,6 +138,35 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(input.task.issueRef!.executionWorkspaceId).toBe(newer.id);
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(original.id);
   });
+
+  it.each(["bound", "issue_moved"] as const)(
+    "re-prepares a restarted fresh Retry attempt as its task directory, never as a git worktree base (RC-58, %s)", async binding => {
+      const { input, issue, workspace, recover } = await fixture();
+      // A project-less task's fresh Retry attempt directory, created and bound by the first preparation.
+      await db.update(issues).set({ projectId: null }).where(eq(issues.id, issue.id));
+      const attemptCwd = await materializeIsolatedTaskDirectory({ companyId: input.agent.companyId, issueId: issue.id, attemptId: input.run.id });
+      const created = await executionWorkspaceService(db).create({ companyId: input.agent.companyId, projectId: null,
+        sourceIssueId: issue.id, name: "Fresh attempt", mode: "isolated_workspace", strategyType: "project_primary",
+        providerType: "local_fs", cwd: attemptCwd });
+      if (!created) throw new Error("Attempt workspace fixture was not created");
+      await db.update(issues).set({ executionWorkspaceId: created.id, executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
+      const issueRef = { ...input.task.issueRef!, projectId: null, executionWorkspaceId: created.id,
+        executionWorkspacePreference: "reuse_existing" };
+      input.task.issueRef = issueRef;
+      input.task.executionProjectId = null;
+      input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+      input.policy.issueExecutionWorkspaceSettings = { mode: "isolated_workspace" };
+      if (binding === "issue_moved") issueRef.executionWorkspaceId = (await workspace()).id;
+      // The restart re-prepares from the admitted native input; readiness is no longer "fresh".
+      recover(created.id);
+      input.task.freshWorkspace = null;
+      const result = await selectHeartbeatEnvironment(db, input);
+      expect(result.nativeRecoveryExecutionWorkspaceId).toBe(created.id);
+      expect(result.reusableExistingExecutionWorkspace?.id).toBe(created.id);
+      // Only the task's current binding may resume as a task directory.
+      expect(result.useIsolatedTaskDirectory).toBe(binding === "bound");
+    });
 
   it("selects the saved execution workspace without inspecting live Git delivery state", async () => {
     const { input, workspace, recover } = await fixture();
@@ -125,6 +197,28 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(input.run.id);
   });
 
+  it.each((["resume_stopped_native_workspace", "reuse_issue_workspace"] as const).flatMap(retainedMode =>
+    ["preserved", "changed_binding", "changed_cwd"].map(mode => [retainedMode, mode] as const)))(
+    "pins the verified Retry workspace during environment selection (%s, %s)", async (retainedMode, mode) => {
+    const { input, issue, workspace } = await fixture();
+    const saved = await workspace();
+    await db.update(issues).set({ executionWorkspaceId: saved.id }).where(eq(issues.id, issue.id));
+    input.task.issueRef!.executionWorkspaceId = saved.id;
+    input.task.issueRef!.executionWorkspacePreference = null;
+    input.task.freshWorkspace = { mode: retainedMode, retryIntentId: randomUUID(),
+      sourceRunId: randomUUID(), workspaceId: saved.id, cwd: home };
+    if (mode === "changed_binding") input.task.issueRef!.executionWorkspaceId = (await workspace()).id;
+    if (mode === "changed_cwd") await executionWorkspaceService(db).update(saved.id, { cwd: join(home, "changed") });
+    if (mode !== "preserved") {
+      await expect(selectHeartbeatEnvironment(db, input)).rejects.toThrow("The saved Retry workspace binding changed.");
+      return;
+    }
+    const result = await selectHeartbeatEnvironment(db, input);
+    expect(result.requestedShouldReuseExisting).toBe(true);
+    expect(result.reusableExistingExecutionWorkspace).toMatchObject({ id: saved.id, cwd: home });
+    expect(result.nativeRecoveryExecutionWorkspaceId).toBeNull();
+  });
+
   it("does not make an archived issue workspace available for reuse", async () => {
     const { input, workspace } = await fixture();
     const saved = await workspace();
@@ -135,6 +229,25 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.requestedShouldReuseExisting).toBe(true);
     expect(result.reusableExistingExecutionWorkspace).toBeNull();
     expect(result.requestedReusableExecutionWorkspaceConfig).toBeNull();
+  });
+
+  it("restores a reopened task's terminal workspace under its own admitted run", async () => {
+    const { input, issue, workspace } = await fixture();
+    const saved = await workspace();
+    await writeFile(join(home, "saved-work.txt"), "Retain the completed investigation\n");
+    await executionWorkspaceService(db).update(saved.id, { status: "archived", strategyType: "project_primary",
+      cleanupReason: "issue_terminal", closedAt: new Date("2020-01-01T00:00:00Z") });
+    await db.update(issues).set({ executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, issue.id));
+    input.task.issueRef!.executionWorkspaceId = saved.id;
+    input.task.issueRef!.executionWorkspacePreference = "reuse_existing";
+
+    const result = await selectHeartbeatEnvironment(db, input);
+
+    expect(result.reusableExistingExecutionWorkspace).toMatchObject({ id: saved.id, status: "active" });
+    expect(await readFile(join(home, "saved-work.txt"), "utf8")).toBe("Retain the completed investigation\n");
+    expect(await executionWorkspaceService(db).getStoredById(input.agent.companyId, saved.id))
+      .toMatchObject({ status: "active", closedAt: null, sourceIssueId: issue.id });
   });
 
   describe("workspaces removed by git cache expiration", () => {

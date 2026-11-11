@@ -1,4 +1,5 @@
 {
+  "experimentalFeatureKey": "enableGoogleWorkspaceConnector",
   "schemaVersion": 1,
   "slug": "google-workspace",
   "name": "Google Workspace",

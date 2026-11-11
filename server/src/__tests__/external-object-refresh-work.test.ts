@@ -16,6 +16,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { notifyExternalObjectRefresh } from "../services/external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -41,7 +42,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
   beforeAll(async () => {
     if (url) await applyPendingMigrations(url);
     if (!url) temp = await startEmbeddedPostgresTestDatabase("external-refresh-work-");
-    db = createDb(url ?? temp!.connectionString, { maxConnections: 6 });
+    db = createDb(url ?? temp!.connectionString, { maxConnections: 4 });
     await db.execute(sql`truncate table ${companies} cascade`);
   }, 90_000);
   afterEach(async () => {
@@ -92,7 +93,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     }
     throw new Error("refresh worker did not settle");
   }
-  async function quiet() { await settle(() => coordinator!.nextWakeAt() === null); }
+  async function quiet() { await settle(() => coordinator!.nextWakeAt() === null && idleWorkSnapshot().active === 0); }
   function clock() { vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true }); }
   async function change(companyId: string, patch: Partial<typeof externalObjects.$inferInsert>) {
     await db.transaction(async tx => {
@@ -119,13 +120,17 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
 
   it("settles empty, configured-idle and retained terminal history without recurring SQL or provider calls", async () => {
     clock();
-    const svc = service(); await start(svc); await quiet();
+    const svc = service(); const worker = await start(svc); await quiet();
+    expect(await db.transaction(tx => svc.readIdleSchedule(tx, Date.now(), worker.reconciliationSnapshot)))
+      .toMatchObject({ blocked: false, deadlines: [] });
     const selects = vi.spyOn(db, "select");
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     expect(selects).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
     const f = await fixture(); await svc.syncIssue(f.issueId);
     await settle(async () => (await row(f.companyId))?.isTerminal === true); await quiet();
     expect((await row(f.companyId)).statusKey).toBe("done");
+    expect(await db.transaction(tx => svc.readIdleSchedule(tx, Date.now(), worker.reconciliationSnapshot)))
+      .toMatchObject({ blocked: false, deadlines: [] });
     selects.mockClear(); provider.mockClear();
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     expect(selects).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
@@ -134,12 +139,15 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
 
   it("registers exact future deadlines, preempts them on earlier writes and cancels terminal work", async () => {
     clock(); provider.mockResolvedValue(active);
-    const svc = service(); await start(svc);
+    const svc = service(); const worker = await start(svc);
     const f = await fixture(); await svc.syncIssue(f.issueId);
     await settle(() => provider.mock.calls.length === 1);
     await settle(async () => (await row(f.companyId)).lastResolvedAt !== null);
     const saved = await row(f.companyId);
     await settle(() => coordinator!.nextWakeAt() === saved.nextRefreshAt!.getTime());
+    await settle(() => worker.reconciliationSnapshot().reconciled);
+    expect(await db.transaction(tx => svc.readIdleSchedule(tx, Date.now(), worker.reconciliationSnapshot)))
+      .toMatchObject({ blocked: false, deadlines: [saved.nextRefreshAt!.getTime()] });
     const earlier = new Date(Date.now() + 1000); await change(f.companyId, { nextRefreshAt: earlier });
     await settle(() => coordinator!.nextWakeAt() === earlier.getTime());
     await vi.advanceTimersByTimeAsync(999); expect(provider).toHaveBeenCalledTimes(1);
@@ -283,7 +291,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
         return new Response(JSON.stringify({ state: "closed", merged: true, title: "Allowed fallback" }), { status: 200 });
       });
       const svc = externalObjectService(db, { pluginWorkerManager: { call: calls } as unknown as PluginWorkerManager,
-        github: { fetch: fallback, credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret" }) } });
+        github: { fetch: fallback, credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret", secretName: "GITHUB_TOKEN" }) } });
       try {
         await start(svc); const f = await fixture();
         await db.update(issues).set({ description: "https://github.com/acme/app/pull/42" }).where(eq(issues.id, f.issueId));
@@ -574,7 +582,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing HTTP test port");
     const svc = externalObjectService(db, { github: {
       fetch: (url, init) => fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, init),
-      credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret" }),
+      credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret", secretName: "GITHUB_TOKEN" }),
     } });
     try {
       await start(svc); const f = await fixture();
@@ -601,7 +609,10 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
       await db.insert(externalObjectMentions).values(batch.map(objectId => ({ companyId: f.companyId,
         sourceIssueId: f.issueId, sourceKind: "description" as const, objectId })));
     }
-    await start(svc); await settle(() => coordinator!.nextWakeAt() === future.getTime());
+    await start(svc);
+    await vi.waitFor(() => {
+      expect(coordinator!.nextWakeAt()).toBe(future.getTime());
+    }, { timeout: 10_000, interval: 5 });
     const [incoming] = await db.insert(issues).values({ companyId: f.companyId, title: "Incoming",
       description: "https://example.com/new-object" }).returning();
     const reads: Array<{ query: string; params: unknown[] }> = [];

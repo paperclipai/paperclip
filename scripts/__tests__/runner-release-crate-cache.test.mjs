@@ -76,6 +76,9 @@ test("the script's path list and key inputs cover what the release build of the 
     `${RELEASE_DIR}/deps/paperclip_runnerd-*`,
     `${RELEASE_DIR}/paperclip-runnerd`,
     `${RELEASE_DIR}/paperclip-runnerd.d`,
+    `${RELEASE_DIR}/.fingerprint/paperclip-process-table-*`,
+    `${RELEASE_DIR}/deps/libpaperclip_process_table-*`,
+    `${RELEASE_DIR}/deps/paperclip_process_table-*.d`,
   ]);
   assert.deepEqual(HASHED_INPUTS, [
     `${RUNNER_PACKAGE}/rust-toolchain.toml`,
@@ -361,8 +364,10 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
   assert.deepEqual(lanes, [
     ["static checks", false],
     ["rust", true],
-    ["vitest 1/2", false],
-    ["vitest 2/2", true],
+    ["vitest package (1/3)", false],
+    ["vitest package (2/3)", false],
+    ["vitest package (3/3)", false],
+    ["vitest native server", true],
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {
     assert.match(step(body, stepName), /if: \$\{\{ matrix\.release_crate == true \}\}/, stepName);
@@ -414,7 +419,7 @@ test("only the master Rust lane writes the crate, after a lookup, with the reade
 
   // The dependency cache's own writer gate is the same expression.
   assert.match(body, new RegExp(`save-if: \\$\\{\\{ ${WRITER_GATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\}\\}`));
-  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 1);
+  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 2, "release and debug workspace caches have separate guarded writers");
 });
 
 test("the scope names the platform, the compiler and the checkout root, and survives a missing rustc", () => {
@@ -449,9 +454,11 @@ function layRestoredCrate(root) {
   const release = path.join(root, RELEASE_DIR);
   const lib = path.join(release, ".fingerprint/paperclip-runner-core-0b6c4654c2710743");
   const bin = path.join(release, ".fingerprint/paperclip-runner-core-46cce78dbc4840c2");
+  const table = path.join(release, ".fingerprint/paperclip-process-table-5a1b2c3d4e5f6071");
   mkdirSync(path.join(release, "deps"), { recursive: true });
   mkdirSync(lib, { recursive: true });
   mkdirSync(bin, { recursive: true });
+  mkdirSync(table, { recursive: true });
   const files = {
     [path.join(lib, "lib-paperclip_runner_core")]: "0123456789abcdef",
     [path.join(lib, "lib-paperclip_runner_core.json")]: "{}",
@@ -467,6 +474,12 @@ function layRestoredCrate(root) {
     [path.join(release, "deps/paperclip_runnerd-46cce78dbc4840c2.d")]: "d",
     [path.join(release, "paperclip-runnerd")]: "ELF",
     [path.join(release, "paperclip-runnerd.d")]: "d",
+    // The process-table workspace library's lib unit.
+    [path.join(table, "lib-paperclip_process_table")]: "1111222233334444",
+    [path.join(table, "dep-lib-paperclip_process_table")]: "dep",
+    [path.join(release, "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rlib")]: "rlib",
+    [path.join(release, "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rmeta")]: "rmeta",
+    [path.join(release, "deps/paperclip_process_table-5a1b2c3d4e5f6071.d")]: "d",
     // A dependency's artifacts sit beside the crate's and must not be touched.
     [path.join(release, "deps/libserde-1234567890abcdef.rlib")]: "dep rlib",
   };
@@ -475,7 +488,7 @@ function layRestoredCrate(root) {
     writeFileSync(file, content);
     utimesSync(file, old, old);
   }
-  for (const dir of [lib, bin, path.join(release, "deps"), path.join(release, ".fingerprint"), release]) utimesSync(dir, old, old);
+  for (const dir of [lib, bin, table, path.join(release, "deps"), path.join(release, ".fingerprint"), release]) utimesSync(dir, old, old);
   return { release, files: Object.keys(files), old };
 }
 
@@ -490,7 +503,7 @@ test("mark-current makes every restored artifact newer than the checkout and lea
 
     const result = markCurrent({ root, now: new Date(checkedOutAt + 5000) });
     assert.equal(result.action, "marked");
-    assert.equal(result.files, 14);
+    assert.equal(result.files, 19);
     assert.equal(result.bytes, files.filter((file) => !file.includes("libserde")).reduce((sum, file) => sum + statSync(file).size, 0));
 
     for (const file of files) {
@@ -507,7 +520,7 @@ test("mark-current makes every restored artifact newer than the checkout and lea
     const printed = JSON.parse(execFileSync(process.execPath, [script, "mark-current"], { encoding: "utf8", env: { ...process.env, GITHUB_WORKSPACE: root } }));
     assert.equal(printed.schema, "paperclip.runner-release-crate.v1");
     assert.equal(printed.action, "marked");
-    assert.equal(printed.files, 14);
+    assert.equal(printed.files, 19);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -526,6 +539,10 @@ const REQUIRED_FILES = {
   "the bin fingerprint hash": ".fingerprint/paperclip-runner-core-46cce78dbc4840c2/bin-paperclip-runnerd",
   "the bin dep-info": ".fingerprint/paperclip-runner-core-46cce78dbc4840c2/dep-bin-paperclip-runnerd",
   "the bin under deps": "deps/paperclip_runnerd-46cce78dbc4840c2",
+  "the process-table lib fingerprint hash": ".fingerprint/paperclip-process-table-5a1b2c3d4e5f6071/lib-paperclip_process_table",
+  "the process-table lib dep-info": ".fingerprint/paperclip-process-table-5a1b2c3d4e5f6071/dep-lib-paperclip_process_table",
+  "the process-table lib rlib": "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rlib",
+  "the process-table lib rmeta": "deps/libpaperclip_process_table-5a1b2c3d4e5f6071.rmeta",
 };
 const NOT_NEEDED = [
   ".fingerprint/paperclip-runner-core-0b6c4654c2710743/lib-paperclip_runner_core.json",
@@ -535,6 +552,7 @@ const NOT_NEEDED = [
   "deps/paperclip_runnerd-46cce78dbc4840c2.d",
   "paperclip-runnerd",
   "paperclip-runnerd.d",
+  "deps/paperclip_process_table-5a1b2c3d4e5f6071.d",
 ];
 
 test("mark-current discards a restore that lacks any file cargo needs for either unit, naming the file, so cargo sees a plain miss", () => {
@@ -577,7 +595,7 @@ test("mark-current discards a restore that lacks any file cargo needs for either
       rmSync(path.join(release, file));
       const result = markCurrent({ root: intact });
       assert.equal(result.action, "marked", `${file} missing must not discard the restore`);
-      assert.equal(result.files, 13, file);
+      assert.equal(result.files, 18, file);
     } finally {
       rmSync(intact, { recursive: true, force: true });
     }

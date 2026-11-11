@@ -13,11 +13,11 @@ import { isConversation } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { assertCurrentWakeCommentsRead, NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ, NATIVE_CURRENT_WAKE_COMMENTS_UNREAD, resolveCurrentWakeCommentsBinding } from "./current-wake-comments.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   approvals,
   agents,
-  companies,
   heartbeatRuns,
   completionContracts,
   issueApprovals,
@@ -40,10 +40,7 @@ function record(value: unknown): Record<string, unknown> {
 /** Reconstruct links from current task state, never from provider-supplied URLs. */
 async function savedDocumentLinks(db: Db, run: typeof heartbeatRuns.$inferSelect, issue: typeof issues.$inferSelect) {
   const saved = await publishedTaskDocuments(db, { companyId: run.companyId, issueId: issue.id });
-  if (!saved.length) return [];
-  const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, run.companyId));
-  if (!company) return [];
-  return saved.map(document => `[Saved document](/${encodeURIComponent(company.issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}#document-${encodeURIComponent(document.key)})`);
+  return saved.map(document => `[Saved document](${document.href})`);
 }
 
 /** Read current constraints before accepting the report, not a premature status commit. */
@@ -70,6 +67,24 @@ export async function nativeCompletionFeedback(
     )
     .then((rows) => rows[0]);
   if (!issue) throw new Error("Completion task no longer exists.");
+  const wakeScope = { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId };
+  const currentWake = await resolveCurrentWakeCommentsBinding(db, wakeScope);
+  if (currentWake) {
+    try {
+      await assertCurrentWakeCommentsRead(db, wakeScope, currentWake);
+    } catch (error) {
+      if (error instanceof Error && (error.message === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD || error.message === NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ)) {
+        const reason = error.message === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
+          ? "The accepted comments have not been fully read."
+          : "The accepted comments changed after the complete read.";
+        const cursorInstruction = error.message === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
+          ? "If you have an unfinished read, continue with its most recent nextCursor; otherwise start without a cursor. If the reader reports that the snapshot changed, restart without a cursor."
+          : "Start without a cursor.";
+        throw new Error(`${reason} Call read_current_wake_comments. ${cursorInstruction} Follow each returned nextCursor until complete=true. Reassess the complete current request and resubmit the completion report in this turn. Preserve completed work and do not repeat completed actions.`);
+      }
+      throw error;
+    }
+  }
   if (result.reportedWorkDisposition === "yielded" && isPublishedGitHubReviewCompletionContinuation(result.continuation)) {
     const current = await readPublishedGitHubReviewCompletionContinuation({ db,
       binding: { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId } });
@@ -132,9 +147,32 @@ export async function nativeCompletionFeedback(
       signals.verification.some((entry) => entry.status === "failed") ||
       signals.actionableAttentionRequests.length > 0)
   ) {
+    const toolAction = record(run.contextSnapshot?.toolAction);
+    const failedActionChat = isConversation(issue) && issue.conversationAgentId === run.agentId &&
+      run.contextSnapshot?.source === "tool_action_review" && toolAction.executionStatus === "failed" &&
+      typeof toolAction.invocationId === "string" && typeof toolAction.actionRequestId === "string";
+    const rejectionReasons = failedActionChat ? [
+      !result.completionClaim.objectiveSatisfied && "completionClaim.objectiveSatisfied.false",
+      result.completionClaim.criteria.some((entry) => entry.status !== "satisfied") && "completionClaim.criteria.unsatisfied",
+      result.completionClaim.remainingWork.some((entry) => entry.blocksCompletion) && "completionClaim.remainingWork.blocksCompletion",
+      signals.verification.some((entry) => entry.status === "failed") && "verification.failed",
+      signals.actionableAttentionRequests.length > 0 && "attentionRequests.actionable",
+    ].filter(Boolean).join(", ") : "";
     throw new Error(
-      "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created.",
+      "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created." +
+      (failedActionChat ? ` Rejection fields: ${rejectionReasons}.` + " This chat turn may finish with a truthful report of the failed approved action; that does not mean the external action succeeded. Keep the failure, observed state, and unresolved work explicit in the summary. Verify the observed state factually. Use not_run with a truthful reason only for a check that could not run or complete because its dependency was unavailable. Do not change a failed check to passed or hide incomplete work. Do not automatically replay the action or request approval again to force success; report the outcome and let the user decide whether to retry." : ""),
     );
+  }
+  const stage = record(issue.executionState), participant = record(stage.currentParticipant);
+  if (stage.status === "pending" && participant.type === "agent" && participant.agentId === run.agentId &&
+      issue.executionRunId === run.id && ["done", "needs_review"].includes(result.reportedWorkDisposition)) {
+    // The active review/approval participant decides the stage on the task
+    // itself. A finish report cannot record that decision, so accepting it
+    // would leave the stage pending with nobody left to decide it.
+    const stageType = typeof stage.currentStageType === "string" ? stage.currentStageType : "review";
+    throw new Error(`You are the active ${stageType} participant on this task. A finish report does not record your ${stageType} decision, so this report was not accepted. ` +
+      `To approve, record the decision first with paperclip_call_api operationId "PATCH /api/issues/{id}" for this task and {"status":"done","comment":"<your decision and the evidence you checked>"}, then report this run with paperclip_finish. ` +
+      "To request changes, or if you cannot decide, report the required changes or the concrete blocker with paperclip_block.");
   }
   if (["done", "cancelled"].includes(issue.status)) {
     return `Report accepted; task is already ${issue.status}. This report will not reopen it.`;
@@ -343,5 +381,5 @@ export async function nativeCompletionFeedback(
   const links = await savedDocumentLinks(db, run, issue);
   const documentGuidance = links.length
     ? ` When compatible with the requested response format, include these clickable links to this run's saved documents in your final response: ${links.join(" ")}` : "";
-  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Follow the user's explicitly requested final-response format, including an exact response when requested. Otherwise describe the completed work and any explicitly requested reviewer action. Do not claim an approval is needed unless one was requested." + documentGuidance;
+  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Follow the user's explicitly requested final-response format, including an exact response when requested. Otherwise describe the completed work and any explicitly requested reviewer action. Do not claim an approval is needed unless one was requested. When compatible with the requested response format, present any created or updated Paperclip resources you cite as usable Markdown links [name](href), using resourceLinks or resource hrefs actually returned by tools, not only backtick-wrapped paths. Do not guess routes or invent links when no resource href was returned." + documentGuidance;
 }

@@ -26,7 +26,7 @@ import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } fr
 import { projectCompanyHolds } from "../adapters/company-policy.js";
 import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
-import type { LifecycleAgent } from "../application/ports.js";
+import type { LifecycleAgent, LifecycleDriver } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
 import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 
@@ -53,7 +53,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lifecycle test", issuePrefix: `L${companyId.slice(0, 7)}` });
   });
-  function worker(runHost: (agent: LifecycleAgent) => Promise<"complete" | "pending"> = async () => "complete") {
+  function worker(runHost: LifecycleDriver["runHost"] = async () => "complete") {
     const value = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost });
     workers.push(value); return value;
   }
@@ -130,7 +130,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.updated")))).toHaveLength(1);
     await request(board).patch(`/api/agents/${agent.id}`).send({ name: "Stale", expectedConfigurationRevision: response.body.configurationRevision }).expect(409);
     const foreign = app({ type: "board", source: "session", userId: "outsider", companyIds: [], memberships: [] });
-    await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(403);
+    await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(404);
     await request(foreign).patch(`/api/agents/${agent.id}`).send({ title: "Denied", expectedConfigurationRevision: saved.body.configurationRevision }).expect(404);
   });
 
@@ -357,6 +357,49 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(setupId)).lifecycleHolds).toContain("setup");
   });
 
+  it("saves the immediate hire budget and actual operator audit in its transaction", async () => {
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Capped hire", adapterType: "process", budgetMonthlyCents: 5000 }, { createdByUserId: "operator-user", initialBudgetPolicyUserId: "operator-user" });
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, agent.id))).toMatchObject([{ amount: 5000 }]);
+    const audit = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "budget.policy_upserted")));
+    expect(audit).toMatchObject([{ actorType: "user", actorId: "operator-user", agentId: null }]);
+  });
+
+  it("preserves trusted no-user provisioning without inventing initial board authority", async () => {
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Internal declared budget", budgetMonthlyCents: 5000 });
+    expect(agent.budgetMonthlyCents).toBe(5000);
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, agent.id))).toHaveLength(0);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "budget.policy_upserted")))).toHaveLength(0);
+  });
+
+  it("credits only the approving operator for a positive-budget approval without a precreated agent", async () => {
+    const approval = await approvalService(db).create(companyId, { type: "hire_agent", requestedByUserId: "requester", payload: { name: "Approved cap", role: "engineer", budgetMonthlyCents: 5000 } });
+    await approvalService(db).approve(approval.id, "approver");
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, companyId))).toMatchObject([{ amount: 5000, createdByUserId: "approver" }]);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "budget.policy_upserted")))).toMatchObject([{ actorType: "user", actorId: "approver" }]);
+  });
+
+  it("does not activate a proposed hire budget before human approval", async () => {
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Proposed cap", status: "pending_approval", budgetMonthlyCents: 5000 }, { createdByUserId: "operator-user", initialBudgetPolicyUserId: "operator-user" });
+    expect(agent.budgetMonthlyCents).toBe(5000);
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, agent.id))).toHaveLength(0);
+  });
+
+  it("rolls back the hire, grants, policy and audit together when its initial budget write fails", async () => {
+    const effects = createAgentLifecycleEffects();
+    const setAgentBudget = vi.fn(async (...args: Parameters<typeof effects.setAgentBudget>) => {
+      await effects.setAgentBudget(...args);
+      throw new Error("Initial budget failed");
+    });
+    const lifecycle = createLifecycleCommands(db, { ...effects, setAgentBudget });
+    await expect(lifecycle.requestHire(companyId, { name: "Budget rollback", adapterType: "process", budgetMonthlyCents: 5000 }, { createdByUserId: "operator-user", initialBudgetPolicyUserId: "operator-user" }))
+      .rejects.toThrow("Initial budget failed");
+    expect(setAgentBudget).toHaveBeenCalledWith(expect.anything(), expect.any(Array), companyId, expect.any(String), 5000, "operator-user");
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(0);
+  });
+
   it("rolls back a hire and its grants when hire initialization fails", async () => {
     const effects = createAgentLifecycleEffects();
     const lifecycle = createLifecycleCommands(db, { ...effects,
@@ -369,6 +412,59 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       .rejects.toThrow("Hire initialization failed");
     expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
     expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toHaveLength(0);
+  });
+
+  // H1 review: a budget resume continues only work its own budget stopped. The
+  // pause records the holds and the company's pause reason on each run it stops.
+  it("records what a pause stopped each active run for", async () => {
+    const agent = await hire();
+    await db.update(companies).set({ status: "paused", pauseReason: "budget" }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ lifecycleState: "pausing", lifecycleHolds: ["company_paused"] }).where(eq(agents.id, agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    await createLifecycleDriver(db, {} as never).runHost(await current(agent.id) as never);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped.resultJson).toMatchObject({ pauseStop: { holds: ["company_paused"], companyPauseReason: "budget" } });
+  });
+
+  // H1 review: a resume that removed the holds before the pause's Stop ran must
+  // not erase why the pause stopped the run (the Stop itself stays owed).
+  it("records the pause's original cause on runs it stops after a resume removed the holds", async () => {
+    const agent = await hire();
+    await db.update(agents).set({ lifecycleState: "pausing", lifecycleHolds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0,
+        pauseCause: { holds: ["budget"], companyPauseReason: null } } }).where(eq(agents.id, agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    await createLifecycleDriver(db, {} as never).runHost(await current(agent.id) as never);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped.resultJson).toMatchObject({ pauseStop: { holds: ["budget"], companyPauseReason: null } });
+  });
+
+  it("keeps a budget pause's cause when the budget is resumed before the pause's Stop runs", async () => {
+    const agent = await hire();
+    await db.update(agents).set({ lifecycleState: "ready", status: "idle" }).where(eq(agents.id, agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    const { applyAgentBudgetHoldInTransaction } = await import("../../../services/agent-lifecycle.js");
+    // The budget hold pauses the agent, then the raise removes it before the
+    // lifecycle worker has run the pause's Stop.
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, companyId, agent.id, true));
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, companyId, agent.id, false));
+    const paused = await current(agent.id);
+    expect(paused).toMatchObject({ lifecycleState: "pausing", lifecycleHolds: [] });
+    await createLifecycleDriver(db, {} as never).runHost(paused as never);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.resultJson).toMatchObject({ pauseStop: { holds: ["budget"] } });
+  });
+
+  it("records why a budget pause started on its lifecycle operation", async () => {
+    const agent = await hire();
+    await db.update(agents).set({ lifecycleState: "ready", status: "idle" }).where(eq(agents.id, agent.id));
+    await db.update(companies).set({ status: "paused", pauseReason: "budget" }).where(eq(companies.id, companyId));
+    const { applyAgentBudgetHoldInTransaction } = await import("../../../services/agent-lifecycle.js");
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, companyId, agent.id, true));
+    expect((await current(agent.id)).lifecycleOperation).toMatchObject({
+      pauseCause: { holds: ["budget"], companyPauseReason: "budget" } });
   });
 
   it("runs the saved harness test and keeps a failed configuration out of ready", async () => {
@@ -410,6 +506,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
+  });
+
+  it("releases an expired native owner whose renewed lease expiry has microsecond precision", async () => {
+    const agent = await hire();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Renewed native run" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, nativeIssueId: issue.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "native",
+      startedAt: new Date(), finishedAt: new Date(), processPid: 2_000_000_000 }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId: run.id,
+      phase: "executing", leaseOwner: "stopped-server", leaseExpiresAt: new Date(0) });
+    await db.update(nativeRunFinalizations)
+      .set({ leaseExpiresAt: sql`'2020-01-01T00:00:00.123456Z'::timestamptz` })
+      .where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
   });

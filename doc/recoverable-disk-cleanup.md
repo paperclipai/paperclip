@@ -20,6 +20,16 @@ unsettled recovery pins are retained. If an active run's version selection is
 unknown, that company's caches remain. Non-versioned skill directories and
 database snapshots are never removed by this worker.
 
+Queued turns and scheduled retries without any preparation, execution, or saved
+skill selection do not pin files. They select current skills when preparation
+starts. Recorded selections and uncertain execution still protect their versions,
+including requeued runs and unfinished recovery. The same distinction applies to
+deleting an unused skill.
+For deletion only, a valid immutable legacy selection with an unknown version
+does not protect a skill created after that run finished. Uncertain or malformed
+selections still block deletion. Global cache eviction keeps its conservative
+protection for these unknown versions.
+
 Last-use records live separately under `__version_access__`. Older installations
 without those records receive a full one-hour observation period. Preparation,
 pin persistence and eviction share a company-scoped database lock across server
@@ -62,6 +72,18 @@ directories, and data Codex downloads again on startup: remote plugin bundles un
 `plugins/cache/<remote marketplace>`, the remote plugin catalog cache, and plugin
 install staging. After a restore, remote plugins can be unavailable to a turn until
 Codex finishes downloading them.
+
+A turn that ends without a proven Runner suspension writes no new copy, but the
+controller can still acknowledge the events Runner produced after the last copy.
+Before it restores a copy into a replacement sandbox, the server compares the
+copy's produced event cursor with the controller's acknowledged cursor. If the
+copy is behind, the run fails with `native_event_replay_conflict` and automatic
+recovery stops. No files are copied to the sandbox. Resuming that copy would make
+Runner reject the controller's acknowledgement, and it could repeat work the
+controller already accepted.
+When a controller is registered, the comparison uses its current live cursor.
+The local marker written for external checkpoint storage does not replace that
+authority.
 
 An hourly background sweep expires the copy once the session can only resume by
 reopening closed work. It checks at most 200 sessions and expires at most 50 per

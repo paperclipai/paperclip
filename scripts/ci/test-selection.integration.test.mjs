@@ -36,6 +36,8 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   write("ui/src/builtin-loader.test.ts", 'process.getBuiltinModule("fs").readFileSync("input");');
   write("ui/src/opaque.test.ts", 'import {parse} from "yaml"; console.log(parse("value: true"));');
   write("ui/src/independent.test.ts", 'export const independent = true;');
+  write("ui/src/raw.test.ts", 'import text from "./leaf.ts?raw"; console.log(text);');
+  write("ui/src/unknown-query.test.ts", 'import text from "./leaf.ts?custom-loader"; console.log(text);');
   write("ui/src/mocked.test.ts", 'import {vi} from "vitest"; vi.mock("./helper",()=>({read:()=>"mock"})); import {read} from "./helper"; read("input");');
   write("ui/src/partial.test.ts", 'import {vi} from "vitest"; vi.mock("./helper",async (original)=>await original()); import {read} from "./helper"; read("input");');
   write("ui/src/automock.test.ts", 'import {vi} from "vitest"; vi.mock("./helper"); import {read} from "./helper"; read("input");');
@@ -50,7 +52,11 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   execFileSync("git", ["add", "."], { cwd: directory });
   const select = (changed) => selectProjectTests({ root: directory, project: "fixture", changed });
   const result = await select(["ui/src/leaf.ts"]);
-  assert.deepEqual(result.related, ["ui/src/import.test.ts"]);
+  assert.ok(result.related.includes("ui/src/import.test.ts"));
+  assert.ok(result.inputRelated.includes("ui/src/raw.test.ts"), "raw text has an explicit repository input edge");
+  assert.ok(!result.alwaysRun.includes("ui/src/raw.test.ts"));
+  assert.ok(!(await select(["ui/src/independent.test.ts"])).selected.includes("ui/src/raw.test.ts"));
+  assert.ok(result.alwaysRun.includes("ui/src/unknown-query.test.ts"), "unknown query loaders remain conservative");
   assert.ok(result.inputRelated.includes("ui/src/reader.test.ts"), "literal file reads add the missing source dependency");
   assert.ok(!result.alwaysRun.includes("ui/src/reader.test.ts"));
   for (const file of ["indirect", "process", "dynamic", "cjs", "builtin-loader", "opaque", "partial", "automock", "bypass", "spy", "remock", "arguments"]) {
@@ -71,9 +77,11 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   assert.ok(broken.selected.includes("ui/src/broken.test.ts"), "an unresolved dependency must retain its test");
   write("ui/src/generated.ts", "export const generated = 42;");
   write("ui/src/generated.test.ts", 'import {generated} from "./generated"; console.log(generated);');
+  write("ui/src/generated-raw.test.ts", 'import text from "./generated.ts?raw"; console.log(text);');
   execFileSync("git", ["add", "ui/src/generated.test.ts"], { cwd: directory });
   assert.ok((await select(["ui/src/leaf.ts"])).alwaysRun.includes("ui/src/generated.test.ts"),
     "generated inputs have no trustworthy source-to-output graph and retain their consumers");
+  assert.ok((await select(["ui/src/leaf.ts"])).alwaysRun.includes("ui/src/generated-raw.test.ts"));
   write("ui/src/environment.ts", 'import {readFileSync} from "node:fs"; readFileSync(new URL("./leaf.ts", import.meta.url));');
   const fileSetup = await select(["ui/src/leaf.ts"]);
   assert.deepEqual(fileSetup.selected, fileSetup.inventory, "an explicit setup file read affects the entire project");

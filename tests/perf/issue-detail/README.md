@@ -24,6 +24,12 @@ Override the sample count (minimum five) or port when needed:
 PAPERCLIP_ISSUE_PERF_RUNS=7 PAPERCLIP_ISSUE_PERF_PORT=3210 pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts
 ```
 
+S1 clicks as soon as the list row is visible. Set
+`PAPERCLIP_ISSUE_PERF_LIST_DWELL_MS=1500` to wait on the list first, as a
+person does. Task lists preload the chat of their top rows after the list's
+own reads settle, so S1 with a dwell measures a preloaded open and S1 without
+one measures an open that usually has to read the task.
+
 Outputs include `baseline.md`, `baseline.json`, and a Chrome trace for the first run of each scenario/profile. Open `*.trace.json` in Chrome DevTools Performance to inspect the `issue-detail:*` user-timing marks.
 
 Set `PAPERCLIP_ISSUE_PERF_PROFILE=1` to capture actual Chrome CPU samples and
@@ -50,7 +56,51 @@ harness validates the task identity before measuring. Network spans in the trace
 use recorded request start/end timestamps relative to task navigation; they
 include completed requests observed during the sample, even after content paint.
 
+## Real-instance click harness
+
+Local fixtures cannot reproduce staging's network round trips, server contention
+or object-store latency. `staging-click-harness.js` measures the same journey on
+any running instance, including staging, from the signed-in browser:
+
+1. Open an Issues list, for example `/<company>/issues?view=mine`.
+2. Paste the file into the DevTools console (or evaluate it through a browser
+   automation tool).
+3. Run `await __taskOpenHarness.series(["ABC-1", "ABC-2", "ABC-3"])`.
+
+Each sample reports the time from the row click to a visible composer and to the
+latest message in the viewport, the requests started before that point, the
+requests that finished last before it (`releasedBy`), the slowest and repeated
+requests, layout shifts, and any movement of the latest message after it first
+appeared. `serverMs` comes from the `paperclip_api` Server-Timing entry that every
+API response carries, so a long `duration` with a short `serverMs` points to the
+network or browser queueing rather than the handler. A fetch that is still
+running when the sample ends is listed with `pending: true`. Run samples
+serially and record whether each task's data was already cached (a revisit) or
+not.
+
+The summary labels each sample (`sample 1`, ...) instead of the task reference.
+It replaces query values and every path segment that contains a digit with a
+placeholder. Other path segments can stay, so review the output before you
+share it outside the instance.
+
 ## Task layout stability
+
+The normal browser CI suite also runs `tests/e2e/task-loading-frame.spec.ts`.
+It seeds a smaller API-only task and checks desktop/mobile frame and composer
+geometry, title typography, the initial reading position, Classic preference
+loading and typography, mobile shell handoff, and a stalled font request. It does not require a separate database URL.
+The rich 200-message fixture below remains an additional local stress journey.
+
+`loading-layout.spec.ts` uses a retained synthetic task with a wrapping title,
+200 saved messages, document and PR cards, a monitor, and a pending confirmation.
+It records every animation frame during direct and list-based entry on desktop
+and mobile, including delayed web fonts and workspace preferences. It rejects real headers shown before
+the initial conversation is ready, loading-frame movement, different header
+typography, composer displacement, and movement of the initial reading position.
+The fixture requires the disposable PostgreSQL URL described below. Its agent
+has interval and on-demand wakes disabled, including when the retained fixture
+is reused. The suite does not start provider work.
+Videos, screenshots, and `frames.json` are retained with each result.
 
 `compact-startup.spec.ts` keeps a synthetic local reproduction with 24 messages,
 a plan, three documents and three saved PR cards. It holds the enriched task

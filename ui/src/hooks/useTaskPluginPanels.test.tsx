@@ -4,6 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, LiveEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from "vitest";
+import { agentsApi } from "@/api/agents";
+import { environmentsApi } from "@/api/environments";
 import { api, ApiError } from "@/api/client";
 import { heartbeatsApi, type LiveRunForIssue } from "@/api/heartbeats";
 import { useTaskRunLiveUpdates } from "@/context/LiveUpdatesProvider";
@@ -471,4 +473,23 @@ it.each(["route", "installation"])("rechecks readiness after a same-version %s c
   expect(get).toHaveBeenCalledTimes(4); expect(current).toEqual([]);
   get.mockResolvedValue({ available: true }); await emit(event());
   expect(get).toHaveBeenCalledTimes(5); expect(current).toHaveLength(1);
+});
+
+it.each(["computer", "local"])("gates manual task views using the running agent's %s environment", async environmentId => {
+  const restricted = { ...slot, agentEnvironmentDriver: "tasks" };
+  plugin.slots = [restricted];
+  vi.spyOn(agentsApi, "get").mockResolvedValue({ id: "agent", companyId: "company", defaultEnvironmentId: environmentId } as Awaited<ReturnType<typeof agentsApi.get>>);
+  vi.spyOn(environmentsApi, "list").mockResolvedValue([{ id: "computer", name: "Computer", description: null, driver: "plugin", status: "active", config: {}, pluginDriver: { pluginKey: slot.pluginKey, driverKey: "tasks" }, envVars: {}, metadata: null, createdAt: new Date(0), updatedAt: new Date(0) }]);
+  await render();
+  expect(panels.map(panel => panel.slot)).toEqual(environmentId === "computer" ? [restricted] : []);
+  if (environmentId === "local") {
+    expect(history).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
+  }
+});
+it("gates an idle task view using its assigned agent's environment", async () => {
+  const restricted = { ...slot, agentEnvironmentDriver: "tasks" };
+  plugin.slots = [restricted]; list.mockResolvedValue([]);
+  vi.spyOn(agentsApi, "get").mockResolvedValue({ id: "agent", companyId: "company", defaultEnvironmentId: "local" } as Awaited<ReturnType<typeof agentsApi.get>>);
+  vi.spyOn(environmentsApi, "list").mockResolvedValue([]);
+  await render(); expect(panels).toEqual([]);
 });

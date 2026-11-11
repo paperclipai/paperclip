@@ -28,6 +28,7 @@ const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 const WELCOME_TIMEOUT: Duration = CONNECT_TOTAL_TIMEOUT;
 const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const QUEUED_CONTROL_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
@@ -1163,6 +1164,19 @@ impl AuthenticatedTransport {
         self.receive_json_until(None)
     }
 
+    pub(crate) fn receive_queued_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
+        self.set_runtime_read_timeout(QUEUED_CONTROL_READ_TIMEOUT)?;
+        let message = self.receive_json_until(None);
+        self.set_runtime_read_timeout(RUNTIME_READ_TIMEOUT)?;
+        message
+    }
+
+    fn set_runtime_read_timeout(&mut self, timeout: Duration) -> Result<(), DurableRunnerError> {
+        self.socket
+            .set_read_timeout(Some(timeout))
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))
+    }
+
     fn receive_json_until(
         &mut self,
         deadline: Option<Instant>,
@@ -1747,6 +1761,10 @@ fn hex_nibble(byte: u8) -> Result<u8, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    include!("tests/hosted_retention.rs");
+    include!("tests/ack_release_poll.rs");
+
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1773,12 +1791,14 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
         }
     }
 

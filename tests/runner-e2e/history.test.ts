@@ -36,6 +36,8 @@ import { githubJourneyCheckpoints, type GitHubReviewJourneyEvidence } from "./gi
 import { antigravityEvidenceFixture } from "./antigravity-journey-test-fixtures.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
+const publicExecution = runnerMatrix.find(execution => execution.id === "core-compatibility.runner-codex.local.message-marker")!;
+
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -438,7 +440,7 @@ describe("historical publication security", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
     const output = path.join(root, "landing");
     temporaryDirectories.push(root);
-    const execution = runnerMatrix[0]!;
+    const execution = publicExecution;
     const campaignResult = {
       ...result(execution, "passed"),
       screenshots: [
@@ -557,7 +559,7 @@ describe("historical publication security", () => {
   it("admits declared PNG screenshots and the trusted summary only", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-s3-test-"));
     temporaryDirectories.push(root);
-    const execution = runnerMatrix[0]!;
+    const execution = publicExecution;
     const campaign = buildRunnerCampaign({
       campaignId: "campaign-summary",
       generatedAt: "2026-08-28T00:01:00.000Z",
@@ -694,7 +696,7 @@ describe("historical publication security", () => {
   });
 
   it("requires trusted-fixture opt-in and rejects unsafe screenshot paths", () => {
-    const execution = runnerMatrix[0]!;
+    const execution = publicExecution;
     expect(() => buildRunnerCampaign({
       campaignId: "unsafe-screenshot",
       generatedAt: "2026-08-28T00:01:00.000Z",
@@ -898,5 +900,19 @@ describe("historical publication security", () => {
     await expect(createBundleManifest(root, "campaign-1")).rejects.toThrow(
       "non-allowlisted",
     );
+  });
+});
+
+// These PNGs are synthetic controls; no retained incident image is inspected.
+describe("privacy findings override screenshot route admission", () => {
+  it.each([
+    { failureClass: "secret_leak", screenshotPrivacy: undefined },
+    { failureClass: "cleanup_failure", screenshotPrivacy: { withheld: true, reasons: ["inner-secret-finding"] } },
+    { failureClass: "cleanup_failure", screenshotPrivacy: { withheld: true, reasons: ["reporter-evidence-withheld"] } },
+  ])("withholds marked screenshots despite terminal wrapper: %j", signal => {
+    const execution = runnerMatrix[0]!;
+    const original = { ...result(execution, "failed"), ...signal, screenshots: [{ id: "failure", label: "Synthetic failure", file: "failure.png", publication: "public-runner-fixture" }] } as RunnerE2EResult;
+    const campaign = buildRunnerCampaign({ campaignId: "privacy-withheld", generatedAt: "2026-08-28T00:01:00.000Z", expected: [execution.id], results: [original] });
+    expect([...publicScreenshotPaths(campaign)]).toEqual([]);
   });
 });

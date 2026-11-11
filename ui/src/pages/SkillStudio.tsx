@@ -198,7 +198,7 @@ function useMutationErrorToast() {
       // Under the open default there is no permission chrome. When an action is
       // actually denied — by an explicit company policy (State B) or a platform
       // safety invariant (State C) — show the actionable denial title/remediation
-      // instead of a generic "try again" error (§9.10, PAP-13865). Transient
+      // instead of a generic "try again" error (`doc/company-skill-policy.md`, PAP-13865). Transient
       // failures keep the plain error toast.
       const denial = classifySkillDenial(error);
       if (denial) {
@@ -2417,6 +2417,7 @@ function RunsPane({
     queryFn: () => companySkillsApi.testRunTemplates(companyId),
     enabled: Boolean(companyId),
   });
+  const templatesQueryView = useQueryView(templatesQuery);
   const templates = templatesQuery.data ?? EMPTY_RUN_TEMPLATES;
 
   useEffect(() => {
@@ -2461,7 +2462,7 @@ function RunsPane({
   });
   const templateGateReason = templatesQuery.isLoading
     ? "Loading run templates"
-    : templatesQuery.isError
+    : (templatesQueryView.kind === "error")
       ? "Run templates couldn't load"
       : null;
 
@@ -2603,7 +2604,7 @@ function RunsPane({
           onOpenChange={setAdvancedOpen}
           templates={templates}
           templatesLoading={templatesQuery.isLoading}
-          templatesError={templatesQuery.isError}
+          templatesError={(templatesQueryView.kind === "error")}
           selectedTemplateId={selectedTemplateId}
           selectedTemplate={selectedTemplate}
           selectedTemplateName={selectedTemplateName}

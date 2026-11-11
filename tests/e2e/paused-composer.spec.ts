@@ -51,6 +51,9 @@ for (const classic of [false, true]) {
     test.setTimeout(120_000);
     const company = await json(await request.post("/api/companies", { data: { name: `Resume preview ${Date.now()}` } }));
     const settings = await json(await request.get("/api/instance/settings/experimental"));
+    await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+      userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
+    } }));
     let primaryFailed = false;
     try {
       await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: classic } }));
@@ -98,6 +101,9 @@ for (const classic of [false, true]) {
     test.setTimeout(120_000);
     const company = await json(await request.post("/api/companies", { data: { name: `Paused composer ${Date.now()}` } }));
     const settings = await json(await request.get("/api/instance/settings/experimental"));
+    await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+      userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
+    } }));
     let primaryFailed = false;
     try {
       await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: classic } }));

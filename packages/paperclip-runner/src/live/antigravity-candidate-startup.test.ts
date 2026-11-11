@@ -63,7 +63,9 @@ describe("Antigravity candidate trusted startup", () => {
     const root = await mkdtemp(join(tmpdir(), "antigravity-candidate-continuation-"));
     const admission = candidate();
     const retained = { driverSessionId: "driver-retained", providerSessionId: "native-retained", providerIdentity: {
-      kind: "acpx", normalizedSessionId: identity.normalizedSessionId,
+      kind: "acpx" as const, normalizedSessionId: identity.normalizedSessionId,
+      acpxRecordId: "acpx-retained", backendSessionId: "backend-retained", agentSessionId: "native-retained",
+      workspaceDigest: `sha256:${"e".repeat(64)}`, providerLifetimeFenceCandidates: [1, 2, 3] as const,
       // The recovery binding digest is distinct from the release command digest.
       profileDigest: `sha256:${"a".repeat(64)}`, requestedModel: admission.model, effectiveModel: admission.model,
     } };

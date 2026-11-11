@@ -125,3 +125,11 @@ describe("owned maintenance providers", () => {
     }
   });
 });
+
+describe("configured acceptance boundaries", () => {
+  it("rejects remote collectors and fake-clock configuration before opening PostgreSQL", async () => {
+    await expect(startMaintenanceServer("not-a-database-url", { configuration: { telemetryOrigin: "https://telemetry.example.test" } })).rejects.toThrow("loopback");
+    await expect(startMaintenanceServer("not-a-database-url", { clock: true, configuration: { announcements: true } })).rejects.toThrow("real clock");
+    await expect(startMaintenanceServer("not-a-database-url", { configuration: { automaticBackups: { intervalMinutes: 0, idleCheckpoint: true } } })).rejects.toThrow("positive integer");
+  });
+});

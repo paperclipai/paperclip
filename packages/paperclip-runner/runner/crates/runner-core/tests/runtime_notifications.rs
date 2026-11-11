@@ -49,12 +49,14 @@ fn real_cli_uses_relative_state_from_another_directory_and_never_process_run_ide
         runner_digest: "sha256:digest".into(),
         acpx_launch_profile: None,
         opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
         max_outbox_bytes: 1024 * 1024,
         p0_reserve_bytes: 65536,
         max_frame_bytes: 65536,
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::ZERO,
+        turn_scoped: false,
     };
     let store = DurableStateStore::new(&path).unwrap();
     let (mut state, _) = store.load_or_create(&config).unwrap();

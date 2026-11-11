@@ -148,6 +148,20 @@ describe("buildPluginWorkerEnv", () => {
     deploymentExposure: "public",
   };
 
+  it("forwards only granted variables to a plugin that registers no environment driver", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: [] },
+      instanceInfo,
+      grantedEnvVars: ["PROVIDER_ORIGIN", "PROVIDER_BLANK", "PROVIDER_MISSING"],
+      processEnv: { PROVIDER_ORIGIN: "https://provider.test", PROVIDER_BLANK: " ", DATABASE_URL: "postgres://host", OPENAI_API_KEY: "openai-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      PROVIDER_ORIGIN: "https://provider.test",
+    });
+  });
+
   it("passes only model provider keys through to environment driver plugins", () => {
     const env = buildPluginWorkerEnv({
       manifest: { capabilities: ["environment.drivers.register"] },
@@ -190,7 +204,7 @@ describe("buildPluginWorkerEnv", () => {
 
   it("does not pass provider keys to non-environment plugins", () => {
     const env = buildPluginWorkerEnv({
-      manifest: { capabilities: ["ui.slots.register"] },
+      manifest: { capabilities: ["ui.sidebar.register"] },
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",

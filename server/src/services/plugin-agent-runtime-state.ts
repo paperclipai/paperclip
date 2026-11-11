@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { agents, environments, plugins, pluginCompanySettings, resourceLifecycleEvents, fileStorageDb, type Db } from "@paperclipai/db";
 import type { PluginAgentRuntimeState, PluginAgentRuntimeIdentity } from "@paperclipai/plugin-sdk";
 import { agentRecordQueries } from "../lib/agent-records.js";
@@ -13,28 +13,25 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { agentInstanceSecretService } from "./agent-instance-secrets.js";
 import { environmentSkillConfig } from "./environment-skills.js";
 
-async function readState(db: Db, pluginId: string, companyId: string, agentId: string, identityOnly: true): Promise<PluginAgentRuntimeIdentity | null>;
-async function readState(db: Db, pluginId: string, companyId: string, agentId: string, identityOnly?: false): Promise<Omit<PluginAgentRuntimeState, "skills" | "connectionAssignments"> | null>;
-async function readState(db: Db, pluginId: string, companyId: string, agentId: string, identityOnly = false): Promise<PluginAgentRuntimeIdentity | Omit<PluginAgentRuntimeState, "skills" | "connectionAssignments"> | null> {
+function assertOwningLifecyclePlugin(plugin: Pick<typeof plugins.$inferSelect, "status" | "manifestJson"> | null | undefined,
+  settings: Pick<typeof pluginCompanySettings.$inferSelect, "enabled"> | null | undefined, requiredPluginIds: string[] | null | undefined, pluginId: string) {
+  if (plugin?.status !== "ready" || settings?.enabled === false || !plugin?.manifestJson.capabilities?.includes("agents.lifecycle.manage")
+    || !plugin.manifestJson.resourceLifecycle?.includes("agent_runtime") || !requiredPluginIds?.includes(pluginId)) {
+    throw forbidden("Agent runtime state requires the owning lifecycle plugin");
+  }
+}
+
+async function readState(db: Db, pluginId: string, companyId: string, agentId: string): Promise<Omit<PluginAgentRuntimeState, "skills" | "connectionAssignments"> | null> {
   return fileStorageDb(db).transaction(async tx => {
     const [agent] = await tx.select().from(agents)
       .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
     if (!agent) return null;
     const [plugin] = await tx.select().from(plugins).where(eq(plugins.id, pluginId));
     const [settings] = await tx.select().from(pluginCompanySettings).where(and(eq(pluginCompanySettings.companyId, companyId), eq(pluginCompanySettings.pluginId, pluginId)));
-    if (plugin?.status !== "ready" || settings?.enabled === false || !plugin?.manifestJson.capabilities?.includes("agents.lifecycle.manage")
-      || !plugin.manifestJson.resourceLifecycle?.includes("agent_runtime") || !agent.lifecycleRequiredPluginIds?.includes(pluginId)) {
-      throw forbidden("Agent runtime state requires the owning lifecycle plugin");
-    }
+    assertOwningLifecyclePlugin(plugin, settings, agent.lifecycleRequiredPluginIds, pluginId);
     const [latest] = await tx.select({ id: resourceLifecycleEvents.id }).from(resourceLifecycleEvents)
       .where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime"), eq(resourceLifecycleEvents.resourceId, agentId)))
       .orderBy(desc(resourceLifecycleEvents.id)).limit(1);
-    if (identityOnly) return {
-      revision: String(latest?.id ?? 0),
-      agent: { id: agent.id, companyId: agent.companyId, status: agent.status as PluginAgentRuntimeIdentity["agent"]["status"],
-        lifecycleState: agent.lifecycleState, lifecycleVersion: agent.lifecycleVersion },
-      instanceSecrets: await agentInstanceSecretService(tx as unknown as Db).read({ companyId, agentId, pluginId }),
-    };
     const instructions = await agentInstructionsService(tx as unknown as Db).getBundleLocation(agent);
     const records = agentRecordQueries(tx as unknown as Db);
     const companyAgents = await records.listCompanyAgentEligibilityRows(companyId);
@@ -46,9 +43,26 @@ async function readState(db: Db, pluginId: string, companyId: string, agentId: s
   });
 }
 
-
 export async function pluginAgentRuntimeIdentity(db: Db, pluginId: string, companyId: string, agentId: string): Promise<PluginAgentRuntimeIdentity | null> {
-  return readState(db, pluginId, companyId, agentId, true);
+  const [row] = await db.select({
+    id: agents.id, companyId: agents.companyId, status: agents.status, lifecycleState: agents.lifecycleState,
+    lifecycleVersion: agents.lifecycleVersion, requiredPluginIds: agents.lifecycleRequiredPluginIds,
+    plugin: { status: plugins.status, manifestJson: plugins.manifestJson }, settings: { enabled: pluginCompanySettings.enabled },
+    revision: sql`(${db.select({ id: resourceLifecycleEvents.id }).from(resourceLifecycleEvents)
+      .where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime"), eq(resourceLifecycleEvents.resourceId, agentId)))
+      .orderBy(desc(resourceLifecycleEvents.id)).limit(1)})`.mapWith(resourceLifecycleEvents.id),
+  }).from(agents)
+    .leftJoin(plugins, eq(plugins.id, pluginId))
+    .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.companyId, companyId), eq(pluginCompanySettings.pluginId, pluginId)))
+    .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+  if (!row) return null;
+  assertOwningLifecyclePlugin(row.plugin, row.settings, row.requiredPluginIds, pluginId);
+  return {
+    revision: String(row.revision ?? 0),
+    agent: { id: row.id, companyId: row.companyId, status: row.status as PluginAgentRuntimeIdentity["agent"]["status"],
+      lifecycleState: row.lifecycleState, lifecycleVersion: row.lifecycleVersion },
+    instanceSecrets: await agentInstanceSecretService(db).read({ companyId, agentId, pluginId }),
+  };
 }
 
 export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyId: string, agentId: string, environmentId?: string, installEnvironmentSkills = false): Promise<PluginAgentRuntimeState | null> {
