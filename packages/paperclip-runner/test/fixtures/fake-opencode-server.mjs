@@ -1186,4 +1186,4 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, "127.0.0.1");
 for (const signal of ["SIGTERM", "SIGINT"])
-  process.on(signal, () => server.close(() => process.exit(0)));
+  process.on(signal, () => { server.close(() => process.exit(0)); server.closeAllConnections(); });
