@@ -1851,6 +1851,13 @@ export async function commitNativeStatusDecision(input: {
         !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
       throw new NativeStatusRaceError();
     }
+    // Every Done path (finalizer, reassessment, retired review) passes this
+    // lock. A policy that now requires or refuses review cannot be closed by a
+    // decision made without it; the finalizer recomputes against the policy.
+    if (input.decision.statusAction === "done" && !isConversation(issue) &&
+        completionReviewStageEntry(issue, originRun?.agentId ?? "").kind !== "none") {
+      throw new NativeStatusRaceError();
+    }
     if (input.decision.statusAction === "done") {
       try {
         const [saved] = await tx.select({ context: heartbeatRuns.contextSnapshot, receipts: heartbeatRuns.resultJson,

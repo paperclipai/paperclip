@@ -386,7 +386,11 @@ export async function nativeCompletionFeedback(
   // request duplicates the configured stage.
   const reviewStage = issue.executionState?.status !== "pending" && !isConversation(issue) &&
     completionReviewStageEntry(issue, run.agentId).kind === "starts";
-  if (reviewStage && result.reportedWorkDisposition === "needs_review" &&
+  // Only a review of finished work belongs to the configured stage; a review
+  // needed before the work can continue keeps its own request path.
+  const workFinished = result.completionClaim.objectiveSatisfied &&
+    !result.completionClaim.remainingWork.some(work => work.blocksCompletion);
+  if (reviewStage && workFinished && result.reportedWorkDisposition === "needs_review" &&
       (signals.actionableAttentionRequests.length === 0 ||
         signals.actionableAttentionRequests.some(request => request.kind === "review"))) {
     throw new Error(

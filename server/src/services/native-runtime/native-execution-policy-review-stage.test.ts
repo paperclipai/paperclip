@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueWorkProducts, issues, statusDecisions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
@@ -136,6 +137,21 @@ describe.skipIf(!support.supported)("native completion with a configured review 
         attentionRequests: [{ kind: "approval", summary: "Approve the page-service call.", ownerClass: "human" }] }))
         .resolves.not.toContain("configured review stage");
     } });
+  });
+
+  it("keeps the review request path for a review needed before the work can continue", async () => {
+    await finishVerifiedDone({ stage: "user", beforeFinish: async (runId, result) => {
+      const early = { ...result, reportedWorkDisposition: "needs_review" as const,
+        completionClaim: { ...result.completionClaim, objectiveSatisfied: false,
+          remainingWork: [{ description: "Build the pages after the layout review", blocksCompletion: true }] },
+        attentionRequests: [{ kind: "review" as const, summary: "Riley: review the layout before I build the pages.", ownerClass: "human" as const }] };
+      await expect(nativeCompletionFeedback(db, runId, early)).resolves.not.toContain("configured review stage");
+    } });
+  });
+
+  it("fails closed when the stored policy cannot be read", () => {
+    expect(completionReviewStageEntry({ status: "in_progress", assigneeAgentId: "worker",
+      executionPolicy: { stages: "unreadable" } as unknown as Record<string, unknown> }, "worker").kind).toBe("rejected");
   });
 
   it("keeps ordinary completion feedback when no review stage is configured", async () => {

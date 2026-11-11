@@ -1254,10 +1254,10 @@ export type CompletionReviewStageEntry =
  * task free to close, or refuse the transition. Refusals fail closed.
  */
 export function completionReviewStageEntry(issue: IssueLike, actorAgentId: string): CompletionReviewStageEntry {
-  const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
-  if (!policy) return { kind: "none" };
   let patch: Record<string, unknown>;
   try {
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    if (!policy) return { kind: "none" };
     ({ patch } = applyIssueExecutionPolicyTransition({
       issue, policy, previousPolicy: policy, requestedStatus: "done",
       requestedAssigneePatch: {}, actor: { agentId: actorAgentId, userId: null },
