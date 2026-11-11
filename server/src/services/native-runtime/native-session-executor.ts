@@ -104,6 +104,7 @@ import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js"
 import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
+import { reconcileControllerJournalWithRunner, refreshRetiredWarmOwnerProjection } from "./warm-controller-journal.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
 import { syncManagedAiCredentials, type ManagedAiCredentialWritebackBinding } from "../managed-ai-credential-writeback.js";
@@ -7325,6 +7326,7 @@ export async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     state = await readRemoteRunnerState({ runner: target.runner,
       stateDirectory: remoteRunnerStateDirectory(retained.remoteCwd, nativeSessionKey(input.execution)) });
   }
+  await reconcileControllerJournalWithRunner({ ...controllerProjectionInput(input, { runId: prior.runId, issueId: input.execution.binding.issueId }), runnerState: state });
   // A running warm source keeps the existing live-adoption identity, idle,
   // controller-fencing and physical-process checks. Only suspension is cached.
   if (!movedAllocation && input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
@@ -7361,6 +7363,18 @@ function isUndeliveredSuspendReceipt(state: Record<string, unknown>, root: strin
   } catch {
     return false;
   }
+}
+
+function controllerProjectionInput(input: { db: Db; execution: NativeExecutionInput }, owner: { runId: string; issueId: string }) {
+  const root = scopedRunnerdStateRoot(input.execution);
+  const statePath = resolve(root, "control-plane", "control-plane-state.json");
+  return {
+    db: input.db, root, normalizedSessionId: nativeSessionKey(input.execution),
+    binding: { companyId: input.execution.binding.companyId, issueId: owner.issueId, runId: owner.runId },
+    readControlState: () => existsSync(statePath)
+      ? readBoundedNativeFile(statePath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "native_runner_checkpoint_invalid").toString("utf8")
+      : null,
+  };
 }
 
 /** Materialize opaque controller state before ordinary warm admission reads it.
@@ -11590,6 +11604,9 @@ async function executePaperclipNativeSessionAttempt(
           forgetWarmNativeSession(warmSessionId, entry);
         } finally { entry.busy = false; }
         if (preparedCopy) throw new Error("native_instruction_preparation_configuration_changed");
+        if (input.useRunnerd && input.runnerExecutionTarget?.kind === "remote") {
+          await refreshRetiredWarmOwnerProjection(controllerProjectionInput(input, { runId: entry.runId, issueId: entry.issueId }));
+        }
         persistedWarmSession = loadWarmNativeCheckpoint(
           input.execution,
           warmConfigDigest,
