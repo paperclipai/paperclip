@@ -31,7 +31,7 @@ function kill(pid: number | null | undefined) {
   try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 }
 
-it.each(["stale", "current"] as const)("a follow-up controller resumes the predecessor's suspended runner from a %s journal", async journal => {
+it.each(["stale", "current"] as const)("a follow-up controller on the predecessor's suspended runner with a %s journal keeps the runner and gets a precise answer", async journal => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-stale-journal-"));
   const controlPath = join(root, "control-plane", "control-plane-state.json");
   const predecessor = transport(root);
@@ -50,10 +50,11 @@ it.each(["stale", "current"] as const)("a follow-up controller resumes the prede
     const outcome = await follower.transport.request("thread/read", {})
       .then(() => "resumed", (error: unknown) => String(error));
     if (journal === "stale") {
-      expect(outcome).not.toBe("resumed");
-      expect(outcome).toContain("controller sequence must be contiguous");
-      await follower.transport.close().catch(() => undefined);
-      expect(follower.transport.runnerExitConfirmed?.()).toBe(true);
+      expect(outcome).toContain('"code":"controller_sequence_mismatch"');
+      expect(outcome).not.toMatch(/runnerd exited/);
+      expect(follower.evidence().runnerExited).toBe(false);
+      const after = JSON.parse(await readFile(join(root, "runner", "runner-state.json"), "utf8")) as { lastControllerCommandSeq: number };
+      expect(after.lastControllerCommandSeq).toBe(closed.commands.length);
     } else {
       expect(outcome).toBe("resumed");
       expect(outcome).not.toContain("controller sequence must be contiguous");

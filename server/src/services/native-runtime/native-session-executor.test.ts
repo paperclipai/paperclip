@@ -449,6 +449,7 @@ import {
   NATIVE_PROVIDER_STARTUP_REJECTED,
   nativeRemoteStartupRejectionCode,
   nativeRunnerExitedBeforeSessionOpen,
+  NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER,
   nativeRepeatedStartupFailureAction,
   nativePreviousStartupFailureSignature,
   nativeStartupFailureSignature,
@@ -14487,6 +14488,14 @@ describe("native session bounded recovery", () => {
       expect(nativeSessionFailureDisposition(3, new Date(), "provider_session_open_rejected")).toEqual({
         phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
       });
+    });
+
+    it("rests a run whose Runner refused its commands as out of sequence with a precise code and a Retry", () => {
+      const refused = new Error(`PRP command session.open rejected: {"commandId":"c","controllerSeq":11,"commandType":"session.open","status":"rejected","result":{"code":"controller_sequence_mismatch","message":"controller sequence must be contiguous: expected 13, received 11","expectedControllerSeq":13,"receivedControllerSeq":11}}`);
+      expect(nativeSessionFailureSourceCode(refused)).toBe(NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER);
+      expect(nativeSessionFailureSourceCode(new Error(`native_session_recovery_failed: ${refused}`))).toBe(NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER);
+      expect(nativeSessionFailureDisposition(1, new Date(), NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER)).toMatchObject({
+        phase: "terminal_failure", failureCode: NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER });
     });
 
     it("records a runner proven to have exited before answering session.open as a failed fresh start", () => {

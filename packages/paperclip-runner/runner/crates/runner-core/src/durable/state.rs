@@ -822,9 +822,18 @@ impl DurableState {
             .checked_add(1)
             .ok_or_else(|| DurableRunnerError::invalid("controller sequence exhausted"))?;
         if command.controller_seq != expected {
-            return Err(DurableRunnerError::invalid(format!(
-                "controller sequence must be contiguous: expected {expected}, received {}",
-                command.controller_seq
+            return Ok(CommandDisposition::Reject(command_result(
+                command,
+                "rejected",
+                json!({
+                    "code": "controller_sequence_mismatch",
+                    "message": format!(
+                        "controller sequence must be contiguous: expected {expected}, received {}",
+                        command.controller_seq
+                    ),
+                    "expectedControllerSeq": expected,
+                    "receivedControllerSeq": command.controller_seq,
+                }),
             )));
         }
 
@@ -3287,7 +3296,11 @@ mod tests {
         let mut unknown = command("command_unknown", 1);
         unknown.command_type = "future.required.command".to_owned();
         assert!(state.begin_command(&unknown).is_err());
-        assert!(state.begin_command(&command("command_2", 2)).is_err());
+        assert!(matches!(
+            state.begin_command(&command("command_2", 2)).unwrap(),
+            CommandDisposition::Reject(result) if result.result["code"] == "controller_sequence_mismatch"
+        ));
+        assert_eq!(state.last_controller_command_seq, 0);
         let first = command("command_1", 1);
         state.begin_command(&first).unwrap();
         state.complete_command(&first, json!({})).unwrap();
