@@ -650,7 +650,7 @@ async function runReleaseRecoveryTail(
     reviewParticipant: {
       applies: reviewParticipantApplies,
       isExecutionReviewParticipantRecoveryRun:
-        isExecutionReviewParticipantRecoveryRun(run),
+        isExecutionReviewParticipantRecoveryRun(run) && run.reassignmentStopConfirmed !== true,
     },
     immediate: {
       applies: immediateApplies,
