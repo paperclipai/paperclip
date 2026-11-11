@@ -242,6 +242,13 @@ async function runReleaseDrain(
         finishingRunId: run.id,
         finishingRunAgentId: run.agentId,
         queuedCommentIds: candidate.queuedCommentIds,
+        // The message is an authorization edge for this independent response,
+        // even when an earlier turn already received the message itself.
+        ...(candidate.payload.mutation === "interaction" &&
+          readNonEmptyString(candidate.deferredContextSeed.interactionId) &&
+          ["accepted", "answered", "rejected"].includes(String(candidate.deferredContextSeed.interactionStatus)) &&
+          readNonEmptyString(candidate.deferredContextSeed.source)?.startsWith("chat:")
+          ? { retainDeliveredCommentBindings: true } : {}),
       });
     }
     // A length mismatch is the only way the lists can differ: the adapter derives `liveNonSelfCommentIds` with `.filter`, so it is always a subsequence of `queuedCommentIds`.
