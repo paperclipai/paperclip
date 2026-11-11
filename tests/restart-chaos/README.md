@@ -481,6 +481,15 @@ error exit reached `diagnostics/runnerd.stderr.log`. Since #20907, its stderr go
 `diagnostics/runnerd.process-stderr.log`, and the probe reads both files. The probe never stops, starts or
 deletes a sandbox. An archived or stopped sandbox is recorded by its state alone.
 
+**Results on master `6154b9485e` with #20907** (image `paperclip-daytona-runner@sha256:39df7406…`):
+
+| Wave | Cell | Result |
+| --- | --- | --- |
+| `w-20261111T192658-s5201` | W2 re-wake, `--faults K0 --daytona-warm`, Codex, 10 tasks | `runner_remote_process_identity_unavailable` twice, with no fault. The follow-up run launched a new runnerd on the warm session state. That runnerd stopped itself: `paperclip-runnerd: controller sequence must be contiguous: expected 13, received 11`. The new controller's journal ended before the predecessor's `runner.drain` and `runner.suspend` (seq 11 and 12). |
+| `w-20261111T202055-s9502` | CR1 75 s and CR2, OpenCode and Claude | No refusal. The Runner survived every outage. A killed provider failed the turn with a clear code: Claude `ACP agent reported a terminal connection failure`, OpenCode `opencode_server_exited`. |
+| `w-20261111T204144-s9503` | CR1 360 s twice, OpenCode and Claude | No refusal. The Runner and the provider survived both outages. |
+| `w-20261111T210055-s9504` | CR3 45 s, OpenCode and Claude | Not the staging code, a separate failure. `runnerd process supervision failed: RPC call "environmentExecute" timed out after 40000ms` failed the run as `notification_transport_failed`. The close path suspended a healthy Runner (`lifecycle: suspended`, no stderr). Retry worked. |
+
 ## Absolute symlink in the workspace (F1)
 
 ```sh
