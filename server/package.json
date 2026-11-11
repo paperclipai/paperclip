@@ -90,7 +90,7 @@
     "ai": "7.0.130",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "better-auth": "1.7.2",
+    "better-auth": "1.7.7",
     "chat": "4.39.0",
     "chokidar": "^5.0.0",
     "compression": "^1.8.2",
