@@ -6405,6 +6405,10 @@ rl.on("line", (line) => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run, project } = await createIssueAndRun(db, company.id, agent.id);
+    const toolResult = { pluginId: "demo-plugin", toolName: "read_index", result: { content: "index ready" } };
+    type ToolResult = typeof toolResult;
+    const dispatches: Array<(finish: (value: ToolResult) => void) => void> = [];
+    const nextDispatch = () => new Promise<(value: ToolResult) => void>((resolve) => dispatches.push(resolve));
     const dispatcher: PluginToolDispatcher = {
       initialize: async () => {},
       teardown: () => {},
@@ -6416,10 +6420,12 @@ rl.on("line", (line) => {
         pluginId: "demo-plugin",
       }],
       getTool: () => null,
-      executeTool: async (_tool, parameters) => {
-        const delayMs = (parameters as { delayMs: number }).delayMs;
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        return { pluginId: "demo-plugin", toolName: "read_index", result: { content: "index ready" } };
+      // The gateway starts its deadline timer right after this call returns.
+      // Fake timers from here on control that deadline without a real wait;
+      // every database call before the dispatch ran on real timers.
+      executeTool: () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        return new Promise<ToolResult>((finish) => dispatches.shift()?.(finish));
       },
       registerPluginTools: () => {},
       unregisterPluginTools: () => {},
@@ -6431,24 +6437,49 @@ rl.on("line", (line) => {
     const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
     await allowToolsForAgent(db, company.id, agent.id, ["demo-plugin:read_index"]);
     const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, projectId: project.id });
-
-    await expect(gateway.executeTool({
+    const call = (timeoutMs?: number) => gateway.executeTool({
       sessionToken: session.token,
       tool: "demo-plugin:read_index",
-      parameters: { delayMs: 10_500 },
-    })).resolves.toMatchObject({ status: "completed" });
-
-    await gateway.executeTool({
-      sessionToken: session.token,
-      tool: "demo-plugin:read_index",
-      parameters: { delayMs: 1_000 },
-      timeoutMs: 50,
-    }).then(
+      parameters: {},
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    });
+    const advanceAfterDispatch = async (dispatched: Promise<(value: ToolResult) => void>, ms: number) => {
+      const finish = await dispatched;
+      try {
+        await vi.advanceTimersByTimeAsync(ms);
+      } finally {
+        vi.useRealTimers();
+      }
+      return finish;
+    };
+    const expectTimeout = (pending: Promise<unknown>) => pending.then(
       () => {
-        throw new Error("Expected the explicit caller deadline to apply");
+        throw new Error("Expected the tool call to time out");
       },
       (error) => expectGatewayError(error, 504, "tool_timeout"),
     );
+
+    try {
+      // Still running one millisecond before the sixty-second default.
+      const beforeDeadlineDispatch = nextDispatch();
+      const beforeDeadline = call();
+      (await advanceAfterDispatch(beforeDeadlineDispatch, 59_999))(toolResult);
+      await expect(beforeDeadline).resolves.toMatchObject({ status: "completed" });
+
+      // Times out at the sixty-second default.
+      const atDeadlineDispatch = nextDispatch();
+      const atDeadline = expectTimeout(call());
+      await advanceAfterDispatch(atDeadlineDispatch, 60_000);
+      await atDeadline;
+
+      // An explicit caller deadline still applies.
+      const explicitDispatch = nextDispatch();
+      const explicit = expectTimeout(call(50));
+      await advanceAfterDispatch(explicitDispatch, 50);
+      await explicit;
+    } finally {
+      vi.useRealTimers();
+    }
   }, 30_000);
 
   it("rejects caller-supplied issue context outside the run company", async () => {
