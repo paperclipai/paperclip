@@ -2,6 +2,7 @@ import { chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { expect } from "@playwright/test";
 import { checks } from "./internal-support.js";
 import { waitForReply } from "./identity-support.js";
+import { waitForRenderedReply } from "./internal-comment-reference.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
 /**
  * The reply must send the person to the real Conference Room: the scripted human clicks the
@@ -34,10 +35,12 @@ export const runtimeConferenceCases = [runtimeDefinition("agent-chat.conference-
   return { deploymentMode: health.deploymentMode, conferenceEnabled: settings.enableConferenceRoomChat,
     agentChatEnabled: settings.enableAgentChat, companyPrefix: ctx.input.fixtures.company.issuePrefix };
 }, gradeConference, {
-  oracleVersion: "paperclip.chat-catalog.runtime-conference.v4",
-  sourceFiles: ["chat-catalog-domains/runtime-conference.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agent-chat.yaml"],
+  oracleVersion: "paperclip.chat-catalog.runtime-conference.v5",
+  sourceFiles: ["chat-catalog-domains/runtime-conference.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/internal-comment-reference.ts", "chat-scenarios/agent-chat.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); state.runsBeforeOpen = (await ctx.allRuns()).length; state.standingIssueBefore = ctx.issue()?.id;
+    // gha-42939717023: the saved reply linked /COM/board-chat, but the anchors were read before it rendered.
+    await waitForRenderedReply(ctx, { leadId: ctx.input.fixtures.agent.id, runs: await ctx.allRuns() });
     const o = await observeRuntime(ctx, state);
     // Find the link as rendered in the thread: the UI may rewrite a reply's href.
     const anchors = ctx.input.page.locator('[id^="comment-"] a[href]');

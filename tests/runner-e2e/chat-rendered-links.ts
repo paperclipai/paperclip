@@ -88,8 +88,10 @@ const expiredReplyWaits = new WeakMap<object, Set<string>>();
 export type ConversationReplyRender = "closed" | "rendered" | "pending";
 export function readLatestConversationReplyRender(input: { anchors: string[]; latest: string }): ConversationReplyRender {
   const threadSelector = '[data-testid="task-chat-thread"], [data-testid="thread-root"]';
+  // A thread is this conversation's when every comment it renders is one of its saved comments; a thread that
+  // has not rendered any comment yet (still loading after navigation or reload) counts too.
   const roots = Array.from(document.querySelectorAll(threadSelector)).filter(root =>
-    Array.from(root.querySelectorAll('[id^="comment-"]')).some(node => input.anchors.some(id => node.id === `comment-${id}`)));
+    Array.from(root.querySelectorAll('[id^="comment-"]')).every(node => input.anchors.some(id => node.id === `comment-${id}`)));
   if (!roots.length) return "closed";
   const rendered = roots.some(root => Array.from(root.querySelectorAll('[id^="comment-"]'))
     .some(node => node.id === `comment-${input.latest}` && node.getClientRects().length > 0));

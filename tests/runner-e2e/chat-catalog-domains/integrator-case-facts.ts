@@ -136,18 +136,19 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
   const row = state.case as CaseRecord; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   const task = await ctx.input.api.get<Issue>(`/api/issues/${row.workIssueId}`);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v5", expectedRunCount: 6, minimumRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000,
+}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v6", expectedRunCount: 6, minimumRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 }, maximumTerminalStatusCounts: { succeeded: 5 } },
   sourceFiles: ["chat-catalog-domains/integrator-case-facts.ts", "chat-catalog-domains/run-roles.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"], cleanup,
   async act(ctx, state) {
-    state.sourceId = ctx.issue()?.id;
     // A phase settles when its CEO turn and any Morgan continuation that turn's task comment woke have finished.
+    // The standing chat may only exist once the query is sent (gha-42939717023: an unknown source made the CEO's
+    // own turn look undeclared), so bind the source from the refreshed conversation and judge roles only once it is known.
     const settle = (turns: number) => pollUntil({ label: `saved case correction phase ${turns}`, deadlineAt: Date.now() + 300_000, intervalMs: 1000,
-      load: () => observeFacts(ctx, state),
-      accept: o => { const roles = caseFactsRoles({ ...o, sourceId: state.sourceId as string }); return roles.valid && roles.ceo.length === turns && roles.review.length === 0
+      load: async () => { const o = await observeFacts(ctx, state); state.sourceId ??= ctx.issue()?.id; return o; },
+      accept: o => { const roles = caseFactsRoles({ ...o, sourceId: state.sourceId as string }); return !!state.sourceId && roles.valid && roles.ceo.length === turns && roles.review.length === 0
         && o.runs.every(run => run.status === (run.id === state.initialRunId ? "cancelled" : "succeeded")) && ctx.issue()?.conversationState === "waiting"; },
       reject: o => { const roles = caseFactsRoles({ ...o, sourceId: state.sourceId as string });
-        return !roles.valid || roles.ceo.length > turns || roles.review.length > 0 || o.runs.some(run => run.id !== state.initialRunId && ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Case correction admitted failed, duplicate or undeclared work" : undefined; } });
+        return !!state.sourceId && !roles.valid || roles.ceo.length > turns || roles.review.length > 0 || o.runs.some(run => run.id !== state.initialRunId && ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Case correction admitted failed, duplicate or undeclared work" : undefined; } });
     const first = await settle(1); state.firstCorrection = { ...first, state: structuredClone(state) }; await ctx.input.evidence("chat-case-initial-correction.json", state.firstCorrection);
     if (!retained(first, false)) throw new Error("Initial case correction was incorrect; a follow-up cannot repair this phase");
     const row = first.caseRecord;
