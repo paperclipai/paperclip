@@ -207,11 +207,12 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const diskFullFaults = allFaults.filter(isDiskFullFault);
   const sessionFaults = allFaults.filter(isSessionFault);
   const baseline = allFaults.includes("K0");
+  const volumeFree = values["ephemeral-server"] === true || values["k15-fresh-home"] === true;
   const options: WaveOptions = {
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q4) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4" && id !== "H2"
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => !(volumeFree && workloadDefinitions[id].usesRepository) && id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4" && id !== "H2"
       && !takesJourneyTriggers(id) && !isRewakeWorkload(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault) && !isSessionFault(fault) && fault !== "K0"),
@@ -392,8 +393,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (env !== "daytona") throw new Error(`${flag} runs only with --env daytona: a local workspace blocks a volume-free server`);
     if (options.faults.includes("K14")) throw new Error(`${flag} does not combine with K14 (--upgrade-from)`);
     const repository = options.workloads.filter(workload => workloadDefinitions[workload].usesRepository);
-    if (repository.length && values.workloads === undefined) options.workloads = options.workloads.filter(workload => !repository.includes(workload));
-    else if (repository.length) throw new Error(`${flag} cannot run ${repository.join(", ")}: the fixture repository is a local_path project source, which a volume-free server refuses; pick other --workloads`);
+    if (repository.length) throw new Error(`${flag} cannot run ${repository.join(", ")}: the fixture repository is a local_path project source, which a volume-free server refuses; pick other --workloads`);
     options.ephemeralServer = true;
   }
   if (values["storage-faults"] !== undefined) {

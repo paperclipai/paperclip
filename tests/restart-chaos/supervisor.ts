@@ -41,6 +41,7 @@ import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
+import { ephemeralServerEnvironment } from "./ephemeral-server.js";
 import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
@@ -287,7 +288,7 @@ export class ChaosSupervisor {
       // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
       ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, this.deployShape.freshHome ? null : home) : {}),
     };
-    const ephemeral = this.ephemeralServer ? await this.ephemeralServerEnvironment(extraEnvironment) : null;
+    const ephemeral = this.ephemeralServer ? await ephemeralServerEnvironment({ configPath: this.paths.configPath, temporaryRoot: this.paths.temporaryRoot, extraEnvironment }) : null;
     const environment = buildPaperclipServerEnvironment(source, { ...overrides, ...ephemeral });
     const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
       ? Object.fromEntries(Object.entries(extraEnvironment).filter(([key]) => key.startsWith("PAPERCLIP_STORAGE_"))) : undefined;
@@ -295,26 +296,6 @@ export class ChaosSupervisor {
       ...(ephemeral ? { generatedSecretsMasterKey: ephemeral.PAPERCLIP_SECRETS_MASTER_KEY } : {}) });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
     await prepareSourceServerDependencies(root, this.environment, false);
-  }
-
-  private async ephemeralServerEnvironment(extraEnvironment: Record<string, string>): Promise<Record<string, string>> {
-    if (extraEnvironment.PAPERCLIP_STORAGE_PROVIDER !== "s3") throw new Error("--ephemeral-server needs the wave's object store (--storage s3)");
-    const config = JSON.parse(await readFile(this.paths.configPath, "utf8")) as { secrets?: { localEncrypted?: { keyFilePath?: string } } };
-    const keyFile = String(config.secrets?.localEncrypted?.keyFilePath ?? path.join(path.dirname(this.paths.configPath), "secrets", "master.key"));
-    if (!path.resolve(keyFile).startsWith(`${path.resolve(this.paths.temporaryRoot)}${path.sep}`)) throw new Error("--ephemeral-server: the wave's master key file escapes its temporary root");
-    let masterKey = await readFile(keyFile, "utf8").then(value => value.trim(), () => "");
-    if (!masterKey) {
-      masterKey = randomBytes(32).toString("base64");
-      await mkdir(path.dirname(keyFile), { recursive: true, mode: 0o700 });
-      await writeFile(keyFile, masterKey, { mode: 0o600, flag: "wx" });
-    }
-    return {
-      PAPERCLIP_EPHEMERAL_SERVER: "true", PAPERCLIP_DURABLE_AGENT_FILES: "true", PAPERCLIP_SHARED_UI_ASSETS: "true",
-      PAPERCLIP_DATABASE_LISTEN_URL: databaseUrlFromConfig(this.paths.configPath), PAPERCLIP_SECRETS_MASTER_KEY: masterKey,
-      RUN_LOG_S3_BUCKET: extraEnvironment.PAPERCLIP_STORAGE_S3_BUCKET!, RUN_LOG_S3_ENDPOINT: extraEnvironment.PAPERCLIP_STORAGE_S3_ENDPOINT!,
-      RUN_LOG_S3_REGION: extraEnvironment.PAPERCLIP_STORAGE_S3_REGION!, RUN_LOG_S3_FORCE_PATH_STYLE: "true",
-      RUN_LOG_S3_PREFIX: `${extraEnvironment.PAPERCLIP_STORAGE_S3_PREFIX ?? ""}run-logs`,
-    };
   }
 
   private async spawnServer(): Promise<ChildProcess> {

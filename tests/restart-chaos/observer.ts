@@ -275,7 +275,10 @@ export class TaskObserver {
 
   private async postStartComment(): Promise<void> {
     if (!this.definition.startComment || !this.record.issueId) return;
-    await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: this.definition.startComment(this.plan.nonce) });
+    const body = this.definition.startComment(this.plan.nonce);
+    const existing = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/comments`);
+    if (existing.some(comment => comment.body === body)) return;
+    await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body });
   }
 
   async launch(options: { assign?: boolean } = {}): Promise<void> {
