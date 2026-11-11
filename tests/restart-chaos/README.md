@@ -292,6 +292,51 @@ receipt names both commits (`upgrade` in `faults.json`, `upgrade_switched` in th
 timeline). K14 is local-only, because a Daytona runner must match its image, and
 it is never part of a storm's default faults.
 
+## Redeploy (K15, `redeploy.ts`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters opencode,claude --workloads A1,C1 --faults K15 --daytona-reuse-lease --concurrency 3 --tasks 6 --seed 9301
+```
+
+The hosted staging stack deploys about every 40 minutes. Each deploy replaces
+the server's container. The replacement has the same database and volume, but it
+runs in another process space (host name, kernel boot and PID namespace) and
+has a new Railway deployment id. The server's PID-based proof that an earlier
+owner exited (`controller-process-identity.ts`, `owner-proof.ts`) never applies
+across a deploy. Recovery must use the deployment proof or the lease deadlines
+instead. K1 and K2 restart on the same machine, so every PID proof succeeds and
+that path stays untested. See `doc/plans/2026-11-11-staging-failures-vs-chaos-coverage.md`.
+
+K15 emulates the container replacement without a container:
+
+- Every server in a wave that has a K15 is launched with a `--import` preload
+  (`redeploy-preload.mjs`). The preload makes `os.hostname()` return a
+  per-generation name, which changes the process-space hash.
+- Every server gets Railway-shaped variables: `RAILWAY_PROJECT_ID`,
+  `RAILWAY_ENVIRONMENT_ID`, `RAILWAY_SERVICE_ID` and `RAILWAY_DEPLOYMENT_ID`,
+  plus `RAILWAY_VOLUME_ID` and `RAILWAY_VOLUME_MOUNT_PATH`, which is the
+  instance home.
+- A K15 stops the server with SIGTERM, like K2. The replacement starts as the
+  next generation, with a new host name and deployment id, on the same project,
+  service and volume.
+- Other faults in the same wave restart within the current generation, like a
+  platform restart of the same deployment.
+- Identities derive from the wave id, so a replay sees the same ones.
+- Each K15 receipt records `redeploy` (both generations) in `faults.json`, and
+  `redeploy_switched` in the timeline.
+
+Limits:
+
+- The Daytona sandboxes and remote runners survive, as they do on staging.
+- Local runners are stopped with the server's process tree.
+- The cloud stop-proof service (`PAPERCLIP_CLOUD_*`) is not emulated, so stop
+  proofs that need it stay unsupported, as on any self-hosted Railway deploy.
+- K15 does not combine with MS1–MS3, because a second server would run in the
+  real host's process space.
+- Combine K15 with `--adapters opencode` and `--daytona-reuse-lease` or
+  `--daytona-warm` to match staging's workload mix.
+
 ## Config faults (CF1–CF3, `config-wave.ts`)
 
 ```sh
@@ -1001,6 +1046,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
 | `multi-server.ts` | MS1–MS3: the second server's steps, the seeded holds, and the cross-server invariant over the wave database. |
 | `repeated-restarts.ts` | RR1–RR3: seeded restart steps, `--rr-gap-seconds`, and the stop-and-replace loop the supervisor runs. |
+| `redeploy.ts`, `redeploy-preload.mjs` | K15: per-generation emulated host name and Railway deployment identity, and the preload that applies the host name. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
 ## Output (gitignored)

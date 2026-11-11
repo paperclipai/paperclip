@@ -6,11 +6,13 @@ import type { TimeFaultRecord } from "./time-faults.js";
 
 /**
  * K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`).
+ * K15 (redeploy, redeploy.ts): a graceful stop, then the replacement starts in a new emulated process space with a new
+ * Railway-shaped deployment id on the same volume, as a hosted deploy replaces the server's container.
  * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
  * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
  * MS1–MS3 (two servers, one database, multi-server.ts): a second server beside the first.
  */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /** The shortest seeded K4 outage (scheduler.ts K4_HOLD_RANGE_MS), also the K4 hold after a provider fault. */
 export const K4_MIN_HOLD_MS = 120_000;
@@ -281,6 +283,8 @@ export interface FaultReceipt {
   crashPoint?: { name: string; hit: number; pid: number; token?: string };
   /** K14: the build the stopped server ran and the build its replacement runs. */
   upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
+  /** K15: the deploy generation, emulated host name and deployment id before and after. */
+  redeploy?: ReturnType<typeof import("./redeploy.js").redeployReceipt>;
   /** TM1–TM3: what was frozen and which rows were aged. */
   timeFault?: TimeFaultRecord;
   /** RR1–RR3: every stop and replacement of the sequence, the first kill included. */

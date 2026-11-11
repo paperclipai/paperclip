@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
-import { validateMultiServerOptions } from "./multi-server.js";
+import { isMultiServerFault, validateMultiServerOptions } from "./multi-server.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
@@ -233,6 +233,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
   }
   validateMultiServerOptions(options);
+  // K15 emulates one deploy identity per generation; a second server beside it would run in the real host's process space.
+  if (options.faults.includes("K15") && options.faults.some(isMultiServerFault)) {
+    throw new Error("K15 (redeploy) does not combine with MS1-MS3: the second server would not share the emulated deploy identity");
+  }
   Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
   const upgradeFrom = values["upgrade-from"];

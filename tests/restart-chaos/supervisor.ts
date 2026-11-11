@@ -39,6 +39,7 @@ import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, r
   type RepeatedRestartRecord, type RestartStep } from "./repeated-restarts.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
+import { nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -48,7 +49,7 @@ const HEALTH_TIMEOUT_MS = (() => {
 const READY_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 30_000;
 
-export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL", K14: "SIGTERM",
+export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL", K14: "SIGTERM", K15: "SIGTERM",
   TM1: "SIGSTOP", TM2: "SIGSTOP", TM3: "SIGKILL", RR1: "SIGKILL", RR2: "SIGKILL", RR3: "SIGKILL",
   // MS1 leaves the primary alone; MS2 freezes it; MS3 stops it gracefully (multi-server.ts).
   MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM" };
@@ -154,13 +155,16 @@ export class ChaosSupervisor {
   private serverRoot: string;
   /** The environment overrides the wave passed to `start`, kept for every restart and for the K14 switch. */
   private extraEnvironment: Record<string, string> = {};
+  /** K15 waves: the wave id the emulated deploy identities derive from, and the generation serving now. */
+  private redeploy: { waveId: string; identity: RedeployIdentity } | null = null;
   /** Wave secrets, kept across a K14 switch as an in-place upgrade keeps its configuration. */
   private readonly secrets = { PAPERCLIP_AGENT_JWT_SECRET: secret(), PAPERCLIP_DECISION_SIGNING_SECRET: secret(),
     PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: secret(), BETTER_AUTH_SECRET: secret() };
 
   private constructor(readonly repositoryRoot: string, readonly port: number, readonly paths: SupervisorPaths,
-    private readonly timeline: Timeline, upgradeFrom: string | null) {
+    private readonly timeline: Timeline, upgradeFrom: string | null, redeployWaveId: string | null) {
     this.serverRoot = upgradeFrom ?? repositoryRoot;
+    if (redeployWaveId) this.redeploy = { waveId: redeployWaveId, identity: redeployIdentity(redeployWaveId, 0) };
     this.baseUrl = `http://127.0.0.1:${port}`;
     this.log = createWriteStream(paths.serverLogPath, { flags: "a", mode: 0o600 });
     this.stopper = createRunnerE2EServerStopper({
@@ -171,13 +175,16 @@ export class ChaosSupervisor {
     });
   }
 
-  static async create(input: { repositoryRoot: string; waveDir: string; timeline: Timeline; upgradeFrom?: string }): Promise<ChaosSupervisor> {
+  /** `redeployWaveId`: a K15 wave; every server gets the emulated deploy identity of its generation (redeploy.ts). */
+  static async create(input: { repositoryRoot: string; waveDir: string; timeline: Timeline; upgradeFrom?: string;
+    redeployWaveId?: string }): Promise<ChaosSupervisor> {
     const temporaryRoot = await createRunnerE2ETemporaryRoot();
     const home = path.join(temporaryRoot, "home");
     const paths: SupervisorPaths = { temporaryRoot, home, configPath: path.join(home, "instances", "default", "config.json"),
       serverLogPath: path.join(input.waveDir, "server.log") };
     const port = await reserveRunnerE2EServerPort();
-    const supervisor = new ChaosSupervisor(input.repositoryRoot, port, paths, input.timeline, input.upgradeFrom ?? null);
+    const supervisor = new ChaosSupervisor(input.repositoryRoot, port, paths, input.timeline, input.upgradeFrom ?? null,
+      input.redeployWaveId ?? null);
     input.timeline.add("supervisor_created", { temporaryRoot, port, ...(input.upgradeFrom
       ? { upgradeFrom: input.upgradeFrom, upgradeFromSha: checkoutSha(input.upgradeFrom) } : {}) });
     return supervisor;
@@ -241,6 +248,8 @@ export class ChaosSupervisor {
       PAPERCLIP_IN_WORKTREE: "false",
       ...waveServerUrlEnvironment(this.port),
       ...extraEnvironment,
+      // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
+      ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, home) : {}),
     };
     const environment = buildPaperclipServerEnvironment(source, overrides);
     const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
@@ -257,7 +266,9 @@ export class ChaosSupervisor {
     const control = this.crashPointControl;
     const env = control ? { ...this.environment, PAPERCLIP_CRASH_POINT_CONTROL: control.controlPath,
       PAPERCLIP_CRASH_POINT_RECEIPT: control.receiptPath } : this.environment;
-    const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(root, entry, ["onboard", "--yes", "--run"]),
+    const args = runnerE2ETypeScriptProcessArgs(root, entry, ["onboard", "--yes", "--run"]);
+    // K15 waves: the emulated host name of the serving deploy generation (redeploy.ts).
+    const child = spawn(process.execPath, this.redeploy ? redeployNodeArgs(args) : args,
       { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
     this.child = child;
     const window = this.trackWindow(child, "primary");
@@ -484,6 +495,8 @@ export class ChaosSupervisor {
           receipt.restartedAt = Date.now();
           // K14: the replacement is the current build, on the same database and instance directory.
           if (kind === "K14") receipt.upgrade = await this.switchToCurrentBuild(receipt.faultId);
+          // K15: the replacement is the next deploy: a new process space and deployment id on the same volume.
+          if (kind === "K15") receipt.redeploy = this.advanceDeploy(receipt.faultId);
           this.timeline.add("fault_restarting", { faultId: receipt.faultId });
           return this.spawnServer();
         },
@@ -672,6 +685,19 @@ export class ChaosSupervisor {
    * K14: move the server from the older build to this checkout. Only the first K14 switches; a later
    * one restarts the current build (recorded with `switched: false`).
    */
+  /** K15: move the next server to the next deploy generation (redeploy.ts). */
+  private advanceDeploy(faultId: string): NonNullable<FaultReceipt["redeploy"]> {
+    if (!this.redeploy || !this.environment) throw new Error("K15 needs a redeploy wave (ChaosSupervisor.create redeployWaveId)");
+    const from = this.redeploy.identity;
+    const to = nextRedeployIdentity(this.redeploy.waveId, from);
+    this.redeploy.identity = to;
+    Object.assign(this.environment, redeployEnvironment(to, this.paths.home));
+    const receipt = redeployReceipt(from, to);
+    this.timeline.add("redeploy_switched", { faultId, ...receipt });
+    this.log.write(`\n[restart-chaos] ${faultId} K15 redeploy ${from.hostname}/${from.deploymentId} -> ${to.hostname}/${to.deploymentId}\n`);
+    return receipt;
+  }
+
   private async switchToCurrentBuild(faultId: string): Promise<NonNullable<FaultReceipt["upgrade"]>> {
     const fromRoot = this.serverRoot;
     const switched = fromRoot !== this.repositoryRoot;
