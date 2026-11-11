@@ -1,4 +1,6 @@
-// Offline source-pin maintenance only. Runtime/compiler/parser/zod pins are never regenerated here.
+// Offline source-pin maintenance only. Compiler/parser/zod pins are never regenerated here.
+// lockSha256 is not chosen here either: it is copied from the committed reviewed report-lock
+// policy (tests/runner-e2e/report-lock.json), which only the trusted lockfile refresh writes.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath, writeFile } from "node:fs/promises";
@@ -6,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const registryPath = "tests/runner-e2e/source-sdk-public-inputs.json";
+const reportLockPath = "tests/runner-e2e/report-lock.json";
 const sourceRoots = ["packages/shared/src", "packages/plugins/sdk/src"];
 const buildInputs = ["package.json", "packages/plugins/sdk/package.json", "packages/plugins/sdk/tsconfig.json",
   "packages/shared/package.json", "packages/shared/tsconfig.json", "pnpm-lock.yaml",
@@ -15,6 +18,23 @@ const blob = bytes => createHash("sha1").update(`blob ${bytes.length}\0`).update
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const fail = () => { throw new Error("SDK public input synchronization refused"); };
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+const committedBytes = (root, revision, file) => execFileSync("git", ["show", `${revision}:${file}`], { cwd: root, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+const hex64 = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+
+/**
+ * The reviewed lock identity the SDK proof must use at this revision: the committed
+ * report-lock policy's output hash, admitted only while the committed lock is that
+ * policy's reviewed input or output (the same rule the reviewed SDK reference applies).
+ */
+export function reviewedSdkLockSha256(root, revision) {
+  const policy = JSON.parse(committedBytes(root, revision, reportLockPath).toString("utf8"));
+  if (!hex64(policy.inputSha256) || !hex64(policy.outputSha256)) fail();
+  const committedLock = sha256(committedBytes(root, revision, "pnpm-lock.yaml"));
+  if (![policy.inputSha256, policy.outputSha256].includes(committedLock)) {
+    throw new Error(`SDK public input synchronization refused: the committed pnpm-lock.yaml is not reviewed by ${reportLockPath}`);
+  }
+  return policy.outputSha256;
+}
 
 export async function synchronizeSdkPublicInputs(root, revision, { write = false } = {}) {
   if (!/^[a-f0-9]{40}$/.test(revision) || await realpath(root) !== root || git(root, ["rev-parse", "HEAD"]).trim() !== revision) fail();
@@ -29,6 +49,7 @@ export async function synchronizeSdkPublicInputs(root, revision, { write = false
     if (!match || match[3].split("/").includes("..") || Object.hasOwn(inputs, match[3])) fail();
     inputs[match[3]] = match[2];
   }
+  const lockSha256 = reviewedSdkLockSha256(root, revision);
   if (buildInputs.some(file => !inputs[file]) || sourceRoots.some(directory => !Object.keys(inputs).some(file => file.startsWith(`${directory}/`)))) fail();
   const actualSources = [];
   const collect = async directory => {
@@ -47,9 +68,9 @@ export async function synchronizeSdkPublicInputs(root, revision, { write = false
     if (!stat.isFile() || stat.isSymbolicLink() || await realpath(filename) !== filename || stat.size > 8 * 1024 * 1024) fail();
     const bytes = await readFile(filename);
     // Preserve the existing, separately authenticated restored-lock exception.
-    if (blob(bytes) !== expected && !(file === "pnpm-lock.yaml" && sha256(bytes) === baseline.lockSha256)) fail();
+    if (blob(bytes) !== expected && !(file === "pnpm-lock.yaml" && sha256(bytes) === lockSha256)) fail();
   }
-  const updated = { ...baseline, inputs: Object.fromEntries(Object.entries(inputs).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) };
+  const updated = { ...baseline, lockSha256, inputs: Object.fromEntries(Object.entries(inputs).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) };
   const output = `${JSON.stringify(updated, null, 2)}\n`;
   const filename = path.join(root, registryPath), stat = await lstat(filename);
   if (!stat.isFile() || stat.isSymbolicLink() || await realpath(filename) !== filename) fail();
@@ -58,27 +79,34 @@ export async function synchronizeSdkPublicInputs(root, revision, { write = false
   if (current !== baselineBytes && current !== output) fail();
   if (git(root, ["rev-parse", "HEAD"]).trim() !== revision) fail();
   const result = { revision, inputs: Object.keys(inputs).length, changed: current !== output,
-    registrySha256: sha256(output), runtimePinsChanged: false };
+    registrySha256: sha256(output), lockPinChanged: baseline.lockSha256 !== lockSha256, runtimePinsChanged: false };
   if (write && result.changed) await writeFile(filename, output);
   return result;
 }
 
 /**
  * Cheap drift guard: the source pins in the registry file must equal the blobs
- * this checkout committed. Compares Git trees only (no working-tree reads), so
- * a stale registry fails with the inputs that changed instead of the opaque
- * "SDK public source proof unavailable" raised later by the source proof.
+ * this checkout committed, and its lockSha256 must equal the committed reviewed
+ * report-lock output. Compares Git trees only (no working-tree reads), so a
+ * stale registry fails with the inputs that changed instead of the opaque
+ * "SDK public source proof unavailable" or "Reviewed SDK reference policy does
+ * not match public proof" raised later by the source proof.
  */
 export async function staleSdkPublicInputs(root, revision = "HEAD") {
-  const pinned = JSON.parse(await readFile(path.join(root, registryPath), "utf8")).inputs ?? {};
+  const registry = JSON.parse(await readFile(path.join(root, registryPath), "utf8"));
+  const pinned = registry.inputs ?? {};
   const committed = {};
   for (const entry of git(root, ["ls-tree", "-rz", revision, "--", ...sourceRoots, ...buildInputs]).split("\0").filter(Boolean)) {
     const match = /^\d+ blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
     if (match) committed[match[2]] = match[1];
   }
-  return [...new Set([...Object.keys(pinned), ...Object.keys(committed)])].sort()
+  const stale = [...new Set([...Object.keys(pinned), ...Object.keys(committed)])].sort()
     .filter(file => pinned[file] !== committed[file])
     .map(file => ({ file, change: !pinned[file] ? "unpinned" : !committed[file] ? "removed" : "changed" }));
+  // A lockfile refresh rewrites report-lock.json; lockSha256 must follow its output hash.
+  const policy = JSON.parse(git(root, ["show", `${revision}:${reportLockPath}`]));
+  if (registry.lockSha256 !== policy.outputSha256) stale.push({ file: `${reportLockPath} outputSha256`, change: "lockSha256 changed" });
+  return stale;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

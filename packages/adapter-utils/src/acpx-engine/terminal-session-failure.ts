@@ -99,3 +99,48 @@ export function formatTerminalSessionFailure(
   if (!diagnostic) return message;
   return [...new Set([message, diagnostic.title, diagnostic.details].filter(Boolean))].join("\n");
 }
+
+/** Advertised on initialize so ACP agents report terminal failures as typed JetBrains AIR metadata. */
+export function typedSessionFailureClientCapabilities(): Record<string, unknown> {
+  return { _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } };
+}
+
+/**
+ * Read a typed terminal failure from the prompt response `_meta`, which ACPX
+ * returns on the turn result. The agent still answers with a normal stop
+ * reason, so the engine fails the turn itself.
+ */
+export function typedTerminalSessionFailure(meta: unknown): AcpxTerminalSessionFailure | null {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const air = object(object(object(meta)?.jetbrains)?.air);
+  if (!air || !Number.isInteger(air.version) || Number(air.version) < 1) return null;
+  const failure = object(air.sessionFailure);
+  if (!failure || failure.severity !== "error") return null;
+  // Keep complete provider text; sanitizeTerminalSessionFailure redacts before bounding.
+  return {
+    category: typeof failure.category === "string" && CATEGORIES.has(failure.category) ? failure.category : "unknown",
+    ...(typeof failure.title === "string" ? { title: failure.title } : {}),
+    ...(typeof failure.details === "string" ? { details: failure.details } : {}),
+  };
+}
+
+type TurnResult =
+  | { status: "completed" | "cancelled"; stopReason?: string; _meta?: Record<string, unknown> | null }
+  | { status: "failed"; error: { message: string; code?: string; detailCode?: string; retryable?: boolean } };
+
+/** A typed AIR session failure fails the turn even though ACP reported a normal stop. */
+export function typedTerminalTurnResult<T extends TurnResult>(
+  result: T,
+  onFailure: (failure: AcpxTerminalSessionFailure) => void,
+): T | { status: "failed"; error: { message: string; code: string } } {
+  if (result.status === "failed") return result;
+  const failure = typedTerminalSessionFailure(result._meta);
+  if (!failure) return result;
+  try {
+    onFailure(failure);
+  } catch {
+    // Diagnostics cannot change the failed terminal outcome.
+  }
+  return { status: "failed", error: { message: `ACP agent reported a terminal ${failure.category} failure.`, code: "RUNTIME" } };
+}

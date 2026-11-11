@@ -38,7 +38,8 @@ export async function prepareReviewedSdkReference(original:string,directory:stri
   const policyFile="tests/runner-e2e/report-lock.json",patchFile="tests/runner-e2e/report-lock.patch";
   const policyBytes=gitFile(original,policyFile),policy=JSON.parse(policyBytes.toString("utf8"));
   if(!(await readFile(path.join(original,policyFile))).equals(policyBytes)||policy.outputSha256!==pins.lockSha256)
-    throw new Error("Reviewed SDK reference policy does not match public proof");
+    throw new Error("Reviewed SDK reference policy does not match public proof: source-sdk-public-inputs.json lockSha256 must equal the committed report-lock.json outputSha256. "
+      +"Commit the lock change, then run `node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write` and commit the updated registry.");
   const committed=gitFile(original,"pnpm-lock.yaml");
   if(![policy.inputSha256,policy.outputSha256].includes(sha(committed)))throw new Error("Committed SDK reference lock is not reviewed");
   for(const [file,expected]of Object.entries(pins.inputs)){
