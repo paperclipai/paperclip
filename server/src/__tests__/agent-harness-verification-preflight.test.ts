@@ -18,6 +18,9 @@ import { readAiConnectionConfigurationFailure } from "../services/ai-connection-
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { environmentService } from "../services/environments.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import * as localRunnerPlatform from "../lib/agent-runner-platform.js";
 
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
 const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -119,6 +122,9 @@ describePostgres("saved harness account preflight", () => {
   });
 
   it.each(["active", "revoked", "restricted"])("verifies the saved native pool member instead of ambient credentials (%s)", async state => {
+    vi.spyOn(localRunnerPlatform, "localAgentRunnerTarget").mockReturnValue({
+      driver: "local", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39",
+    });
     vi.spyOn(modelCatalog, "listOpenRouterModels").mockResolvedValue([{ id: "openrouter/anthropic/claude-sonnet-4.5", label: "Fixture model" }]);
     const pool = await harnessPoolService(db).save(agent.companyId, { config: {
       schemaVersion: 2, kind: "harness_pool", name: "Lifecycle Pool", enabled: true, mode: "failover", members: [{
@@ -202,6 +208,57 @@ describePostgres("saved harness account preflight", () => {
     expect(probe).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledExactlyOnceWith("failed");
   });
+
+  it.each([["local", "paperclip"], ["ssh", "paperclip"], ["local", "legacy"]] as const)(
+    "selects the supported lifecycle pool member before probing the inherited %s environment with %s profiles", async (driver, runner) => {
+      vi.spyOn(localRunnerPlatform, "localAgentRunnerTarget").mockReturnValue({ driver: "local", platform: "win32", architecture: "x64" });
+      const envs = environmentService(db);
+      const environment = driver === "local" ? await envs.ensureLocalEnvironment(agent.companyId)
+        : await envs.create(agent.companyId, { name: randomUUID(), driver: "ssh", config: { host: "verification-fixture.invalid", username: "fixture" } });
+      await instanceSettingsService(db).update({ defaultEnvironmentId: environment.id });
+      const resolveEnvironment = vi.fn<ReturnType<typeof realEnvironmentTests>["resolveAdapterTestEnvironmentId"]>();
+      vi.mocked(environmentTests.agentEnvironmentTestService).mockImplementation((database, manager) => {
+        const real = realEnvironmentTests(database, manager);
+        resolveEnvironment.mockImplementation(real.resolveAdapterTestEnvironmentId);
+        return { ...real, resolveAdapterTestEnvironmentId: resolveEnvironment,
+          assertAdapterTestEnvironmentForCompany: vi.fn().mockResolvedValue(undefined),
+          resolveAdapterTestExecutionContext: allocate, testManagedEnvironment: probe };
+      });
+      const accounts = aiConnectionService(db);
+      const claude = await accounts.save(agent.companyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal",
+        name: "Claude lifecycle", apiKey: "fixture-claude-key", allAgents: true, agentIds: [] }, "fixture-claude-key");
+      const codex = await accounts.save(agent.companyId, userId, { provider: "openai", method: "api_key", ownership: "personal",
+        name: "Codex lifecycle", apiKey: "fixture-codex-key", allAgents: true, agentIds: [] }, "fixture-codex-key");
+      const pool = await harnessPoolService(db).save(agent.companyId, { config: {
+        schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+          { id: randomUUID(), harness: { type: "claude_code" }, connection: { mode: "delegated", provider: "anthropic", method: "api_key", ...claude },
+            model: "claude-sonnet-5", runner, adapterConfig: runner === "legacy" ? { engine: "cli", timeoutSec: 42 } : { lifecycleMode: "per_turn" } },
+          { id: randomUUID(), harness: { type: "codex" }, connection: { mode: "delegated", provider: "openai", method: "api_key", ...codex },
+            model: "gpt-6.1-sol", runner, adapterConfig: runner === "legacy" ? { engine: "cli", timeoutSec: 42 } : { lifecycleMode: "per_turn" } },
+        ],
+      } }, userId);
+      [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: {
+        provider: "codex", cwd: home, instructionsFilePath: "/fixture/AGENTS.md", env: { FIXTURE_AUTHORITY: "retained" },
+      }, defaultEnvironmentId: null, runtimeConfig: { harnessPool: { poolId: pool.id } },
+        lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
+      }).where(eq(agents.id, agent.id)).returning();
+      try {
+        await expect(verify()).resolves.toBe("complete");
+        const nativeWindows = driver === "local" && runner === "paperclip";
+        const expectedAdapter = runner === "legacy" ? "claude_local" : "paperclip_runner";
+        expect(probe).toHaveBeenCalledOnce();
+        expect(probe.mock.calls[0][0]).toBe(expectedAdapter);
+        expect(probe.mock.calls[0][1].config).toMatchObject({
+          provider: nativeWindows ? "codex" : "acpx", model: nativeWindows ? "gpt-6.1-sol" : "claude-sonnet-5",
+          cwd: home, instructionsFilePath: "/fixture/AGENTS.md", env: { FIXTURE_AUTHORITY: "retained",
+            [nativeWindows ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"]: nativeWindows ? "fixture-codex-key" : "fixture-claude-key" },
+          ...(runner === "legacy" ? { engine: "cli", timeoutSec: 42 } : { lifecycleMode: "per_turn" }),
+        });
+        expect(allocate).toHaveBeenCalledWith(expect.objectContaining({ environmentId: environment.id, adapterType: expectedAdapter }));
+        expect(resolveEnvironment).toHaveBeenCalledOnce();
+        expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0].adapterConfig).toEqual(agent.adapterConfig);
+      } finally { await instanceSettingsService(db).update({ defaultEnvironmentId: null }); }
+    });
 
   it("releases the target when the managed probe fails", async () => {
     probe.mockRejectedValueOnce(new Error("Fixture probe failure"));

@@ -2698,7 +2698,7 @@ export function heartbeatService(
           }
           aiBinding = selection.binding;
           // Provider-specific fields from the configured harness must not leak into the selected member.
-          config = applyAiConnectionRouterTaskSettings(config, selection, poolPolicyAgent.adapterType);
+          config = applyAiConnectionRouterTaskSettings(config, selection, poolPolicyAgent.adapterType, parseObject(poolPolicyAgent.adapterConfig));
           if (issueAssigneeOverrides) issueAssigneeOverrides = { ...issueAssigneeOverrides, adapterConfig: applyAiConnectionRouterTaskSettings(issueAssigneeOverrides.adapterConfig ?? {}, selection, poolPolicyAgent.adapterType, { ...parseObject(poolPolicyAgent.adapterConfig), ...issueAssigneeOverrides.adapterConfig }) };
           agent = { ...agent, adapterConfig: config };
           context.aiRouterSelection = selection;

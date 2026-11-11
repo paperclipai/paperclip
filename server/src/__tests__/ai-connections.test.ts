@@ -2024,6 +2024,27 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("permits only exact Codex confinement config pairs with managed credentials", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace/project" } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    const safe = ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=false"];
+    try {
+      execute.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
+      await expect(assertManagedAiProjectAuth({ extraArgs: safe }, "openai", target)).resolves.toBeUndefined();
+      await expect(assertManagedAiProjectAuth({ args: safe }, "openai", target)).resolves.toBeUndefined();
+      for (const extraArgs of [
+        [...safe, "-c", 'model_provider="evil"'],
+        ["-c", 'sandbox_mode="workspace-write"\nmodel_provider="evil"'],
+        ["-c", "sandbox_workspace_write.network_access=true"],
+        ["-c", 'sandbox_mode="danger-full-access"'],
+        ["-c", 'profile="evil"'], ["-c", 'sandbox_workspace_write.writable_roots=["/"]'],
+        [...safe, "-c"], [...safe, "--config=model_provider=evil"],
+        [...safe, "--api-key=evil"], [...safe, "--settings=evil"],
+      ]) await expect(assertManagedAiProjectAuth({ extraArgs }, "openai", target)).rejects.toThrow("overrides");
+      await expect(assertManagedAiProjectAuth({ extraArgs: safe }, "anthropic", target)).rejects.toThrow("overrides");
+      await expect(assertManagedAiProjectAuth({ extraArgs: ["-c"], args: ['sandbox_mode="workspace-write"'] }, "openai", target)).rejects.toThrow("overrides");
+    } finally { execute.mockRestore(); }
+  });
   it("reports only a found conflict as configuration, naming the files to fix", async () => {
     const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
     const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace/project" } as Parameters<typeof assertManagedAiProjectAuth>[2];

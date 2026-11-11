@@ -31,6 +31,7 @@ import { preparePoolAdapterClaim, effectiveRunAgent } from "../services/heartbea
 import { resolveCodexExecutionEngineForRun } from "../../../packages/adapters/codex-local/src/server/acp.js";
 import * as localRunnerPlatform from "../lib/agent-runner-platform.js";
 import { environmentService } from "../services/environments.js";
+import { buildCodexExecArgs } from "@paperclipai/adapter-codex-local/server";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -395,7 +396,7 @@ describe("durable, authorized connection routing", () => {
     const [agent] = await db.insert(agents).values({ companyId, name: "Taskless pool", adapterType: "paperclip_runner",
       adapterConfig: { provider: "codex", cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id }, heartbeat: { enabled: source === "timer" } } }).returning();
     const before = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId));
-    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, summary: "Company heartbeat completed" }));
+    const execute = vi.fn(async (_ctx: AdapterExecutionContext) => ({ exitCode: 0, signal: null, timedOut: false, summary: "Company heartbeat completed" }));
     registerServerAdapter({ ...getServerAdapter("codex_local"), execute });
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
     try {
@@ -403,6 +404,10 @@ describe("durable, authorized connection routing", () => {
         triggerDetail: "manual", requestedByActorType: "user", requestedByActorId: "alice", contextSnapshot: { responsibleUserId: "alice" } });
       await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
       expect(execute).toHaveBeenCalledOnce();
+      const args = buildCodexExecArgs(execute.mock.calls[0][0].config).args;
+      expect(args).toEqual(expect.arrayContaining(['sandbox_mode="workspace-write"', "sandbox_workspace_write.network_access=false"]));
+      expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+      expect(args).not.toContain("sandbox_workspace_write.network_access=true");
       const saved = await heartbeat.getRun(run!.id);
       expect(saved).toMatchObject({ scopeKind: "company", issueId: null });
       expect(saved?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: member.id, adapterType: "codex_local" });
@@ -413,8 +418,12 @@ describe("durable, authorized connection routing", () => {
   it("retains a company run allocation and uses the backup for a new run when its account cools", async () => {
     const { harnessPoolService } = await import("../services/harness-pools.js");
     await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    const backupAccount = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal",
+      name: "Company Codex backup", apiKey: "company-codex-backup", agentIds: [], allAgents: true }, "company-codex-backup");
+    const backupMember: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...backupAccount },
+      profile: { provider: "codex", model: "gpt-6-luna" } };
     const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Company backup", enabled: true, mode: "failover",
-      members: members.map((member, index) => ({ id: member.id, connection: member.binding, harness: { type: index === 0 ? "codex" as const : "claude_code" as const }, model: member.profile.model })) } }, "alice");
+      members: [members[0]!, backupMember].map(member => ({ id: member.id, connection: member.binding, harness: { type: "codex" as const }, model: member.profile.model })) } }, "alice");
     const [agent] = await db.insert(agents).values({ companyId, name: "Company backup", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id } } }).returning();
     const [first] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "company", status: "queued" }).returning();
     const admitted = await preparePoolAdapterClaim(db, first, agent, "alice");
@@ -428,9 +437,11 @@ describe("durable, authorized connection routing", () => {
       const [second] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "company", status: "queued" }).returning();
       const backup = await preparePoolAdapterClaim(db, second, agent, "alice");
       expect(backup.context.aiRouterTaskKey).toBe(second.id);
-      expect(backup.context.aiRouterSelection).toMatchObject({ memberId: members[1]!.id, adapterType: "claude_local" });
+      expect(backup.context.aiRouterSelection).toMatchObject({ memberId: backupMember.id, adapterType: "codex_local" });
       expect(effectiveRunAgent({ ...second, contextSnapshot: backup.context, runnerProfileJson: { adapterDispatch: backup.adapterDispatch } }, agent))
-        .toMatchObject({ adapterType: "claude_local", adapterConfig: { engine: "cli", model: members[1]!.profile.model } });
+        .toMatchObject({ adapterType: "codex_local", adapterConfig: { engine: "cli", model: backupMember.profile.model,
+          filesystemScope: "workspace", dangerouslyBypassApprovalsAndSandbox: false,
+          extraArgs: ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=false"] } });
       expect((await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, first.id))))[0]?.selection.memberId).toBe(members[0]!.id);
     } finally { await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, identity))); }
   });
@@ -576,7 +587,7 @@ describe("durable, authorized connection routing", () => {
   it("pins the earliest cooling account including the source for a deferred new round", async () => {
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
-      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members,
+      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: members.map(member => ({ ...member, runner: "legacy" as const })),
     } }, "alice");
     const taskKey = randomUUID();
     const source = await resolve(pool.id, taskKey, { adapterType: "claude_local" });

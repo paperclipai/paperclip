@@ -31,7 +31,7 @@ function poolHarnessChanges(config: Record<string, unknown>, sourceAdapterType: 
     agentHarnessType(sourceAdapterType, config) !== agentHarnessType(targetAdapterType, { ...config, ...targetConfig }) ||
     (sourceAdapterType === "paperclip_runner" && targetAdapterType === "paperclip_runner" && config.provider !== targetConfig.provider);
 }
-export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown>, sourceAdapterType: string, targetAdapterType: string, targetRuntimeConfig: Record<string, unknown> = {}): void {
+export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown>, sourceAdapterType: string, targetAdapterType: string, targetRuntimeConfig: Record<string, unknown> = {}, sourceSelection?: AiConnectionRouterSelection): void {
   for (const key of ["dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "dangerouslySkipPermissions", "alwaysApprove", "permissionMode", "acpPermissionMode", "nonInteractivePermissions", "acpNonInteractivePermissions", "codexPermissionMode", "acpxPermissionMode", "opencodePermissionMode"]) {
     if (config[key] !== undefined && targetRuntimeConfig[key] !== undefined && config[key] !== targetRuntimeConfig[key])
       throw unprocessable("Pool member cannot replace the configured execution policy.", { code: "pool_execution_policy_incompatible" });
@@ -41,6 +41,18 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
     const target = targetRuntimeConfig[primary] ?? targetRuntimeConfig[alias];
     if (source !== undefined && target !== undefined && source !== target)
       throw unprocessable("Pool member cannot replace the configured execution policy.", { code: "pool_execution_policy_incompatible" });
+  }
+  if (sourceSelection && targetAdapterType !== "paperclip_runner" &&
+      (!sourceSelection.adapterType || (sourceSelection.adapterType === "paperclip_runner" && (sourceSelection.runtimeConfig.provider == null || sourceSelection.runtimeConfig.provider === "codex"))))
+    throw unprocessable("Cannot preserve the execution sandbox across this pool continuation. Use a compatible native backup or start a fresh task turn.", { code: "pool_execution_policy_incompatible" });
+  if (sourceSelection?.adapterType === "paperclip_runner") {
+    const frozen = sourceSelection.runtimeConfig;
+    for (const [provider, key, unrestricted] of [["acpx", "acpxPermissionMode", "approve-all"], ["opencode", "opencodePermissionMode", "allow"]]) {
+      if (frozen[key] == null || frozen[key] === unrestricted) continue;
+      if (frozen.provider !== provider || targetAdapterType !== "paperclip_runner" || targetRuntimeConfig.provider !== provider ||
+          targetRuntimeConfig[key] !== frozen[key] || (provider === "acpx" && targetRuntimeConfig.acpxAgent !== frozen.acpxAgent))
+        throw unprocessable("Cannot preserve the frozen pool member execution policy. Use a compatible native backup with the same explicit restrictions.", { code: "pool_execution_policy_incompatible" });
+    }
   }
   if (!poolHarnessChanges(config, sourceAdapterType, targetAdapterType, targetRuntimeConfig)) return;
   const sourceHarness = agentHarnessType(sourceAdapterType, config);
@@ -548,6 +560,9 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         row.pool.pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY || row.pool.config.mode !== "failover" ||
         !pin || !samePoolSelection(pin.selection, input.expectedSelection, input.adapterType) || pin.member.id !== pin.selection.memberId ||
         !isDeepStrictEqual(pin.member.binding, pin.selection.binding) || !row.pool.config.members.some(member => member.id === pin.member.id && isDeepStrictEqual(member.binding, pin.member.binding))) return { kind: "unavailable" };
+    const sourceSelection = { ...pin.selection, adapterType: pin.selection.adapterType ??
+      (pin.member.runner === "paperclip" ? "paperclip_runner" : pin.member.runner === "legacy"
+        ? poolExecutionAdapterType(pin.member.binding, "paperclip_runner", true, "legacy") : undefined) };
     const members = row.pool.config.members.filter((member) => !input.attemptedMemberIds.includes(member.id));
     const platform = await resolvePoolExecutionPlatform(db, input.companyId, input.environmentId !== undefined ? input.environmentId : input.expectedSelection.runnerScope?.environmentId);
     const memberIdentities = new Map<string, string>();
@@ -569,7 +584,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         const effective = poolMemberRuntimeConfig(member, input.adapterType);
         if (input.taskless && effective.adapterType === "paperclip_runner") continue;
         assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
-        assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config);
+        assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config, sourceSelection);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
           runnerProvider: effective.config.provider, acpxAgent: effective.config.acpxAgent });
@@ -620,7 +635,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         effective = poolMemberRuntimeConfig(member, input.adapterType);
         if (input.taskless && effective.adapterType === "paperclip_runner") continue;
         assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
-        assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config);
+        assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config, sourceSelection);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
           runnerProvider: effective.config.provider, acpxAgent: effective.config.acpxAgent });

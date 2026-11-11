@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildCodexExecArgs } from "@paperclipai/adapter-codex-local/server";
 import type { AiConnectionPoolMember } from "@paperclipai/shared";
 import { applyAiConnectionRouterTaskSettings, assertPoolAdapterPolicyCompatible, poolMemberRuntimeConfig } from "../ai-connection-router.js";
 
@@ -33,5 +34,41 @@ describe("pool member runtime settings", () => {
     expect(() => assertPoolAdapterPolicyCompatible({ permissionMode: "deny-all" }, "claude_local", "claude_local", { permissionMode: "approve-all" })).toThrow("cannot replace");
     expect(() => assertPoolAdapterPolicyCompatible({ acpPermissionMode: "deny-all" }, "claude_local", "claude_local", { permissionMode: "approve-all" })).toThrow("cannot replace");
     expect(() => assertPoolAdapterPolicyCompatible({ acpNonInteractivePermissions: "deny" }, "claude_local", "claude_local", { nonInteractivePermissions: "fail" })).toThrow("cannot replace");
+  });
+  it("refuses a native Codex continuation before Legacy CLI can acquire its default bypass", () => {
+    const legacy = { provider: "codex", engine: "cli", model: "gpt-5.6-sol" };
+    expect(buildCodexExecArgs(legacy).args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    const admitted = { poolId: "pool", memberId: "native", binding: { ...claude.binding, provider: "openai" as const },
+      adapterType: "paperclip_runner", runtimeConfig: { provider: "codex", model: "gpt-5.6-sol" }, notes: [] };
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "codex_local", legacy, admitted))
+      .toThrow("Cannot preserve");
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "claude_local", { engine: "cli" }, admitted))
+      .toThrow("Cannot preserve");
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "paperclip_runner", legacy, admitted))
+      .not.toThrow();
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "codex_local", legacy, { ...admitted, runtimeConfig: {} }))
+      .toThrow("Cannot preserve");
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "codex_local", legacy, { ...admitted, adapterType: undefined }))
+      .toThrow("Cannot preserve");
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "codex_local", legacy, { ...admitted, adapterType: "codex_local" }))
+      .not.toThrow();
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "claude_local", { engine: "cli" }))
+      .not.toThrow();
+  });
+  it.each([
+    { provider: "acpx", acpxAgent: "claude", key: "acpxPermissionMode", restricted: "deny-all", widened: "approve-all" },
+    { provider: "opencode", key: "opencodePermissionMode", restricted: "deny", widened: "allow" },
+  ])("retains explicit frozen $provider restrictions on native successors", ({ provider, acpxAgent, key, restricted, widened }) => {
+    const config = { provider, ...(acpxAgent ? { acpxAgent } : {}), [key]: restricted };
+    const admitted = { poolId: "pool", memberId: "native", binding: claude.binding,
+      adapterType: "paperclip_runner", runtimeConfig: config, notes: [] };
+    const check = (target: Record<string, unknown>, adapter = "paperclip_runner") =>
+      assertPoolAdapterPolicyCompatible({}, "paperclip_runner", adapter, target, admitted);
+    expect(() => check({ provider, ...(acpxAgent ? { acpxAgent } : {}) })).toThrow("Cannot preserve");
+    expect(() => check({ ...config, [key]: widened })).toThrow("Cannot preserve");
+    expect(() => check({ ...config, provider: "codex" })).toThrow("Cannot preserve");
+    expect(() => check(config, "claude_local")).toThrow("Cannot preserve");
+    if (acpxAgent) expect(() => check({ ...config, acpxAgent: "grok" })).toThrow("Cannot preserve");
+    expect(() => check(config)).not.toThrow();
   });
 });

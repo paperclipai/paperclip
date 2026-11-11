@@ -94,10 +94,13 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     let adapterType = agent.adapterType;
     let binding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(agent.runtimeConfig));
     let config = agent.adapterConfig;
+    let poolEnvironmentId: string | null | undefined;
     if (binding?.mode === "router") {
+      poolEnvironmentId = await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId,
+        adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "copilot");
       const selected = await aiConnectionRouterService(db, manager).resolve({ companyId: agent.companyId,
         poolId: binding.connectionId, agentId: agent.id, userId: responsibleUserId,
-        adapterType, sourceAdapterConfig: config,
+        adapterType, sourceAdapterConfig: config, environmentId: poolEnvironmentId,
         taskKey: `lifecycle:${agent.lifecycleOperation!.id}` });
       binding = selected.binding;
       config = applyAiConnectionRouterTaskSettings(config, selected, adapterType);
@@ -108,7 +111,8 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     if (binding) config = { ...config, env: stripAiAuthBindings(config.env) };
     config = (await secrets.resolveAdapterConfigForRuntime(agent.companyId, config, context, { adapterType })).config;
     let runner: Record<string, unknown> | null = providerApi ? { kind: "provider_api" } : { kind: "local", version: serverVersion };
-    const environmentId = providerApi ? null : await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId, adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "copilot");
+    const environmentId = providerApi ? null : poolEnvironmentId !== undefined ? poolEnvironmentId
+      : await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId, adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "copilot");
     if (environmentId) {
       await tests.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId, adapterType);
       const environment = await environments.getById(environmentId);

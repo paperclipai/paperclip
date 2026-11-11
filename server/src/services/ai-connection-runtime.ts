@@ -104,23 +104,24 @@ export async function assertManagedAiProjectAuth(
   provider: AiConnectionBinding["provider"],
   target?: AdapterExecutionTarget | null,
 ) {
-  const extraArgs = [
-    ...(Array.isArray(config.extraArgs) ? config.extraArgs : []),
-    ...(Array.isArray(config.args) ? config.args : []),
-  ];
-  if (
-    extraArgs.some(
-      (arg) =>
-        typeof arg === "string" &&
-        /^(--config|-c|--settings|--setting-sources|--api-key|--auth-token)(=|$)/.test(
-          arg,
-        ),
-    )
-  ) {
-    throw unprocessable(
-      "Remove authentication/configuration overrides before selecting a managed AI connection",
-      { code: "ai_connection_incompatible" },
-    );
+  for (const configuredArgs of [config.extraArgs, config.args]) {
+    const args = Array.isArray(configuredArgs) ? configuredArgs : [];
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (typeof arg !== "string") continue;
+      // Exact confinement assignments cannot select credentials, profiles or providers.
+      if (provider === "openai" && arg === "-c" &&
+          ['sandbox_mode="workspace-write"', "sandbox_workspace_write.network_access=false"].includes(args[index + 1])) {
+        index++;
+        continue;
+      }
+      if (/^(--config|-c|--settings|--setting-sources|--api-key|--auth-token)(=|$)/.test(arg)) {
+        throw unprocessable(
+          "Remove authentication/configuration overrides before selecting a managed AI connection",
+          { code: "ai_connection_incompatible" },
+        );
+      }
+    }
   }
   const files =
     provider === "anthropic"
