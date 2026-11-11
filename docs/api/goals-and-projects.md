@@ -86,8 +86,9 @@ Notes:
 
 - `environmentId` optionally selects the project's workspace storage: the storage
   that this environment uses. When omitted, storage follows the creator's effective
-  default environment. The project does not save the environment, and it does not
-  change where runs execute.
+  default environment. If that default is unavailable and only one storage owner is
+  available, the project uses that owner. The project does not save the environment,
+  and it does not change where runs execute.
 - `expectedStorageProviderPluginId` optionally guards the observed storage owner.
   Use `GET /api/companies/{companyId}/project-environments` to discover compatible
   groups and the creator's default. Unknown or changed storage is rejected.

@@ -1358,8 +1358,12 @@ same-run bootstrap retry, and leaves an active board recovery action that asks
 for a supported model. A definite rejection whose startup `providerFailure`
 is `requires_action` for `authentication`, `permission` or `invalid_request`
 stops on its first attempt as `native_provider_startup_rejected`. On a remote
-execution target, any definite rejection with a startup `providerFailure` stops
-the same way, because a remote same-run bootstrap cannot prove ownership. No
+execution target, another definite rejection with a startup `providerFailure`
+retries on the same run only when the Runner transport proved, at close, that
+the failed runner settled and its process exited (`runnerExitConfirmed` in the
+saved failure). Restart recovery then launches a new runner. A rejection
+without that proof, or one that repeats the previous attempt's startup error,
+stops as `native_provider_startup_rejected`; the repeat names that error. No
 provider work began, so the board offers Retry, which starts a new run with a
 fresh provider session. Other local `session.open` rejections keep the bounded
 startup retry and end with Retry when it is spent. An
@@ -1453,6 +1457,16 @@ reconciler settles; a retry neither reuses nor abandons it. The task shows the
 provider failure as the reason, retries automatically, and on exhaustion becomes
 `blocked` with a specific recovery notice and a Retry. Because no provider work
 started, no execution-reconciliation hold is created.
+
+Lease acquisition precedes provider work by construction, so the same budget
+covers every lease acquisition failure that carries structured transient evidence,
+not only a provider status: the provider's acquisition deadline or an unfinished
+provisional creation (the validated acquisition diagnostic the runtime recorded
+for that run), the plugin RPC deadline, and a database driver error while the
+lease is recorded. A definite non-transient status (for example HTTP 401 or 404)
+still fails as `setup_failed`. On exhaustion the task's recovery action is
+system-owned (cause `environment_provider_unavailable`), not a board escalation:
+nothing needs board repair, and the task's Retry starts a new acquisition.
 
 A saved workspace that cannot be restored into a new allocation before provider
 dispatch fails with `remote_workspace_restore_failed`. The run error names the
@@ -1711,7 +1725,15 @@ assigned the task, or clicked Retry. It does this only when the run recorded no
 provider turn or its last provider turn is settled. Activity records the request
 as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
 recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
-server requested gets no second automatic attempt. System wakes and runs with an
+server requested gets no second automatic attempt. A system wake (for example a
+monitor or an automatic assignment) continues this way only with a positive
+record that no turn was ever issued: the refused reattachment proved the Runner
+process gone, and the run's controller journal, which records each turn command
+before it is sent, holds no turn command and no turn event
+(`providerTurnIssued: false` on `native.remote_runner_recovery_failed`). The run
+must also have no turn or tool event, and the Retry runs under the run's
+responsible user. Missing events alone never qualify, because a turn can reach
+the provider before its events are stored. Other system wakes and runs with an
 in-flight provider turn do not continue automatically. For these failed runs, a
 recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
@@ -2123,6 +2145,13 @@ its fenced controller checkpoint before external preparation. Launch records
 the exact launch intent before submission. A successor reconciles that intent
 and adopts the same Runner; a missing launch acknowledgement does not permit a
 second process. Uncertain launch evidence remains held.
+
+The accepted launch helper runs detached on the remote machine, independently
+of the web controller. Web-controller loss does not terminate that helper. If
+the remote helper itself fails before publishing a receipt, recovery retains
+the named pending hold: a missing receipt and a dead helper do not prove its
+child never started. This independent remote failure requires launch or machine
+recovery; it does not authorize another process on uncertain evidence.
 
 Upgrade readiness version 2 distinguishes committed admissions from admissions
 that still depend on a local promise. Only committed admissions with durable
