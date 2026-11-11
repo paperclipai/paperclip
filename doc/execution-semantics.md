@@ -3754,7 +3754,10 @@ infrastructure certification, and grants no agent or provider execution authorit
 Each completed export frees its own slot and wakes the next scan. A slow export
 does not hold a free slot. Completed cleanup and saved-input obligations receive
 one bounded pass through unvisited sources. The pass stops at its tail so paused
-input does not keep the worker active; a committed change starts a fresh pass.
+input does not keep the worker active; a committed change starts a fresh pass
+once the current pass reaches its tail. A pass is never restarted midway, so on
+a busy instance, where changes commit continuously, every candidate is still
+visited: the due re-arms and fallbacks of older exhausted holds included.
 Shutdown joins this worker's exports before closing the database. Repeated Retry
 during physical preservation binds the canonical intent
 without changing the attempt's generation or revision. Progress writes preserve
