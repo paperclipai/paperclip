@@ -119,6 +119,25 @@ describe("syncNodes with 250 agents", () => {
   });
 });
 
+describe("syncNodes while a note or a draft is dragged", () => {
+  it("keeps the dragged position until the drag is committed", () => {
+    const roster = agents(6);
+    const sticky = { id: "note", x: 10, y: 20, width: 200, height: 120, text: "", color: "yellow" as const };
+    const draft = {
+      id: "draft", x: 30, y: 40, name: "Copy", role: "engineer", title: null, capabilities: null,
+      adapterType: "claude_local", model: null, reportsTo: null, sourceAgentId: null,
+    };
+    const layout = { ...defaultAgentGraphLayout(), stickies: [sticky], drafts: [draft] };
+    const input = { agents: roster, layout, autoPositions: layoutHierarchy(roster), liveAgentIds: new Set<string>(), managerNames: new Map<string, string>() };
+    const moving = syncNodes([], input).map((node) =>
+      node.type === "agent" ? node : { ...node, dragging: true, position: { x: 777, y: 888 } }) as GraphFlowNode[];
+    const next = syncNodes(moving, { ...input, liveAgentIds: new Set([roster[2]!.id]) });
+    expect(next.filter((node) => node.type !== "agent").map((node) => node.position)).toEqual([{ x: 777, y: 888 }, { x: 777, y: 888 }]);
+    const released = syncNodes(moving.map((node) => ({ ...node, dragging: false })) as GraphFlowNode[], input);
+    expect(released.filter((node) => node.type !== "agent").map((node) => node.position)).toEqual([{ x: 10, y: 20 }, { x: 30, y: 40 }]);
+  });
+});
+
 describe("pruneLayout", () => {
   it("drops positions and hidden ids of agents that no longer exist", () => {
     const layout = {
