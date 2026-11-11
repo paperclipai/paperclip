@@ -384,8 +384,8 @@ minutes. In staging class R, recovery then found the remote Runner gone
   redacted. A failed capture is recorded and does not fail the wave.
 
   The whole capture (client, listing and every probe) has one 45 s deadline.
-  The capture runs while the server is down, so a slow Daytona API cannot
-  stretch the outage. A capture that hits the deadline is recorded as
+  The capture runs while the server is down, so a slow Daytona API adds at most
+  that much to the outage. A capture that hits the deadline is recorded as
   `deadlineExceeded`, and the restart continues. A probe that answers after the
   deadline writes nothing, because its evidence is from after the outage window.
 

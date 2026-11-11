@@ -67,8 +67,11 @@ export async function captureWaveRunnerLogs(input: {
   apiKey: string; companyId: string; environmentId: string; outDir: string; label: string; secrets: readonly string[];
   client?: ProbeClient; timeoutSeconds?: number; deadlineMs?: number;
 }): Promise<RunnerLogCapture> {
-  const label = captureDirectoryName(input.label);
-  const capture: RunnerLogCapture = { label, observedAt: new Date().toISOString(), sandboxes: [], error: null };
+  // An unusable label must not throw out of the restart path: fall back to a fixed directory and record why.
+  let label = "capture";
+  let labelError: string | null = null;
+  try { label = captureDirectoryName(input.label); } catch (error) { labelError = error instanceof Error ? error.message : String(error); }
+  const capture: RunnerLogCapture = { label, observedAt: new Date().toISOString(), sandboxes: [], error: labelError };
   const directory = path.join(input.outDir, label);
   const deadlineMs = input.deadlineMs ?? RUNNER_LOG_CAPTURE_DEADLINE_MS;
   const deadlineAt = Date.now() + deadlineMs;
@@ -83,6 +86,8 @@ export async function captureWaveRunnerLogs(input: {
     if (outcome === "deadline") {
       expired = true;
       capture.deadlineExceeded = true;
+      // A probe still in flight when the deadline won left its entry with neither a file nor an error.
+      for (const entry of capture.sandboxes) if (entry.file === null && entry.error === null && probeableSandbox({ id: entry.id, state: entry.state ?? undefined })) entry.error = "deadline";
       capture.error = `capture deadline ${deadlineMs} ms exceeded`;
     }
   } finally {

@@ -201,6 +201,22 @@ describe("Daytona Runner log capture", () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(executeCommand).not.toHaveBeenCalled();
     expect((await readdir(path.join(outDir, "f04-before_start"))).sort()).toEqual(["index.json"]);
-    expect(capture.sandboxes.map(sandbox => [sandbox.id, sandbox.file])).toEqual([["late", null]]);
+    expect(capture.sandboxes.map(sandbox => [sandbox.id, sandbox.file, sandbox.error])).toEqual([["late", null, "deadline"]]);
+  });
+
+  it("drops a probe result that arrives after the deadline, and records an unusable label instead of throwing", async () => {
+    const outDir = await mkdtemp(path.join(os.tmpdir(), "runner-logs-"));
+    const labels = { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT };
+    let release: ((value: { exitCode: number; result: string }) => void) | undefined;
+    const client = { async *list() { yield { id: "slow-probe", state: "started", labels }; },
+      get: async () => ({ process: { executeCommand: () => new Promise<{ exitCode: number; result: string }>(resolve => { release = resolve; }) } }) };
+    const capture = await captureWaveRunnerLogs({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, outDir,
+      label: "///", secrets: [], client, deadlineMs: 100 });
+    expect(capture.label).toBe("capture");
+    expect(capture.error).toMatch(/deadline 100 ms exceeded/);
+    release?.({ exitCode: 0, result: "too late" });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect((await readdir(path.join(outDir, "capture"))).sort()).toEqual(["index.json"]);
+    expect(capture.sandboxes.map(sandbox => [sandbox.id, sandbox.file, sandbox.error])).toEqual([["slow-probe", null, "deadline"]]);
   });
 });
