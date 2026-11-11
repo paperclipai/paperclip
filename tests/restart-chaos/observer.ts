@@ -16,11 +16,13 @@ import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js"
 import type { UiRetryClick } from "./board-ui.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "./question-handoff.js";
+import { isSessionFault, rotateAgentSession } from "./session-faults.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 import { databaseUrlFromConfig, journeyDriverFor, type JourneyDriver } from "./journey-driver.js";
 import { withLiveStatusEvidence } from "./live-status-evidence.js";
+import { diskFullRest, diskFullRestReady, isDiskFullFault, type DiskFullFaultSeam } from "./disk-full-faults.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
 const MAX_SNAPSHOT_FILES = 2_000;
@@ -207,6 +209,8 @@ export class TaskObserver {
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
   done = false;
+  /** DF1 (disk-full-faults.ts): arms this task's saves at launch and clears them before its Retry. */
+  diskFullSeam: Pick<DiskFullFaultSeam, "arm" | "clear"> | null = null;
 
   /** Replaceable in tests. A Daytona run's process is remote, so only local runs are checked. */
   processAlive = (pid: number, startedAt: string) => this.lab.environmentKind === "local" && localProcessAlive(pid, startedAt);
@@ -288,6 +292,7 @@ export class TaskObserver {
       this.record.deadlineAt = this.record.createdAt + definition.budgetMs;
       this.timeline.add("task_launched", { taskId: this.plan.taskId, issueId: issue.id, identifier: issue.identifier,
         workload: this.plan.workload, adapter: this.plan.adapter, faults: this.faultSchedule });
+      await this.armDiskFull();
     } catch (error) {
       this.record.launchError = error instanceof Error ? error.message : String(error);
       this.done = true;
@@ -605,6 +610,37 @@ export class TaskObserver {
     return true;
   }
 
+  /** DF1: the task's final saves find the sandbox disk full until the fault is cleared. */
+  private async armDiskFull(): Promise<void> {
+    if (!isDiskFullFault(this.plan.fault) || !this.record.issueId) return;
+    const record = this.record.diskFull = { kind: this.plan.fault, armedAt: null as number | null, clearedAt: null as number | null, rest: null };
+    try {
+      if (!this.diskFullSeam) throw new Error("disk-full seam not installed");
+      await this.diskFullSeam.arm(this.record.issueId);
+      record.armedAt = Date.now();
+      this.timeline.add("disk_full_fault_armed", { taskId: this.plan.taskId, issueId: this.record.issueId });
+    } catch (error) {
+      (record as NonNullable<TaskRecord["diskFull"]>).armError = error instanceof Error ? error.message : String(error);
+      this.timeline.add("disk_full_fault_arm_failed", { taskId: this.plan.taskId, error: (record as NonNullable<TaskRecord["diskFull"]>).armError });
+    }
+  }
+
+  /**
+   * DF1: once the rest names the full disk (or the task is done, or the settle bound passed), record
+   * what the board shows, then clear the fault, as a person who freed space. Returns false to keep watching.
+   */
+  private async clearDiskFullAtRest(now: number): Promise<boolean> {
+    const record = this.record.diskFull;
+    if (!record || record.armedAt === null || record.clearedAt !== null || !this.record.issueId) return true;
+    const rest = diskFullRest(this.issue, now);
+    if (!diskFullRestReady(record, rest, now)) return false;
+    record.rest = rest;
+    await this.diskFullSeam!.clear(this.record.issueId);
+    record.clearedAt = Date.now();
+    this.timeline.add("disk_full_fault_cleared", { taskId: this.plan.taskId, rest: record.rest });
+    return true;
+  }
+
   private async onRest(sample: TaskSample, now: number) {
     const status = sample.issueStatus ?? null;
     // The board has not acted yet: the task waits on it, so it has not rested (and gets no Retry).
@@ -629,6 +665,7 @@ export class TaskObserver {
         return;
       }
     }
+    if (!await this.clearDiskFullAtRest(now)) { this.restCandidateSince = null; return; }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
       if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
       this.record.retry = await this.retry(sample, now);
@@ -782,7 +819,7 @@ export class TaskObserver {
     if (this.journey) return this.journey.awaitingBoard();
     if (this.plan.workload === "G1") return Boolean(governance?.approvalSeenAt) && !governance?.decision;
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
-    if (this.plan.workload === "Q1") return awaitingQuestionAnswer(this.record);
+    if (this.plan.workload === "Q1" || this.plan.workload === "Q4") return awaitingQuestionAnswer(this.record);
     return false;
   }
 
@@ -817,10 +854,12 @@ export class TaskObserver {
     if (!sample.reachable || !this.record.issueId) return;
     if (this.plan.workload === "G1") await this.approvalStep(sample, now);
     if (this.plan.workload === "H1") await this.budgetStep(sample, now);
-    if (this.plan.workload === "Q1") {
+    if (this.plan.workload === "Q1" || this.plan.workload === "Q4") {
       await questionStep({ api: this.api, issueId: this.record.issueId, nonce: this.plan.nonce, record: this.record, sample, now,
         // An `answered` fault waits for the answer, so the board may answer before it fires.
-        boardMayAct: this.boardMayAct(sample, "answered"), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
+        boardMayAct: this.boardMayAct(sample, "answered"), sequence: this.plan.workload === "Q4",
+        note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }),
+        ...(isSessionFault(this.plan.fault) ? { beforeAnswer: () => rotateAgentSession(this.api, this.lab.agents[this.plan.adapter].id, this.plan.index, now) } : {}) });
     }
   }
 
@@ -999,7 +1038,7 @@ export class TaskObserver {
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
-      ...(this.plan.workload === "Q1" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
+      ...(this.plan.workload === "Q1" || this.plan.workload === "Q4" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
     };
   }

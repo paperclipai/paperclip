@@ -190,6 +190,11 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
   and OpenCode) passed 2 of 2 on master. The save-back did not block the task. The harness keeps no
   evidence for passing tasks, so it is not verified that the link existed at save-back time.
 - Proposed (not built): `DF1`, which fills the sandbox disk to ENOSPC before result copy-back.
+- Built (2026-11-11): `DF1` (`--faults DF1`, `--env daytona`). A test-only server hook makes the
+  task's final saves report a full sandbox disk until the harness clears it, instead of filling a
+  real disk. See "Sandbox disk full (DF1)" in `tests/restart-chaos/README.md`. First wave
+  `w-20261111T131941-s9412` (Daytona, R1, Codex): the task rested with `sandbox_disk_full` and the
+  API offered Retry, but the board showed "Recover saved files" and no Retry button.
 
 ### E: Daytona capacity outage (18 runs, mostly self-healing)
 
@@ -274,7 +279,7 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 | K15 redeploy into a new process space and deployment identity | R, P, L (and A with `--upgrade-from`) | `--faults K15` | Implemented, unit-tested. Five Daytona waves are recorded below. |
 | EP1 environment-provider 5xx window | E | — | Proposed |
 | F1 absolute symlink kept in the repository workspace | F (unsafe-symlink save-back) | `--workloads F1` | Implemented, unit-tested. Daytona wave: 2 of 2 pass on master. |
-| DF1 sandbox disk full | F (ENOSPC save-back) | — | Proposed |
+| DF1 sandbox disk full | F (ENOSPC save-back) | — | Built (test-only save hook) |
 
 ### Waves on master 8f6ca25976
 

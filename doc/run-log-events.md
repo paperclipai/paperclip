@@ -862,7 +862,11 @@ or its owner changed, the existing cancellation settlement records
 `continuation_task_ownership_changed`. The run and wake request become cancelled
 before adapter dispatch, with the run-log message
 `stale execution continuation cancelled before dispatch`. Immediate recovery is
-suppressed. Missing source context, authorization failures, and other setup
+suppressed. A comment the cancelled run carried that no run read is saved
+first when an agent run closed the task: a person's comment, or another agent's
+comment posted with `resume: true`. The release then reopens the task and
+delivers that comment once. Another agent's comment without `resume: true`
+stays communicative and does not reopen the task. Missing source context, authorization failures, and other setup
 errors retain their failure classification. An untyped error with the same
 message is also still a failure; cancellation requires the typed ownership guard.
 
