@@ -4269,6 +4269,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return structuredClone(this.#evidence);
   }
 
+  /**
+   * True only after a completed close settled the runner (it stopped its
+   * provider and suspended) and the runner process's own exit was observed.
+   * A remote same-run bootstrap retry may then launch a new runner.
+   */
+  runnerExitConfirmed(): boolean {
+    return this.#closed && this.#shutdownSettled && this.#evidence.runnerExited === true
+      && this.#handle?.isExitConfirmed?.() !== false;
+  }
+
   async request(
     method: string,
     params: Record<string, unknown>,

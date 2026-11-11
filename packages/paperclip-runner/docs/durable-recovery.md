@@ -159,10 +159,13 @@ which proves that the sidecar and the provider are gone.
   `authentication`, `permission` or `invalid_request` records
   `native_provider_startup_rejected`. No provider work began, so the
   controller stops same-run bootstrap retries and the board offers Retry at once
-  with the provider message. On a remote execution target, every definite
-  `session.open` failure with a startup `providerFailure` records the same code,
-  because a remote same-run bootstrap after the runner launched cannot prove
-  ownership and would stop on `ambiguous_remote_recovery_evidence`. On a local
+  with the provider message. On a remote execution target, a definite
+  `session.open` failure with a startup `providerFailure` keeps a same-run
+  bootstrap retry only when the transport's close settled the runner and
+  observed its exit (`runnerExitConfirmed`); restart recovery accepts that proof
+  as it accepts a runner's own exit. Without it, or when the failure repeats the
+  previous attempt's startup error, it records the same code, because a remote
+  same-run bootstrap cannot then prove ownership. On a local
   target, other startup failures (unknown, transient, rate limit, quota, model)
   keep the bounded same-run startup retries and end as
   `native_session_retry_exhausted` with Retry. A run an older release held on
