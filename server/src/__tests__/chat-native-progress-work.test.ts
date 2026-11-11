@@ -112,6 +112,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(errors).toEqual([]);
   });
 
+  it("pages past unusable public notes to keep the latest useful commentary", async () => {
+    await commentary("Found the retry cause. Checking recovery.");
+    for (let index = 0; index < 51; index++) await commentary("x".repeat(450));
+    await commentary("<thinking>PRIVATE</thinking>");
+    await start(); await settle();
+    expect(await publications()).toEqual([expect.objectContaining({ payload: expect.objectContaining({
+      text: expect.stringContaining("Found the retry cause. Checking recovery."),
+    }) })]);
+    await quiet(); expect(errors).toEqual([]);
+  });
+
+  it("uses a real lifecycle fallback when public notes are unusable", async () => {
+    await commentary("x".repeat(450));
+    await appendHeartbeatRunEvent(db, event(false, "tool.execution.completed"));
+    await start(); await settle();
+    expect(await publications()).toEqual([expect.objectContaining({ payload: expect.objectContaining({ text: "Maya is using tools…" }) })]);
+    await quiet(); expect(errors).toEqual([]);
+  });
+
   it.each(["terminal", "question", "answer"])("cancels the cooldown deadline when %s takes over", async reason => {
     await commentary("Checking retries.");
     await start(); await settle();
@@ -126,7 +145,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       payload: { version: 1, questions: [] } });
     if (reason === "answer") {
       const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
-        authorType: "agent", authorAgentId: f.agentId, createdByRunId: runId, body: "Done", metadata: { authorizationReason: "paperclip_runner_protocol" } }).returning();
+        authorType: "agent", authorAgentId: f.agentId, createdByRunId: runId, body: "Done", metadata: { version: 1, sections: [], authorizationReason: "paperclip_runner_protocol" } }).returning();
       await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId,
         issueId: f.issueId, commentId: comment.id, idempotencyKey: `answer:${runId}`, payload: { text: "Done" } });
     }

@@ -1,3 +1,4 @@
+import type { SafeChatPublicationPayload } from "@paperclipai/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { chatMessageLinks, chatPublications, fastResponseRequests, heartbeatRuns, type Db } from "@paperclipai/db";
 
@@ -25,4 +26,12 @@ export async function slackPublicProgressReceiptToReplace(
       eq(fastResponseRequests.conversationId, publication.conversationId)))
     .limit(1);
   return receipt?.providerMessageId ?? null;
+}
+
+/** Apply this before the replacement chain, including queued-wake fallbacks. */
+export function slackAnswerNeedsFreshReply(
+  publication: Pick<typeof chatPublications.$inferSelect, "commentId">,
+  payload: SafeChatPublicationPayload,
+): boolean {
+  return Boolean(publication.commentId) && payload.progressState === undefined;
 }

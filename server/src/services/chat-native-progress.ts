@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, like, notExists, or, sql, type SQLWrapper } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, lt, notExists, or, sql, type SQLWrapper } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { agents, chatConversations, chatEndpoints, chatPublications, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
@@ -22,6 +22,31 @@ function publicProgressEvent(event: { eventType: SQLWrapper; payload: SQLWrapper
     and ${event.payload}->'prpEvent'->'payload'->>'kind' = 'agentMessage'
     and ${event.payload}->'prpEvent'->'payload'->>'channel' = 'progress'
     and jsonb_typeof(${event.payload}->'prpEvent'->'payload'->'text') = 'string'), false)`;
+}
+
+/** SQL narrows to explicit public items; only the text projector can decide if
+ * a note is usable after sanitization and bounding. Page past rejected notes
+ * instead of letting them hide an older useful note or a lifecycle fallback. */
+async function latestPublicProgress(
+  db: Pick<Db, "select">,
+  scope: { companyId: string; runId: string },
+  signal?: AbortSignal,
+): Promise<{ seq: number; text: string } | null> {
+  let beforeSeq: number | undefined;
+  for (;;) {
+    signal?.throwIfAborted();
+    const events = await db.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(and(eq(heartbeatRunEvents.companyId, scope.companyId), eq(heartbeatRunEvents.runId, scope.runId),
+        publicProgressEvent(heartbeatRunEvents), beforeSeq === undefined ? undefined : lt(heartbeatRunEvents.seq, beforeSeq)))
+      .orderBy(desc(heartbeatRunEvents.seq)).limit(50);
+    for (const event of events) {
+      const text = publicNativeChatProgressText("item.completed", event.payload, scope.runId);
+      if (text) return { seq: event.seq, text };
+    }
+    if (events.length < 50) return null;
+    beforeSeq = events[events.length - 1].seq;
+  }
 }
 
 type SafeNativeChatProgressCandidate = {
@@ -110,7 +135,7 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
           eq(basePublication.issueId, chatConversations.issueId),
           sql`${basePublication.idempotencyKey} = 'run:' || ${heartbeatRuns.id}::text || ':working:' || ${chatConversations.endpointId}::text`,
           or(inArray(basePublication.state, ["pending", "retry", "streaming", "published"]),
-            and(eq(chatEndpoints.provider, "slack"), publicProgressEvent(heartbeatRunEvents),
+            and(eq(chatEndpoints.provider, "slack"),
               eq(basePublication.state, "cancelled"), eq(basePublication.redactedError, "Acknowledged by contextual fast response"))),
         ),
       )
@@ -131,12 +156,7 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
                 and(
                   eq(laterEvent.companyId, heartbeatRunEvents.companyId),
                   eq(laterEvent.runId, heartbeatRunEvents.runId),
-                  or(
-                    and(eq(chatEndpoints.provider, "slack"), publicProgressEvent(laterEvent), sql`not ${publicProgressEvent(heartbeatRunEvents)}`),
-                    and(gt(laterEvent.seq, heartbeatRunEvents.seq), or(
-                      sql`${chatEndpoints.provider} <> 'slack'`, publicProgressEvent(laterEvent), sql`not ${publicProgressEvent(heartbeatRunEvents)}`,
-                    )),
-                  ),
+                  gt(laterEvent.seq, heartbeatRunEvents.seq),
                   inArray(laterEvent.eventType, [
                     ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
                   ]),
@@ -274,7 +294,6 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
             id: heartbeatRunEvents.id,
             seq: heartbeatRunEvents.seq,
             eventType: heartbeatRunEvents.eventType,
-            payload: heartbeatRunEvents.payload,
             createdAt: heartbeatRunEvents.createdAt,
           })
           .from(heartbeatRunEvents)
@@ -287,7 +306,7 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
               ]),
             ),
           )
-          .orderBy(...(row.provider === "slack" ? [desc(publicProgressEvent(heartbeatRunEvents))] : []), desc(heartbeatRunEvents.seq), desc(heartbeatRunEvents.id))
+          .orderBy(desc(heartbeatRunEvents.seq), desc(heartbeatRunEvents.id))
           .limit(1);
         if (
           !currentEvent ||
@@ -297,8 +316,8 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
         ) {
           return 0;
         }
-        const publicText = row.provider === "slack"
-          ? publicNativeChatProgressText(currentEvent.eventType, currentEvent.payload, row.runId) : null;
+        const publicNote = row.provider === "slack" ? await latestPublicProgress(tx, row, options.signal) : null;
+        const publicText = publicNote?.text ?? null;
         const progress = publicText ? { phase: "public", text: publicText } : safeNativeChatProgressForEvent(
           currentEvent.eventType,
           row.agentName,
@@ -421,7 +440,7 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
             endpointId: row.endpointId,
             conversationId: row.conversationId,
             issueId: row.issueId,
-            idempotencyKey: `${progressKeyPrefix}${progress.phase}:${currentEvent.seq}`,
+            idempotencyKey: `${progressKeyPrefix}${progress.phase}:${publicNote?.seq ?? currentEvent.seq}`,
             payload: projectSafeChatPublication({
               classification: "external",
               source: "safe_milestone",

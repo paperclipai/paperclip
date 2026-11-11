@@ -339,9 +339,6 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
     payload: SafeChatPublicationPayload,
   ): Promise<string | null> {
     if (payload.attachmentIds?.length) return null;
-    // Slack answers are fresh replies: users must not have to notice an edit
-    // to discover completion. Progress still shares one bot-owned message.
-    if (publication.commentId && (await endpointRecord(publication.endpointId))?.endpoint.provider === "slack") return null;
     const currentRunId =
       runIdFromMilestonePublication(publication) ??
       (publication.commentId

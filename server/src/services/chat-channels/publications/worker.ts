@@ -1,3 +1,4 @@
+import { slackAnswerNeedsFreshReply } from "../slack/public-progress.js";
 import { notifyChatNativeProgress } from "../../chat-native-progress-notifications.js";
 import type { ChatPublicationPreparationWait } from "./preparation.js";
 import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
@@ -695,7 +696,8 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                 publication,
                 endpoint,
               );
-              const replaceProviderMessageId = endpoint.provider !== "imessage-photon" && CAPABILITIES[endpoint.provider]
+              const freshSlackAnswer = endpoint.provider === "slack" && slackAnswerNeedsFreshReply(publication, payload);
+              const replaceProviderMessageId = !freshSlackAnswer && endpoint.provider !== "imessage-photon" && CAPABILITIES[endpoint.provider]
                 .messageEdits
                 ? (closedProgress?.providerMessageId ??
                   (await interactionResolutionPublicationToReplace(
