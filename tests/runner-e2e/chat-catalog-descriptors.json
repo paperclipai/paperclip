@@ -1189,9 +1189,11 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/budgets-costs.yaml",
       "chat-catalog-domains/api-read-receipts.ts",
-      "run-observations.ts"
+      "run-observations.ts",
+      "chat-accounting-fault.ts",
+      "chat-archive-storage-fault.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.repair-cost-recording.structural.v2",
+    "oracleVersion": "paperclip.chat-catalog.repair-cost-recording.structural.v3",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,

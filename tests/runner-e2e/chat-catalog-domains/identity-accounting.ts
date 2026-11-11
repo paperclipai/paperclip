@@ -6,11 +6,14 @@ import type { CostDataQualityReport, CostByProject, CostEvent, IssueCostSummary,
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { pollUntil } from "../api.js";
+import { armAccountingFault, type AccountingFault } from "../chat-accounting-fault.js";
 import { collectRunEvents } from "../run-observations.js";
 import { apiReadDigests, recordParams } from "./api-read-receipts.js";
 import { checks, entity, hasLink, project, task, sameTask, type Entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, identityWorker, observeIdentity, openStandingChat, probeAgentPermission } from "./identity-support.js";
 
+/** Armed per company for the single selected repair-cost-recording cell; closed at cleanup. */
+const accountingFaults = new Map<string, AccountingFault>();
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 interface NativeAccountingState { worker: Entity; project: Entity; preflightTask: Entity; originalRun: HeartbeatRun; originalRunId: string; originalUsageHash: string; originalLogHash: string | null; unresolvedBefore: CostDataQualityReport }
 /** Public UI retry eligibility is narrower than unresolved event valuation.
@@ -34,16 +37,31 @@ async function nativeUnresolvedContext(ctx: ChatCatalogContext, retryable: boole
   // preparation for the genuine native prerequisite run, never a cost receipt.
   for (const [scopeType, scopeId] of [["company", ctx.input.fixtures.company.id], ["agent", worker.id]]) await ctx.input.api.post(`${root}/budgets/policies`, { scopeType, scopeId, amount: 10000, unpricedUsagePolicy: "allow", windowKind: "calendar_month_utc" });
   await pollUntil({ label: "real accounting preflight worker ready", deadlineAt: Date.now() + 45_000, load: () => ctx.input.api.get<{ lifecycleState: string }>(`/api/agents/${worker.id}`), accept: row => row.lifecycleState === "ready" });
-  const preflightTask = await task(ctx, "Native accounting prerequisite", p.id, { assigneeAgentId: worker.id, status: "todo",
-    description: "Return a concise readiness acknowledgement, then close this accounting preflight task. Do not create files, delegate, or start other tasks. This is a real native-provider prerequisite execution, not a simulated receipt." });
+  const description = "Return a concise readiness acknowledgement, then close this accounting preflight task. Do not create files, delegate, or start other tasks. This is a real native-provider prerequisite execution, not a simulated receipt.";
+  // Saved usage stays "Ready to record" only while recording its cost keeps failing. For the retry case the
+  // prerequisite task is created unassigned (it runs nothing), its cost-event write is faulted in the case-owned
+  // database, and only then is it assigned, so its genuine run finishes with its accounting still pending.
+  const preflightTask = retryable ? await task(ctx, "Native accounting prerequisite", p.id, { description })
+    : await task(ctx, "Native accounting prerequisite", p.id, { assigneeAgentId: worker.id, status: "todo", description });
+  if (retryable) {
+    accountingFaults.set(ctx.input.fixtures.company.id, await armAccountingFault({ executionId: ctx.input.execution.id, binding: { companyId: ctx.input.fixtures.company.id, issueId: preflightTask.id } }));
+    await ctx.input.api.patch(`/api/issues/${preflightTask.id}`, { assigneeAgentId: worker.id, status: "todo" });
+  }
   const run = await pollUntil({ label: "genuine completed native accounting prerequisite", deadlineAt: Date.now() + 180_000,
     load: () => ctx.allRuns(), accept: rows => rows.some(row => row.agentId === worker.id && row.status === "succeeded" && row.runtimeMode === "native") }).then(rows => rows.find(row => row.agentId === worker.id && row.status === "succeeded" && row.runtimeMode === "native")!);
   const original = await ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${run.id}`);
-  const quality = await ctx.input.api.get<CostDataQualityReport>(`${root}/costs/data-quality?period=all`);
+  // Accounting is attempted once native finalization closes; until then the run reads as receiving usage.
+  const quality = retryable ? await pollUntil({ label: "saved usage ready to record", deadlineAt: Date.now() + 90_000,
+    load: () => ctx.input.api.get<CostDataQualityReport>(`${root}/costs/data-quality?period=all`),
+    accept: report => report.runs.some(row => row.runId === run.id && row.reason === "retryable") || report.events.some(row => row.runId === run.id) })
+    .catch(() => ctx.input.api.get<CostDataQualityReport>(`${root}/costs/data-quality?period=all`))
+    : await ctx.input.api.get<CostDataQualityReport>(`${root}/costs/data-quality?period=all`);
   const prerequisite = nativeAccountingPrerequisite(original, quality, retryable);
+  const faultedWrites = retryable ? await accountingFaults.get(ctx.input.fixtures.company.id)?.failures() : undefined;
   await ctx.input.evidence("identity-native-accounting-context.json", { runId: run.id, taskId: preflightTask.id, workerId: worker.id, nativeRunActuallyCompleted: true,
     usageEvidenceExists: prerequisite.savedUsage, actualUnresolvedReasons: prerequisite.unresolvedReasons, requiresRetryableSavedUsage: retryable,
-    prerequisiteDisposition: prerequisite.disposition, actualRetryControlAvailable: prerequisite.retryControlAvailable, prerequisiteMet: prerequisite.eligible, usageAccountingFabricated: false, setupNativeUsageMustCountInCampaignAccounting: true });
+    prerequisiteDisposition: prerequisite.disposition, actualRetryControlAvailable: prerequisite.retryControlAvailable, prerequisiteMet: prerequisite.eligible, usageAccountingFabricated: false, setupNativeUsageMustCountInCampaignAccounting: true,
+    ...(retryable ? { faultedCostEventWrites: faultedWrites ?? 0 } : {}) });
   if (!prerequisite.eligible) throw new Error(`Setup blocker: actual completed native accounting prerequisite is ${prerequisite.disposition}; unresolved reasons=${prerequisite.unresolvedReasons.join(",") || "none"}. Saved retry debt cannot be fabricated`);
   return { worker, project: p, preflightTask: await ctx.input.api.get<Entity>(`/api/issues/${preflightTask.id}`), originalRun: original, originalRunId: run.id, originalUsageHash: digest(original.usageJson), originalLogHash: original.logSha256, unresolvedBefore: quality };
 }
@@ -150,7 +168,7 @@ export function gradeAccounting(value: unknown) {
   return c.result();
 }
 const sources = ["chat-catalog-domains/identity-accounting.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/budgets-costs.yaml"];
-const repairSources = [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"];
+const repairSources = [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts", "chat-accounting-fault.ts", "chat-archive-storage-fault.ts"];
 async function verifyUnresolvedSetup(ctx: ChatCatalogContext, state: Record<string, unknown>) {
   const quality = await ctx.input.api.get<CostDataQualityReport>(`/api/companies/${ctx.input.fixtures.company.id}/costs/data-quality?period=all`);
   const c = checks(); const rows = [...quality.runs, ...quality.events].filter(row => row.runId === state.originalRunId);
@@ -211,11 +229,14 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
   }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v3", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
-    const state = await nativeUnresolvedContext(ctx, true);
+    let state: NativeAccountingState;
+    try { state = await nativeUnresolvedContext(ctx, true); }
+    catch (error) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); throw error; }
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The completed native run requiring saved-cost recovery is ${state.originalRunId}, on task ${state.preflightTask.identifier}. Its public accounting quality record is actually retryable and retains saved usage. Only the person may use cost-recording retry; do not start or rerun the task.` });
     return { ...state };
   }, gradeAccounting, {
-    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v2", sourceFiles: repairSources, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v3", sourceFiles: repairSources,
+    async cleanup(ctx) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); }, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] },
     async act(ctx, state) {
       await pollUntil({ label: "accounting guidance source settled", deadlineAt: Date.now() + 150_000, load: async () => { await ctx.refreshIssue(); return ctx.allRuns(); },
@@ -228,6 +249,11 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
       await ctx.input.page.getByRole("button", { name: /run costs? unavailable|billing types? unknown/i }).first().click();
       const row = ctx.input.page.getByRole("listitem").filter({ has: ctx.input.page.locator(`a[href*="/runs/${state.originalRunId}"]`) }).filter({ has: ctx.input.page.getByRole("button", { name: "Retry cost recording", exact: true }) }).last();
       const response = ctx.input.page.waitForResponse(result => result.request().method() === "POST" && new URL(result.url()).pathname === `${root}/costs/retry-accounting` && result.request().postDataJSON()?.runId === state.originalRunId);
+      await expect(row.getByRole("button", { name: "Retry cost recording", exact: true })).toBeVisible();
+      // The transient write failure clears, then the person retries. Automatic recovery may record it first;
+      // the saved accounting read afterwards classifies either result.
+      const fault = accountingFaults.get(ctx.input.fixtures.company.id); if (!fault) throw new Error("Accounting fault was not armed for this attempt");
+      state.faultedCostEventWritesBeforeRetry = await fault.failures(); await fault.release();
       await row.getByRole("button", { name: "Retry cost recording", exact: true }).click(); const receipt = await response; state.humanRetryHttpStatus = receipt.status(); const result = await receipt.json() as { accounted: boolean }; state.retryAccounted = result.accounted;
       await expect(ctx.input.page.getByText(result.accounted ? "Costs recorded." : "No new cost data is available.", { exact: true })).toBeVisible(); state.retryReceiptVisible = true;
       await expect(ctx.input.page.getByText("The agent was not rerun.", { exact: true })).toBeVisible();
