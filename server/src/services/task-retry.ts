@@ -22,6 +22,7 @@ import { deferredChatInputPredicate, resumeDeferredChatWake } from "./durable-ch
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
+import { rearmExhaustedNativeFinalization } from "./native-runtime/exhausted-finalization-retry.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
 
@@ -104,7 +105,7 @@ async function readBoardMessageRetrySource(db: Db, input: {
       sql`${heartbeatRuns.resultJson}->>'stopReason' = 'adapter_failed'`,
       sql`not exists (select 1 from jsonb_object_keys(case when jsonb_typeof(${heartbeatRuns.resultJson}) = 'object'
         then ${heartbeatRuns.resultJson} else '{}'::jsonb end) key
-        where key not in ('effectiveTimeoutSec', 'executionRecovery', 'stopReason', 'timeoutConfigured', 'timeoutFired', 'timeoutSource'))`,
+        where key not in ('effectiveTimeoutSec', 'executionRecovery', 'stopReason', 'timeoutConfigured', 'timeoutFired', 'timeoutSource', 'failureCause'))`,
       sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch' = '{"adapterType":"paperclip_runner"}'::jsonb`,
       sql`not exists (select 1 from jsonb_object_keys(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
         then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) key
@@ -223,11 +224,19 @@ export async function retireSupersededTaskRetry(db: Db, input: {
 type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
-  /** Paperclip requests the user's Retry itself after a restart lost an unstarted turn. */
-  initiatedBy?: "restart_recovery";
+  /** Paperclip requests the user's Retry itself: after a restart lost an
+   * unstarted turn, or once a provider usage limit it waited on has reset. */
+  initiatedBy?: "restart_recovery" | "provider_limit_reset";
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
 };
+
+/** Activity actor for a Retry: the user, or the Paperclip hook acting for them. */
+function automaticRetryActor(input: Pick<TaskRetryRequest, "initiatedBy" | "actorId">) {
+  if (!input.initiatedBy) return { actorType: "user" as const, actorId: input.actorId };
+  return { actorType: "system" as const,
+    actorId: input.initiatedBy === "restart_recovery" ? "restart-recovery" : "provider-limit-reset" };
+}
 
 const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
 const TASK_RETRY_CONTENTION_DELAY_MS = 100;
@@ -300,6 +309,38 @@ function admitTaskRetry(input: TaskRetryRequest) {
         .where(eq(agentWakeupRequests.id, active.id));
       active = undefined;
     }
+    // An accepted result that only failed to finalize is applied again, never
+    // replaced by a new provider run. The receipt coalesces into that run.
+    const finalizeId = randomUUID();
+    const savedResult = latest.runtimeMode === "native" && latest.status === "succeeded"
+      ? await rearmExhaustedNativeFinalization(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
+        generationId: active?.id ?? finalizeId, actorId: input.actorId })
+      : { kind: "not_eligible" as const };
+    if (savedResult.kind !== "not_eligible") {
+      // A later click joins the saved-result Retry already under way (or applied).
+      const canonicalId = (savedResult.kind === "joined" ? savedResult.generationId : null) ?? active?.id ?? null;
+      const finalizeIntent: TaskRetryIntent = { schema: "paperclip.task-retry.v1", generationId: canonicalId ?? finalizeId,
+        sourceRunId: latest.id, actorId: input.actorId,
+        actorSource: taskRetryIntentSchema.shape.actorSource.parse(input.actorSource ?? "session"), strategy: "finalize_result",
+        ...(canonicalId ? { canonicalIntentId: canonicalId } : {}) };
+      const settled = { status: "coalesced", runId: latest.id, finishedAt: new Date(), updatedAt: new Date() } as const;
+      // An unadmitted Retry for this run would start a provider turn; it joins the re-finalization instead.
+      if (active && !active.runId) await tx.update(agentWakeupRequests).set({ ...settled,
+        payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"finalize_result"'::jsonb)` })
+        .where(eq(agentWakeupRequests.id, active.id));
+      await tx.insert(agentWakeupRequests).values({ id: finalizeId, companyId: issue.companyId, agentId: issue.assigneeAgentId,
+        source: "on_demand", triggerDetail: "manual", reason: "task_retry", idempotencyKey: key,
+        requestedByActorType: "user", requestedByActorId: input.actorId, ...settled,
+        payload: { issueId: issue.id, taskRetry: finalizeIntent } });
+      await persistActivity(db, { companyId: issue.companyId, ...automaticRetryActor(input),
+        action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
+        details: { requestId: canonicalId ?? finalizeId, sourceRunId: latest.id, attachedToExistingWork: Boolean(canonicalId),
+          strategy: "finalize_result",
+          ...(input.initiatedBy ? { initiatedBy: input.initiatedBy, onBehalfOfUserId: input.actorId } : {}) } });
+      const finalizing = savedResult.kind === "rearmed" || savedResult.finalizing;
+      return { requestId: canonicalId ?? finalizeId, accepted: true, stale: false, observedRunId: latest.id,
+        chatActionId: undefined, ...(finalizing ? { finalizeRunId: latest.id } : {}) };
+    }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {
       await preserveTaskRemoteWorkspaceWriter(db, issue.companyId, issue.id);
@@ -336,10 +377,10 @@ function admitTaskRetry(input: TaskRetryRequest) {
     // A new deliberate click (new key) replaces it with a fresh attempt under the
     // clicker's current authority instead of joining it. Waits on shared state
     // (cleanup, recovery, an active run) keep coalescing: that intent starts by
-    // itself once the gate clears. The restart hook never replaces a user's click.
+    // itself once the gate clears. An automatic hook never replaces a user's click.
     let replacedRequestId: string | undefined;
     if (active && !busy && !active.runId && active.status === "deferred_issue_execution" &&
-        input.initiatedBy !== "restart_recovery" && activeIntent && !activeIntent.chatActionId &&
+        !input.initiatedBy && activeIntent && !activeIntent.chatActionId &&
         !activeIntent.queuedChatRequestId && isDeclinedTaskRetry(active.payload)) {
       await tx.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_replaced",
         finishedAt: new Date(), updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, active.id),
@@ -427,13 +468,11 @@ function admitTaskRetry(input: TaskRetryRequest) {
           actionId: action.id }, previous, next);
       }
     }
-    const restartRecovery = input.initiatedBy === "restart_recovery";
-    await persistActivity(db, { companyId: issue.companyId, actorType: restartRecovery ? "system" : "user",
-      actorId: restartRecovery ? "restart-recovery" : input.actorId,
+    await persistActivity(db, { companyId: issue.companyId, ...automaticRetryActor(input),
       action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy),
         ...(replacedRequestId ? { replacedRequestId } : {}),
-        ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
+        ...(input.initiatedBy ? { initiatedBy: input.initiatedBy, onBehalfOfUserId: input.actorId } : {}) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId,
       ...(!active && latest.status === "scheduled_retry" ? { scheduledRetryRunId: latest.id } : {}) };

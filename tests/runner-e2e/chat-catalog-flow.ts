@@ -1,0 +1,297 @@
+import type { AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
+import { assertSdkCanaryFingerprintMatches } from "./sdk-canary-prefixture.js";
+import { collectConversationLinks, type ConversationLinkInput } from "./chat-rendered-links.js";
+import { chatCatalogAgentIsReady, chatCatalogAgentReadinessDetail, type ChatCatalogAgentReadiness, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "./chat-catalog-contract.js";
+import { chatNativeTimeoutEvidence } from "./chat-native-timeout-policy.js";
+import { completeNativeSlackFileConditional, dispatchNativeSlackIngress, prepareNativeSlackOtherThread, slackOtherThreadBoundaryMatches, slackNativeRunCheck } from "./chat-slack-ingress.js";
+import { runScopedCompanionSurface } from "./chat-companion-surface.js";
+import { chatQueryWithAttachments, resolveChatQueryAttachments, verifyChatQueryAttachments, type ChatQueryAttachmentReceipt } from "./chat-query-attachments.js";
+import { chatCatalogNeverStartedTerminalTaskRun, chatCatalogRunStatusAllowed, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
+import { chatCatalogCaseFingerprint, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
+import { expect } from "@playwright/test";
+import { pollUntil } from "./api.js";
+import { collectChatRunEvidence, sendChatMessage } from "./chat-flow.js";
+import { prepareNativeStopCanonicalBoundary } from "./chat-native-stop-boundary.js";
+import { collectChatCatalogCompanySecretApprovalActivity, verifyChatCatalogCompanySecretBindingApproval, chatCatalogHumanHistoryMatches, chatCatalogAllowsHumanQuestionAnswer, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
+import { findChatCatalogCase, loadChatCatalogImplementation } from "./chat-catalog-registry.js";
+import { chatCatalogInventoryDigest } from "./chat-catalog-inventory.js";
+import { resolveChatCatalogQuery } from "./chat-query-bindings.js";
+import { chatRunEvidenceApi } from "./chat-run-evidence-observer.js";
+import { markReturningBrowser } from "./chat-returning-browser.js";
+
+/** The case owns product semantics; this flow owns the actual chat entry point and evidence lifecycle. */
+export async function runChatCatalogFlow(context: ChatCatalogContext) {
+  const { input, scenario } = context;
+  const descriptor = findChatCatalogCase(scenario.id);
+  if (!descriptor) throw new Error(`No executable chat scenario: ${scenario.id}`);
+  const fingerprint = chatCatalogCaseFingerprint(descriptor, normalizedChatCatalogExecution(input.execution));
+  assertSdkCanaryFingerprintMatches(input.execution, fingerprint);
+  const implementation = await loadChatCatalogImplementation(descriptor);
+  if (implementation.optionalCompanySecretBindingApproval===true && (input.execution.task.optionalCompanySecretBindingApproval!==true || input.execution.task.expectedHumanMessageCount!==2)) throw new Error("Company governed approval task metadata is missing");
+  if (implementation.companionSurface) return runScopedCompanionSurface(context, implementation, fingerprint);
+  const slack = implementation.journeyKind === "native-slack-thread";
+  const deadlineAt = Date.now() + implementation.attemptTimeoutMs - 30_000;
+  Object.assign(context, { observationDeadlineAt: deadlineAt });
+  let state: Record<string, unknown> | undefined;
+  let observation: unknown;
+  let grade: ChatCatalogGrade | undefined;
+  let failed = false;
+  let failure: unknown;
+  let renderedQuery = scenario.query;
+  let persistedQuery = scenario.query;
+  let queryAttachments: ChatQueryAttachmentReceipt[] = [];
+  let setupBoundary: ChatCatalogSetupBoundary = { humanCommentIds: [], runIds: [] };
+  async function conversation(persist = true) {
+    await context.refreshIssue();
+    const issue = context.issue();
+    const runs = await context.allRuns();
+    const comments = issue ? await input.api.get<Array<{ id: string; body: string; authorAgentId?: string; authorUserId?: string; issueId?: string; companyId?: string; createdByRunId?: string }>>(
+      `/api/issues/${issue.id}/comments?order=asc`,
+    ) : [];
+    const hasCreationCard = await input.page.locator('[data-testid="task-chat-thread"] article[aria-label^="Project created: "]').count() > 0;
+    const [projects, activity] = hasCreationCard ? await Promise.all([
+      input.api.get<ConversationLinkInput["projects"]>(`/api/companies/${input.fixtures.company.id}/projects?includeArchived=true`),
+      input.api.get<ConversationLinkInput["activity"]>(`/api/companies/${input.fixtures.company.id}/activity?limit=1000`),
+    ]) : [[], []];
+    const renderedLinks = issue ? await collectConversationLinks(input.page, {
+      origin: input.api.baseURL, companyId: input.fixtures.company.id, companyPrefix: input.fixtures.company.issuePrefix,
+      sourceId: issue.id, leadId: input.fixtures.agent.id, comments, runs, projects, activity,
+    }) : [];
+    const evidence = { issue, runs, comments, renderedLinks };
+    if (persist) await input.evidence("chat-catalog-conversation.json", evidence);
+    return evidence;
+  }
+  async function refresh() {
+    const evidence = await conversation();
+    observation = await implementation!.observe(context, state!);
+    grade = validateChatCatalogGrade(implementation!.grade(observation));
+    const human = evidence.comments.filter(comment => !comment.authorAgentId);
+    const canonicalHuman = human[implementation!.setupHumanMessageCount ?? 0];
+    const expectedAnswer = chatCatalogAllowsHumanQuestionAnswer(scenario.id)
+      ? implementation!.expectedHumanQuestionAnswer?.(observation) : undefined;
+    let questionAnswer: ReturnType<typeof verifyChatCatalogHumanQuestionAnswer>;
+    if (expectedAnswer && evidence.issue && canonicalHuman) {
+      const [interactions, activity, companySecrets, personalSecrets] = await Promise.all([
+        input.api.get<AskUserQuestionsInteraction[]>(`/api/issues/${evidence.issue.id}/interactions`),
+        expectedAnswer.companySecretConfirmation ? collectChatCatalogCompanySecretApprovalActivity(input.api,input.fixtures.company.id,evidence.issue.id) : input.api.get<ChatCatalogHumanQuestionAudit[]>(`/api/issues/${evidence.issue.id}/activity`),
+        expectedAnswer.personalSecretConfirmation ? undefined : (expectedAnswer.companySavedSecretNameAnswer || expectedAnswer.companySecretConfirmation) ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["companySecrets"]>>(`/api/companies/${input.fixtures.company.id}/secrets`) : undefined,
+        expectedAnswer.personalSecretConfirmation ? input.api.get<NonNullable<Parameters<typeof verifyChatCatalogHumanQuestionAnswer>[0]["personalSecrets"]>>(`/api/companies/${input.fixtures.company.id}/me/user-secrets`) : undefined,
+      ]);
+      questionAnswer = verifyChatCatalogHumanQuestionAnswer({ expected: expectedAnswer, companyId: input.fixtures.company.id,
+        issueId: evidence.issue.id, agentId: input.fixtures.agent.id, canonicalComment: canonicalHuman,
+        interactions, activity, companySecrets, personalSecrets, runs: evidence.runs });
+    }
+    const expectedApproval=scenario.id==="secrets.configure-company-secret"&&implementation!.optionalCompanySecretBindingApproval===true?implementation!.expectedCompanySecretBindingApproval?.(observation):undefined;
+    let secretApproval:ReturnType<typeof verifyChatCatalogCompanySecretBindingApproval>;
+    if(expectedApproval&&evidence.issue&&canonicalHuman){
+      const [interactions,proposals,activity,secrets,usage]=await Promise.all([
+        input.api.get<Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["interactions"]>(`/api/issues/${evidence.issue.id}/interactions`),
+        input.api.get<Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["proposals"]>(`/api/companies/${input.fixtures.company.id}/secret-proposals`),
+        collectChatCatalogCompanySecretApprovalActivity(input.api,input.fixtures.company.id,evidence.issue.id),
+        input.api.get<Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["secrets"]>(`/api/companies/${input.fixtures.company.id}/secrets`),
+        input.api.get<{bindings:Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["bindings"]}>(`/api/secrets/${expectedApproval.secretId}/usage`),
+      ]);
+      secretApproval=verifyChatCatalogCompanySecretBindingApproval({scenarioId:scenario.id,expected:expectedApproval,companyId:input.fixtures.company.id,issueId:evidence.issue.id,agentId:input.fixtures.agent.id,interactions,proposals,activity,secrets,bindings:usage.bindings,comments:evidence.comments as unknown as Parameters<typeof verifyChatCatalogCompanySecretBindingApproval>[0]["comments"],runs:evidence.runs});
+    }
+    const humanAccounting = { basis: secretApproval ? "comments_and_verified_company_binding_approval" : expectedAnswer?.companySecretConfirmation ? "comments_and_declared_company_secure_confirmation" : expectedAnswer?.personalSecretConfirmation ? "comments_and_declared_personal_secure_confirmation" : expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
+      accountedHumanActionCount: human.length + (questionAnswer ? 1 : 0) + (secretApproval ? 1 : 0), declaredHumanActionCount: (implementation!.expectedHumanMessageCount ?? 1) + (secretApproval ? 1 : 0),
+      declaredMinimumHumanActionCount: implementation!.expectedHumanMessageCount ?? 1, declaredMaximumHumanActionCount:(implementation!.expectedHumanMessageCount ?? 1)+(implementation!.optionalCompanySecretBindingApproval===true?1:0), verifiedCompanySecretApprovalCount:secretApproval?1:0, companySecretApproval:secretApproval??null, expectedCompanySecretApprovalVerified:expectedApproval?!!secretApproval:null,
+      questionAnswer: questionAnswer ?? null, expectedQuestionAnswerVerified: expectedAnswer ? !!questionAnswer : null };
+
+    const attachmentsValid = !queryAttachments.length || !!canonicalHuman && await verifyChatQueryAttachments(context, queryAttachments, canonicalHuman);
+    if (queryAttachments.length) await input.evidence("chat-catalog-query-attachment-receipts.json", { receipts: queryAttachments,
+      canonicalCommentId: canonicalHuman?.id ?? null, verified: attachmentsValid });
+    const checks = [...grade.checks,
+      { id: "catalog-complete-conditions", passed: !implementation!.coverageGaps?.length,
+        detail: implementation!.coverageGaps?.length ? `Missing conditions: ${implementation!.coverageGaps.join(", ")}` : "No known catalog condition is omitted." },
+      { id: "catalog-original-human-query", passed: (!expectedAnswer || !!questionAnswer) && (!expectedApproval||!!secretApproval) && chatCatalogHumanHistoryMatches({ implementation: implementation!, human, questionAnswer, secretApproval, runIds: evidence.runs.map(run => run.id), boundary: setupBoundary, renderedQuery: persistedQuery }),
+        detail: "The original query/setup history is unchanged. Human actions are raw comments, plus independently verified bound UI answers and an optional executed company binding approval only for its opted-in case." },
+      { id: "catalog-query-attachment-receipts", passed: attachmentsValid,
+        detail: "Only declared production attachment suffixes are allowed, backed by same-source human receipts and independently retrieved matching bytes." },
+      ...(slack ? [slackNativeRunCheck(context, evidence.runs, state)] : []),
+      ...gradeChatCatalogRuns({ implementation: implementation!, companyId: input.fixtures.company.id,
+        leadId: input.fixtures.agent.id, source: evidence.issue, runs: evidence.runs, observation }).checks,
+    ];
+    grade = { passed: checks.every(check => check.passed), checks };
+    await input.evidence("chat-catalog-observation.json", { scenarioId: scenario.id, inventoryDigest: chatCatalogInventoryDigest,
+      oracleVersion: implementation!.oracleVersion, observation, humanAccounting, grade });
+    return { grade, runs: evidence.runs, issue: evidence.issue };
+  }
+  try {
+    // Setup may finish five or more tasks; a returning person has already dismissed the star prompt.
+    await markReturningBrowser(input.page, input.api?.baseURL);
+    await input.evidence("chat-catalog-definition.json", { scenarioId: scenario.id, ...fingerprint,
+      suiteDefinitionHash: input.execution.suiteDefinitionHash, journeyKind: implementation.journeyKind ?? "agent-chat" });
+    // Setup turns (prerequisite chat messages, worker runs) spend before the query. Fund the company and
+    // lead first: the fixture's default policy blocks unpriced usage, so one unpriced setup turn would
+    // otherwise budget-pause the lead before the standard funding below is applied.
+    if (implementation.setupPolicy?.funding !== "preserve-scenario") for (const scope of [{ scopeType: "company", scopeId: input.fixtures.company.id },
+      { scopeType: "agent", scopeId: input.fixtures.agent.id }]) await input.api.post(`/api/companies/${input.fixtures.company.id}/budgets/policies`, { ...scope, amount: 500,
+      hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
+    state = await implementation.setup(context);
+    const query = await resolveChatCatalogQuery(context, implementation.queryBindings, state);
+    renderedQuery = query.renderedQuery;
+    if (implementation.queryOutcome === "rejected" && implementation.queryAttachments?.length) throw new Error("Rejected-query attachment branches need an explicit contract");
+    queryAttachments = await resolveChatQueryAttachments(context, implementation.queryAttachments, state);
+    persistedQuery = chatQueryWithAttachments(renderedQuery, queryAttachments);
+    if (queryAttachments.length) await input.evidence("chat-catalog-query-attachments-before-send.json", {
+      originalQuery: scenario.query, renderedQuery, persistedQuery, receipts: queryAttachments });
+    await input.evidence("chat-catalog-query-binding.json", { scenarioId: scenario.id, ...query });
+    const company = `/api/companies/${input.fixtures.company.id}`;
+    const agents = await input.api.get<Array<{ id: string }>>(`${company}/agents`);
+    if (implementation.setupPolicy?.readiness !== "preserve-scenario") for (const agent of agents) await pollUntil({ label: `catalog agent readiness ${agent.id}`,
+      deadlineAt: Math.min(deadlineAt, Date.now() + 45_000), intervalMs: 500,
+      load: () => input.api.get<ChatCatalogAgentReadiness>(`/api/agents/${agent.id}`),
+      accept: chatCatalogAgentIsReady,
+      reject: value => value.lifecycleError ? "Agent setup failed; diagnostic details withheld" : undefined,
+      timeoutDetail: chatCatalogAgentReadinessDetail,
+    });
+    const scopes = [{ scopeType: "company", scopeId: input.fixtures.company.id },
+      ...agents.map(agent => ({ scopeType: "agent", scopeId: agent.id }))];
+    if (implementation.setupPolicy?.funding !== "preserve-scenario") for (const scope of scopes) await input.api.post(`${company}/budgets/policies`, { ...scope, amount: 500,
+      hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
+    const funding = await input.api.get<{ policies: Array<{ scopeType: string; scopeId: string; amount: number; hardStopEnabled: boolean; isActive: boolean; unpricedUsagePolicy: string }> }>(`${company}/budgets/overview`);
+    if (implementation.setupPolicy?.funding !== "preserve-scenario") expect(scopes.every(scope => funding.policies.some(policy => policy.scopeType === scope.scopeType && policy.scopeId === scope.scopeId
+      && policy.amount === 500 && policy.hardStopEnabled && policy.isActive && policy.unpricedUsagePolicy === "allow")), "Public funding policy persisted").toBe(true);
+    await input.evidence("chat-catalog-funding.json", { scopes, mode: implementation.setupPolicy?.funding ?? "standard",
+      policies: funding.policies.filter(policy => scopes.some(scope => scope.scopeType === policy.scopeType && scope.scopeId === policy.scopeId)), setupProbeUsage: "unknown; production hello probes are outside heartbeat accounting" });
+    if (slack && implementation.slackIngress?.setupThread === "same-agent-distractor") await prepareNativeSlackOtherThread(context,implementation,state,deadlineAt);
+    const savedLead = await input.api.get<{ adapterConfig?: { timeoutSec?: unknown } }>(`/api/agents/${input.fixtures.agent.id}`);
+    const nativeTimeoutPolicy = chatNativeTimeoutEvidence({ selectedTurnTimeoutMs: input.execution.task.turnTimeoutMs,
+      authoredLegacyTurnTimeoutMs: implementation.turnTimeoutMs, attemptTimeoutMs: implementation.attemptTimeoutMs,
+      observationBudgetMs: implementation.attemptTimeoutMs - 30_000,
+      savedAgentTimeoutSec: savedLead.adapterConfig?.timeoutSec });
+    await input.evidence("chat-catalog-setup.json", { nativeTimeoutPolicy, scenario, state, inventoryDigest: chatCatalogInventoryDigest,
+      oracleVersion: implementation.oracleVersion, expectedRunCount: implementation.expectedRunCount,
+      ...(implementation.optionalCompanySecretBindingApproval===true?{optionalCompanySecretBindingApproval:true,declaredMinimumHumanActionCount:2,declaredMaximumHumanActionCount:3}:{}),
+      minimumRunCount: implementation.minimumRunCount, effectiveNativeTurnTimeoutMs: input.execution.task.turnTimeoutMs,
+      authoredLegacyTurnTimeoutMs: implementation.turnTimeoutMs,
+      attemptTimeoutMs: implementation.attemptTimeoutMs });
+    if (implementation.verifySetup) {
+      const setupGrade = validateChatCatalogGrade(await implementation.verifySetup(context, state));
+      await input.evidence("chat-catalog-prepared-state.json", setupGrade);
+      expect(setupGrade.passed && (implementation.setupPolicy?.invariantCheckIds ?? []).every(id => setupGrade.checks.some(check => check.id === id && check.passed)), "Independent scenario prerequisites").toBe(true);
+    }
+    const setupConversation = await conversation();
+    const setupHuman = setupConversation.comments.filter(comment => !comment.authorAgentId);
+    expect(setupHuman.length, "Only declared genuine pre-query human turns exist").toBe(implementation.setupHumanMessageCount ?? 0);
+    expect(setupConversation.runs.length <= implementation.expectedRunCount, "Setup runs count toward the total native run bound").toBe(true);
+    setupBoundary = { humanCommentIds: setupHuman.map(comment => comment.id), runIds: setupConversation.runs.map(run => run.id) };
+    await input.evidence("chat-catalog-setup-boundary.json", { ...setupBoundary, setupHumanMessageCount: implementation.setupHumanMessageCount ?? 0,
+      expectedHumanMessageCount: implementation.expectedHumanMessageCount ?? 1, expectedRunCount: implementation.expectedRunCount });
+    await input.evidence("chat-catalog-query.json", { query: scenario.query, expectedOutcome: implementation.queryOutcome ?? "persisted", journeyKind: implementation.journeyKind ?? "agent-chat" });
+    if (slack) {
+      const other=state.slackOtherThreadSetupReceipt as (import("./chat-catalog-contract.js").ChatSlackIngressReceipt & {runId:string})|undefined;
+      const declaredOther=implementation.scenarioId==="chat-channels.reply-in-thread"&&implementation.slackIngress?.setupThread==="same-agent-distractor";
+      if (setupBoundary.humanCommentIds.length || (declaredOther ? !other || !slackOtherThreadBoundaryMatches({receipt:other,runs:setupConversation.runs,companyId:input.fixtures.company.id,agentId:input.fixtures.agent.id}) : setupBoundary.runIds.length!==0)) throw new Error("Native Slack setup cannot admit undeclared canonical or unrelated work");
+      state.slackIngressReceipt = await dispatchNativeSlackIngress(context, implementation, state, deadlineAt);
+      await input.page.goto(new URL(`/${input.fixtures.company.issuePrefix}/issues/${context.issue()!.id}`, input.api.baseURL).href);
+      if (implementation.scenarioId === "chat-channels.channel-file") await completeNativeSlackFileConditional(context, implementation, state, deadlineAt);
+    } else {
+      await prepareNativeStopCanonicalBoundary(context, implementation, state, renderedQuery, setupBoundary);
+      await sendChatMessage(input.page, renderedQuery, chatCatalogNativePhaseRemainingBudget(context));
+    }
+    if (implementation.queryOutcome === "rejected") {
+      const rejection = validateChatCatalogGrade(await implementation.verifyQueryRejection!(context, state));
+      await input.evidence("chat-catalog-query-rejection.json", rejection);
+      expect(rejection.passed, "Real browser/API query rejection").toBe(true);
+    }
+    if (implementation.act) await implementation.act(context, state);
+    let settledAt: number | undefined;
+    let passedAt: number | undefined;
+    await pollUntil({ label: scenario.id, deadlineAt, intervalMs: 1_000, load: refresh,
+      accept: result => {
+        if (!chatCatalogNativePhaseIsTimely(context)) return false;
+        if (!result.grade.passed) { passedAt = undefined; return false; }
+        passedAt ??= Date.now();
+        return Date.now() - passedAt >= 5_000;
+      },
+      reject: result => {
+        if (result.runs.length > implementation.expectedRunCount) return "Scenario exceeded its declared run bound";
+        if (result.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status) && !chatCatalogNeverStartedTerminalTaskRun(run, result.issue) && !chatCatalogRunStatusAllowed({ implementation,
+          run, companyId: input.fixtures.company.id, leadId: input.fixtures.agent.id, source: result.issue, observation }))) return "Observed provider run failed";
+        if (result.runs.length && result.runs.every(run => !["queued", "running"].includes(run.status)) && result.issue?.conversationState === "waiting") settledAt ??= Date.now();
+        else settledAt = undefined;
+        // A passing grade is still inside accept()'s stability window; let it finish.
+        return settledAt && Date.now() - settledAt >= 15_000 && !result.grade.passed
+          ? `Settled scenario failed: ${result.grade.checks.filter(check => !check.passed).map(check => check.id).join(", ")}` : undefined;
+      }, timeoutDetail: result => result?.grade.checks.filter(check => !check.passed).map(check => check.id).join(", "),
+    });
+    expect(chatCatalogNativePhaseIsTimely(context), "Original selected native observation budget before final proof").toBe(true);
+    const originalIssueId = context.issue()?.id;
+    await input.page.reload({ waitUntil: "domcontentloaded" });
+    if (!slack) await expect(input.page.getByTestId("task-chat-composer-input")).toBeVisible();
+    const persisted = await refresh();
+    expect(context.issue()?.id, "Source chat survives browser reload").toBe(originalIssueId);
+    expect(persisted.grade.passed, "Independent oracle survives browser reload").toBe(true);
+    await implementation.verifyResult(context, state, observation);
+    for (const check of persisted.grade.checks) input.check?.(check.id, check.passed, check.detail);
+    await input.capture("final-state", scenario.id, "final-state.png");
+    expect(chatCatalogNativePhaseIsTimely(context), "Original selected native observation budget includes complete final proof").toBe(true);
+    return createChatCatalogFinalRunVerifier({ implementation, companyId: input.fixtures.company.id,
+      leadId: input.fixtures.agent.id, observation });
+  } catch (error) {
+    failed = true;
+    failure = error;
+    throw error;
+  } finally {
+    if (failed) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const failureSnapshot: Record<string, unknown> = { capturePhase: "failure" };
+      try {
+        failureSnapshot.observation = observation === undefined ? null : structuredClone(observation);
+        await input.retireFailedAttempt?.(failure);
+        const collection = (async () => {
+          const finalConversation = await conversation(false);
+          Object.assign(failureSnapshot, finalConversation);
+          const interactions = finalConversation.issue ? await input.api.get(`/api/issues/${finalConversation.issue.id}/interactions`) : [];
+          failureSnapshot.interactions = interactions;
+          const runEvidence = await Promise.all(finalConversation.runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
+          return { ...failureSnapshot, runEvidence };
+        })();
+        const evidence = await Promise.race([collection, new Promise<undefined>(resolve => {
+          timer = setTimeout(() => resolve(undefined), 5_000);
+        })]);
+        if (evidence) {
+          await input.evidence("chat-catalog-runs.json", evidence.runEvidence);
+          await input.evidence("api-state.json", evidence);
+        } else {
+          await input.evidence("api-state.json", structuredClone({ ...failureSnapshot, incomplete: true }));
+          await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id, reason: "failure_collection_deadline" });
+        }
+      } catch {
+        await input.evidence("api-state.json", structuredClone({ ...failureSnapshot, incomplete: true })).catch(() => {});
+        await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id }).catch(() => {});
+      } finally {
+        if (timer) clearTimeout(timer);
+        try {
+          if (state) await implementation.cleanup?.(context, state);
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "complete", instanceCleanup: "owned by existing launcher" });
+        } catch {
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "failed" }).catch(() => {});
+        }
+      }
+    } else {
+      try {
+        const finalConversation = await conversation();
+        if (state) await refresh();
+        const runs = await context.allRuns();
+        const runEvidence = await Promise.all(runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
+        await input.evidence("chat-catalog-runs.json", runEvidence);
+        await input.evidence("api-state.json", { capturePhase: failed ? "failure" : "final",
+          ...finalConversation, runs, runEvidence });
+      } catch {
+        await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id });
+        if (!failed) throw new Error("Scenario evidence collection failed");
+      } finally {
+        try {
+          if (state) await implementation.cleanup?.(context, state);
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "complete", instanceCleanup: "owned by existing launcher" });
+        } catch (error) {
+          await input.evidence("chat-catalog-cleanup.json", { scenarioId: scenario.id, caseCleanup: "failed" });
+          if (!failed) throw error;
+        }
+      }
+    }
+  }
+}

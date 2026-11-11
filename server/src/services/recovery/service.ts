@@ -1,4 +1,5 @@
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
+import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
@@ -298,6 +299,7 @@ export type StrandedRecoveryCause =
   | "deliberate_wait_without_target"
   | "process_lost"
   | "provider_quota"
+  | typeof ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
@@ -443,12 +445,24 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   );
 }
 
+/**
+ * Lease acquisition failed before any provider work, and its bounded retry
+ * budget is spent. Nothing needs inspection or repair by the board: the task
+ * rests on a system-owned action and the normal Retry, never on a board one.
+ */
+function isPreDispatchEnvironmentProviderFailure(latestRun: LatestIssueRun) {
+  if (latestRun?.errorCode !== ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE) return false;
+  const recovery = parseObject(parseObject(latestRun.resultJson).executionRecovery);
+  return recovery.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 function resolveStrandedRecoveryCause(
   latestRun: LatestIssueRun,
   explicitCause?: StrandedRecoveryCause,
 ): StrandedRecoveryCause {
   if (explicitCause) return explicitCause;
   if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
+  if (isPreDispatchEnvironmentProviderFailure(latestRun)) return ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
   if (latestRun?.errorCode === "process_lost") return "process_lost";
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
@@ -547,6 +561,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  INTERACTION_DELIVERY_DENIED,
   "project_access_denied",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
@@ -674,7 +689,8 @@ export function classifyAdapterFailureForRecovery(
   if (parsedClockReset) {
     return {
       kind: "provider_quota",
-      retryAt: parsedClockReset,
+      // A calendar reset read after it passed has released the wait.
+      retryAt: parsedClockReset > now ? parsedClockReset : now,
       parsedResetTime: true,
     };
   }
@@ -1186,7 +1202,8 @@ export function recoveryService(
     const selfBlocked = row?.actorType === "agent" && row.agentId === agentId && details.status === "blocked";
     const nativeSelfBlocked = row?.actorType === "system" &&
       row.actorId === "native-status-committer" && row.runAgentId === agentId &&
-      details.source === "native_status_decision" && details.toStatus === "blocked";
+      details.source === "native_status_decision" && details.toStatus === "blocked" &&
+      details.reasonCode !== "durable_dependency_blocker_bound";
     if (!selfBlocked && !nativeSelfBlocked) return false;
     const newlyCompletedBlocker = await db.select({ id: issues.id }).from(issues).where(and(
       eq(issues.companyId, companyId),
@@ -1196,8 +1213,10 @@ export function recoveryService(
     if (newlyCompletedBlocker.length > 0) return false;
     const newlyFinalizedBlocker = await db.select({ id: workspaceOperations.id }).from(workspaceOperations)
       .innerJoin(issues, and(eq(issues.companyId, companyId), inArray(issues.id, blockerIssueIds),
-        eq(issues.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
-        eq(workspaceOperations.issueId, issues.id)))
+        eq(workspaceOperations.issueId, issues.id),
+        or(eq(issues.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
+          and(isNull(workspaceOperations.executionWorkspaceId),
+            sql`${workspaceOperations.metadata}->>'owningService' = 'workspace_recovery'`))))
       .where(and(eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.phase, "workspace_finalize"),
         eq(workspaceOperations.status, "succeeded"), gt(workspaceOperations.finishedAt, blockedTransitionAt)))
       .limit(1);
@@ -2547,6 +2566,7 @@ export function recoveryService(
       latestRun: input.latestRun,
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota";
+    const isEnvironmentProviderWait = recoveryCause === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
     const now = new Date();
     const actions = database === db ? recoveryActionsSvc : issueRecoveryActionService(database);
     const action = await actions.upsertSourceScoped({
@@ -2559,7 +2579,7 @@ export function recoveryService(
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
-      ownerType: isProviderQuotaWait ? "system" : "board",
+      ownerType: isProviderQuotaWait || isEnvironmentProviderWait ? "system" : "board",
       ownerAgentId: null,
       ownerUserId: null,
       previousOwnerAgentId: input.issue.assigneeAgentId,
@@ -2581,7 +2601,7 @@ export function recoveryService(
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
       },
-      evidenceOnCreate: isProviderQuotaWait
+      evidenceOnCreate: isProviderQuotaWait || isEnvironmentProviderWait
         ? {}
         : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
       nextAction:
@@ -2591,6 +2611,8 @@ export function recoveryService(
             ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
             : recoveryCause === "provider_quota"
               ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+              : isEnvironmentProviderWait
+              ? "No agent work started. Retry the task once the environment provider is available."
               : recoveryCause === "codex_output_inactivity_monitor"
                 ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
                 : recoveryCause === "workspace_validation_failed"
@@ -2626,6 +2648,8 @@ export function recoveryService(
             type: "monitor_only",
             reason: recoveryCause,
           }
+        : isEnvironmentProviderWait
+        ? { type: "manual_retry", reason: recoveryCause, preservesSourceAssignee: true }
         : {
             type: "board_escalation",
             reason: recoveryCause,
@@ -4660,6 +4684,10 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (latestRun?.agentId === agentId && isInteractionDeliveryDeniedRun(latestRun)) {
+        result.skipped += 1;
+        continue;
+      }
       // Terminal run/wake rows survive a restart even if finalization never
       // reached the escalation transaction. Retry that idempotent disposition
       // before the participant-only review branch can skip pathless reviews.
@@ -4829,6 +4857,10 @@ export function recoveryService(
         issue.status === "in_review"
           ? participantLatestRunForRecovery
           : latestRun;
+      if (isInteractionDeliveryDeniedRun(executionRecoverySource)) {
+        result.skipped += 1;
+        continue;
+      }
       if (
         executionRecoverySource?.agentId === agentId &&
         (

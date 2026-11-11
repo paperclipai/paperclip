@@ -2487,6 +2487,43 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
   });
 
+  it.each(["codex_local", "claude_local"])("does not resume %s on a different sign-in computer", async (adapterType) => {
+    const active = { sessionId: "computer-a-login", agentId: "computer-a", environmentId: "plugin-env", status: "waiting_for_user", prompt: null };
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue(active);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue(active);
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container); roots.push(root);
+    await act(async () => renderFormView(root, createFormQueryClient(),
+      <AdapterLoginPanel requiresAgent agentId="computer-b" companyId="company-1" adapterType={adapterType} environmentId="plugin-env" chrome="onboarding" autoStart />));
+    await flushUntil(() => container.textContent?.includes("Another sign-in attempt") ?? false);
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.getAdapterAuthLoginStatus).not.toHaveBeenCalled();
+    expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).not.toHaveBeenCalled();
+  });
+
+  it.each(["codex_local", "claude_local"] as const)("resumes %s using the computer Core selected", async (adapterType) => {
+    const aiConnection = {
+      provider: adapterType === "codex_local" ? "openai" : "anthropic",
+      method: "subscription", name: "My subscription", ownership: "personal", allAgents: false,
+      agentIds: [] as string[],
+    } as const;
+    const active = { sessionId: "computer-login", agentId: "computer-a", environmentId: "plugin-env",
+      status: "waiting_for_user", prompt: null, aiConnection };
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue(active);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue(active);
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container); roots.push(root);
+    await act(async () => renderFormView(root, createFormQueryClient(),
+      <AdapterLoginPanel requiresAgent companyId="company-1" adapterType={adapterType} environmentId="plugin-env"
+        aiConnection={aiConnection} chrome="onboarding" autoStart />));
+
+    const statusApi = adapterType === "codex_local" ? mockAgentsApi.getAdapterAuthLoginStatus : mockAgentsApi.getClaudeSetupTokenLoginStatus;
+    await flushUntil(() => statusApi.mock.calls.some(call => call.includes(active.sessionId)));
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+
   it("recovers a previous-environment sign-in only after explicit successful cancellation", async () => {
     const intent = { provider: "xai", method: "subscription", name: "My Grok subscription", ownership: "personal", agentIds: [], allAgents: true } as const;
     mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValueOnce({

@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
+  agents,
   heartbeatRuns,
   issues,
   dotAgentBindings,
@@ -19,6 +20,7 @@ import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
@@ -44,7 +46,8 @@ const executionRunColumns = {
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
     'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
-    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
+    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
+    'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
@@ -189,6 +192,13 @@ export async function executionProjectionsForRuns(
   // executor the claim also waits for. Pending uses admission's own predicate.
   const settlingPredecessorKeys = new Set<string>();
   const queuedRuns = runs.filter(run => run.status === "queued");
+  const setupAgentIds = [...new Set(queuedRuns.filter(run => !run.startedAt).map(run => run.agentId))];
+  const setupAgents = setupAgentIds.length ? await read(async () => db
+    .select({ id: agents.id, lifecycleState: agents.lifecycleState,
+      lifecycleHolds: agents.lifecycleHolds,
+      retryRequired: sql<boolean>`coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true'` })
+    .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, setupAgentIds)))) : [];
+  const setupByAgent = new Map(setupAgents.map(agent => [agent.id, agent]));
   const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
   const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
   if (queuedIssueIds.length) {
@@ -250,6 +260,7 @@ export async function executionProjectionsForRuns(
         now,
         waitingByRun.get(run.id),
         settlingPredecessorKeys.has(run.id),
+        setupByAgent.get(run.agentId),
       ),
     );
   }
@@ -275,6 +286,7 @@ export function projectExecution(
   now = new Date(),
   waitingForProvider?: WaitingExternalProvider,
   waitingForPredecessor = false,
+  setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -388,6 +400,10 @@ export function projectExecution(
     projection.nextAction = `Waiting for the agent's provider usage limit to reset; the work starts at ${resetAt}. To continue sooner, restore the provider allowance or change the agent's AI connection, then start a manual run.`;
     return set("retry_scheduled", "Waiting for usage limit reset");
   }
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === "agent_directory_busy") {
+    projection.nextAction = "Waiting for another run of this agent to finish with its files; this task continues automatically.";
+    return set("retry_scheduled", "Waiting for agent files");
+  }
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "workspace_busy") {
     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";
     return set("retry_scheduled", "Waiting for workspace");
@@ -475,6 +491,15 @@ export function projectExecution(
     return leaseConfirmed || processConfirmed
       ? set("working", "Working")
       : set("reconnecting", "Confirming execution");
+  }
+  if (run.status === "queued" && !run.startedAt && setupAgent
+    && isAgentAwaitingSetup(setupAgent)) {
+    const needsRepair = setupAgent.retryRequired === true;
+    projection.cause = needsRepair ? "agent_setup_failed" : "agent_setup_pending";
+    projection.nextAction = needsRepair
+      ? "Open the agent's Harness / Runtime settings to repair its configuration, then retry verification."
+      : "This turn starts automatically after the agent finishes setup and verification.";
+    return set("queued", needsRepair ? "Agent setup needs attention" : "Waiting for agent setup");
   }
   if (run.status === "queued" && !run.startedAt && readTaskDrain(now)) {
     projection.cause = "task_drain";

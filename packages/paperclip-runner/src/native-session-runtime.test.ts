@@ -17,6 +17,7 @@ import type { NativeRunIdentity } from "./contracts/types.js";
 import type {
   NativeSession,
   NativeSessionBackend,
+  NativeSessionRecoveryResult,
   PersistedNativeSession,
 } from "./contracts/native-session-backend.js";
 import {
@@ -220,7 +221,8 @@ function canonicalTestJson(value: unknown): string {
 const RESTART_LOST_PROCESS_GUIDANCE = "may no longer be running";
 function expectRestartContinuationGuidance(text: string) {
   const events = String(JSON.parse(text).events);
-  expect(events).toContain("This is a resumed session after a Paperclip control-plane restart.");
+  expect(events).toContain("This is a resumed session. The process running the previous turn was lost");
+  expect(events).not.toContain("control-plane restart");
   expect(events).toContain("Shell commands and background processes started in earlier turns " + RESTART_LOST_PROCESS_GUIDANCE);
   expect(events).toContain("check the workspace for the outputs or artifacts");
   expect(events).toContain("If the expected output is missing, re-run the command.");
@@ -6663,6 +6665,232 @@ describe("executeNativeSession recovery", () => {
     }
   });
 
+  // Staging class P after #20757: a follow-up after a governed (approval) wait
+  // rebinds the previous run's session, but the new sandbox holds no saved
+  // Runner state for it. The follow-up has not started a turn, so a fresh
+  // provider session cannot repeat provider work or a tool side effect; only
+  // the earlier conversation context is lost. The run continues in a fresh
+  // session with the full task, the answer and the stored handoff.
+  describe("a governed-wait follow-up whose saved provider state is gone", () => {
+    const approval = { interactionId: "interaction-approval", kind: "request_confirmation" as const,
+      response: { outcome: "accepted", note: "APPROVED_BY_BOARD" } };
+    const followUpInput = {
+      ...input,
+      task: { ...input.task, prompt: "FULL_TASK_CONTEXT\nAPPROVAL_FOLLOW_UP" },
+      interactionResponses: [approval],
+    };
+    const reboundCheckpoint = (): PersistedNativeSession => ({
+      backendKind: "mock", driverKind: "codex_app_server", sessionId: "driver-lost", identity,
+      providerSessionId: "provider-lost", providerRecoveryPolicy: "allow_replacement_after_governed_wait",
+      cursor: null, semanticResult: null, terminal: null, activeTurnId: null, terminalTurns: [],
+      pendingRuntimeRequests: [], dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null,
+      lineage: [],
+    });
+    const stateUnavailable: NativeSessionRecoveryResult = {
+      recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE, resumeStateUnavailable: true,
+      reason: "Error: NativeRunnerResumeStateUnavailableError: PRP provider resume state is unavailable",
+    };
+    function harness(options: {
+      checkpoint?: PersistedNativeSession;
+      recovery?: Awaited<ReturnType<NonNullable<NativeSessionBackend["recoverSession"]>>>;
+      proof?: boolean | null | "rejects" | "hangs";
+      replay?: PrpEvent[];
+    } = {}) {
+      const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-fresh" }));
+      const replacementSnapshot: PersistedNativeSession = {
+        ...reboundCheckpoint(), sessionId: "driver-fresh", providerSessionId: "provider-fresh",
+      };
+      const replacementSession: NativeSession = {
+        identity: () => identity,
+        capabilities: async () => ({ resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }),
+        async *events() { yield runnerEvent(1, "turn.completed"); },
+        startTurn,
+        result: async () => ({ result, terminal, turnId: "turn-fresh" }),
+        snapshot: async () => structuredClone(replacementSnapshot),
+        close: async () => {},
+      };
+      const openReplacementSession = vi.fn(async () => replacementSession);
+      const openSession = vi.fn(async () => { throw new Error("replacement seam must be used"); });
+      const recoverSession = vi.fn(async () => options.recovery ?? stateUnavailable);
+      const backend: NativeSessionBackend = {
+        descriptor: async () => ({ kind: "mock", name: "governed-follow-up", version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
+        openSession, openReplacementSession, recoverSession,
+      };
+      const events: PrpEvent[] = [];
+      const provesNoRunProviderWork = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+        if (options.proof === "rejects") throw new Error("database unavailable");
+        if (options.proof === "hangs") return await new Promise<boolean>((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+        return options.proof === true;
+      });
+      const openRun = vi.fn(async () => undefined);
+      const replay = options.replay ?? [];
+      const controlPlane: ControlPlanePort = {
+        openRun,
+        loadSessionCheckpoint: async () => structuredClone(options.checkpoint ?? reboundCheckpoint()),
+        checkpointSession: async () => {},
+        async appendEvent(event) {
+          events.push(structuredClone(event as PrpEvent));
+          return { cursor: events.length, highestContiguousSourceSeq: highestContiguous(events), disposition: "committed" };
+        },
+        replayEvents: async ({ afterSourceSeq }) => {
+          const page = replay.filter(event => event.sourceSeq > afterSourceSeq);
+          return { events: page, highestContiguousSourceSeq: highestContiguous(page) };
+        },
+        completeRun: async () => {},
+        ...(options.proof === null ? {} : { provesNoRunProviderWork }),
+      };
+      const onContinuityBreak = vi.fn(async () => undefined);
+      const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF: prior conversation summary");
+      const run = () => executeNativeSession({
+        input: followUpInput, backend, controlPlane, getFreshSessionHandoff, onContinuityBreak,
+        runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      });
+      return { run, startTurn, openReplacementSession, openSession, recoverSession, provesNoRunProviderWork,
+        openRun, onContinuityBreak, getFreshSessionHandoff };
+    }
+
+    it("continues in a fresh provider session with the task, the answer and the stored handoff", async () => {
+      const h = harness({ proof: true });
+      await expect(h.run()).resolves.toMatchObject({ providerSessionId: "provider-fresh" });
+      expect(h.recoverSession).toHaveBeenCalledOnce();
+      expect(h.provesNoRunProviderWork).toHaveBeenCalledOnce();
+      expect(h.openReplacementSession).toHaveBeenCalledOnce();
+      expect(h.openSession).not.toHaveBeenCalled();
+      expect(h.startTurn).toHaveBeenCalledOnce();
+      const envelope = JSON.parse(h.startTurn.mock.calls[0]![0].message.text) as {
+        task: { prompt: string }; interactionResponses: unknown[];
+      };
+      expect(envelope.task.prompt).toBe("FRESH_HANDOFF: prior conversation summary\n\nFULL_TASK_CONTEXT\nAPPROVAL_FOLLOW_UP");
+      expect(envelope.interactionResponses).toEqual([approval]);
+      expect(h.startTurn.mock.calls[0]![0]).not.toHaveProperty("continuation");
+      // The user sees that the earlier conversation context was reset.
+      expect(h.onContinuityBreak).toHaveBeenCalledWith({
+        reason: expect.stringContaining("saved provider state is unavailable, so the follow-up continues in a fresh provider session without the earlier conversation context"),
+        previousDriverSessionId: "driver-lost", previousProviderSessionId: "provider-lost",
+        replacementDriverSessionId: "driver-fresh", replacementProviderSessionId: "provider-fresh",
+      });
+    });
+
+    it.each([
+      ["the control plane cannot prove the run started no provider work", { proof: false }],
+      ["the control plane predates the provider-work proof", { proof: null }],
+      ["the provider-work proof fails", { proof: "rejects" }],
+      ["the saved state is incompatible for another reason", { proof: true, recovery: {
+        recovered: false as const, failureClass: PROVIDER_STATE_INCOMPATIBLE, reason: "saved launch profile changed" } }],
+      ["the checkpoint requires the same session", { proof: true,
+        checkpoint: { ...reboundCheckpoint(), providerRecoveryPolicy: "same_session_only" as const } }],
+      ["this run already completed a turn", { proof: true,
+        checkpoint: { ...reboundCheckpoint(), cursor: "2", terminalTurns: [{ turnId: "turn-own", fingerprint: "completed" }] } }],
+      ["this run already advanced the durable cursor", { proof: true, checkpoint: { ...reboundCheckpoint(), cursor: "3" } }],
+      ["this run already recorded a provider event", { proof: true, replay: [runnerEvent(1, "turn.started")] }],
+      ["this run already proposed a result", { proof: true, checkpoint: { ...reboundCheckpoint(), semanticResult: result } }],
+      ["the checkpoint was saved without the at-most-once recovery marker", { proof: true,
+        checkpoint: (() => { const { dispositionOnlyRecoveryConsumed: _omitted, ...older } = reboundCheckpoint(); return older; })() }],
+    ] as const)("keeps the named refusal and a working Retry when %s", async (_label, options) => {
+      const h = harness(options as Parameters<typeof harness>[0]);
+      const failure = await h.run().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(NativeProviderStateIncompatibleError);
+      expect((failure as NativeProviderStateIncompatibleError).code).toBe("native_provider_state_incompatible");
+      expect(h.openReplacementSession).not.toHaveBeenCalled();
+      expect(h.openSession).not.toHaveBeenCalled();
+      expect(h.openRun).not.toHaveBeenCalled();
+      expect(h.startTurn).not.toHaveBeenCalled();
+    });
+
+    it("never replaces a session whose checkpoint records this run's own governed wait", async () => {
+      const h = harness({ proof: true, checkpoint: { ...reboundCheckpoint(),
+        governedWait: { sourceEvent: runnerEvent(1, "turn.started"), result: yieldedResult } } });
+      await expect(h.run()).rejects.toThrow();
+      expect(h.openReplacementSession).not.toHaveBeenCalled();
+      expect(h.startTurn).not.toHaveBeenCalled();
+    });
+
+    it("keeps the named refusal when the provider-work proof does not answer in time", async () => {
+      vi.useFakeTimers();
+      try {
+        const h = harness({ proof: "hangs" });
+        const failure = h.run().catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(30_001);
+        expect(await failure).toBeInstanceOf(NativeProviderStateIncompatibleError);
+        expect(h.provesNoRunProviderWork).toHaveBeenCalledOnce();
+        expect(h.openReplacementSession).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops by name when the follow-up's saved session still owns a runtime request", async () => {
+      const h = harness({ proof: true, recovery: { recovered: false as const, failureClass: PROVIDER_SIDE_EFFECT_PENDING,
+        reason: "native_runner_source_runtime_reconciliation_required" } });
+      await expect(h.run()).rejects.toBeInstanceOf(NativeProviderSideEffectPendingError);
+      expect(h.provesNoRunProviderWork).not.toHaveBeenCalled();
+      expect(h.openReplacementSession).not.toHaveBeenCalled();
+    });
+  });
+
+  // A remote workspace epoch was abandoned, so the run was assigned a new
+  // sibling root while its checkpoint still names the old one. A checkpoint
+  // that requires the same session (an unfinished goal) ends with the
+  // permanent named code, never a generic retryable failure; a checkpoint that
+  // allows replacement continues in a fresh session in the assigned root.
+  it.each([
+    ["same_session_only", false, false],
+    ["allow_replacement_after_governed_wait", false, false],
+    ["allow_replacement_after_resume_failure", true, false],
+    // An in-flight turn may have an unsettled external effect: never replaced, under any policy.
+    ["same_session_only", false, true],
+    ["allow_replacement_after_resume_failure", false, true],
+  ] as const)("handles a %s checkpoint whose remote workspace root moved (replaces=%s, in flight=%s)", async (providerRecoveryPolicy, replaces, inFlight) => {
+    const parent = "/home/daytona/paperclip-workspace/.paperclip-workspaces";
+    const savedRoot = `${parent}/a5a34403-04fe-4e7e-97cf-d8f371a802a4-1-80214561-2151-4112-a43a-7d65f3071b56`;
+    const assignedRoot = `${parent}/a5a34403-04fe-4e7e-97cf-d8f371a802a4-5-ef79592c-6784-438f-8a17-9800dd2fa2fc`;
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", sessionId: "thread-1", identity, providerSessionId: "provider-session-1",
+      workingDirectory: savedRoot, providerRecoveryPolicy, cursor: "0", activeTurnId: inFlight ? "turn-in-flight" : null,
+      terminalTurns: [], pendingRuntimeRequests: [], lineage: [],
+    };
+    const transportFactory = vi.fn(() => new FakeCodexTransport());
+    const backend = createCodexNativeSessionBackend({ ...input, workspace: { ...input.workspace, cwd: assignedRoot } }, {
+      runnerInstanceId: "runner-recovery", transportFactory,
+      workingDirectoryAuthority: "remote_runner", environment: { PAPERCLIP_WORKSPACE_CWD: assignedRoot },
+    });
+    const replacementAttempted = new Error("replacement attempted");
+    const openReplacementSession = vi.fn(async (sessionInput: { workingDirectory?: string }) => {
+      expect(sessionInput.workingDirectory).toBe(assignedRoot);
+      throw replacementAttempted;
+    });
+    const openRun = vi.fn(async () => undefined);
+    const failure = await executeNativeSession({
+      input: { ...input, workspace: { ...input.workspace, cwd: assignedRoot } },
+      backend: { descriptor: () => backend.descriptor(), openSession: sessionInput => backend.openSession(sessionInput),
+        openReplacementSession, recoverSession: (snapshot, options) => backend.recoverSession!(snapshot, options) },
+      controlPlane: {
+        openRun, appendEvent: vi.fn(), completeRun: vi.fn(),
+        loadSessionCheckpoint: async () => structuredClone(checkpoint),
+        replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+      },
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    }).catch((error: unknown) => error);
+    if (replaces) {
+      expect(failure).toBe(replacementAttempted);
+      expect(openReplacementSession).toHaveBeenCalledOnce();
+    } else {
+      if (inFlight) {
+        expect(failure).toBeInstanceOf(NativeProviderSideEffectPendingError);
+        expect((failure as NativeProviderSideEffectPendingError).code).toBe("native_provider_side_effect_pending");
+      } else {
+        expect(failure).toBeInstanceOf(NativeProviderStateIncompatibleError);
+        expect((failure as NativeProviderStateIncompatibleError).code).toBe("native_provider_state_incompatible");
+      }
+      expect(openReplacementSession).not.toHaveBeenCalled();
+      expect(openRun).not.toHaveBeenCalled();
+    }
+    // No Runner or provider process starts for a session that cannot resume here.
+    expect(transportFactory).not.toHaveBeenCalled();
+  });
+
   it("never replaces a session after a deterministic, non-destructive recovery refusal", async () => {
     const outcomes = [
       { failureClass: PROVIDER_ATTACH_REFUSED, reason: "run.attach cannot change protected launch arguments",
@@ -9587,7 +9815,7 @@ describe("executeNativeSession recovery", () => {
     expect(history.filter(event => event.payload.kind === "usage")).toEqual([usage]);
   });
 
-  it.each(["missing-trigger", "changed-trigger", "unproven-terminal", "different-turn", "foreign-settlement", "active-settled-turn"])("rejects unsafe governed-wait recovery: %s", async fault => {
+  it.each(["missing-trigger", "changed-trigger", "unproven-terminal", "failed-terminal", "lost-not-recoverable", "different-turn", "foreign-settlement", "active-settled-turn"])("rejects unsafe governed-wait recovery: %s", async fault => {
     const trigger = { ...runnerEvent(1, "item.completed", { kind: "dynamicToolCall" }), turnId: "turn-waiting" };
     const checkpoint: PersistedNativeSession = { backendKind: "mock", sessionId: identity.sessionId, identity,
       activeTurnId: trigger.turnId, governedWait: { sourceEvent: trigger, result: yieldedResult } };
@@ -9596,6 +9824,11 @@ describe("executeNativeSession recovery", () => {
       runId: fault === "foreign-settlement" ? "another-run" : identity.runId, normalizedSessionId: identity.sessionId, turnId: trigger.turnId,
     };
     if (fault === "unproven-terminal") history.push({ ...trigger, sourceSeq: 2, sourceEventId: "unproven", eventType: "turn.failed", payload: { providerTerminalObserved: false } });
+    // Only a recoverable restart loss proves the old provider lifetime ended.
+    if (fault === "failed-terminal") history.push({ ...trigger, sourceSeq: 2, sourceEventId: "failed", eventType: "turn.failed",
+      payload: { status: "failed", error: { code: "model_not_found", recoverable: false } } });
+    if (fault === "lost-not-recoverable") history.push({ ...trigger, sourceSeq: 2, sourceEventId: "lost", eventType: "turn.failed",
+      payload: { status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: false } } });
     if (fault === "different-turn") history.push({ ...trigger, sourceSeq: 2, sourceEventId: "new-turn", turnId: "different", eventType: "turn.started" });
     const start = vi.fn();
     const complete = vi.fn();
@@ -9608,6 +9841,126 @@ describe("executeNativeSession recovery", () => {
       completeRun: complete, async replayEvents(request) { return { events: history.filter(row => row.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: history.at(-1)?.sourceSeq ?? 0 }; } };
     await expect(executeNativeSession({ input, backend, controlPlane: port, persistedSession: checkpoint,
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" })).rejects.toThrow(/governed_wait|failed terminal|native_event_replay_conflict/);
+    expect(start).not.toHaveBeenCalled(); expect(complete).not.toHaveBeenCalled();
+  });
+
+  // Restart chaos (Codex Q1 with PV1/PV2 + K1): the provider held or dropped
+  // the parked turn's terminal and the controller died during the accounting
+  // drain. The drain had already discarded numbered non-accounting events, so
+  // the saved replay has gaps after the trigger.
+  // Claude (ACPX) Q1 with PV1/PV2 + K1 (wave w-20261110T094930-s214): the
+  // restored runner proves the old provider lifetime ended and reports the
+  // parked turn as lost on restore instead of interrupted.
+  it.each(["terminal-after-restart", "late-terminal-saved", "lost-on-restore-after-restart", "lost-on-restore-saved"])("settles a saved governed wait whose drain left sequence gaps before a restart (%s)", async variant => {
+    const lateTerminalSaved = variant.endsWith("-saved");
+    const lostOnRestore = variant.startsWith("lost-on-restore");
+    const turn = (event: PrpEvent) => ({ ...event, turnId: "turn-waiting" });
+    const trigger = turn(runnerEvent(1, "item.completed", { kind: "dynamicToolCall", item: { id: "ask-1", name: "request_human_input" } }));
+    const acknowledgement = turn(runnerEvent(2, "item.completed", { kind: "interrupt_acknowledgement", status: "acknowledged" }));
+    const discardedMessage = turn(runnerEvent(3, "item.completed", { kind: "agentMessage", text: "I asked the board." }));
+    const discardedToolEnd = turn(runnerEvent(4, "tool.execution.completed", { name: "request_human_input", status: "completed" }));
+    const usage = turn(runnerEvent(5, "item.completed", { kind: "usage", usage: { runDelta: { inputTokens: 7, outputTokens: 3 }, runDeltaComplete: true } }));
+    const stopped = lostOnRestore
+      ? turn(runnerEvent(6, "turn.failed", { provider: "acpx", status: "failed", providerTerminalObserved: false, code: "provider_turn_lost_on_restore", error: { code: "provider_turn_lost_on_restore", recoverable: true } }))
+      : turn(runnerEvent(6, "turn.interrupted", { providerTerminalObserved: true }));
+    const history: PrpEvent[] = [];
+    let checkpoint: PersistedNativeSession | undefined;
+    const start = vi.fn(async () => ({ turnId: trigger.turnId }));
+    const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
+    const complete = vi.fn(async () => undefined);
+    const snapshot = (): PersistedNativeSession => ({ backendKind: "mock", sessionId: identity.sessionId, identity,
+      providerSessionId: "same-provider", activeTurnId: trigger.turnId, cursor: String(history.at(-1)?.sourceSeq ?? 0) });
+    const makeSession = (recovering: boolean): NativeSession => ({ identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      startTurn: start, revokeTurnPublication: vi.fn(), cancel,
+      async snapshot() { return snapshot(); }, async result() { return null; }, async close() {},
+      async *events() {
+        if (!recovering) {
+          // The terminal is held (or dropped) and the process then dies.
+          yield trigger; yield acknowledgement; yield discardedMessage; yield discardedToolEnd; yield usage;
+          return;
+        }
+        if (!lateTerminalSaved) yield stopped;
+      },
+    });
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "drain-gap", version: "1", capabilities: await makeSession(false).capabilities() }; },
+      async openSession() { return makeSession(false); },
+      async recoverSession() { return { recovered: true, session: makeSession(true) }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {}, completeRun: complete,
+      async checkpointSession(value) { checkpoint = structuredClone(value); },
+      async appendEvent(event: PrpEvent) {
+        const duplicate = history.some(row => row.sourceEventId === event.sourceEventId);
+        if (!duplicate) history.push(event);
+        return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: duplicate ? "duplicate" : "committed" };
+      },
+      async replayEvents(request) {
+        const events = history.filter(row => row.sourceInstanceId === request.sourceInstanceId && row.sourceSeq > request.afterSourceSeq)
+          .sort((left, right) => left.sourceSeq - right.sourceSeq);
+        return { events, highestContiguousSourceSeq: events.at(-1)?.sourceSeq ?? request.afterSourceSeq };
+      },
+    };
+    const options = { input, backend, controlPlane: port, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" };
+    await expect(executeNativeSession({ ...options, resolveGovernedWait: ({ event }) => event.sourceSeq === 1 ? yieldedResult : null }))
+      .rejects.toThrow();
+    // The question is saved, and the drain kept only accounting facts.
+    expect(checkpoint?.governedWait).toEqual({ sourceEvent: trigger, result: yieldedResult });
+    expect(history).toEqual([trigger, acknowledgement, usage]);
+    expect(complete).not.toHaveBeenCalled();
+    cancel.mockClear();
+    if (lateTerminalSaved) history.push(stopped);
+
+    const answerAlreadySaved = vi.fn(() => null);
+    await expect(executeNativeSession({ ...options, persistedSession: checkpoint, resolveGovernedWait: answerAlreadySaved }))
+      .resolves.toMatchObject({ result: yieldedResult, turnId: trigger.turnId, terminal: { runTerminalState: "succeeded" } });
+    expect(start).toHaveBeenCalledOnce();
+    // A saved terminal settles without interrupting provider work again.
+    expect(cancel).toHaveBeenCalledTimes(lateTerminalSaved ? 0 : 1);
+    expect(answerAlreadySaved).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(history.filter(event => event.sourceInstanceId === trigger.sourceInstanceId)).toEqual([trigger, acknowledgement, usage, stopped]);
+
+    // A further recovery of the settled wait neither submits nor settles again.
+    const settledCheckpoint = structuredClone(checkpoint);
+    await expect(executeNativeSession({ ...options, persistedSession: settledCheckpoint }))
+      .resolves.toMatchObject({ result: yieldedResult, turnId: trigger.turnId, terminal: { runTerminalState: "succeeded" } });
+    expect(start).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledTimes(lateTerminalSaved ? 0 : 1);
+    expect(history.filter(event => event.sourceInstanceId === trigger.sourceInstanceId)).toEqual([trigger, acknowledgement, usage, stopped]);
+  });
+
+  it.each([
+    "gap-before-trigger", "gap-foreign-run", "gap-foreign-session", "gap-foreign-instance",
+    "gap-other-turn-usage", "gap-unaccounted-event", "unaccounted-event-after-gap",
+  ])("keeps rejecting an unproven governed-wait replay with a sequence gap: %s", async fault => {
+    const trigger = { ...runnerEvent(1, "item.completed", { kind: "dynamicToolCall" }), turnId: "turn-waiting" };
+    const afterGap = (sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>, overrides: Partial<PrpEvent> = {}) =>
+      ({ ...runnerEvent(sourceSeq, eventType, payload), turnId: trigger.turnId, ...overrides }) as PrpEvent;
+    const usagePayload = { kind: "usage", usage: { runDelta: { inputTokens: 1, outputTokens: 1 }, runDeltaComplete: true } };
+    const history: PrpEvent[] = fault === "gap-before-trigger" ? [{ ...trigger, sourceSeq: 2, sourceEventId: "late-trigger" }] : [trigger];
+    if (fault === "gap-foreign-run") history.push(afterGap(3, "item.completed", usagePayload, { runId: "another-run" }));
+    if (fault === "gap-foreign-session") history.push(afterGap(3, "item.completed", usagePayload, { normalizedSessionId: "another-session" }));
+    if (fault === "gap-foreign-instance") history.push(afterGap(3, "item.completed", usagePayload, { sourceInstanceId: "another-runner" }));
+    if (fault === "gap-other-turn-usage") history.push(afterGap(3, "item.completed", usagePayload, { turnId: "another-turn" }));
+    if (fault === "gap-unaccounted-event") history.push(afterGap(3, "item.completed", { kind: "agentMessage", text: "more work" }));
+    if (fault === "unaccounted-event-after-gap") {
+      history.push(afterGap(3, "item.completed", usagePayload), afterGap(4, "item.delta", { kind: "agentMessage", delta: "more" }));
+    }
+    const checkpoint: PersistedNativeSession = { backendKind: "mock", sessionId: identity.sessionId, identity,
+      activeTurnId: trigger.turnId, governedWait: { sourceEvent: trigger, result: yieldedResult } };
+    const start = vi.fn();
+    const complete = vi.fn();
+    const session: NativeSession = { identity: () => identity, startTurn: start, async result() { return null; },
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async snapshot() { return checkpoint; }, async *events() {}, async close() {} };
+    const backend: NativeSessionBackend = { async descriptor() { return { kind: "mock", name: "unsafe-gap", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { return session; }, async recoverSession() { return { recovered: true, session }; } };
+    const port: ControlPlanePort = { async openRun() {}, async checkpointSession() {}, async appendEvent() { throw new Error("unexpected append"); },
+      completeRun: complete, async replayEvents(request) { return { events: history.filter(row => row.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: request.afterSourceSeq }; } };
+    await expect(executeNativeSession({ input, backend, controlPlane: port, persistedSession: checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" })).rejects.toThrow("native_governed_wait_replay_mismatch");
     expect(start).not.toHaveBeenCalled(); expect(complete).not.toHaveBeenCalled();
   });
 

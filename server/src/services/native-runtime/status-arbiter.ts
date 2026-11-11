@@ -3,6 +3,11 @@ import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, N
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v13";
 
+/** The automatic continuation after a failed turn is used once per chain. */
+export const NATIVE_RUN_FAILED_RETRY_CAUSE = "native_run_failed";
+export const NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION =
+  "The agent's turn failed again after Paperclip continued it automatically. The saved work is kept. Check the failed run, then Retry the task.";
+
 export type NativeAuthoritativeIssueStatus =
   | "backlog"
   | "todo"
@@ -168,11 +173,22 @@ export function arbitrateNativeStatus(input: {
   reviewOwnerUserId?: string | null;
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
+  /**
+   * This run, as the configured participant, recorded the approval that
+   * completed the task's final execution-policy stage. That durable decision is
+   * the completion authority for its done report, as the policy intends.
+   */
+  executionStageApprovedByRun?: boolean;
   /** Re-derived from the committed runner terminal and pinned execution identity. */
   providerModelRejected?: boolean;
   providerOverloaded?: boolean;
   providerFailureSuperseded?: boolean;
   failureRetryCount?: number;
+  /**
+   * This run was itself the automatic continuation of an earlier failed turn.
+   * Another failure needs a person's Retry, never another automatic wake.
+   */
+  failedTurnContinuationUsed?: boolean;
   agentId: string;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
 }): NativeStatusDecision {
@@ -306,6 +322,18 @@ export function arbitrateNativeStatus(input: {
         effects: [{ kind: "release_run_resources" }],
       };
     }
+    if (input.failedTurnContinuationUsed) {
+      // The automatic continuation already ran and failed too. Keep the work
+      // and hand the next attempt to a person instead of waking again.
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "blocked",
+        toStatus: "blocked",
+        reasonCode: "native_run_failed_continuation_exhausted",
+        unblockDescriptor: { owner: "board", action: NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION },
+        effects: [{ kind: "bind_blocker", owner: "board", action: NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION }],
+      };
+    }
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "preserve",
@@ -315,7 +343,7 @@ export function arbitrateNativeStatus(input: {
       effects: [
         {
           kind: "schedule_retry",
-          cause: "native_run_failed",
+          cause: NATIVE_RUN_FAILED_RETRY_CAUSE,
           summary:
             "Resume the persisted native run without opening a second provider session.",
           agentId: input.agentId,
@@ -439,7 +467,13 @@ export function arbitrateNativeStatus(input: {
     !input.assessment.hasFailedVerification &&
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
-  const complete = evidenceComplete || policyClaimComplete;
+  const stageApprovalComplete =
+    input.executionStageApprovedByRun === true &&
+    input.assessment.reportedDisposition === "done" &&
+    !input.assessment.hasFailedVerification &&
+    input.assessment.attentionRequests.length === 0 &&
+    !input.assessment.hasBlockingRemainingWork;
+  const complete = evidenceComplete || policyClaimComplete || stageApprovalComplete;
   if (complete && input.hasPendingChildCompletion) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -456,9 +490,11 @@ export function arbitrateNativeStatus(input: {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "done",
       toStatus: "done",
-      reasonCode: input.completionClaimPolicyAccepted
-        ? "completion_claim_policy_accepted"
-        : "completion_contract_satisfied",
+      reasonCode: !evidenceComplete && !policyClaimComplete
+        ? "execution_stage_approved"
+        : input.completionClaimPolicyAccepted
+          ? "completion_claim_policy_accepted"
+          : "completion_contract_satisfied",
       unblockDescriptor: null,
       effects: [{ kind: "release_checkout" }],
     };

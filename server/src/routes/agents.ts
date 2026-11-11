@@ -1,3 +1,4 @@
+import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
@@ -11,6 +12,7 @@ import { completeSetupTokenAiConnection } from "../services/setup-token-ai-conne
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
 import { connectionManagementGuard, connectionRequestContext, connectionRequestUserId, aiLoginUserAction } from "./connection-management-authz.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE } from "../services/native-runtime/completed-turn-cleanup.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage, pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
@@ -152,7 +154,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 
 import { environmentRuntimeService } from "../services/environment-runtime.js";
-import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
+import { pluginSupportsLoginPty, resolvePluginEnvironmentDriver, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type {
   AdapterEnvironmentCheck,
@@ -743,7 +745,7 @@ export function agentRoutes(
     options.setupTokenLogin?.completeCredential ?? deferredSetupTokenSecretWriter;
 
   // Re-check the environment company binding at lease acquisition. The start
-  // route runs `assertSandboxLoginEnvironment` before the session begins, but
+  // route runs `resolveSandboxLoginTarget` before the session begins, but
   // managed-environment reconciliation can bind the sandbox to another company
   // between that guard and the lease acquire. This wrapper re-runs the same
   // guard at acquire time and fails closed with the 403
@@ -752,7 +754,8 @@ export function agentRoutes(
   // insert, so a bind that lands during the provider call still holds no lease.
   const guardedSetupTokenLeaseManager: SetupTokenLeaseManager = {
     async acquire(input): Promise<SetupTokenLease> {
-      await assertSandboxLoginEnvironment(input.scope.companyId, input.scope.environmentId, {
+      await resolveSandboxLoginTarget(input.scope.companyId, input.scope.environmentId, {
+        agentId: input.scope.agentId,
         requireSetupTokenLoginProvider: true,
       });
       return setupTokenLeaseManager.acquire(input);
@@ -1524,26 +1527,12 @@ export function agentRoutes(
   // an environment that binds to other companies. The route caller is already
   // bound to the path company by `assertCompanyAccess`, and the acquired lease
   // records that same company, so the login stays attributed to the caller.
-  async function assertSandboxLoginEnvironment(
+  async function resolveSandboxLoginTarget(
     companyId: string,
     environmentId: string,
-    options?: { requireSetupTokenLoginProvider?: boolean },
-  ): Promise<void> {
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ["sandbox"],
-    });
-    // Reject an environment that another company owns. A managed sandbox
-    // environment binds to the companies that the instance provisions it for.
-    // When the environment binds to companies but not the request company, the
-    // environment belongs to another company. A login there runs the process in
-    // a foreign company sandbox, so the guard fails closed. An environment with
-    // no company binding is instance-global and stays open to every member.
-    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
-    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
-      throw forbidden("The selected environment belongs to another company.", {
-        code: "environment_company_mismatch",
-      });
-    }
+    options: { requireSetupTokenLoginProvider?: boolean; agentId?: string; adapterType?: string; selectComputer?: boolean },
+  ): Promise<string | undefined> {
+    const target = await resolveLoginEnvironmentTarget(db, { companyId, environmentId, ...options });
     // Gate the Claude setup-token login on the provider capability. Only a
     // sandbox provider that advertises the setup-token login capability
     // implements the setup-token pseudo-terminal methods. The setup-token start
@@ -1551,9 +1540,10 @@ export function agentRoutes(
     // before the session starts. The lease guard passes it too, so a
     // reconciliation that rebinds the environment to an unsupported provider
     // still fails closed before the lease and the pseudo-terminal.
-    if (options?.requireSetupTokenLoginProvider) {
+    if (options.requireSetupTokenLoginProvider) {
       await assertSetupTokenLoginProviderCapability(environmentId);
     }
+    return target.agentId;
   }
 
   /**
@@ -1565,12 +1555,20 @@ export function agentRoutes(
    * login flows share this resolver, so both gates read the same current
    * capability.
    */
-  async function resolveProviderSupportsLoginPty(environmentId: string): Promise<boolean> {
+  async function resolveProviderSupportsLoginPty(environmentId: string, requireCredentialRead = false): Promise<boolean> {
     const environment = await environmentsSvc.getById(environmentId);
     const config =
       environment?.config && typeof environment.config === "object"
         ? (environment.config as Record<string, unknown>)
         : {};
+    if (environment?.driver === "plugin") {
+      if (!options.pluginWorkerManager || typeof config.pluginKey !== "string" || typeof config.driverKey !== "string") return false;
+      try {
+        const resolved = await resolvePluginEnvironmentDriver({ db, workerManager: options.pluginWorkerManager, config: config as unknown as import("@paperclipai/shared").PluginEnvironmentConfig });
+        const methods = options.pluginWorkerManager.getWorker(resolved.plugin.id)?.supportedMethods ?? [];
+        return pluginSupportsLoginPty(resolved.driver, methods, requireCredentialRead);
+      } catch { return false; }
+    }
     const provider = typeof config.provider === "string" ? config.provider : "";
     const resolved = provider
       ? await resolvePluginSandboxProviderDriverByKey({ db, driverKey: provider })
@@ -1601,7 +1599,7 @@ export function agentRoutes(
    * so no session row, lease, or pseudo-terminal starts.
    */
   async function assertCodexLoginProviderCapability(environmentId: string): Promise<void> {
-    if (!(await resolveProviderSupportsLoginPty(environmentId))) {
+    if (!(await resolveProviderSupportsLoginPty(environmentId, true))) {
       throw unprocessable(DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
         code: DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
       });
@@ -3721,18 +3719,21 @@ export function agentRoutes(
         requestSchema: startAdapterAuthSessionRequestSchema,
         invalidRequestError: "The device login start request is invalid.",
         requestOverrides: { adapterType: type },
-        assertSandbox: async (data) => {
+        resolveTargetAgentId: async (data) => {
           // The device login runs on a real pseudo-terminal, so it needs a
           // provider that advertises the login pseudo-terminal capability. Gate
           // the route on the current provider capability before any session or
           // lease state. The lease-acquisition path re-checks it from current
           // runtime state before the provider lease.
-          await assertSandboxLoginEnvironment(companyId, data.environmentId);
+          const targetAgentId = await resolveSandboxLoginTarget(companyId, data.environmentId, {
+            agentId: data.agentId, adapterType: data.adapterType, selectComputer: Boolean(data.aiConnection),
+          });
           await assertCodexLoginProviderCapability(data.environmentId);
+          return targetAgentId;
         },
       });
       if (!resolved) return;
-      const { ownerUserId: startedByUserId, data } = resolved;
+      const { ownerUserId: startedByUserId, data, targetAgentId } = resolved;
 
       if (req.actor.type === "agent" && !data.aiConnection) throw forbidden("Agent logins must save a managed AI account");
       if (data.aiConnection) {
@@ -3745,6 +3746,7 @@ export function agentRoutes(
         result = await adapterLoginService.start({
           companyId,
           environmentId: data.environmentId,
+          agentId: targetAgentId,
           adapterType: type,
           startedByUserId,
           ttlSeconds: data.ttlSeconds,
@@ -4679,6 +4681,8 @@ export function agentRoutes(
         {
           ...(setupAgentId ? { setupAgentId } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+          createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+          interactionTexts: [JSON.stringify(req.body)],
           ...(req.actor.type === "board" && req.body.budgetMonthlyCents > 0 ? { initialBudgetPolicyUserId: getActorInfo(req).actorId } : {}),
           runnerResolved: true,
           responsibleUserId: responsibleUserForAiRequest(req),
@@ -4962,6 +4966,8 @@ export function agentRoutes(
       {
         ...(setupId ? { setupOnly: true } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+        createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+        interactionTexts: [JSON.stringify(req.body)],
         ...(req.actor.type === "board" && req.body.budgetMonthlyCents > 0 ? { initialBudgetPolicyUserId: getActorInfo(req).actorId } : {}),
         runnerResolved: true,
         responsibleUserId: responsibleUserForAiRequest(req),
@@ -5066,7 +5072,7 @@ export function agentRoutes(
           at: new Date().toISOString(),
         } }
       : req.body;
-    const agent = await svc.updatePermissions(id, permissionsPatch);
+    const agent = await svc.updatePermissions(id, permissionsPatch, { actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5517,7 +5523,12 @@ export function agentRoutes(
     res.json(completed);
   });
 
-  router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
+  router.patch("/agents/:id", (req, _res, next) => {
+    if (req.body?.permissions && typeof req.body.permissions === "object" && hasOwn(req.body.permissions, "interactions")) {
+      throw unprocessable("Use /api/agents/:id/interaction-permissions to change interaction permissions");
+    }
+    next();
+  }, validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
@@ -6222,7 +6233,7 @@ export function agentRoutes(
         throw notFound("Failed run not found");
       }
       if (failedRun.runtimeMode === "native" && failedRun.errorCode === "native_session_cleanup_quarantined") {
-        throw conflict("The stopped native session requires cleanup and reconciliation before a new attempt.", {
+        throw conflict(NATIVE_CLEANUP_SETTLING_MESSAGE, {
           code: "native_session_cleanup_quarantined",
         });
       }
@@ -6858,13 +6869,16 @@ export function agentRoutes(
         }
         return false;
       },
-      assertSandbox: (data) =>
-        assertSandboxLoginEnvironment(companyId, data.environmentId, {
+      resolveTargetAgentId: (data) =>
+        resolveSandboxLoginTarget(companyId, data.environmentId, {
           requireSetupTokenLoginProvider: true,
+          agentId: data.agentId,
+          adapterType: data.adapterType,
+          selectComputer: Boolean(data.aiConnection),
         }),
     });
     if (!resolved) return;
-    const { ownerUserId, data } = resolved;
+    const { ownerUserId, data, targetAgentId } = resolved;
     const { environmentId, adapterType } = data;
     if (req.actor.type === "agent" && !data.aiConnection) throw forbidden("Agent logins must save a managed AI account");
     if (data.aiConnection) {
@@ -6878,6 +6892,7 @@ export function agentRoutes(
       ownerUserId,
       adapterType,
       environmentId,
+      agentId: targetAgentId,
       confirmedOverwrite,
       aiConnection: data.aiConnection,
       managementContext: continuingConnectionManagement(connectionRequestContext(req)),
@@ -6937,7 +6952,7 @@ export function agentRoutes(
         ? { authorizationUrl: descriptor.loginUrl, transportAdvisory: assessSetupTokenTransport(req) }
         : null,
     };
-    res.json({ ...body, ...(descriptor.aiConnection ? { aiConnection: descriptor.aiConnection } : {}) });
+    res.json({ ...body, ...(descriptor.agentId ? { agentId: descriptor.agentId } : {}), ...(descriptor.aiConnection ? { aiConnection: descriptor.aiConnection } : {}) });
   });
 
   router.get("/companies/:companyId/setup-token-login-sessions/:sessionId", managementGuard("connections:read", "GET /companies/:companyId/setup-token-login-sessions/:sessionId", { personal: true }), async (req, res) => {

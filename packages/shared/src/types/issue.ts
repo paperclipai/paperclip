@@ -1177,6 +1177,13 @@ export interface IssueQueuedCommentQueue {
   entries: IssueQueuedCommentEntry[];
   /** Current admission condition for a saved user continuation. */
   executionWait?: { reason: string; message: string } | null;
+  /**
+   * Messages the target run's first provider turn takes: ones it already
+   * sealed into that turn, and ones it will take while it is still starting
+   * (for example while its sandbox boots). They are sent, not waiting for
+   * Steer or Interrupt. Omitted when there are none.
+   */
+  firstTurnCommentIds?: string[];
 }
 
 interface IssueCommentMetadataRowBase {
@@ -1565,6 +1572,10 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Controller-created repair for a queued turn awaiting agent verification. */
+  agentSetup?: true;
+  /** Server-owned lifecycle operation whose selected account this card repairs. */
+  agentSetupOperationId?: string;
   /** Human-selected audience for this OAuth draft; applied only at completion. */
   setupAccess?: { connectionId: string; access: "all_agents" | { agentIds: string[] } };
   /** Existing chat setup; the server derives the destination from these IDs. */

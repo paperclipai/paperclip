@@ -1,3 +1,4 @@
+import { readDockerDatabaseReceipt, type DockerRun } from "./docker-postgres.js";
 import path from "node:path";
 import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 
@@ -20,9 +21,23 @@ export async function recordControllerDatabaseOwnership(input: {
   }), { mode: 0o600 });
 }
 
-export async function assertEmbeddedDatabaseIsolation(
+/** True only for a launcher-created external database recorded for this exact config. */
+export async function isOwnedExternalControllerDatabase(configPath: string, temporaryRoot: string, database: { connectionString?: unknown; embeddedPostgresDataDir?: unknown }) {
+  if (typeof database.connectionString !== "string" || typeof database.embeddedPostgresDataDir !== "string") return false;
+  try {
+    const owner = JSON.parse(await readFile(path.join(database.embeddedPostgresDataDir, CONTROLLER_DATABASE_OWNER_FILE), "utf8"));
+    return owner.version === 2 && /^runner_e2e_[a-f0-9]{32}$/.test(owner.externalDatabaseName)
+      && new URL(database.connectionString).pathname === `/${owner.externalDatabaseName}`
+      && owner.connectionString === database.connectionString
+      && owner.configPath === await realpath(configPath) && owner.temporaryRoot === await realpath(temporaryRoot);
+  } catch { return false; }
+}
+
+export async function assertRunnerDatabaseIsolation(
   configPath: string,
   temporaryRoot: string,
+  dockerReceiptPath?: string,
+  dockerRun?: DockerRun,
 ) {
   const configText = await readFile(configPath, "utf8");
   const config = JSON.parse(configText) as {
@@ -44,10 +59,12 @@ export async function assertEmbeddedDatabaseIsolation(
       localEncrypted?: { keyFilePath?: string };
     };
   };
-  const supervised = config.database?.mode === "postgres";
-  if (!config.database || (!supervised &&
+  if (!config.database) throw new Error("Runner E2E config omitted its database");
+  const docker = dockerReceiptPath ? await readDockerDatabaseReceipt(dockerReceiptPath, temporaryRoot, dockerRun) : undefined;
+  const supervised = !docker && config.database?.mode === "postgres";
+  if (docker ? config.database?.mode !== "postgres" || config.database.connectionString !== docker.connectionString : !config.database || (!supervised &&
     (config.database.mode !== "embedded-postgres" || config.database.connectionString))) {
-    throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database");
+    throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database lane");
   }
   if (
     config.storage?.provider !== "local_disk" ||
@@ -59,7 +76,7 @@ export async function assertEmbeddedDatabaseIsolation(
     );
   }
   const isolatedPaths = {
-    database: config.database.embeddedPostgresDataDir,
+    ...(docker ? {} : { database: config.database.embeddedPostgresDataDir }),
     backup: config.database.backup?.dir,
     logs: config.logging?.logDir,
     storage: config.storage.localDisk?.baseDir,
@@ -76,34 +93,39 @@ export async function assertEmbeddedDatabaseIsolation(
       );
     }
   }
-  const databasePath = path.resolve(isolatedPaths.database!);
-  if (supervised) {
-    try {
-      const root = await realpath(temporaryRoot);
-      const directory = await realpath(databasePath);
-      if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Database escaped fixture");
-      const owner = JSON.parse(await readFile(path.join(directory, CONTROLLER_DATABASE_OWNER_FILE), "utf8"));
-      const port = config.database.embeddedPostgresPort;
-      const connection = new URL(config.database.connectionString!);
-      const external = owner.version === 2 && /^runner_e2e_[a-f0-9]{32}$/.test(owner.externalDatabaseName)
-        && ["postgres:", "postgresql:"].includes(connection.protocol)
-        && ["127.0.0.1", "localhost", "[::1]"].includes(connection.hostname)
-        && connection.pathname === `/${owner.externalDatabaseName}`;
-      const embedded = owner.version === 1 && Number.isInteger(port) && Number(port) > 0 && Number(port) <= 65535
-        && config.database.connectionString === `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`
-        && (await stat(path.join(directory, "PG_VERSION"))).isFile();
-      if ((!external && !embedded) || owner.temporaryRoot !== root || owner.dataDirectory !== directory
-        || owner.configPath !== await realpath(configPath) || owner.connectionString !== config.database.connectionString) {
-        throw new Error("Supervisor database ownership mismatch");
+  if (!docker) {
+    const databasePath = path.resolve(isolatedPaths.database!);
+    if (supervised) {
+      try {
+        const root = await realpath(temporaryRoot);
+        const directory = await realpath(databasePath);
+        if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Database escaped fixture");
+        const owner = JSON.parse(await readFile(path.join(directory, CONTROLLER_DATABASE_OWNER_FILE), "utf8"));
+        const port = config.database.embeddedPostgresPort;
+        const connection = new URL(config.database.connectionString!);
+        const external = owner.version === 2 && /^runner_e2e_[a-f0-9]{32}$/.test(owner.externalDatabaseName)
+          && ["postgres:", "postgresql:"].includes(connection.protocol)
+          && ["127.0.0.1", "localhost", "[::1]"].includes(connection.hostname)
+          && connection.pathname === `/${owner.externalDatabaseName}`;
+        const embedded = owner.version === 1 && Number.isInteger(port) && Number(port) > 0 && Number(port) <= 65535
+          && config.database.connectionString === `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`
+          && (await stat(path.join(directory, "PG_VERSION"))).isFile();
+        if ((!external && !embedded) || owner.temporaryRoot !== root || owner.dataDirectory !== directory
+          || owner.configPath !== await realpath(configPath) || owner.connectionString !== config.database.connectionString) {
+          throw new Error("Supervisor database ownership mismatch");
+        }
+      } catch (cause) {
+        throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database lane", { cause });
       }
-    } catch (cause) {
-      throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database", { cause });
     }
+    const databaseStat = await stat(databasePath);
+    if (!databaseStat.isDirectory())
+      throw new Error("Embedded database path is not a directory");
   }
-  const databaseStat = await stat(databasePath);
-  if (!databaseStat.isDirectory())
-    throw new Error("Embedded database path is not a directory");
   const keyStat = await stat(path.resolve(isolatedPaths.secretsKey!));
   if (!keyStat.isFile())
     throw new Error("Encrypted-secrets master key path is not a file");
 }
+
+/** The compatibility entry point still requires an owned controller/embedded database. */
+export async function assertEmbeddedDatabaseIsolation(configPath: string, temporaryRoot: string) { return assertRunnerDatabaseIsolation(configPath, temporaryRoot); }

@@ -73,12 +73,17 @@ test.afterEach(async ({ page }, info) => {
 
 test("Inbox click reveals once after reordered initial responses; refresh retains rows", async ({ page }) => {
   await installMeasurements(page);
+  // Exercise the separate reads: a failed chat bootstrap (the list's preload
+  // and the open's own) falls back to them.
+  await page.route(/\/chat-bootstrap(?:\?|$)/, (route) => route.abort());
   await page.goto(`/${prefix}/inbox/all`);
   const link = page.getByRole("link", { name: new RegExp(`Open ${issue.identifier}:`) });
   await expect(link).toBeVisible({ timeout: 90_000 });
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
-  await page.route("**/api/issues/*/comments?*", async (route) => { await held; await route.continue(); });
+  // The compact chat's comment window arrives last. (The chat no longer reads
+  // `/comments?…` on open, so holding that read did not delay the reveal.)
+  await page.route("**/api/issues/*/recent-comments", async (route) => { await held; await route.continue(); });
   await link.click();
   await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="true"]')).toBeVisible();
   await expect(page.getByText("Historical message 159", { exact: true })).not.toBeVisible();
@@ -92,6 +97,34 @@ test("Inbox click reveals once after reordered initial responses; refresh retain
   expect(visibleFrames.length).toBeGreaterThan(2);
   expect(new Set(visibleFrames.map((f) => f.anchor)).size).toBe(1);
   expect(Math.max(...visibleFrames.map((f) => f.offset)) - Math.min(...visibleFrames.map((f) => f.offset))).toBeLessThanOrEqual(2);
+});
+
+test("a task the list preloaded reveals once at the latest message, without its own chat reads", async ({ page }) => {
+  await installMeasurements(page);
+  const preloaded = page.waitForResponse(response => /\/chat-bootstrap\?/.test(response.url()) && response.ok(), { timeout: 90_000 });
+  await page.goto(`/${prefix}/inbox/all`);
+  const link = page.getByRole("link", { name: new RegExp(`Open ${issue.identifier}:`) });
+  await expect(link).toBeVisible({ timeout: 90_000 });
+  await preloaded;
+  const chatReads: string[] = [];
+  let opening = true;
+  page.on("request", request => {
+    if (opening && /\/api\/issues\/[^/]+\/(recent-comments|activity|runs|interactions|attachments)(\?|$)/.test(request.url())) chatReads.push(request.url());
+  });
+  await link.click();
+  await ready(page);
+  // Later refreshes (such as after the task is marked read) are not part of the open.
+  opening = false;
+  const scroller = page.getByTestId("task-chat-scroller");
+  await expect.poll(() => scroller.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2);
+  await page.waitForTimeout(1200);
+  const frames = await page.evaluate(() => (window as unknown as { taskLayoutEvidence: { frames: { busy: string; anchor: string; offset: number }[] } }).taskLayoutEvidence.frames);
+  const visibleFrames = frames.filter((frame) => frame.busy === "false");
+  expect(visibleFrames.length).toBeGreaterThan(2);
+  expect(new Set(visibleFrames.map((f) => f.anchor)).size).toBe(1);
+  expect(Math.max(...visibleFrames.map((f) => f.offset)) - Math.min(...visibleFrames.map((f) => f.offset))).toBeLessThanOrEqual(2);
+  // The open rendered from the preloaded cache instead of reading the chat again.
+  expect(chatReads).toEqual([]);
 });
 
 test("reading anchor survives late media, composer resizing, older history and browser Back", async ({ page }) => {
@@ -167,6 +200,8 @@ test("a loaded comment target positions after the reveal deadline when live-run 
   let metadataReads = 0;
   const held = new Promise<void>(resolve => { release = resolve; });
   await page.route("**/api/issues/*/live-runs", async route => { metadataReads++; await held; await route.continue().catch(() => {}); });
+  // Exercise the separate reads: a failed chat bootstrap falls back to them.
+  await page.route(/\/chat-bootstrap(?:\?|$)/, route => route.abort());
   try {
     await page.goto(`/${prefix}/issues/${issue.identifier}#comment-${oldestCommentId}`);
     await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });

@@ -1,5 +1,13 @@
+import { isProviderFault, withProviderFaultRules } from "./provider-faults.js";
+import { isDiskFullFault } from "./disk-full-faults.js";
+import { isSessionFault } from "./session-faults.js";
+import { takesJourneyTriggers } from "./journeys.js";
 import { workloadDefinitions } from "./workloads.js";
-import type { AdapterId, FaultKind, ScheduledFault, StormFault, StormPlan, TaskFaultKind, TaskPlan, TriggerId, WavePlan, WaveOptions, WorkloadId } from "./types.js";
+import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
+import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
+import { isRepeatedRestartFault, planRestartSteps, type RestartStep } from "./repeated-restarts.js";
+import { k15HoldMs } from "./redeploy.js";
+import { K4_MIN_HOLD_MS, type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
 /** mulberry32: small, fast and fully determined by its 32-bit seed. */
@@ -27,7 +35,7 @@ export function createRng(seed: number) {
   };
 }
 
-export const K4_HOLD_RANGE_MS: readonly [number, number] = [120_000, 300_000];
+export const K4_HOLD_RANGE_MS: readonly [number, number] = [K4_MIN_HOLD_MS, 300_000];
 
 /** The seeded K4 hold range; `--k4-hold-max-seconds` raises its upper end
  * (up to the 600 s controller-outage cap) to reach the 7-minute reconnect
@@ -45,6 +53,10 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   approval: [0, 3_000],
   paused: [0, 3_000],
   stop: [0, 2_000],
+  asked: [0, 3_000],
+  answered: [0, 3_000],
+  // Not a `--triggers` choice: `--provider-fault-restart-after-seconds` sets its delay.
+  provider: [0, 0],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
@@ -53,11 +65,13 @@ export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): b
   if (trigger === "approval") return workload === "G1";
   if (trigger === "paused") return workload === "H1";
   if (trigger === "stop") return workload === "S1";
+  if (trigger === "asked" || trigger === "answered") return takesJourneyTriggers(workload);
   return true;
 }
 
 /** The workload a trigger needs, for the error when none is selected. */
-const TRIGGER_WORKLOAD: Partial<Record<TriggerId, WorkloadId>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1", stop: "S1" };
+const TRIGGER_WORKLOAD: Partial<Record<TriggerId, string>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1", stop: "S1",
+  asked: "Q1, Q2 or Q3", answered: "Q1, Q2 or Q3" };
 
 /** Faults a `result` task may fire inside a storm: a fast restart that lands on the boundary. */
 const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
@@ -67,8 +81,8 @@ const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
  * A `result` task in a storm also fires its own K1 or K2 just after its run
  * accepts a result, the window of RC-30, RC-33 and RC-41.
  */
-function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes">, trigger: TriggerId): readonly TaskFaultKind[] {
-  if (!options.stormMinutes) return options.faults;
+function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "baseline">, trigger: TriggerId): readonly TaskFaultKind[] {
+  if (!options.stormMinutes) return [...options.faults, ...(options.providerFaults ?? []), ...(options.diskFullFaults ?? []), ...(options.sessionFaults ?? []), ...(options.baseline ? ["K0" as const] : [])];
   if (trigger === "time") return ["K13"];
   if (trigger !== "result") throw new Error(`A K13 storm fires on its own clock; --triggers ${trigger} does not combine with it (use time or result)`);
   const faults = options.faults.filter(fault => STORM_RESULT_FAULTS.includes(fault));
@@ -84,7 +98,7 @@ function pinnedFireAfterMs(faultAfterMs: number | undefined, drawn: number): num
   return faultAfterMs ?? drawn;
 }
 
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "faultAfterMs">): TaskPlan[] {
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "rrGapMs" | "baseline">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
@@ -114,8 +128,12 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       index,
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
-      fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
-      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
+      fireAfterMs: cell.fault === "K13" || cell.fault === "K0" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
+        : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
+        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
+      // Drawn only for RR tasks, so the plans of existing seeds do not change.
+      ...(isRepeatedRestartFault(cell.fault) ? { restartSteps: planRestartSteps(cell.fault, rng.int, options.rrGapMs) } : {}),
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),
     });
@@ -136,8 +154,10 @@ function replayMasks(source: readonly string[] | undefined, added: readonly stri
 
 export function planWave(waveId: string, options: WaveOptions, createdAt = new Date()): WavePlan {
   return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed,
-    createdAt: createdAt.toISOString(), options, tasks: planTasks(options),
-    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs) } : {}) };
+    createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options)
+      // `--long-turn-minutes` is part of each task's plan, so a replay keeps it.
+      .map(task => options.longTurnMinutes ? { ...task, longTurnMinutes: options.longTurnMinutes } : task),
+    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
 }
 
 /** K13: the gap between one storm fault settling and the next one firing. */
@@ -148,7 +168,8 @@ export const STORM_GAP_RANGE_MS: readonly [number, number] = [120_000, 240_000];
  * after a 2-4 minute gap, long enough to fill `minutes`. It uses its own RNG
  * stream so adding a storm does not change the task cells for a seed.
  */
-export function planStorm(seed: number, minutes: number, faults: readonly FaultKind[], k4HoldMaxMs?: number): StormPlan {
+export function planStorm(seed: number, minutes: number, faults: readonly FaultKind[], k4HoldMaxMs?: number,
+  k15HoldRangeMs?: readonly [number, number]): StormPlan {
   if (!faults.length) throw new Error("A K13 storm needs at least one fault kind");
   const rng = createRng((seed ^ 0x6b313353) >>> 0);
   const durationMs = minutes * 60_000;
@@ -156,7 +177,8 @@ export function planStorm(seed: number, minutes: number, faults: readonly FaultK
   for (let planned = 0; planned < durationMs;) {
     const gapMs = rng.int(...STORM_GAP_RANGE_MS);
     const kind = faults[rng.int(0, faults.length - 1)]!;
-    sequence.push({ kind, gapMs, holdMs: kind === "K4" ? rng.int(...k4HoldRange(k4HoldMaxMs)) : 0 });
+    sequence.push({ kind, gapMs, holdMs: kind === "K4" ? rng.int(...k4HoldRange(k4HoldMaxMs))
+      : kind === "K15" ? k15HoldMs(k15HoldRangeMs, rng.int) : 0 });
     planned += gapMs;
   }
   return { durationMs, faults: sequence };
@@ -261,10 +283,12 @@ export function replayRecordFor(taskId: string, graded: { createdAt: number | nu
 /** Faults that actually crossed a task, as offsets from its launch. */
 export function observedFaultSchedule(createdAt: number | null, faultIds: readonly string[],
   faults: ReadonlyArray<{ faultId: string; kind: FaultKind; holdMs: number; startedAt: number; requestedBy?: string;
-    trigger?: TriggerId; triggerDelayMs?: number }>, taskId?: string): ScheduledFault[] {
+    trigger?: TriggerId; triggerDelayMs?: number; repeatedRestart?: { planned: RestartStep[] } }>, taskId?: string): ScheduledFault[] {
   if (createdAt === null) return [];
   return faults.filter(fault => faultIds.includes(fault.faultId))
     .map((fault): ScheduledFault => ({ kind: fault.kind, holdMs: fault.holdMs, atMs: Math.max(0, fault.startedAt - createdAt),
+      // RR: the replay restarts again after the same gaps.
+      ...(fault.repeatedRestart ? { restartSteps: fault.repeatedRestart.planned.map(step => ({ ...step })) } : {}),
       ...(fault.trigger && fault.trigger !== "time" && fault.requestedBy === taskId
         ? { trigger: fault.trigger, delayMs: fault.triggerDelayMs ?? 0 } : {}) }))
     .sort((a, b) => a.atMs - b.atMs);
@@ -273,8 +297,13 @@ export function observedFaultSchedule(createdAt: number | null, faultIds: readon
 /** The faults a task schedules: its replayed sequence, or its one planned fault. */
 export function taskFaultSchedule(task: TaskPlan): ScheduledFault[] {
   if (task.replayFaults?.length) return task.replayFaults;
-  if (task.fault === "K13") return [];
-  const planned: ScheduledFault = { kind: task.fault, holdMs: task.holdMs, atMs: task.fireAfterMs };
+  // A storm crosses K13 tasks; a provider fault (PV*), a disk-full fault (DF1) and a matrix baseline (K0) restart nothing, unless
+  // `--provider-fault-restart` asked for a K1 once the provider fault applied (the `provider` trigger).
+  const restart = task.providerFault?.restart;
+  if (restart) return [{ kind: restart.kind, holdMs: restart.holdMs ?? 0, atMs: 0, trigger: "provider", delayMs: restart.afterAppliedMs }];
+  if (task.fault === "K13" || task.fault === "K0" || isProviderFault(task.fault) || isDiskFullFault(task.fault) || isSessionFault(task.fault)) return [];
+  const planned: ScheduledFault = { kind: task.fault, holdMs: task.holdMs, atMs: task.fireAfterMs,
+    ...(task.restartSteps ? { restartSteps: task.restartSteps } : {}) };
   const trigger = task.trigger ?? "time";
   if (trigger === "time") return [planned];
   const delayMs = task.triggerDelayMs ?? 0;

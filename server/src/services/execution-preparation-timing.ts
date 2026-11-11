@@ -7,13 +7,16 @@ import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context }
 type PreparationPhase = "environment_selection" | "execution_configuration" | "session"
   | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
   | "run_identity" | "trust_preset" | "task_context"
+  | "chat_retry_admission" | "workspace_selection" | "dependency_readiness" | "issue_checkout"
+  | "instance_settings" | "workspace_context" | "project_context" | "plan_wake_routing"
+  | "routine_environment" | "responsible_user" | "execution_start"
   | "workspace" | "github_environment" | "github_launchers" | "run_output"
   | "workspace_validation" | "runtime_services" | "instructions" | "runtime_selection"
   | "configuration_mentions" | "configuration_github_identity" | "configuration_secrets"
   | "configuration_ai_runtime" | "configuration_skills" | "configuration_connector_assignments"
   | "configuration_connector_skills" | "configuration_connector_delivery"
   | "configuration_connection_instructions" | "configuration_agent_identity"
-  | "workspace_source_resolution"
+  | "workspace_source_resolution" | "workspace_verification"
   | "workspace_provision_policy"
   | "workspace_base_validation"
   | "workspace_source_authorization"
@@ -34,7 +37,8 @@ type PreparationPhase = "environment_selection" | "execution_configuration" | "s
   | "github_access" | "wake_binding" | "backend_setup" | "connector_assignments"
   | "assigned_mcp" | "tool_authority" | "companion_selection" | "runner_binary"
   | "github_stop" | "coordinator_release" | "instruction_checkpoint"
-  | "instruction_changes" | "warm_release" | "instruction_collection";
+  | "instruction_changes" | "warm_release" | "instruction_collection"
+  | "attachment_staging" | "warm_restore" | "span_persistence" | "state_migration";
 
 export type ExecutionPhase =
   | "skills.inventory" | "skills.inventory.wait" | "skills.inventory.bundled" | "skills.inventory.releases"

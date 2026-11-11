@@ -28,6 +28,13 @@ export type CrashPointDefinition = {
 export const CRASH_POINT_NAME_PATTERN = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.(before|after)_[a-z0-9_]+$/;
 
 export const CRASH_POINTS = {
+  "remote_workspace.prepare.after_publish_before_provision": {
+    description: "A run restored its remote workspace's saved version and published the root as its dirty epoch, with the unchanged baseline; no provisioning, runner command or agent process has started. Recovery must hand the workspace on at its saved version and keep the root, not abandon the epoch.",
+    environments: ["daytona"],
+    kinds: ["remote_workspace_unsaved_files"],
+    invariants: ["I2", "I7"],
+    prerequisite: "a previously saved remote workspace: the point counts only a preparation that restores a saved version (a follow-up or continuation run, for example workload S1), never a workspace's first preparation",
+  },
   "sandbox.create.after_intent_before_provider": {
     description: "The sandbox_creation_operations intent is committed; the provider create call has not been made. Recovery must settle the intent without a sandbox to find.",
     environments: ["daytona"],
@@ -113,6 +120,13 @@ export const CRASH_POINTS = {
     kinds: ["environment_run_lease_active", "environment_retained_hold"],
     invariants: ["I2"],
     prerequisite: "A reuse_by_environment lease that expires or is replaced (destroyReusableSandboxLease). The chaos Daytona environment's leases are ephemeral by default.",
+  },
+  "agent_directory.operation_lock.before_acquire": {
+    description: "A remote agent-directory operation (collect, checkpoint, release) is about to take its per-company-and-agent Postgres lock; no agent file has been read or written. In fail mode the call site throws the lock's own conflict (\"Agent directory operation is already active\"), staging class A's terminal step, so a recovery that collects a stopped run's agent files meets a held lock.",
+    environments: ["daytona"],
+    kinds: ["copyback_owner_hold"],
+    invariants: ["I2", "I7"],
+    prerequisite: "A remote (Daytona) agent directory copy: a task whose run materialized the agent's files in a sandbox.",
   },
   "environment.stop_retain.after_claim_before_stop": {
     description: "A stop-and-retain intent and its claim are committed; the provider stop has not been retried.",

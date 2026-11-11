@@ -1,6 +1,7 @@
 import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
+import { legacyShutdownBeforeDispatchCondition } from "./legacy-shutdown-before-dispatch.js";
 import { and, desc, eq, gt, inArray, not, or, sql, type SQL } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
@@ -8,7 +9,7 @@ import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLease
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
-import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
+import { EXECUTION_RECONCILIATION_CAUSES, readRunFailureCause, withoutSqlStatementText, type ExecutionBlocker } from "@paperclipai/shared";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -16,6 +17,8 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
+import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -115,6 +118,17 @@ export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     not(preDispatchExecutionWaitRecoveryActionPredicate()),
+    // Holds saved before shutdown certified pre-dispatch interruptions carry
+    // the same row proof; they have no unknown outcome to reconcile.
+    sql`not (${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation' and exists (
+      select 1 from ${heartbeatRuns}
+      where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+        and ${heartbeatRuns.id} = ${canonicalExecutionUuid(sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`)}
+        and ${issueRecoveryActions.sourceIssueId} = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
+        and ${legacyShutdownBeforeDispatchCondition()}
+        and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
+        and ${issueRecoveryActions.evidence}->'workspaceRestoreRecovery' is null
+    ))`,
     sql`not (${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation' and exists (
       select 1 from ${heartbeatRuns}
       where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
@@ -274,7 +288,26 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
   )}), false)`;
 }
 
-export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
+/**
+ * The coordinator's own scheduled resume of one native run: the active action
+ * that its failure wrote for that run and whose wake policy resumes that same
+ * run. It is the authority for that resume, not a hold against it. A saved
+ * governed wait whose shutdown confirmation is still pending records a
+ * reconciliation cause here, and its same-run resume is what settles it.
+ * Strictly true or false, because callers negate it.
+ */
+function ownNativeResumePredicate(runId: string) {
+  return sql`coalesce((${issueRecoveryActions.status} = 'active'
+    and ${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'
+    and ${issueRecoveryActions.wakePolicy}->>'runId' = ${runId}
+    and ${issueRecoveryActions.evidence}->>'runId' = ${runId}), false)`;
+}
+
+export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: {
+  conversationResetCommentId?: string | null;
+  /** The native run being dispatched; its own scheduled resume does not block it. */
+  resumingNativeRunId?: string | null;
+}): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
     assigneeAgentId: issues.assigneeAgentId, statusVersion: issues.statusVersion,
@@ -317,6 +350,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
+    options?.resumingNativeRunId ? not(ownNativeResumePredicate(options.resumingNativeRunId)) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
@@ -374,9 +408,14 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
   const runError = run && canRetry && isPreDispatchReviewWait(run)
     ? "Waiting for review; this continuation never started."
+    // Earlier releases saved operator-facing text for the cleanup gate. Show
+    // the plain wording from the code instead of the stored message.
+    : run?.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED ? NATIVE_CLEANUP_SETTLING_MESSAGE
+    : run?.errorCode === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE
     : cancellation?.reason ?? (run?.status === "cancelled"
       ? "Execution was cancelled; its source was not recorded."
-      : run?.error);
+      // Rows written before SQL text was kept out of run errors still carry it.
+      : run?.error ? withoutSqlStatementText(run.error, readRunFailureCause(run.resultJson)) : run?.error);
   const [chatBinding] = eligibleContinuation || canRetry ? await db.select({
     state: chatConversations.state, endpointStatus: chatEndpoints.status,
     connectionStatus: toolConnections.status, connectionEnabled: toolConnections.enabled,
@@ -387,7 +426,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).where(and(
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
-  let nextAction = action.nextAction;
+  let nextAction = action.status === "active" && action.cause === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED
+    ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE : action.nextAction;
   // Retry is a person's control on this task. Say so, so an agent reading this
   // record points the person to it instead of re-running the work itself.
   if (canRetry && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;

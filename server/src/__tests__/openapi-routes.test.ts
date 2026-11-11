@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
-import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
+import { buildOpenApiSpec, openApiRoutes, applyPluginSettingsVisibility, buildOpenApiDocument } from "../routes/openapi.js";
 import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,7 @@ const apiPrefixes: Record<string, string> = {
   "agents.ts": "/api",
   "agent-project-access.ts": "/api",
   "agent-permission-grants.ts": "/api",
+  "agent-interaction-permissions.ts": "/api",
   "agent-commentary.ts": "/api",
   "agent-chat-messages.ts": "/api",
   "agent-avatars.ts": "/api",
@@ -77,6 +78,7 @@ const apiPrefixes: Record<string, string> = {
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "link-previews.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
   "openapi.ts": "/api",
@@ -332,6 +334,18 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("tells agents that unpriced usage in cost reports is unknown cost, not zero", () => {
+    const paths = buildOpenApiSpec().paths;
+    for (const segment of ["summary", "by-agent", "by-agent-model", "by-project"]) {
+      const description = paths[`/api/companies/{companyId}/costs/${segment}`].get.description as string;
+      expect(description).toContain("unpricedEventCount is above 0");
+      expect(description).toContain("never as $0.00");
+      expect(description).toContain("GET /api/companies/{companyId}/heartbeat-runs?agentId=<agentId>");
+      expect(description).not.toContain("costs/data-quality");
+    }
+    expect(paths["/api/companies/{companyId}/costs/window-spend"].get.description).toBeUndefined();
+  });
+
   it("tells agents managed-agent profiles are created with the CLI, not a web page", () => {
     const route = buildOpenApiSpec().paths["/api/companies/{companyId}/managed-agent-profiles"];
     for (const operation of [route.get, route.post]) {
@@ -648,6 +662,25 @@ describe("openapi routes", () => {
       expect(operation.description).toContain("Agent Chat is always on");
       expect(operation.description).toContain("enableAgentChat is a retired compatibility key");
       expect(operation.description).toContain("tell them it is already on");
+    }
+  });
+
+  it("names the Experimental settings page where an instance admin turns a feature on", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const experimental = res.body.paths["/api/instance/settings/experimental"];
+    for (const operation of [experimental.get, experimental.patch]) {
+      expect(operation.description).toContain("[Experimental settings](/<prefix>/company/settings/instance/experimental)");
+      expect(operation.description).toContain("Agent credentials cannot read or change these settings");
+      expect(operation.description).toContain("Cases via enableCases");
+    }
+  });
+
+  it("names the hosting operator instead of a hidden Experimental settings page", () => {
+    const hidden = applyPluginSettingsVisibility(buildOpenApiDocument(), new Set(["instance.experimental"]));
+    const experimental = hidden.paths["/api/instance/settings/experimental"];
+    for (const operation of [experimental.get, experimental.patch]) {
+      expect(operation.description).toContain("controlled by the hosting operator");
+      expect(operation.description).not.toContain("/instance/experimental");
     }
   });
 
@@ -1299,6 +1332,17 @@ describe("openapi routes", () => {
     expect(spec.paths[base + "/event-test"].post.requestBody.content["application/json"].schema.properties.bindingId).toMatchObject({ type: "string", format: "uuid" });
   });
 
+  it("documents project environment compatibility and creation selection", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/project-environments"].get;
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+    expect(operation.responses["403"]).toBeDefined();
+    expect(operation.responses["200"].content["application/json"].schema.properties).toHaveProperty("defaultEnvironmentId");
+    const creation = spec.paths["/api/companies/{companyId}/projects"].post;
+    expect(creation.requestBody.content["application/json"].schema.properties.environmentId).toMatchObject({ type: "string", format: "uuid" });
+    expect(creation.requestBody.content["application/json"].schema.properties.expectedStorageProviderPluginId).toMatchObject({ type: "string", nullable: true });
+  });
+
   it("documents board-only repository discovery and selection", () => {
     const { spec } = loadSpecRoutes();
     const discovery = spec.paths["/api/companies/{companyId}/project-repositories"].get;
@@ -1507,6 +1551,10 @@ describe("openapi routes", () => {
     expect(
       (responseSchemas.start.properties as Record<string, unknown>).prompt,
     ).toBeDefined();
+    const activeSchema = spec.paths[`${base}/active`].get.responses["200"].content["application/json"].schema;
+    expect(activeSchema.properties.agentId).toMatchObject({ type: "string", format: "uuid" });
+    expect(activeSchema.required ?? []).not.toContain("agentId");
+    expect((responseSchemas.status.properties as Record<string, unknown>).agentId).toBeUndefined();
     // The prompt route returns the authorization URL and the optional transport
     // advisory. The advisory is present on a non-confidential transport, so the
     // client can show a non-blocking disclaimer.

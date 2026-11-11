@@ -151,7 +151,7 @@ describe("report-only ownership reconciliation", () => {
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
-      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "remote_workspace_unsaved_files", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
+      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "remote_workspace_unsaved_files", "remote_snapshot_ledger", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "native_completed_turn_cleanup_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -527,6 +527,66 @@ describe("report-only ownership reconciliation", () => {
       .toEqual({ kind: "free" });
   });
 
+  it("hands on a preparation-only epoch at its saved version only when the unchanged baseline is proven", async () => {
+    // Each writer restored saved version `snapshotId` and was killed in
+    // preparation. Only `clean` has nothing after the restore; every other
+    // writer lacks the proof and keeps today's abandonment.
+    const cases = ["clean", "noBaseline", "otherEpochBaseline", "releasedBaseline", "provisioned", "processStarted"] as const;
+    const snapshotId = randomUUID();
+    const setup = Object.fromEntries(cases.map(name => [name, {
+      runId: randomUUID(), workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: `sandbox-${randomUUID()}`,
+    }])) as Record<(typeof cases)[number], { runId: string; workspaceId: string; leaseId: string; providerLeaseId: string }>;
+    const remoteCwd = (name: string) => `/home/daytona/paperclip-workspace/.paperclip-workspaces/${setup[name as keyof typeof setup].workspaceId}`;
+    await db.insert(heartbeatRuns).values(cases.map(name => {
+      const s = setup[name];
+      return { id: s.runId, companyId, agentId, status: "failed", invocationSource: "manual", executionStage: "preparing",
+        finishedAt: minutesAgo(2), errorCode: "process_lost",
+        ...(name === "processStarted" ? { processPid: 4_194_303 } : {}),
+        runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId: s.workspaceId,
+          leaseId: s.leaseId, providerLeaseId: s.providerLeaseId, remoteCwd: remoteCwd(name), epoch: 2, state: "prepared", snapshotId } } };
+    }));
+    await db.insert(executionWorkspaces).values(cases.map(name => {
+      const s = setup[name];
+      const baseline = name === "noBaseline" ? {}
+        : { remoteWorkspaceUnchangedBaseline: { schema: "paperclip.remote-workspace-unchanged-baseline.v1",
+          epoch: name === "otherEpochBaseline" ? 1 : 2, runId: s.runId, snapshotId,
+          ...(name === "releasedBaseline" ? { releasedAt: minutesAgo(5).toISOString() } : {}) } };
+      return { id: s.workspaceId, companyId, mode: "isolated_workspace", strategyType: "test", name,
+        metadata: { ...baseline, remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 2, snapshotId,
+          source: { kind: "git", repoUrl: "https://example.invalid/repo.git", ref: null }, dirty: true, writerRunId: s.runId,
+          location: { environmentId: randomUUID(), leaseId: s.leaseId, providerLeaseId: s.providerLeaseId, remoteCwd: remoteCwd(name) } } } };
+    }));
+    // The restore itself is file-neutral; a provisioning command is not.
+    await db.insert(workspaceOperations).values(cases.map(name => ({ companyId, executionWorkspaceId: setup[name].workspaceId,
+      heartbeatRunId: setup[name].runId, phase: "remote_workspace_restore", status: "succeeded", metadata: { epoch: 2, snapshotId } })));
+    await db.insert(workspaceOperations).values({ companyId, executionWorkspaceId: setup.provisioned.workspaceId,
+      heartbeatRunId: setup.provisioned.runId, phase: "remote_workspace_provision", status: "failed", metadata: { epoch: 2 } });
+    const read = async (name: (typeof cases)[number]) => (await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, setup[name].workspaceId)))[0]!;
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+
+    const clean = await read("clean");
+    expect(readRemoteWorkspaceAuthority(clean.metadata)).toMatchObject({ epoch: 2, dirty: false, writerRunId: null, snapshotId,
+      location: { leaseId: setup.clean.leaseId, providerLeaseId: setup.clean.providerLeaseId, remoteCwd: remoteCwd("clean") } });
+    expect(clean.metadata?.remoteWorkspaceAbandonedEpochs).toBeUndefined();
+    expect(clean.metadata?.remoteWorkspaceUnchangedBaseline).toMatchObject({ releasedAt: expect.any(String) });
+    const [cleanRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, setup.clean.runId));
+    expect(cleanRun.runnerProfileJson?.remoteWorkspace).toMatchObject({ state: "saved", epoch: 2 });
+    // The retry is admitted at once, and the killed run's sandbox is no longer a prepared source holding it.
+    expect(await readRemoteWorkspaceWriterHold(db, { companyId, authority: readRemoteWorkspaceAuthority(clean.metadata)!,
+      runId: randomUUID() })).toEqual({ kind: "free" });
+    // A recorded process is runtime work: neither handed on nor abandoned here.
+    expect(readRemoteWorkspaceAuthority((await read("processStarted")).metadata))
+      .toMatchObject({ epoch: 2, dirty: true, writerRunId: setup.processStarted.runId });
+    for (const name of cases.filter(name => name !== "clean" && name !== "processStarted")) {
+      const row = await read(name);
+      expect(readRemoteWorkspaceAuthority(row.metadata), name)
+        .toMatchObject({ epoch: 3, dirty: false, writerRunId: null, location: null });
+      expect(row.metadata?.remoteWorkspaceAbandonedEpochs, name).toEqual([expect.objectContaining({ epoch: 2, runId: setup[name].runId })]);
+    }
+  });
+
   it("settles a workspace command whose process died mid-command, and keeps live or unprovable ones", async () => {
     const run = (id: string, status: string) => ({ id, companyId, agentId, status, invocationSource: "manual",
       ...(status === "running" ? {} : { finishedAt: minutesAgo(2) }) });
@@ -721,6 +781,119 @@ describe("report-only ownership reconciliation", () => {
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
       .toEqual([lost.commentId]);
+  });
+
+  // The check reads a task's runs through two separate bindings (legacy
+  // context or native column) and reads event payloads only for comments that
+  // the indexed checks keep. Each binding must count alone, and only in the
+  // comment's company.
+  it("binds each task run by its legacy context or its native column in the user-comment wake check", async () => {
+    const otherCompanyId = randomUUID(), otherAgentId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTH" });
+    await db.insert(agents).values({ id: otherAgentId, companyId: otherCompanyId, name: "Other", role: "engineer", adapterType: "codex_local" });
+    const task = async (title: string, runs: Array<{ binding: "context" | "native" | "both"; status?: string;
+      startedAt: Date; finishedAt?: Date | null; companyId?: string }>, commentAt: Date) => {
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title, status: "todo", assigneeAgentId: agentId });
+      const runIds: string[] = [];
+      for (const run of runs) {
+        const runCompanyId = run.companyId ?? companyId;
+        const [row] = await db.insert(heartbeatRuns).values({ companyId: runCompanyId, agentId: runCompanyId === companyId ? agentId : otherAgentId,
+          status: run.status ?? "succeeded", invocationSource: "manual",
+          contextSnapshot: run.binding === "native" ? {} : { issueId },
+          nativeIssueId: run.binding === "context" ? null : issueId,
+          startedAt: run.startedAt, createdAt: run.startedAt, finishedAt: run.finishedAt === undefined ? minutesAgo(3) : run.finishedAt }).returning();
+        runIds.push(row!.id);
+      }
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1", body: title,
+        createdAt: commentAt }).returning();
+      return { issueId, runIds, commentId: comment!.id };
+    };
+    const steerEvent = (runId: string, commentId: string, eventType: string, createdAt: Date) => ({ companyId, runId, agentId,
+      seq: 1, eventType, stream: "system", level: "info", sourceEventId: randomUUID(), createdAt,
+      payload: { prpEvent: { itemId: `provider:steer:${commentId}`, payload: { kind: "steering_acknowledgement" } } } });
+    const lostNative = await task("lost, native prior run", [{ binding: "native", startedAt: minutesAgo(10), finishedAt: minutesAgo(9) }], minutesAgo(8));
+    const lostContext = await task("lost, legacy prior run", [{ binding: "context", startedAt: minutesAgo(10), finishedAt: minutesAgo(9) }], minutesAgo(7));
+    await task("no run at all", [], minutesAgo(8));
+    await task("only another company's run", [{ binding: "both", startedAt: minutesAgo(10), finishedAt: minutesAgo(9), companyId: otherCompanyId }], minutesAgo(8));
+    await task("native later run", [{ binding: "context", startedAt: minutesAgo(10), finishedAt: minutesAgo(9) },
+      { binding: "native", startedAt: minutesAgo(5) }], minutesAgo(8));
+    await task("legacy later run", [{ binding: "native", startedAt: minutesAgo(10), finishedAt: minutesAgo(9) },
+      { binding: "context", startedAt: minutesAgo(5) }], minutesAgo(8));
+    await task("native live run", [{ binding: "native", status: "running", startedAt: minutesAgo(10), finishedAt: null }], minutesAgo(8));
+    const nativeSteered = await task("native steered run", [{ binding: "native", startedAt: minutesAgo(10) }], minutesAgo(8));
+    const contextSteered = await task("legacy steered run", [{ binding: "context", startedAt: minutesAgo(10) }], minutesAgo(8));
+    const earlyAck = await task("acknowledged before the comment", [{ binding: "native", startedAt: minutesAgo(10) }], minutesAgo(6));
+    const logOnly = await task("named only in a log event", [{ binding: "context", startedAt: minutesAgo(10) }], minutesAgo(5));
+    const otherRunAck = await task("acknowledged by a run that started after it", [{ binding: "native", startedAt: minutesAgo(10), finishedAt: minutesAgo(9) }], minutesAgo(4));
+    await db.insert(heartbeatRunEvents).values([
+      steerEvent(nativeSteered.runIds[0]!, nativeSteered.commentId, "item.completed", minutesAgo(7)),
+      steerEvent(contextSteered.runIds[0]!, contextSteered.commentId, "item.started", minutesAgo(7)),
+      steerEvent(earlyAck.runIds[0]!, earlyAck.commentId, "item.completed", minutesAgo(7)),
+      steerEvent(logOnly.runIds[0]!, logOnly.commentId, "log", minutesAgo(4)),
+      // The run that names this comment ended before it: not a steer of this comment.
+      steerEvent(otherRunAck.runIds[0]!, otherRunAck.commentId, "item.completed", minutesAgo(3)),
+    ]);
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false,
+      processStartedAt: minutesAgo(30) });
+    // Oldest first, as the check orders them.
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
+      .toEqual([lostNative.commentId, lostContext.commentId, earlyAck.commentId, logOnly.commentId, otherRunAck.commentId]);
+  });
+
+  // The stale-continuation check reads a task's runs through the same two
+  // bindings. The closing run and a live run must each count through either
+  // binding alone, and only in the comment's company and for the assignee.
+  it("binds each task run by its legacy context or its native column in the stale-continuation check", async () => {
+    const otherCompanyId = randomUUID(), otherAgentId = randomUUID(), peerAgentId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTH" });
+    await db.insert(agents).values([
+      { id: otherAgentId, companyId: otherCompanyId, name: "Other", role: "engineer", adapterType: "codex_local" },
+      { id: peerAgentId, companyId, name: "Peer", role: "engineer", adapterType: "codex_local" }]);
+    type Run = { binding: "context" | "native"; status?: string; startedAt: Date; finishedAt?: Date | null; companyId?: string; agentId?: string };
+    const task = async (title: string, runs: Run[], commentAt: Date, options: { closedBy?: string; wake?: "commentId" | "list" | "open" } = {}) => {
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title, status: "done", assigneeAgentId: agentId });
+      for (const run of runs) {
+        const runCompanyId = run.companyId ?? companyId;
+        await db.insert(heartbeatRuns).values({ companyId: runCompanyId, agentId: run.agentId ?? (runCompanyId === companyId ? agentId : otherAgentId),
+          status: run.status ?? "succeeded", invocationSource: "manual",
+          contextSnapshot: run.binding === "native" ? {} : { issueId }, nativeIssueId: run.binding === "context" ? null : issueId,
+          startedAt: run.startedAt, createdAt: run.startedAt, finishedAt: run.finishedAt === undefined ? minutesAgo(2) : run.finishedAt });
+      }
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1", body: title,
+        createdAt: commentAt }).returning();
+      const commentId = comment!.id;
+      const payload = options.wake === "list" ? { issueId, _paperclipWakeContext: { wakeCommentIds: [commentId] } } : { issueId, commentId };
+      await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "cancelled",
+        error: "continuation_task_ownership_changed", payload });
+      if (options.wake === "open") await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+        status: "deferred_issue_execution", payload: { issueId, commentId } });
+      await db.insert(activityLog).values({ companyId, actorType: options.closedBy ?? "agent", actorId: "actor", action: "issue.updated",
+        entityType: "issue", entityId: issueId, details: { toStatus: "done" }, createdAt: minutesAgo(1) });
+      return commentId;
+    };
+    const closing = (binding: Run["binding"], extra: Partial<Run> = {}): Run => ({ binding, startedAt: minutesAgo(10), ...extra });
+    const nativeClosing = await task("closed by a native run", [closing("native")], minutesAgo(8));
+    const contextClosing = await task("closed by a legacy run", [closing("context")], minutesAgo(7));
+    const listWake = await task("carried by a wake list", [closing("native")], minutesAgo(6), { wake: "list" });
+    await task("no closing run", [], minutesAgo(8));
+    await task("closing run in another company", [closing("native", { companyId: otherCompanyId }), closing("context", { companyId: otherCompanyId })], minutesAgo(8));
+    await task("closing run of another agent", [closing("native", { agentId: peerAgentId }), closing("context", { agentId: peerAgentId })], minutesAgo(8));
+    await task("closing run failed", [closing("native", { status: "failed" })], minutesAgo(8));
+    await task("closing run ended before the comment", [closing("context", { finishedAt: minutesAgo(9) })], minutesAgo(8));
+    await task("closing run started after the comment", [closing("native", { startedAt: minutesAgo(7) })], minutesAgo(8));
+    await task("native live run", [closing("context"), closing("native", { status: "running", startedAt: minutesAgo(3), finishedAt: null })], minutesAgo(8));
+    await task("legacy live run", [closing("native"), closing("context", { status: "queued", startedAt: minutesAgo(3), finishedAt: null })], minutesAgo(8));
+    const otherCompanyLive = await task("live run in another company only", [closing("native"),
+      closing("context", { status: "running", companyId: otherCompanyId, finishedAt: null })], minutesAgo(5));
+    await task("closed by a person", [closing("native")], minutesAgo(8), { closedBy: "user" });
+    await task("an open wake carries it", [closing("context")], minutesAgo(8), { wake: "open" });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    const dropped = report.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation");
+    // Oldest first, as the check orders them. The other company's live run does not hold the last one.
+    expect(dropped.map(row => row.recordId)).toEqual([nativeClosing, contextClosing, listWake, otherCompanyLive]);
+    expect(dropped.every(row => row.companyId === companyId)).toBe(true);
   });
 
   it("keeps a backstop deadline for a lifted pause still inside its grace window", async () => {
