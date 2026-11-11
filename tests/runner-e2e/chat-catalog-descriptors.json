@@ -1977,9 +1977,10 @@
       "../../cli/src/index.ts",
       "../../cli/src/commands/worktree.ts",
       "../../cli/src/commands/run.ts",
-      "../e2e/fetch-allowed-port.ts"
+      "../e2e/fetch-allowed-port.ts",
+      "redaction.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.privileged.owned-dev-instance.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
