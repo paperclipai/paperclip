@@ -222,15 +222,21 @@ const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 
+type ResultPromptInjectionConfig = { tools?: { resultPromptInjectionMode?: "block" | "ignore" } } | null;
+
 let cachedResultPromptInjectionMode: "block" | "ignore" | undefined;
+
+export function resolveResultPromptInjectionModeFrom(read: () => ResultPromptInjectionConfig): "block" | "ignore" {
+  try {
+    return read()?.tools?.resultPromptInjectionMode ?? "block";
+  } catch {
+    return "block";
+  }
+}
 
 function resolveResultPromptInjectionMode(): "block" | "ignore" {
   if (cachedResultPromptInjectionMode === undefined) {
-    try {
-      cachedResultPromptInjectionMode = readConfigFile()?.tools?.resultPromptInjectionMode ?? "block";
-    } catch {
-      cachedResultPromptInjectionMode = "block";
-    }
+    cachedResultPromptInjectionMode = resolveResultPromptInjectionModeFrom(() => readConfigFile());
   }
   return cachedResultPromptInjectionMode;
 }
