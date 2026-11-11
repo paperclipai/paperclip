@@ -21,6 +21,7 @@ import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 import { databaseUrlFromConfig, journeyDriverFor, type JourneyDriver } from "./journey-driver.js";
 import { withLiveStatusEvidence } from "./live-status-evidence.js";
+import { diskFullRest, isDiskFullFault, type DiskFullFaultSeam } from "./disk-full-faults.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
 const MAX_SNAPSHOT_FILES = 2_000;
@@ -207,6 +208,8 @@ export class TaskObserver {
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
   done = false;
+  /** DF1 (disk-full-faults.ts): arms this task's saves at launch and clears them before its Retry. */
+  diskFullSeam: Pick<DiskFullFaultSeam, "arm" | "clear"> | null = null;
 
   /** Replaceable in tests. A Daytona run's process is remote, so only local runs are checked. */
   processAlive = (pid: number, startedAt: string) => this.lab.environmentKind === "local" && localProcessAlive(pid, startedAt);
@@ -288,6 +291,7 @@ export class TaskObserver {
       this.record.deadlineAt = this.record.createdAt + definition.budgetMs;
       this.timeline.add("task_launched", { taskId: this.plan.taskId, issueId: issue.id, identifier: issue.identifier,
         workload: this.plan.workload, adapter: this.plan.adapter, faults: this.faultSchedule });
+      await this.armDiskFull();
     } catch (error) {
       this.record.launchError = error instanceof Error ? error.message : String(error);
       this.done = true;
@@ -605,6 +609,31 @@ export class TaskObserver {
     return true;
   }
 
+  /** DF1: the task's final saves find the sandbox disk full until the fault is cleared. */
+  private async armDiskFull(): Promise<void> {
+    if (!isDiskFullFault(this.plan.fault) || !this.record.issueId) return;
+    const record = this.record.diskFull = { kind: this.plan.fault, armedAt: null as number | null, clearedAt: null as number | null, rest: null };
+    try {
+      if (!this.diskFullSeam) throw new Error("disk-full seam not installed");
+      await this.diskFullSeam.arm(this.record.issueId);
+      record.armedAt = Date.now();
+      this.timeline.add("disk_full_fault_armed", { taskId: this.plan.taskId, issueId: this.record.issueId });
+    } catch (error) {
+      (record as NonNullable<TaskRecord["diskFull"]>).armError = error instanceof Error ? error.message : String(error);
+      this.timeline.add("disk_full_fault_arm_failed", { taskId: this.plan.taskId, error: (record as NonNullable<TaskRecord["diskFull"]>).armError });
+    }
+  }
+
+  /** DF1: at the first rest, record what the board shows, then clear the fault, as a person who freed space. */
+  private async clearDiskFullAtRest(now: number): Promise<void> {
+    const record = this.record.diskFull;
+    if (!record || record.armedAt === null || record.clearedAt !== null || !this.record.issueId) return;
+    record.rest = diskFullRest(this.issue, now);
+    await this.diskFullSeam!.clear(this.record.issueId);
+    record.clearedAt = Date.now();
+    this.timeline.add("disk_full_fault_cleared", { taskId: this.plan.taskId, rest: record.rest });
+  }
+
   private async onRest(sample: TaskSample, now: number) {
     const status = sample.issueStatus ?? null;
     // The board has not acted yet: the task waits on it, so it has not rested (and gets no Retry).
@@ -629,6 +658,7 @@ export class TaskObserver {
         return;
       }
     }
+    await this.clearDiskFullAtRest(now);
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
       if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
       this.record.retry = await this.retry(sample, now);
