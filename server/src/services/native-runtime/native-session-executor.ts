@@ -81,7 +81,7 @@ import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { CURSOR_DISTRIBUTION_PINS, KIMI_DISTRIBUTION_CLOSURE_SHA256, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
 import { codexUsageBaselineForNextRun } from "../../vendor/paperclip-runner/index.js";
-import { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, runnerBinaryTarget } from "../../vendor/paperclip-runner/index.js";
+import { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, runnerBinaryTarget } from "../../vendor/paperclip-runner/index.js";
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
 import { readNativePlanWait } from "./native-plan-wait.js";
 import { nativeProviderLifecycle } from "./provider-lifecycle.js";
@@ -130,10 +130,11 @@ import {
   EXECUTION_CONTROL_DEADLINE_MS,
 } from "../execution-control-deadline.js";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  createReadStream,
   closeSync,
   constants,
   existsSync,
@@ -152,6 +153,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -296,7 +298,7 @@ import {
 import { conflict, HttpError } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { classifyRemoteConnectionError } from "../remote-connection-failure.js";
-import { resolvePaperclipRunnerBinary, resolveRemotePaperclipRunnerBinary } from "./native-codex-runner.js";
+import { resolvePaperclipRunnerBinary, resolvePaperclipRunnerBinaryAsync, resolveRemotePaperclipRunnerBinary, verifiedBundledRemoteRunnerBinary } from "./native-codex-runner.js";
 import {
   createNativeRunTrace,
   isNativeRunRootHistoricalSpan,
@@ -316,6 +318,13 @@ import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.
 import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
 import { currentControllerProcessStamp, currentProcessSpaceHash } from "../controller-process-identity.js";
 import { proveOwnerGone } from "../owner-proof.js";
+import {
+  binaryTargetFromHeader,
+  cachedFileSha256,
+  execFileBuffered,
+  sha256DirectoryTreeStreamed,
+  sha256FileStreamed,
+} from "./off-loop-file-work.js";
 import {
   NativeRunnerOwnershipUnverifiedError,
   isNativeRunnerOwnershipHeld,
@@ -7775,6 +7784,60 @@ function digestBackupDirectory(directory: string): {
   return { sha256: `sha256:${hash.digest("hex")}`, bytes };
 }
 
+// `digestBackupDirectory` for run paths: the same digest, streamed. A harness
+// backup can hold large provider databases, and hashing it synchronously
+// blocked every lease renewal for the whole read.
+async function digestBackupDirectoryStreamed(directory: string): Promise<{
+  sha256: string;
+  bytes: number;
+}> {
+  let hash = createHash("sha256");
+  let bytes = 0;
+  const visit = async (current: string, relative: string): Promise<void> => {
+    const entries = (await readdir(current, { withFileTypes: true })).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    if (entries.length === 0) hash.update(`directory:${relative}\0`);
+    for (const entry of entries) {
+      const entryPath = resolve(current, entry.name);
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      const stats = await lstat(entryPath);
+      if (entry.isDirectory()) {
+        hash.update(`directory:${entryRelative}:${stats.mode & 0o777}\0`);
+        await visit(entryPath, entryRelative);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`symlink:${entryRelative}:${await readlink(entryPath)}\0`);
+      } else if (entry.isFile()) {
+        // The record names the byte count before the contents. Stream with the
+        // size from lstat; if the file changed size meanwhile, hash the bytes
+        // actually read, exactly as the synchronous digest would.
+        const before = hash.copy();
+        const header = (size: number) => `file:${entryRelative}:${stats.mode & 0o777}:${size}\0`;
+        hash.update(header(stats.size));
+        let fileBytes = 0;
+        for await (const chunk of createReadStream(entryPath)) {
+          fileBytes += (chunk as Buffer).byteLength;
+          hash.update(chunk as Buffer);
+        }
+        if (fileBytes !== stats.size) {
+          const contents = await readFile(entryPath);
+          hash = before;
+          hash.update(header(contents.byteLength));
+          hash.update(contents);
+          fileBytes = contents.byteLength;
+        }
+        bytes += fileBytes;
+      } else {
+        throw new Error(
+          `runner_harness_backup_unsupported_entry:${entryRelative}`,
+        );
+      }
+    }
+  };
+  await visit(directory, "");
+  return { sha256: `sha256:${hash.digest("hex")}`, bytes };
+}
+
 function harnessBackupRoot(root: string): string {
   return resolve(root, "failover-backups");
 }
@@ -7866,14 +7929,16 @@ function compatibleNativeHarnessBackupManifests(input: {
   return compatible;
 }
 
-export function buildNativeHarnessBackupManifest(input: {
+type NativeHarnessBackupManifestInput = {
   backupRoot: string;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
   providerSessionIdentity: unknown;
   sourceProviderLeaseId: string;
   completedAt?: string;
-}): NativeHarnessBackupManifest {
+};
+
+export function buildNativeHarnessBackupManifest(input: NativeHarnessBackupManifestInput): NativeHarnessBackupManifest {
   if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
     throw new Error("runner_harness_state_mismatch: backup_provider_identity_missing");
   }
@@ -7883,6 +7948,31 @@ export function buildNativeHarnessBackupManifest(input: {
     if (!existsSync(path)) throw new Error("runner_harness_state_mismatch: backup_directory_missing");
     return { name: directory.name, ...digestBackupDirectory(path) };
   });
+  return nativeHarnessBackupManifest(input, profile, directories);
+}
+
+/** `buildNativeHarnessBackupManifest` for run paths: the backup is hashed by streaming. */
+export async function buildNativeHarnessBackupManifestStreamed(
+  input: NativeHarnessBackupManifestInput,
+): Promise<NativeHarnessBackupManifest> {
+  if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
+    throw new Error("runner_harness_state_mismatch: backup_provider_identity_missing");
+  }
+  const profile = resolveNativeHarnessPersistenceProfile(input.execution);
+  const directories: NativeHarnessBackupManifest["directories"] = [];
+  for (const directory of profile.directories) {
+    const path = resolve(input.backupRoot, directory.name);
+    if (!existsSync(path)) throw new Error("runner_harness_state_mismatch: backup_directory_missing");
+    directories.push({ name: directory.name, ...await digestBackupDirectoryStreamed(path) });
+  }
+  return nativeHarnessBackupManifest(input, profile, directories);
+}
+
+function nativeHarnessBackupManifest(
+  input: NativeHarnessBackupManifestInput,
+  profile: ReturnType<typeof resolveNativeHarnessPersistenceProfile>,
+  directories: NativeHarnessBackupManifest["directories"],
+): NativeHarnessBackupManifest {
   return {
     schema: "paperclip.native-harness-backup.v1",
     normalizedSessionId: nativeSessionKey(input.execution),
@@ -7898,6 +7988,44 @@ export function buildNativeHarnessBackupManifest(input: {
     directories,
     completedAt: input.completedAt ?? new Date().toISOString(),
   };
+}
+
+/** `verifyNativeHarnessBackup` for run paths: the same checks, streamed. */
+export async function verifyNativeHarnessBackupStreamed(input: {
+  root: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+}): Promise<VerifiedHarnessBackup | null> {
+  for (const {
+    root: candidateRoot,
+    manifest,
+  } of compatibleNativeHarnessBackupManifests(input)) {
+    let bytes = 0;
+    let valid = true;
+    for (const declared of manifest.directories) {
+      const directoryPath = resolve(candidateRoot, declared.name);
+      if (!existsSync(directoryPath)) {
+        valid = false;
+        break;
+      }
+      try {
+        const digest = await digestBackupDirectoryStreamed(directoryPath);
+        if (
+          digest.sha256 !== declared.sha256 ||
+          digest.bytes !== declared.bytes
+        ) {
+          valid = false;
+          break;
+        }
+        bytes += digest.bytes;
+      } catch {
+        valid = false;
+        break;
+      }
+    }
+    if (valid) return { root: candidateRoot, manifest, bytes };
+  }
+  return null;
 }
 
 export function verifyNativeHarnessBackup(input: {
@@ -13120,6 +13248,10 @@ function sha256File(path: string): string {
   return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 }
 
+const unsupportedProviderDistEntry = (relativePath: string) => new Error(
+  `runner_remote_provider_artifact_incompatible: unsupported dist entry ${relativePath}`,
+);
+
 export function sha256DirectoryTree(root: string): string {
   const hash = createHash("sha256");
   const visit = (directory: string, prefix = "") => {
@@ -13139,9 +13271,7 @@ export function sha256DirectoryTree(root: string): string {
           `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
         );
       } else {
-        throw new Error(
-          `runner_remote_provider_artifact_incompatible: unsupported dist entry ${relativePath}`,
-        );
+        throw unsupportedProviderDistEntry(relativePath);
       }
     }
   };
@@ -13169,6 +13299,23 @@ export function readRemoteProviderPackManifest(packRoot: string): RemoteProvider
   return readRemoteProviderPackIdentity(packRoot, true);
 }
 
+/**
+ * `readRemoteProviderPackManifest` for a run path: the same checks in the same
+ * order, but the controller files are hashed by streaming, off the event loop.
+ */
+export async function verifyRemoteProviderPackManifest(packRoot: string): Promise<RemoteProviderPackManifest> {
+  const checks = providerPackIdentityChecks(packRoot, true);
+  let step = checks.next();
+  while (!step.done) {
+    const request = step.value;
+    const digest = request.kind === "file"
+      ? await sha256FileStreamed(request.path)
+      : await sha256DirectoryTreeStreamed(request.path, unsupportedProviderDistEntry);
+    step = checks.next(digest);
+  }
+  return step.value;
+}
+
 export function readBundledRemoteProviderPackManifest(manifestPath = bundledRemoteProviderPackManifestPath(), target: "linux-x64" | "linux-arm64" = "linux-x64"): RemoteProviderPackManifest {
   const manifest = readRemoteProviderPackIdentity(dirname(manifestPath), false);
   if (`${manifest.payload.target.platform}-${manifest.payload.target.architecture}` !== target) {
@@ -13177,7 +13324,25 @@ export function readBundledRemoteProviderPackManifest(manifestPath = bundledRemo
   return manifest;
 }
 
+type ProviderPackHashRequest = { kind: "file" | "tree"; path: string };
+
 function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles: boolean): RemoteProviderPackManifest {
+  const checks = providerPackIdentityChecks(packRoot, verifyControllerFiles);
+  let step = checks.next();
+  while (!step.done) {
+    const request = step.value;
+    step = checks.next(request.kind === "file" ? sha256File(request.path) : sha256DirectoryTree(request.path));
+  }
+  return step.value;
+}
+
+// Validates a provider pack manifest. Each controller-file digest it needs is
+// yielded to the caller, so the sync and streamed readers share one order of
+// checks and one set of errors.
+function* providerPackIdentityChecks(
+  packRoot: string,
+  verifyControllerFiles: boolean,
+): Generator<ProviderPackHashRequest, RemoteProviderPackManifest, string> {
   let manifest: RemoteProviderPackManifest;
   try {
     manifest = JSON.parse(
@@ -13267,14 +13432,14 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
     }
     if (
       !/^sha256:[a-f0-9]{64}$/.test(artifact?.sha256 ?? "") ||
-      (verifyControllerFiles && sha256File(resolve(packRoot, artifactPath)) !== artifact.sha256)
+      (verifyControllerFiles && (yield { kind: "file", path: resolve(packRoot, artifactPath) }) !== artifact.sha256)
     ) {
       throw new Error(
         `runner_remote_provider_artifact_incompatible: ${label} digest mismatch`,
       );
     }
   }
-  if (verifyControllerFiles && sha256DirectoryTree(resolve(packRoot, "dist")) !== payload.distDigest) {
+  if (verifyControllerFiles && (yield { kind: "tree", path: resolve(packRoot, "dist") }) !== payload.distDigest) {
     throw new Error(
       "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
     );
@@ -13332,7 +13497,7 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
           throw new Error("runner_remote_provider_artifact_incompatible: Kimi profile or closure does not match this release");
         }
       }
-      if (verifyControllerFiles && sha256DirectoryTree(resolve(packRoot, candidatePath)) !== candidate.sha256) {
+      if (verifyControllerFiles && (yield { kind: "tree", path: resolve(packRoot, candidatePath) }) !== candidate.sha256) {
         throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
       }
     }
@@ -13418,7 +13583,7 @@ export async function stageRemoteRunnerFile(input: {
     ]);
     return;
   }
-  const bytes = readFileSync(input.sourcePath);
+  const bytes = await readFile(input.sourcePath);
   const directory = posix.dirname(input.targetPath);
   const escapedDirectory = directory.replaceAll("'", "'\\''");
   const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
@@ -13494,16 +13659,15 @@ export async function stageRemoteRunnerDirectory(input: {
     try {
       if (excludeArgs.length > 0) {
         stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-restore-"));
-        const archive = execFileSync(
+        const archive = await execFileBuffered(
           "tar",
           [...excludeArgs, "--no-xattrs", "-czf", "-", "-C", input.sourcePath, "."],
           {
-            encoding: "buffer",
             maxBuffer: 64 * 1024 * 1024,
             env: { ...process.env, COPYFILE_DISABLE: "1" },
           },
         );
-        execFileSync("tar", ["-xzf", "-", "-C", stagingRoot], {
+        await execFileBuffered("tar", ["-xzf", "-", "-C", stagingRoot], {
           input: archive,
           maxBuffer: 64 * 1024 * 1024,
         });
@@ -13527,11 +13691,10 @@ export async function stageRemoteRunnerDirectory(input: {
     }
     return;
   }
-  const archive = execFileSync(
+  const archive = await execFileBuffered(
     "tar",
     [...excludeArgs, "--no-xattrs", "-czf", "-", "-C", input.sourcePath, "."],
     {
-      encoding: "buffer",
       maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, COPYFILE_DISABLE: "1" },
     },
@@ -13668,7 +13831,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
         targetPath: stagedRemoteProviderPackRoot,
         reuseRoots: preinstalledProviderPackRoots,
         trace: input.trace,
-        verifyDirectory: (sourceRoot) => { readRemoteProviderPackManifest(sourceRoot); },
+        verifyDirectory: async (sourceRoot) => { await verifyRemoteProviderPackManifest(sourceRoot); },
         stageDirectory: (sourceRoot) => stageRemoteRunnerDirectory({
           target: remoteTarget,
           runner: remoteCommandRunner,
@@ -13717,27 +13880,27 @@ async function remoteRunnerPathExists(input: {
   return result.exitCode === 0 && !result.timedOut;
 }
 
-function assertSafeRemoteCheckpointArchive(archive: Buffer): void {
+async function assertSafeRemoteCheckpointArchive(archive: Buffer): Promise<void> {
   if (archive.length > MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES) {
     throw new Error("runner_remote_checkpoint_archive_too_large");
   }
   let names: string[];
   let verboseEntries: string[];
   try {
-    names = execFileSync("tar", ["-tzf", "-"], {
+    names = (await execFileBuffered("tar", ["-tzf", "-"], {
       input: archive,
-      encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       timeout: 30_000,
-    })
+    }))
+      .toString("utf8")
       .split("\n")
       .filter((line) => line.length > 0);
-    verboseEntries = execFileSync("tar", ["-tvzf", "-"], {
+    verboseEntries = (await execFileBuffered("tar", ["-tvzf", "-"], {
       input: archive,
-      encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       timeout: 30_000,
-    })
+    }))
+      .toString("utf8")
       .split("\n")
       .filter((line) => line.length > 0);
   } catch {
@@ -13767,9 +13930,8 @@ function assertSafeRemoteCheckpointArchive(archive: Buffer): void {
     }
   }
   try {
-    execFileSync("tar", ["-xOzf", "-"], {
+    await execFileBuffered("tar", ["-xOzf", "-"], {
       input: archive,
-      stdio: ["pipe", "pipe", "pipe"],
       maxBuffer: MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES,
       timeout: 60_000,
     });
@@ -13972,7 +14134,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
     throw new Error("runner_remote_checkpoint_failed");
   }
   const archive = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
-  assertSafeRemoteCheckpointArchive(archive);
+  await assertSafeRemoteCheckpointArchive(archive);
   const parent = resolve(input.targetPath, "..");
   const stagingRoot = mkdtempSync(join(parent, ".paperclip-checkpoint-"));
   const stagedTarget = join(stagingRoot, "payload");
@@ -13984,7 +14146,10 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   let replacementInstalled = false;
   try {
     mkdirSync(stagedTarget, { recursive: true, mode: input.mode });
-    execFileSync(
+    // Extraction runs off the event loop into this call's private staging
+    // directory. The swap below stays synchronous, so no other run can observe
+    // or interleave with a half-installed checkpoint.
+    await execFileBuffered(
       "tar",
       [
         "--no-same-owner",
@@ -15458,7 +15623,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const providerArtifactsSignal = () => input.executionContext?.signal
     ? AbortSignal.any([input.executionContext.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000);
   const liveProviderRecovery = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
-  const artifactBackup = artifactStorage ? verifyNativeHarnessBackup({ root, execution: input.execution,
+  const artifactBackup = artifactStorage ? await verifyNativeHarnessBackupStreamed({ root, execution: input.execution,
     runnerInstanceId: input.runnerInstanceId }) : null;
   let providerArtifacts = artifactStorage ? artifactBackup?.manifest.providerArtifacts
     ?? input.providerPackAdmissionSource?.artifacts as NativeProviderArtifactReceipt | undefined : undefined;
@@ -15476,7 +15641,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const remoteClaudeRunnerBinary = remoteClaude && !adoptingPersistedRemoteRunner
     ? await resolveRemotePaperclipRunnerBinary({ runner: remoteCommandRunner!, remoteCwd: remoteTarget!.remoteCwd, configuredPath: input.runnerRemoteBinaryPath })
     : null;
-  const remoteClaudeTarget = remoteClaudeRunnerBinary ? runnerBinaryTarget(readFileSync(remoteClaudeRunnerBinary)) : null;
+  const remoteClaudeTarget = remoteClaudeRunnerBinary ? await binaryTargetFromHeader(remoteClaudeRunnerBinary, runnerBinaryTarget) : null;
   const useBundledClaudePack = remoteClaude && !adoptingPersistedRemoteRunner && !input.runnerRemoteProviderPackPath?.trim();
   if (useBundledClaudePack && remoteClaudeTarget !== "linux-x64" && remoteClaudeTarget !== "linux-arm64") {
     throw new Error("runner_remote_provider_artifact_incompatible: Claude remote provider packs require a qualified Linux target");
@@ -15537,12 +15702,12 @@ async function createRunnerdBackendWithinSessionClaim(
   // The persisted admission owns a surviving runner's identity. Local release
   // files are launch inputs and may no longer exist on a replacement controller.
   const controllerRunnerBinary = adoptingPersistedRemoteRunner
-    ? input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary()
+    ? input.runnerRemoteBinaryPath?.trim() || await resolvePaperclipRunnerBinaryAsync()
     : targetMatchedCodexArtifact
     ? await timeController("runner_binary", () => resolveRemotePaperclipRunnerBinary({ runner: remoteCommandRunner!, remoteCwd: remoteTarget.remoteCwd, configuredPath: input.runnerRemoteBinaryPath }))
     : remoteTarget
-    ? remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? bundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
-    : resolvePaperclipRunnerBinary();
+    ? remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
+    : await resolvePaperclipRunnerBinaryAsync();
   const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
     stateDirectory: root,
     binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
@@ -16053,7 +16218,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // hashed once.
   let retiredSourceBackup: VerifiedHarnessBackup | null = null;
   const retiredSourceBackupAuthorized = async (): Promise<boolean> => {
-    const backup = verifyNativeHarnessBackup({ root, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
+    const backup = await verifyNativeHarnessBackupStreamed({ root, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
     const sessionId = nativeSessionKey(input.execution);
     if (!backup || !sessionId) return false;
     retiredSourceBackup = backup;
@@ -16069,7 +16234,7 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!remoteTarget || !remoteCommandRunner) {
       throw new Error("runner_harness_backup_unavailable");
     }
-    const backup = retiredSourceBackup ?? verifyNativeHarnessBackup({
+    const backup = retiredSourceBackup ?? await verifyNativeHarnessBackupStreamed({
       root,
       execution: input.execution,
       runnerInstanceId: input.runnerInstanceId,
@@ -16528,7 +16693,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     `[paperclip-runner] remote checkpoint read interrupted (attempt ${attempt} of ${attempts}); reading the settled state again\n`,
                   ),
                 );
-                const manifest = buildNativeHarnessBackupManifest({
+                const manifest = await buildNativeHarnessBackupManifestStreamed({
                   backupRoot: pendingRoot,
                   execution: input.execution,
                   runnerInstanceId: input.runnerInstanceId,
@@ -17548,9 +17713,9 @@ export function createRemoteNativeArtifactPreparation(input: {
 
   const prepare = async (requiredMode: "dial_wss" | "listen_ws") => {
     const matchesControllerRunnerArtifact = async (executable: string): Promise<boolean> => {
-      const expected = createHash("sha256")
-        .update(readFileSync(controllerRunnerBinary))
-        .digest("hex");
+      // Streamed once per boot and reused while the binary is unchanged; a
+      // synchronous 31 MB read here blocked the event loop on every run.
+      const expected = (await cachedFileSha256(controllerRunnerBinary)).slice("sha256:".length);
       try {
         const probe = await remoteCommandRunner.execute({
           command: "sh",
