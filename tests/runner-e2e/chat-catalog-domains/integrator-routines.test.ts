@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradeIntegratorRoutines, integratorRoutinesCases } from "./integrator-routines.js";
+import { gradeIntegratorRoutines, integratorRoutinesCases, runsHourly } from "./integrator-routines.js";
 function valid(id: string) {
   const managed = id === "routines.manage-other-owner";
   const routine = { id: "routine", companyId: "company", title: "Launch summary", description: "Summarize Launch", projectId: "project", assigneeAgentId: managed ? "morgan" : "ceo", createdByAgentId: "ceo", latestRevisionId: "revision",
@@ -63,4 +63,9 @@ describe("owner-routed routine change", () => {
     outside.activity.push({ id: "w", action: "routine.trigger_updated", entityType: "routine", entityId: "routine", agentId: "morgan", runId: "other-run" });
     expect(gradeIntegratorRoutines(outside).passed).toBe(false);
   });
+});
+
+it("recognizes every-hour cron forms and rejects other frequencies", () => {
+  for (const cron of ["0 * * * *", "15 */1 * * *", "0 0-23 * * *", "5 0-23/1 * * ?"]) expect(runsHourly(cron)).toBe(true);
+  for (const cron of ["* * * * *", "0 */2 * * *", "0 9-17 * * *", "0 * * * 1-5", "*/30 * * * *", "0 *"]) expect(runsHourly(cron)).toBe(false);
 });

@@ -4652,7 +4652,7 @@
       "chat-catalog-domains/run-roles.ts",
       "chat-scenarios/routines.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.manage-other-owner.v3",
+    "oracleVersion": "paperclip.chat-catalog.integrator.manage-other-owner.v4",
     "expectedRunCount": 2,
     "minimumRunCount": 1,
     "expectedHumanMessageCount": 1,

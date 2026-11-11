@@ -22,6 +22,13 @@ function routineObservation(value: unknown): RoutinesObservation | undefined {
   return observation(value) && Array.isArray(o.routines) && !!o.histories && !!o.routineRevisions && typeof o.browserTimezone === "string" ? o : undefined;
 }
 type Activity = Entity & { runId?: string | null };
+/** Fires once in every hour of every day: one fixed minute, and an hour field that covers every hour
+ * (`*`, `*\/1`, `0-23`, `0-23/1`). Day, month and weekday fields are unrestricted. */
+export function runsHourly(cron: string) {
+  const [minute, hour, ...rest] = cron.trim().split(/\s+/);
+  return rest.length === 3 && rest.every(field => field === "*" || field === "?") && /^(?:[0-5]?\d)$/.test(minute ?? "")
+    && /^(?:\*|0-23)(?:\/1)?$/.test(hour ?? "");
+}
 function linksTo(o: InternalObservation, href: string, segment: string, ids: Array<string | null | undefined>) {
   try { const url = new URL(href, o.origin), parts = url.pathname.split("/").map(decodeURIComponent), index = parts.indexOf(segment);
     return url.origin === new URL(o.origin).origin && index >= 0 && ids.filter(Boolean).includes(parts[index + 1]); } catch { return false; }
@@ -65,7 +72,7 @@ export function gradeIntegratorRoutines(value: unknown) {
     // When the owner does change it, the saved result must be the requested one: one enabled hourly schedule
     // in the original timezone (minute fixed, every hour).
     const schedules = current?.triggers.filter(row => row.kind === "schedule") ?? [];
-    const hourly = schedules.length === 1 && schedules[0]!.enabled === true && /^[0-5]?\d\s+\*\s+\*\s+\*\s+\*$/.test(schedules[0]!.cronExpression?.trim() ?? "")
+    const hourly = schedules.length === 1 && schedules[0]!.enabled === true && runsHourly(schedules[0]!.cronExpression ?? "")
       && schedules[0]!.timezone === before?.triggers.find(row => row.kind === "schedule")?.timezone;
     c.add("same-owned-definition-and-triggers", !!current && current.assigneeAgentId === worker?.id && o.routines.length === 1
       && agentWrites.length === ownerWrites.length && (unchanged || ownerWrites.length > 0 && hourly),
@@ -90,6 +97,6 @@ export const integratorRoutinesCases: readonly ChatCatalogCase[] = [
     const created = await ctx.input.api.post<RoutineDetail>(`${root(ctx)}/routines`, { title: "Morgan's launch summary", description: "Summarize Launch without changing project tasks.", projectId: p.id, assigneeAgentId: worker.id });
     await ctx.input.api.post(`/api/routines/${created.id}/triggers`, { kind: "schedule", enabled: true, cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" });
     return { project: p, worker, routine: await ctx.input.api.get<RoutineDetail>(`/api/routines/${created.id}`), originalRevisions: await ctx.input.api.get<RoutineRevision[]>(`/api/routines/${created.id}/revisions`) };
-  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v3", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
+  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v4", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
     sourceFiles: ["chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-routines.ts", "chat-catalog-domains/run-roles.ts", "chat-scenarios/routines.yaml"] }),
 ];
