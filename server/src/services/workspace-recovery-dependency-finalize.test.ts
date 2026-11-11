@@ -14,11 +14,6 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
     (input.leaseId ? targets.get(input.leaseId) : undefined) ?? actual.resolveEnvironmentExecutionTarget(input) };
 });
 
-/**
- * A done child whose retained work was saved by "Recover saved files" must stop
- * holding its parent's dependency wait. A legacy child can still share the
- * parent's execution workspace.
- */
 describe("dependency readiness after a done child's work is recovered", () => {
   useWorkspaceRecoveryFixture(targets);
 
@@ -28,7 +23,6 @@ describe("dependency readiness after a done child's work is recovered", () => {
     expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
     const [child] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
-    // Legacy shape: the parent and the child share one execution workspace.
     const [parent] = await db.insert(issues).values({ companyId: f.companyId, title: "Parent",
       status: "blocked", priority: "medium", assigneeAgentId: child.assigneeAgentId,
       executionWorkspaceId: f.workspaceId }).returning();
@@ -54,8 +48,6 @@ describe("dependency readiness after a done child's work is recovered", () => {
   it("releases the parent when the recovery saved through a snapshot without a workspace", async () => {
     const f = await recoveredDoneChildWithParent();
     const finalize = await recoveryFinalize(f);
-    // Snapshot-fallback shape: the preservation receipt has no workspace, so
-    // the child's latest operation on the workspace is the run's failed finalize.
     await db.update(workspaceOperations).set({ executionWorkspaceId: null }).where(and(
       eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
       eq(workspaceOperations.phase, "workspace_recovery")));
@@ -72,7 +64,6 @@ describe("dependency readiness after a done child's work is recovered", () => {
     const [sibling] = await db.insert(issues).values({ companyId: f.companyId, title: "Sibling", status: "done",
       priority: "medium", executionWorkspaceId: f.workspaceId }).returning();
     await db.insert(issueRelations).values({ companyId: f.companyId, issueId: sibling.id, relatedIssueId: f.parentId, type: "blocks" });
-    // Saving cleared the writer before teardown; the sibling began work then.
     await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: sibling.id,
       executionWorkspaceId: f.workspaceId, phase: "worktree_prepare", status: "succeeded",
       startedAt: new Date(finalize.startedAt.getTime() - 1_000), finishedAt: new Date(finalize.startedAt.getTime() - 500) });

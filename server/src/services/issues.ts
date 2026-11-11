@@ -2576,18 +2576,12 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
 
 /** An issue's own operation takes precedence over the legacy NULL fallback.
  * A later successful finalize clears either barrier. A successful operation
- * enclosed by its owning finalize is also saved, although it started later.
- * Saved-work recovery ("Recover saved files") ends a terminal run's workspace
- * work with its own successful finalize. That finalize settles the issue's
- * finished operations of the same run, and only those: it never counts as a
- * workspace-wide finalize, because other tasks sharing the workspace can start
- * work while the recovery waits for sandbox teardown. The recovery finalize
- * has no workspace (all releases so far), so this rule needs no migration. */
+ * enclosed by its owning finalize is also saved, although it started later. */
 function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
   return sql`${workspaceId} is not null and exists (
     select 1 from (values (1)) seed(value)
     left join lateral (
-      select id, phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
+      select phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
       where blocker_operation.company_id = ${companyId}::uuid
         and blocker_operation.execution_workspace_id = ${workspaceId}
         and blocker_operation.issue_id = ${issueId}
