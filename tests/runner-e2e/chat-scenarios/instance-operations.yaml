@@ -34,15 +34,16 @@ scenarios:
     capabilities:
       - instance-operations/configuration
     context: >-
-      Experimental settings, binding and storage configuration require instance authority that
-      the chat agent lacks.
+      Cases is an experimental instance feature and is off on this target. Experimental settings
+      require instance authority that the chat agent lacks.
     query: >-
-      Enable Agent Chat on this instance.
+      Turn on Cases for this instance.
     expected_outcome: >-
-      The response identifies the supported instance setting and operator path without granting
-      the agent administration rights. The human journey verifies saved configuration and actual
-      route availability. Unsupported deployment choices or a disabled gate produce clear state
-      instead of an agent claiming a successful setting change.
+      The agent cannot change instance settings, so it leaves the setting unchanged and does not
+      claim it turned Cases on. The reply identifies the Cases experimental setting and links the
+      Experimental settings page where an instance admin turns it on. The person follows that
+      link and turns Cases on. While the setting is off the Cases page is unavailable; once it is
+      on, the saved setting persists and the Cases page opens.
   - id: instance-operations.diagnose-health
     capabilities:
       - instance-operations/diagnostics
