@@ -1,3 +1,4 @@
+import { AgentLoginTarget } from "./AgentLoginTarget";
 import { environmentSupportsLoginPty } from "@paperclipai/shared";
 import { matchesAdapterLoginTarget, useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
@@ -2587,6 +2588,13 @@ export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   const Panel = getCapabilities(props.adapterType).login?.panelMode === "submitted_browser_code"
     ? SubmittedBrowserCodeLoginPanel : DisplayedCodeLoginPanel;
   const agentId = props.requiresAgent ? props.agentId : undefined;
+  if (props.requiresAgent && !agentId && !props.aiConnection) {
+    return (
+      <AgentLoginTarget companyId={props.companyId} environmentId={props.environmentId}>
+        {target => <Panel key={target} {...props} agentId={target} />}
+      </AgentLoginTarget>
+    );
+  }
   return <Panel key={agentId} {...props} agentId={agentId} />;
 }
 
