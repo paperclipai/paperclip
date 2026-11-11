@@ -737,10 +737,12 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
       // without a task owner, the Runner itself durably suspended. Unsettled
       // Core tool callbacks (a governed-wait park leaves one) belong to the
       // discarded conversation: its run is terminal, its provider is stopped,
-      // and the new conversation never replays them. Other close errors can
-      // mean controller authority is still live.
-      const discardable = options?.discardUnsettledSession === true
-        && error instanceof NativeSessionCloseUnrecoverableError;
+      // and the new conversation never replays them. With a Launcher receipt
+      // any close error qualifies, including a controller journal drain that
+      // outlived the close grace: the old journal lives in the discarded
+      // session's own state root, and its Runner is stopped. Without a task
+      // owner, other close errors can mean controller authority is still live.
+      const discardable = options?.discardUnsettledSession === true;
       const owner = discardable ? pluginTaskSessionOwners.get(entry.session) : undefined;
       const retiredWithoutCheckpoint = discardable && (owner
         ? owner.isRetired() || await owner.retireSupersededTask().catch(() => false)

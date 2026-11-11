@@ -11849,7 +11849,7 @@ describe("native warm session supervision", () => {
       await closeIdleWarmNativeSessionsForRestart();
     });
 
-    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound", "pending-semantic", "stop-unconfirmed-at-close", "suspended-unbound"] as const)(
+    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound", "pending-semantic", "stop-unconfirmed-at-close", "suspended-unbound", "journal-drain-timeout"] as const)(
       "handles a permanently rejected plugin close during reset (%s)", async mode => {
         const { base, next, run } = fixture(`identity-poisoned-close-${mode}`);
         const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: base.binding.runId,
@@ -11881,21 +11881,26 @@ describe("native warm session supervision", () => {
           runnerInstanceId: "runner", runnerIngressAuthorized: true,
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task } });
         const registration = await owner.registration({} as never, base.binding.runId);
+        // A drain that outlives the close grace fails before the checkpoint's stop
+        // and completion, as releaseRunnerProcessOwnership does in the transport.
+        const drainTimedOut = mode === "journal-drain-timeout";
         const failure = mode === "other-error" ? new Error("controller retirement unconfirmed")
+          : drainTimedOut ? new Error("Controller journal drain timed out; preserve the session before replacing its writer.")
           // A local Runner that durably suspended is contained without a task owner.
           : mode === "suspended-unbound" ? new NativeSessionCloseUnrecoverableError({ runnerSuspended: true, providerDrained: true }, false)
           : new NativeSessionCloseUnrecoverableError(undefined, mode !== "pending-semantic");
         let closePromise: Promise<void> | undefined;
         const close = vi.fn(() => closePromise ??= (async () => {
           await registration.release();
-          await registration.checkpoint("unsettled").catch(() => undefined);
+          if (!drainTimedOut) await registration.checkpoint("unsettled").catch(() => undefined);
           throw failure;
         })());
         const session = { close };
-        if (mode !== "unbound" && mode !== "suspended-unbound") backend.bindManagedSession(session as never);
+        // Without a task owner, a close error other than proven suspension still blocks.
+        if (mode !== "unbound" && mode !== "suspended-unbound" && mode !== "other-error") backend.bindManagedSession(session as never);
         // A governed-wait park leaves its Core tool callback unsettled, and a
         // failed Launcher stop leaves no receipt: neither belongs to the new session.
-        const succeeds = mode === "retired" || mode === "pending-semantic" || mode === "stop-unconfirmed-at-close" || mode === "suspended-unbound";
+        const succeeds = mode === "retired" || mode === "pending-semantic" || mode === "stop-unconfirmed-at-close" || mode === "suspended-unbound" || drainTimedOut;
         const collectStopped = vi.fn(async () => {
           expect(owner.isRetired()).toBe(true);
           if (mode === "collection-failed") throw new Error("file collection failed");

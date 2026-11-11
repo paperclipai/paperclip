@@ -344,9 +344,12 @@ Runner's own durable suspension instead. Unsettled Core tool results do not
 block this reset: a governed-wait park leaves one by design, its run is already
 terminal, its provider is stopped, and the new session never replays it. Core
 then collects stopped instruction files before it releases the in-memory owner.
-The old checkpoint remains evidence; it is not reused by the new session. A
-handoff that still fails, failed file collection, other close error, or
-continuation of the same session still blocks replacement.
+With that task receipt, any close error qualifies, including a controller
+journal drain that outlived the close grace: the old journal lives in the
+discarded session's own state root. The old checkpoint remains evidence; it is
+not reused by the new session. A handoff that still fails, failed file
+collection, another close error from an owner without a task, or continuation
+of the same session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
 
 Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
