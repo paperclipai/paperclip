@@ -4149,14 +4149,14 @@ export function issueRoutes(
     const existingAgentIds = new Set<string>();
     for (const stage of existingPolicy?.stages ?? []) {
       for (const participant of stage.participants) {
-        if (participant.type === "agent" && participant.agentId) existingAgentIds.add(participant.agentId);
+        if (participant.type === "agent" && participant.agentId) existingAgentIds.add(participant.agentId.toLowerCase());
       }
     }
     const requestedAgentIds = new Set<string>();
     for (const stage of policy.stages) {
       for (const participant of stage.participants) {
         if (participant.type !== "agent" || !participant.agentId) continue;
-        if (existingAgentIds.has(participant.agentId)) continue;
+        if (existingAgentIds.has(participant.agentId.toLowerCase())) continue;
         requestedAgentIds.add(participant.agentId);
       }
     }
@@ -4169,9 +4169,9 @@ export function issueRoutes(
         .select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds.slice(index, index + batchSize))));
-      for (const row of rows) foundAgentIds.add(row.id);
+      for (const row of rows) foundAgentIds.add(row.id.toLowerCase());
     }
-    const unknownAgentIds = agentIds.filter((agentId) => !foundAgentIds.has(agentId));
+    const unknownAgentIds = agentIds.filter((agentId) => !foundAgentIds.has(agentId.toLowerCase()));
     if (unknownAgentIds.length > 0) {
       throw unprocessable("Execution policy references agents that do not exist in this company", {
         agentIds: unknownAgentIds,

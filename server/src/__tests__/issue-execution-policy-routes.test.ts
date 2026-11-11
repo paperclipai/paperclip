@@ -237,7 +237,7 @@ describe("issue execution policy routes", () => {
           .filter((value): value is string => typeof value === "string" && value !== "company-1"))];
         const rows = async () => name === "issues"
           ? (await Promise.all(ids.map(id => mockIssueService.getById(id)))).filter(row => row && ids.includes(row.id))
-          : ids.filter(id => !mockMissingAgentIds.has(id)).map(id => ({ id, companyId: "company-1", permissions: null }));
+          : ids.filter(id => !mockMissingAgentIds.has(id)).map(id => ({ id: id.toLowerCase(), companyId: "company-1", permissions: null }));
         const query = {
           orderBy: () => query,
           for: () => query,
@@ -1282,6 +1282,23 @@ describe("issue execution policy routes", () => {
       const res = await request(await createApp())
         .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
         .send({ executionPolicy: storedPolicy });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    });
+
+    it("accepts an agent id written in uppercase", async () => {
+      const issue = issueWithPolicy(null);
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ executionPolicy: reviewPolicy("44444444-4444-4444-8444-44444444ABCD") });
 
       expect(res.status).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalled();
