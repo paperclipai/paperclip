@@ -1,4 +1,5 @@
 import { readRequiredQualityReview } from "../required-quality-review.js";
+import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { and, desc, eq, gt, or } from "drizzle-orm";
 import { completionContracts, heartbeatRuns, issueWorkProducts, issues, nativeRunResults,
@@ -9,7 +10,7 @@ import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { resolveNativeReconciliationStatus, type NativeReconciliationFacts } from "./native-reconciliation-status.js";
 import { pendingNativeGovernance, resolveNativeFinalizerStatus } from "./native-run-finalizer.js";
-import { NATIVE_STATUS_ARBITER_POLICY_VERSION, supersedeStaleOwnerCompletion, type NativeAuthoritativeIssueStatus, type NativeStatusDecision } from "./status-arbiter.js";
+import { gateDoneOnConfiguredReview, NATIVE_STATUS_ARBITER_POLICY_VERSION, supersedeStaleOwnerCompletion, type NativeAuthoritativeIssueStatus, type NativeStatusDecision } from "./status-arbiter.js";
 import { commitNativeStatusDecision, NativeStatusRaceError } from "./status-decision-committer.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import { readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
@@ -215,9 +216,13 @@ export async function reassessNativeStatusFromSource(
       ? await pendingNativeGovernance({ db, companyId: row.companyId, issueId: row.issueId,
           runId: row.runId, executionState: record(currentIssue.executionState) }) : null;
     const qualityReview = currentIssue ? await readRequiredQualityReview(db, currentIssue) : null;
+    // The configured review policy gates Done here exactly as in the finalizer.
+    const reviewStage = currentIssue && !currentIssue.conversationAgentId
+      ? completionReviewStageEntry(currentIssue, row.agentId) : { kind: "none" as const };
     let decision = retiredAutomaticReview && currentIssue
       ? resolveNativeFinalizerStatus({
           hasPendingChildCompletion,
+          executionReviewStageStarts: reviewStage.kind === "starts",
           requiredQualityReviewSatisfied: qualityReview?.satisfied,
           assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
           governanceGate,
@@ -234,6 +239,7 @@ export async function reassessNativeStatusFromSource(
       decision = resolveNativeFinalizerStatus({ assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
         requiredQualityReviewSatisfied: false, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId });
     }
+    decision = gateDoneOnConfiguredReview(decision, reviewStage, row.agentId);
     // New evidence from a reassigned-away run cannot close the new owner's task.
     if (currentIssue && !currentIssue.conversationAgentId) {
       decision = supersedeStaleOwnerCompletion(decision, { ...currentIssue, status: row.issueStatus }, row.agentId, row.runId);

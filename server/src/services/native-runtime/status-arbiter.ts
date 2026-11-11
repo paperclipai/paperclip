@@ -1,4 +1,4 @@
-import { COMPLETION_REVIEW_STAGE_REASON } from "../issue-execution-policy.js";
+import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, type CompletionReviewStageEntry } from "../issue-execution-policy.js";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 
@@ -111,6 +111,27 @@ export function ownsNativeTaskCompletion(
 
 export function heldByAnotherRun(issue: { executionRunId?: string | null }, runId: string) {
   return Boolean(issue.executionRunId && issue.executionRunId !== runId);
+}
+
+/**
+ * The configured review policy decides a Done exactly as the issue route does:
+ * a stage that starts turns Done into its review, and a refused transition
+ * keeps the task open with a recovery note. Every Done-producing path applies it.
+ */
+export function gateDoneOnConfiguredReview(
+  decision: NativeStatusDecision,
+  stage: CompletionReviewStageEntry,
+  agentId: string,
+): NativeStatusDecision {
+  if (decision.statusAction !== "done" || stage.kind === "none") return decision;
+  if (stage.kind === "starts") {
+    return { ...decision, statusAction: "in_review", toStatus: "in_review", reasonCode: COMPLETION_REVIEW_STAGE_REASON,
+      unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+  }
+  return { ...decision, statusAction: "in_progress", toStatus: "in_progress", reasonCode: COMPLETION_REVIEW_STAGE_REJECTED_REASON,
+    unblockDescriptor: null, effects: [{ kind: "release_checkout" }, { kind: "record_recovery", cause: COMPLETION_REVIEW_STAGE_REJECTED_REASON,
+      nextAction: `The task's configured review policy cannot start its review: ${stage.message} Correct the review stages or participants; do not mark the task done.`,
+      agentId }] };
 }
 
 export function supersedeStaleOwnerCompletion(

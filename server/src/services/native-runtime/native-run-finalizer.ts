@@ -37,7 +37,7 @@ import { findSupersededExternalReviewRequests } from "./superseded-external-revi
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
-import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
+import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -65,6 +65,7 @@ import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   supersedeStaleOwnerCompletion,
   type NativeAuthoritativeIssueStatus,
+  gateDoneOnConfiguredReview,
 } from "./status-arbiter.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
@@ -1729,15 +1730,7 @@ export async function finalizeNativeRun(input: {
             : effect.kind === "record_finalization_error" ? { ...effect, nextAction: error.message } : effect) };
       }
     }
-    // A policy the issue route would refuse for `status: "done"` keeps the
-    // task open instead of closing it.
-    if (proposedDecision.statusAction === "done" && reviewStage.kind === "rejected") {
-      proposedDecision = { ...proposedDecision, statusAction: "in_progress", toStatus: "in_progress",
-        reasonCode: COMPLETION_REVIEW_STAGE_REJECTED_REASON, unblockDescriptor: null,
-        effects: [{ kind: "release_checkout" }, { kind: "record_recovery", cause: COMPLETION_REVIEW_STAGE_REJECTED_REASON,
-          nextAction: `The task's configured review policy cannot start its review: ${reviewStage.message} Correct the review stages or participants; do not mark the task done.`,
-          agentId: run.agentId }] };
-    }
+    proposedDecision = gateDoneOnConfiguredReview(proposedDecision, reviewStage, run.agentId);
     const decision = conversationNativeDecision({
       conversation: isConversation(authoritativeIssue), terminalState,
       workspaceFinalizeStatus: input.workspaceFinalizeStatus, hasGovernanceGate: !!governanceGate,

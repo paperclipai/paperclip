@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueWorkProducts, issues, statusDecisions } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueThreadInteractions, issueWorkProducts, issues, statusDecisions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { gateDoneOnConfiguredReview, type NativeStatusDecision } from "./status-arbiter.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
@@ -20,7 +22,7 @@ describe.skipIf(!support.supported)("native completion with a configured review 
   }, 90_000);
   afterAll(async () => { await temporary?.cleanup(); });
 
-  type Options = { stage?: "user" | "agent"; monitor?: boolean; liveCycleWithRemovedStage?: boolean; unprovenEvidence?: boolean;
+  type Options = { stage?: "user" | "agent"; monitor?: boolean; liveCycleWithRemovedStage?: boolean; unprovenEvidence?: boolean; earlyReview?: boolean;
     beforeFinish?: (runId: string, result: PrpStructuredRunResult) => Promise<void> };
   async function finishVerifiedDone(options: Options = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -63,17 +65,22 @@ describe.skipIf(!support.supported)("native completion with a configured review 
       evidence: options.unprovenEvidence ? refs.map(ref => ({ ref })) : [{ kind: "work_product", ref: evidenceRef }],
       verification: [options.unprovenEvidence ? { commandOrCheck: "python3 html.parser verification of website.html", status: "passed" }
         : { commandOrCheck: "Site check", status: "passed", artifactRef: evidenceRef }] } as PrpStructuredRunResult;
-    if (options.beforeFinish) await options.beforeFinish(runId, result);
+    const reported: PrpStructuredRunResult = options.earlyReview ? { ...result, reportedWorkDisposition: "needs_review",
+      completionClaim: { ...result.completionClaim, objectiveSatisfied: false,
+        criteria: [{ criterionId: "objective", status: "not_satisfied", evidenceRefs: [] }] as never,
+        remainingWork: [{ description: "Build the pages after the layout review", blocksCompletion: true }] },
+      attentionRequests: [{ kind: "review", summary: "Riley: review the layout before I build the pages.", ownerClass: "human" }] } : result;
+    if (options.beforeFinish) await options.beforeFinish(runId, reported);
     const identity = { companyId, agentId, issueId, runId };
     const port = new PaperclipControlPlanePort(db, { ...identity, sessionId, completionContractId: contractId,
       completionContractSha256: contractSha256, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: randomUUID() });
     await port.openRun({ identity: { ...identity, sessionId }, backendKind: "mock", sourceInstanceId: runnerId });
-    await port.completeRun({ result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: randomUUID() });
+    await port.completeRun({ result: reported, terminal: options.earlyReview ? { ...CONTROL_PLANE_CONFORMANCE_TERMINAL, reportedWorkDisposition: "needs_review" } : CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: randomUUID() });
     await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
     const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
     const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId));
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
-    return { task: task!, decisions, wakes, reviewerId, reviewerAgentId, stageId, agentId };
+    return { task: task!, decisions, wakes, reviewerId, reviewerAgentId, stageId, agentId, companyId, issueId };
   }
 
   it("closes verified work on a task without a configured review stage", async () => {
@@ -147,6 +154,29 @@ describe.skipIf(!support.supported)("native completion with a configured review 
         attentionRequests: [{ kind: "review" as const, summary: "Riley: review the layout before I build the pages.", ownerClass: "human" as const }] };
       await expect(nativeCompletionFeedback(db, runId, early)).resolves.not.toContain("configured review stage");
     } });
+  });
+
+  it("resumes the worker instead of closing when an early review card is accepted on a configured-review task", async () => {
+    const r = await finishVerifiedDone({ stage: "user", earlyReview: true });
+    expect(r.task.status).toBe("in_review");
+    const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, r.issueId));
+    expect(card).toMatchObject({ kind: "request_confirmation", status: "pending" });
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: r.issueId, companyId: r.companyId, projectId: null, goalId: null, status: "in_review" }, card!.id, {}, { userId: r.reviewerId });
+    const [after] = await db.select().from(issues).where(eq(issues.id, r.issueId));
+    expect(after).toMatchObject({ status: "todo", assigneeAgentId: r.agentId });
+  });
+
+  it("gates every Done-producing decision on the configured review", () => {
+    const done = { policyVersion: "test", statusAction: "done", toStatus: "done", reasonCode: "decision_superseded_by_new_evidence",
+      unblockDescriptor: null, effects: [{ kind: "release_checkout" }] } as unknown as NativeStatusDecision;
+    expect(gateDoneOnConfiguredReview(done, { kind: "none" }, "worker")).toBe(done);
+    expect(gateDoneOnConfiguredReview(done, { kind: "starts", patch: {}, state: {} as never }, "worker"))
+      .toMatchObject({ statusAction: "in_review", reasonCode: "execution_stage_review_required" });
+    expect(gateDoneOnConfiguredReview(done, { kind: "rejected", message: "No eligible review participant." }, "worker"))
+      .toMatchObject({ statusAction: "in_progress", reasonCode: "execution_stage_transition_rejected" });
+    const open = { ...done, statusAction: "in_progress", toStatus: "in_progress" } as NativeStatusDecision;
+    expect(gateDoneOnConfiguredReview(open, { kind: "starts", patch: {}, state: {} as never }, "worker")).toBe(open);
   });
 
   it("fails closed when the stored policy cannot be read", () => {
