@@ -19,9 +19,24 @@ describe("Codex planning read-only grading", () => {
     expect(gradePlanningWriteRefusal([command(write, "failed", 1, denied), command(write, "completed", 0)], nonce))
       .toMatchObject({ passed: false, failure: expect.stringContaining("allowed a write") });
     expect(gradePlanningWriteRefusal([command(write, "completed", null)], nonce))
-      .toMatchObject({ passed: false, failure: expect.stringContaining("without a sandbox refusal") });
+      .toMatchObject({ passed: false, failure: expect.stringContaining("without a filesystem refusal") });
     expect(gradePlanningWriteRefusal([command(write, "failed", 127, "printf: command not found")], nonce))
-      .toMatchObject({ passed: false, failure: expect.stringContaining("without a sandbox refusal") });
+      .toMatchObject({ passed: false, failure: expect.stringContaining("without a filesystem refusal") });
+    expect(gradePlanningWriteRefusal([command(write, "failed", 1, "Permission denied")], nonce))
+      .toMatchObject({ passed: false, failure: expect.stringContaining("without a filesystem refusal") });
+  });
+
+  it("does not count a sandbox that failed to start as a refused write", () => {
+    for (const output of [
+      "bwrap: setting up uid map: Permission denied",
+      "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+    ]) {
+      expect(gradePlanningWriteRefusal([command(write, "failed", 1, output)], nonce)).toMatchObject({
+        passed: false,
+        attempts: [expect.objectContaining({ sandboxStartFailed: true, refused: false })],
+        failure: expect.stringContaining("failed to start the command"),
+      });
+    }
   });
 
   it("ignores file checks that are not the requested write", () => {

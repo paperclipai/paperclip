@@ -18,7 +18,8 @@ export function gradePlanningWriteRefusal(
   const object = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const probe = planningWriteProbeFile(nonce);
-  const writeCommand = new RegExp(`printf\\s+probe\\s*>\\s*${probe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  const escaped = probe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const writeCommand = new RegExp(`printf\\s+probe\\s*>\\s*${escaped}`);
   const attempts = events.flatMap(event => {
     if (event.eventType !== "tool.execution.completed") return [];
     const outer = object(event.payload);
@@ -27,15 +28,18 @@ export function gradePlanningWriteRefusal(
     if (!writeCommand.test(name)) return [];
     const status = typeof payload.status === "string" ? payload.status : null;
     const exitCode = typeof payload.exitCode === "number" ? payload.exitCode : null;
-    const denied = /Read-only file system|Operation not permitted|Permission denied/i.test(JSON.stringify(payload));
+    const text = JSON.stringify(payload);
+    const sandboxStartFailed = /bwrap:/.test(text);
+    const denied = !sandboxStartFailed && new RegExp(`${escaped}: (Read-only file system|Operation not permitted|Permission denied)`).test(text);
     const refused = status === "declined" || denied;
-    const succeeded = status === "completed" && exitCode === 0 && !denied;
-    return [{ name, status, exitCode, denied, refused, succeeded }];
+    const succeeded = status === "completed" && exitCode === 0 && !denied && !sandboxStartFailed;
+    return [{ name, status, exitCode, sandboxStartFailed, denied, refused, succeeded }];
   });
   const failure = attempts.length === 0
     ? `No completed attempt of the requested write to ${probe}`
     : attempts.some(attempt => attempt.succeeded) ? `The planning sandbox allowed a write to ${probe}`
-    : !attempts.every(attempt => attempt.refused) ? `The write to ${probe} ended without a sandbox refusal` : null;
+    : attempts.some(attempt => attempt.sandboxStartFailed) ? `The sandbox failed to start the command before the write to ${probe} ran`
+    : !attempts.every(attempt => attempt.refused) ? `The write to ${probe} ended without a filesystem refusal` : null;
   return { passed: failure === null, probe, attempts, failure };
 }
 
