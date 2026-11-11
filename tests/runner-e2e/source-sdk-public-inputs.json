@@ -379,7 +379,7 @@
     "packages/shared/src/types/company-skill.ts": "259ee322e01e0c97532a6d5ff2e9753e3c1de460",
     "packages/shared/src/types/company.ts": "40b5858ebabe3df694af955bd68d2222069a3993",
     "packages/shared/src/types/connection-intent.ts": "883a9ea5d509780422a668906be058acf8c0eaeb",
-    "packages/shared/src/types/cost.ts": "bdf1f818dd06b7fd029f3f004b023be3e1755a56",
+    "packages/shared/src/types/cost.ts": "20cbc1b6cc6c1a45643d3b25e5d66944c8ec2aba",
     "packages/shared/src/types/dashboard.ts": "cdeaebdb7774b3b039dc5199a5ed8bc6cf32ce40",
     "packages/shared/src/types/decision-queue.ts": "029b8c252913700287892b277d5353f00d2ef484",
     "packages/shared/src/types/decision-training.ts": "23a6485b82e1cd1125ec2002285e0a29cd73d485",
