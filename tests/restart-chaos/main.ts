@@ -53,6 +53,7 @@ import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timelin
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
 import { sessionFaultServerEnvironment } from "./session-faults.js";
+import { gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -302,6 +303,8 @@ async function main(): Promise<number> {
   let diskFullSeam: DiskFullFaultSeam | null = null;
   let speedSection: string | null = null;
   let storageSection: string | null = null;
+  let warmShutdownSection: string | null = null;
+  let daytonaCleanup: WarmShutdownCleanup | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -883,6 +886,7 @@ async function main(): Promise<number> {
       sandboxSweep ??= await owned.sweep(0);
       // Cleanup only through Paperclip; the harness never changes a sandbox.
       const cleanup = await owned.cleanUp();
+      daytonaCleanup = cleanup;
       timeline.add("daytona_cleanup", cleanup);
       console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
@@ -914,6 +918,15 @@ async function main(): Promise<number> {
         timeline.add("supervisor_stop_failed", { error: String(error) });
       }
     }
+    if (isWarmWave(plan.options)) {
+      const serverLog = await readFile(supervisor.paths.serverLogPath, "utf8").catch(() => "");
+      const warmShutdown = gradeWarmShutdown({ cleanup: daytonaCleanup, serverLog });
+      timeline.add("warm_shutdown", { ...warmShutdown });
+      if (warmShutdown.verdict === "fail") anyFailure = true;
+      warmShutdownSection = warmShutdownMarkdown(warmShutdown);
+      await writeFile(path.join(waveDir, "warm-shutdown.json"), `${JSON.stringify(warmShutdown, null, 2)}\n`, { mode: 0o600 })
+        .catch(error => timeline.add("warm_shutdown_write_failed", { error: String(error) }));
+    }
     storageChaos?.stop();
     await credentialRotation?.settled();
     if (credentialRotation?.failures.length) harnessError ??= new Error(`ST5R credential rotation failed: ${credentialRotation.failures.join("; ")}`);
@@ -940,7 +953,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }
