@@ -285,8 +285,6 @@ async function requestApp(
 
 describe("agent permission routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    // Sequential on purpose: concurrent vi.importActual() calls can drop a
-    // factory mock, because Vitest keeps one shared mock-resolution callstack.
     const [{ errorHandler }, { agentRoutes }] = [
       await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
       await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),

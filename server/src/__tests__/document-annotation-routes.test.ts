@@ -158,8 +158,6 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
-  // Sequential on purpose: concurrent vi.importActual() calls can drop a
-  // factory mock, because Vitest keeps one shared mock-resolution callstack.
   const [{ issueRoutes }, { errorHandler }] = [
     await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -229,8 +227,6 @@ describe("document annotation routes", () => {
     mockAnnotationService.updateThread.mockResolvedValue({ ...annotationThread, status: "resolved" });
     mockAnnotationService.remapOpenThreadsForDocument.mockResolvedValue([]);
     // Cold route transforms belong to fixture setup, not the request timeout.
-    // Sequential on purpose: concurrent vi.importActual() calls can drop a
-    // factory mock, because Vitest keeps one shared mock-resolution callstack.
     await vi.importActual("../routes/issues.js");
     await vi.importActual("../middleware/index.js");
   });

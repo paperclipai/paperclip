@@ -46,8 +46,6 @@ function createDbStub(...selectResponses: unknown[][]) {
 }
 
 async function loadAppModules() {
-  // Sequential on purpose: concurrent vi.importActual() calls can drop a
-  // factory mock, because Vitest keeps one shared mock-resolution callstack.
   return [
     await vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
     await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),

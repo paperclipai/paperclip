@@ -89,8 +89,6 @@ function localAdminActor() {
 
 describe("instance settings routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    // Sequential on purpose: concurrent vi.importActual() calls can drop a
-    // factory mock, because Vitest keeps one shared mock-resolution callstack.
     const [{ errorHandler }, { instanceSettingsRoutes }, { cloudControlMiddleware }, controlIdentity] = [
       await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
       await vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),

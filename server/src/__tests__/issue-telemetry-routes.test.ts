@@ -121,8 +121,6 @@ function makeIssue(status: "todo" | "done") {
 }
 
 async function loadAppModules() {
-  // Sequential on purpose: concurrent vi.importActual() calls can drop a
-  // factory mock, because Vitest keeps one shared mock-resolution callstack.
   return [
     await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),

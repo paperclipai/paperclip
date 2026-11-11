@@ -130,8 +130,6 @@ function registerModuleMocks() {
 
 describe("cost routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    // Sequential on purpose: concurrent vi.importActual() calls can drop a
-    // factory mock, because Vitest keeps one shared mock-resolution callstack.
     const [costsRouteModule, middlewareModule] = [
       await vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
       await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
