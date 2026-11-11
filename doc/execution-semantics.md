@@ -328,6 +328,15 @@ Messages from the same conversation still coalesce into one run. Messages from
 different conversations queue separately and run one after the other. Wakes
 without a conversation keep their normal coalescing.
 
+The comparison uses the conversations of the messages themselves, not only the
+conversation a wake records. A wake that the work-intent outbox saved for
+unanswered chat messages records no conversation, so a message from another
+conversation does not join it, and is not folded into a run promoted from it.
+Board comments have no conversation and still join any batch. A saved chat wake
+that older code already merged across two conversations is split when it is
+promoted: the other conversation's messages run first as saved messages, then
+the recorded conversation runs with its own messages.
+
 If reviewed chat attestation exhausts its short lock or delivery wait before
 provider dispatch, the run records `reviewed_chat_execution_binding_not_ready`.
 The existing durable retry scheduler permits at most two further attempts. Each
