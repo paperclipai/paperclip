@@ -1355,6 +1355,11 @@ annotation for each such test, and a row to the step summary with the file, test
 retry count and job. Fix a test that this reporter reports. Do not treat the
 retry as the fix. Playwright retries stay at zero.
 
+Heartbeat environment-inheritance tests await `drainActiveRunExecutions()` before
+asserting terminal state instead of treating a five-second poll as completion.
+Instance-wide environment names include the fixture UUID so a failed attempt
+cannot collide with the next attempt's unique-name constraint.
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable
