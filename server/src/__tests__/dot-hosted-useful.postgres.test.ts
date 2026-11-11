@@ -2,6 +2,7 @@ import { forkNormalDotApp } from "./helpers/owned-linux/physical-app-owner.js";
 import { attachDotChild, type ChildSnapshot } from "./helpers/owned-linux/child-client.js";
 import { usefulAfterPhysicalRestart } from "./helpers/owned-linux/useful-after-physical-restart.js";
 import { nativeProviderRecoveryEvidence } from "../services/native-runtime/native-session-executor.js";
+import { NATIVE_PREPARATION_FENCING_VERSION } from "../services/native-runtime/native-active-runs.js";
 import { loadNativeRunnerCheckpointHeader, NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES } from "../services/native-runtime/native-runner-checkpoint.js";
 import { stopCheckpointedOwnedRun } from "./helpers/owned-linux/checkpointed-fault.js";
 import { beginOwnedPrivateCA } from "./helpers/owned-linux/private-ca-scope.js";
@@ -679,18 +680,29 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     await vi.waitFor(async()=>{
       expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId))).toHaveLength(1);
     },{timeout:30_000,interval:50});
+    const checkpointObservationStarted=performance.now();
+    let lastCheckpointOracle:{recoveryMode:Awaited<ReturnType<typeof nativeProviderRecoveryEvidence>>["recoveryMode"];
+      checkpointExists:boolean;providerSessionEstablished:boolean;providerEventsExist:boolean;observedAtMs:number}|undefined;
     try {
     await vi.waitFor(async()=>{
-      expect(await nativeProviderRecoveryEvidence({db,runId:failedRunId,
-        sourceFailureCode:"native_session_interrupted",executionTargetKind:"remote"}))
+      const evidence=await nativeProviderRecoveryEvidence({db,runId:failedRunId,
+        sourceFailureCode:"native_session_interrupted",executionTargetKind:"remote"});
+      lastCheckpointOracle={recoveryMode:evidence.recoveryMode,checkpointExists:evidence.checkpointExists,
+        providerSessionEstablished:evidence.providerSessionEstablished,providerEventsExist:evidence.providerEventsExist,
+        observedAtMs:performance.now()-checkpointObservationStarted};
+      expect(evidence)
         .toMatchObject({recoveryMode:"exact_checkpoint_resume",checkpointExists:true,providerSessionEstablished:true});
     },{timeout:30_000,interval:50});
     } catch (primary) {
+      // Freeze the last returned existing call at timeout: Vitest does not
+      // cancel an in-flight callback when it rejects with its last error.
+      const lastOracleAtCatch=lastCheckpointOracle,catchObservedAtMs=performance.now()-checkpointObservationStarted;
+      let snapshotObservedAtMs:number|undefined,headerObservedAtMs:number|undefined;
       // Failure-only observation with the SAME live fixture key. Never grants
       // recovery, polls a header, or changes the original checkpoint oracle.
       let category="not_read",keyPresent=Boolean(process.env.PAPERCLIP_SECRETS_MASTER_KEY);
       let rowPresent=false,companyMatches=false,issuePresent=false,sessionPresent=false,instancePresent=false;
-      let profileParsed=false,terminalStatePresent=false,terminalFailed=false,headerPresent=false,withinBound=false,directParsed=false,stagedParsed=false;
+      let profileIsObject=false,snapshotCheckpointExists=false,snapshotProviderSessionEstablished=false,runnerBackend=false,currentFencingVersion=false,terminalStatePresent=false,terminalFailed=false,headerPresent=false,withinBound=false,directParsed=false,stagedParsed=false;
       let directRun=false,directSession=false,directInstance=false,stagedRun=false,stagedSession=false,stagedInstance=false;
       try {
         if(!keyPresent)category="live_key_missing";
@@ -701,14 +713,23 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
             .from(heartbeatRuns).where(eq(heartbeatRuns.id,failedRunId)).limit(1);
           rowPresent=Boolean(current);companyMatches=current?.companyId===companyId;
           issuePresent=Boolean(current?.issueId);sessionPresent=Boolean(current?.sessionId);instancePresent=Boolean(current?.instanceId);
-          const terminal=z.object({sessionCheckpoint:z.object({terminal:z.object({runTerminalState:z.string().optional()}).passthrough().optional()}).passthrough().optional()})
-            .passthrough().safeParse(current?.profile);
-          profileParsed=terminal.success;terminalStatePresent=terminal.success&&terminal.data.sessionCheckpoint?.terminal?.runTerminalState!==undefined;
-          terminalFailed=terminal.success&&terminal.data.sessionCheckpoint?.terminal?.runTerminalState==="failed";
+          snapshotObservedAtMs=performance.now()-checkpointObservationStarted;
+          // Exact nativeProviderRecoveryEvidence record semantics, including
+          // null/non-object/array -> {}. No stricter diagnostic profile schema.
+          const record=(value:unknown):Record<string,unknown>=>value&&typeof value==="object"&&!Array.isArray(value)
+            ? (value as Record<string,unknown>) : {};
+          const profile=record(current?.profile),checkpoint=record(profile.sessionCheckpoint),terminal=record(checkpoint.terminal);
+          profileIsObject=Boolean(current?.profile)&&typeof current?.profile==="object"&&!Array.isArray(current?.profile);
+          snapshotCheckpointExists=Object.keys(checkpoint).length>0;
+          snapshotProviderSessionEstablished=typeof checkpoint.providerSessionId==="string"&&checkpoint.providerSessionId.length>0
+            ||Object.keys(record(checkpoint.providerIdentity)).length>0;
+          runnerBackend=checkpoint.backendKind==="runner";currentFencingVersion=profile.nativePreparationFencingVersion===NATIVE_PREPARATION_FENCING_VERSION;
+          terminalStatePresent=terminal.runTerminalState!==undefined;terminalFailed=terminal.runTerminalState==="failed";
           if(!current||!companyMatches||!current.issueId)category="run_binding_unavailable";
           else if(activeCaseDeadline!==undefined&&performance.now()>=activeCaseDeadline)category="original_budget_exhausted";
           else {
             const header=await loadNativeRunnerCheckpointHeader(db,{companyId,issueId:current.issueId,runId:failedRunId});
+            headerObservedAtMs=performance.now()-checkpointObservationStarted;
             headerPresent=header!==null;withinBound=header!==null&&Buffer.byteLength(header)<=NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES;
             if(header===null)category="header_unavailable_missing_or_decrypt";
             else if(!withinBound)category="header_oversize";
@@ -730,7 +751,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       try {
         if(!destination||!path.isAbsolute(destination))throw new Error("private_witness_destination_required");
         await writeFile(destination+".checkpoint-frontier.json",JSON.stringify({scope:"ONE failure-only live-key normal header observation",category,
-          keyPresent,rowPresent,companyMatches,issuePresent,sessionPresent,instancePresent,profileParsed,terminalStatePresent,terminalFailed,headerPresent,withinBound,directParsed,stagedParsed,
+          lastOracle:lastOracleAtCatch,catchObservedAtMs,snapshotObservedAtMs,headerObservedAtMs,
+          keyPresent,rowPresent,companyMatches,issuePresent,sessionPresent,instancePresent,profileIsObject,snapshotCheckpointExists,snapshotProviderSessionEstablished,runnerBackend,currentFencingVersion,terminalStatePresent,terminalFailed,headerPresent,withinBound,directParsed,stagedParsed,
           directRun,directSession,directInstance,stagedRun,stagedSession,stagedInstance,
           controllerCheckpointMatches:directRun&&directSession&&directInstance||stagedRun&&stagedSession&&stagedInstance,
           noRawPayload:true,noPolling:true,originalFailureRethrown:true},null,2)+"\n",{flag:"wx",mode:0o600});
