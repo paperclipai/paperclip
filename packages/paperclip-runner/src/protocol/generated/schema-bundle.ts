@@ -729,7 +729,8 @@ export const commandV3Schema = {
         "session.goal.get",
         "session.goal.set",
         "session.goal.clear",
-        "external_provider.operation"
+        "external_provider.operation",
+        "runner.attachment.download"
       ]
     },
     "issuedAt": {

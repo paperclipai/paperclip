@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
+use crate::attachment_download::{AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND};
 use crate::credential_observer::CredentialObserver;
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
@@ -141,6 +142,7 @@ pub struct NativeProviderCommandExecutor {
     selected: Option<SelectedExecutor>,
     recovery_checked: bool,
     credentials: CredentialObserver,
+    attachments: AttachmentDownloads,
 }
 
 impl NativeProviderCommandExecutor {
@@ -148,6 +150,7 @@ impl NativeProviderCommandExecutor {
         let state_dir = state_dir.into();
         let credentials = CredentialObserver::new(&state_dir, &config.normalized_session_id);
         Self {
+            attachments: AttachmentDownloads::new(&state_dir),
             state_dir,
             config: config.clone(),
             selected: None,
@@ -253,6 +256,9 @@ impl NativeProviderCommandExecutor {
                     | "harness.exited"
             )
         });
+        if terminal {
+            self.attachments.close();
+        }
         self.credentials.poll(terminal)?;
         Ok(self
             .credentials
@@ -409,6 +415,20 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     }
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.select_recovery()?;
+        if command.command_type == DOWNLOAD_COMMAND {
+            if !matches!(
+                self.selected,
+                Some(SelectedExecutor::LocalFacade(_) | SelectedExecutor::Acpx(_))
+            ) {
+                return Err(DurableRunnerError::invalid(
+                    "attachment downloads require a workspace provider",
+                ));
+            }
+            let grant: AttachmentGrant = serde_json::from_value(command.payload.clone())
+                .map_err(|_| DurableRunnerError::invalid("attachment download grant is invalid"))?;
+            let path = self.attachments.download(grant, &self.config.turn_id)?;
+            return Ok(CommandExecution::result(json!({"path": path})));
+        }
         if self.selected.is_none()
             && matches!(command.command_type.as_str(), "run.prepare" | "run.attach")
         {
@@ -434,6 +454,19 @@ impl CommandExecutor for NativeProviderCommandExecutor {
                 )
             })?
             .execute(command);
+        if result.is_ok()
+            && matches!(
+                command.command_type.as_str(),
+                "turn.stop"
+                    | "run.cancel"
+                    | "session.close"
+                    | "session.destroy"
+                    | "runner.suspend"
+                    | "runner.shutdown"
+            )
+        {
+            self.attachments.close();
+        }
         if result.is_ok() && matches!(command.command_type.as_str(), "run.prepare" | "run.attach") {
             self.credentials.configure(&command.payload)?;
         }
@@ -476,6 +509,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.attachments.reset();
         self.config = config.clone();
         if let Some(executor) = self.selected.as_mut() {
             executor.rotate_authority(config);
@@ -523,6 +557,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         } else {
             Ok(())
         };
+        self.attachments.close();
         cleanup.and(self.credentials.poll(true))
     }
 }

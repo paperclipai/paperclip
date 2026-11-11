@@ -35,7 +35,7 @@
     {
       "path": "schemas/command-v3.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/command.schema.json",
-      "sha256": "6d910a693fba2a7ee77a0aaf0cbfdf4d20998f0b157e64da699671b296ff0769"
+      "sha256": "3c8a2d55bfcd1151885ed74bfb4fe2994b9b56f4794d02e446606253d2e8870d"
     },
     {
       "path": "schemas/command.schema.json",

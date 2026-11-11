@@ -150,3 +150,26 @@ after success. Runner publishes its matching absolute executable as host-owned
 as `PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`. Configured task environment cannot
 override either value. Context is invalidated on warm attachment and process
 recovery, so a caller cannot attribute a later completion to a different run.
+
+### Runner attachment downloads
+
+For native workspace providers, the authenticated controller can send
+`runner.attachment.download` as a PRP v3 command after provider preparation.
+The controller authorizes the source and sends `turnId`, an HTTPS `url` with
+no query or fragment, a short-lived opaque bearer `token`, `byteSize`,
+`sha256` (lowercase hex), and `contentType`. The controller must choose the
+tenant download endpoint and issue a grant redeemable for only the admitted
+file during that turn. Keep grants in private controller state.
+
+Runner makes a bounded HTTPS GET with the grant in the Authorization header,
+verifies the complete file, and returns `{ path }` for use by the provider.
+The path is local to the Runner, uses a random filename, and is valid only
+during the bound turn. Runner clears its private download directory on turn
+settlement, authority rotation, and shutdown. The next use of that Runner
+state directory also clears residue from interrupted processes. The command
+supports files through 10 MiB and limits live downloads to 128 files or
+128 MiB per turn. Providers should receive only the path and file metadata.
+
+The tenant controller must gate this command on a compatible Runner build.
+The command defines the Runner receiver. Attachment admission and issuance
+of download grants belong to the tenant app.
