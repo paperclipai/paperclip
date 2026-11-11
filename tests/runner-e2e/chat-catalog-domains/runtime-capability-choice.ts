@@ -37,6 +37,10 @@ export function environmentSettingsLink(o: Pick<InternalObservation, "links" | "
     } catch { return false; }
   });
 }
+/** A saved computer's list row reads "<name> · <driver>"; the default-computer select repeats names as options. */
+export function environmentRowName(name: string) {
+  return new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: · [a-z]+)?$`);
+}
 export function gradeCapabilityChoice(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("independent-capability-observation", !!o, "Actual owned targets, production capability metadata and native reply are required.");
@@ -107,7 +111,7 @@ export const runtimeCapabilityChoiceCase = runtimeDefinition(scenarioId, async c
     expect(actualResponse.ok() && JSON.stringify(await actualResponse.json()) === JSON.stringify(state.capabilities), "The opened view loads the independently checked capabilities").toBe(true);
     const view = ctx.input.page.getByTestId("instance-settings-environments-section");
     await expect(view).toBeVisible();
-    for (const target of targets) await expect(view.getByText(target.name, { exact: true })).toBeVisible();
+    for (const target of targets) await expect(view.getByText(environmentRowName(target.name)).and(view.locator(":not(option)")).first()).toBeVisible();
     await ctx.input.evidence("runtime-advertised-capabilities.json", { supportIsAdvertisedOnly: true, runtimeHealth: "unverified", openedFromReplyLink: href, supportedTargetId: targets[0]!.id, unqualifiedTargetId: targets[1]!.id, capabilities: state.capabilities });
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();

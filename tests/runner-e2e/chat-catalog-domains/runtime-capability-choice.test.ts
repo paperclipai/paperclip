@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { getEnvironmentCapabilities } from "../../../packages/shared/src/environment-support.js";
-import { advertisedClaudeTargets, environmentSettingsLink, gradeCapabilityChoice, runtimeCapabilityChoiceCase, unqualifiedSshConfig } from "./runtime-capability-choice.js";
+import { advertisedClaudeTargets, environmentRowName, environmentSettingsLink, gradeCapabilityChoice, runtimeCapabilityChoiceCase, unqualifiedSshConfig } from "./runtime-capability-choice.js";
 import { runtimeComputerSshCases } from "./runtime-computers-ssh.js";
 import { runtimePrivateRequirements } from "../chat-runtime-private-requirements.js";
 const origin = "http://127.0.0.1:3100";
@@ -63,4 +63,10 @@ it("removes only the choice case private contract and preserves both genuine SSH
     expect(runtimeComputerSshCases.find(row => row.scenarioId === id)?.externalInput?.provider).toBe("ssh");
     expect(runtimePrivateRequirements).toHaveProperty(id);
   }
+});
+
+it("matches a computer's list row with or without its driver suffix and nothing broader", () => {
+  for (const text of ["Local", "Local · local", "Build server abc123-1 · ssh"]) expect([environmentRowName("Local"), environmentRowName("Build server abc123-1")].some(re => re.test(text))).toBe(true);
+  for (const text of ["Local computers", "Not Local", "Build server abc123-10 · ssh", "Build server abc123-1 · ssh extra"]) expect([environmentRowName("Local"), environmentRowName("Build server abc123-1")].some(re => re.test(text))).toBe(false);
+  expect(environmentRowName("a.b (c)").test("a.b (c) · ssh")).toBe(true); expect(environmentRowName("a.b (c)").test("aXb (c)")).toBe(false);
 });
