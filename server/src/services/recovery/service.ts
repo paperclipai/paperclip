@@ -299,6 +299,7 @@ export type StrandedRecoveryCause =
   | "deliberate_wait_without_target"
   | "process_lost"
   | "provider_quota"
+  | typeof ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
@@ -444,12 +445,24 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   );
 }
 
+/**
+ * Lease acquisition failed before any provider work, and its bounded retry
+ * budget is spent. Nothing needs inspection or repair by the board: the task
+ * rests on a system-owned action and the normal Retry, never on a board one.
+ */
+function isPreDispatchEnvironmentProviderFailure(latestRun: LatestIssueRun) {
+  if (latestRun?.errorCode !== ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE) return false;
+  const recovery = parseObject(parseObject(latestRun.resultJson).executionRecovery);
+  return recovery.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 function resolveStrandedRecoveryCause(
   latestRun: LatestIssueRun,
   explicitCause?: StrandedRecoveryCause,
 ): StrandedRecoveryCause {
   if (explicitCause) return explicitCause;
   if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
+  if (isPreDispatchEnvironmentProviderFailure(latestRun)) return ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
   if (latestRun?.errorCode === "process_lost") return "process_lost";
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
@@ -2553,6 +2566,7 @@ export function recoveryService(
       latestRun: input.latestRun,
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota";
+    const isEnvironmentProviderWait = recoveryCause === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
     const now = new Date();
     const actions = database === db ? recoveryActionsSvc : issueRecoveryActionService(database);
     const action = await actions.upsertSourceScoped({
@@ -2565,7 +2579,7 @@ export function recoveryService(
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
-      ownerType: isProviderQuotaWait ? "system" : "board",
+      ownerType: isProviderQuotaWait || isEnvironmentProviderWait ? "system" : "board",
       ownerAgentId: null,
       ownerUserId: null,
       previousOwnerAgentId: input.issue.assigneeAgentId,
@@ -2587,7 +2601,7 @@ export function recoveryService(
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
       },
-      evidenceOnCreate: isProviderQuotaWait
+      evidenceOnCreate: isProviderQuotaWait || isEnvironmentProviderWait
         ? {}
         : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
       nextAction:
@@ -2597,6 +2611,8 @@ export function recoveryService(
             ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
             : recoveryCause === "provider_quota"
               ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+              : isEnvironmentProviderWait
+              ? "No agent work started. Retry the task once the environment provider is available."
               : recoveryCause === "codex_output_inactivity_monitor"
                 ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
                 : recoveryCause === "workspace_validation_failed"
@@ -2632,6 +2648,8 @@ export function recoveryService(
             type: "monitor_only",
             reason: recoveryCause,
           }
+        : isEnvironmentProviderWait
+        ? { type: "manual_retry", reason: recoveryCause, preservesSourceAssignee: true }
         : {
             type: "board_escalation",
             reason: recoveryCause,

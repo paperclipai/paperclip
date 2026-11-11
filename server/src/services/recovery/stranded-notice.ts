@@ -281,7 +281,8 @@ export function buildStrandedRecoveryEscalationNotice(input: {
       ? agentLinkRow("Recovery owner", input.recoveryOwner)
       : keyValueRow(
           "Recovery owner",
-          "Board decision required",
+          // A pre-dispatch provider outage needs no board decision, only Retry.
+          input.recoveryCause === "environment_provider_unavailable" ? "Retry when ready" : "Board decision required",
         ),
     keyValueRow(
       "Next action",

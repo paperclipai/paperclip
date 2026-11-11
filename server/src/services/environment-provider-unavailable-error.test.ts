@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
+import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import {
   EnvironmentProviderUnavailableError,
   findEnvironmentProviderUnavailableError,
   readTransientEnvironmentProviderFailure,
+  readTransientLeaseAcquisitionFailure,
 } from "./environment-provider-unavailable-error.js";
 
 function withStatus(status: number, key: "status" | "statusCode" = "status") {
@@ -110,5 +113,66 @@ describe("EnvironmentProviderUnavailableError", () => {
     });
     expect(findEnvironmentProviderUnavailableError(new Error("outer", { cause: inner }))).toBe(inner);
     expect(findEnvironmentProviderUnavailableError(new Error("plain"))).toBeNull();
+  });
+});
+
+describe("readTransientLeaseAcquisitionFailure", () => {
+  const run = { id: "run-1", companyId: "company-1" };
+  const creationFailure = (elapsedMs: number, runId = run.id) => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "Daytona lease acquisition timed out; allocation cleanup is pending",
+      data: { schema: "paperclip/environment-creation-cleanup/v1",
+        cleanup: { providerLeaseId: "paperclip-create-1", companyId: run.companyId, environmentId: "env-1", runId,
+          attemptId: "attempt-1", accountFingerprint: "a".repeat(64), labels: {} },
+        acquisitionDiagnostic: { phase: "create", elapsedMs, budgetMs: 300_000 } } });
+    captureEnvironmentAcquisitionDiagnostic(error, { companyId: run.companyId, environmentId: "env-1", runId },
+      readEnvironmentAcquisitionDiagnostic(error));
+    return error;
+  };
+
+  it("keeps the provider's transient status", () => {
+    expect(readTransientLeaseAcquisitionFailure(withStatus(503), run)).toEqual({ httpStatus: 503 });
+  });
+
+  it("retries a creation that hit the acquisition deadline", () => {
+    expect(readTransientLeaseAcquisitionFailure(new Error("wrapped", { cause: creationFailure(300_000) }), run))
+      .toEqual({ acquisitionTimedOut: true });
+  });
+
+  it("retries a provisional creation that did not finish", () => {
+    expect(readTransientLeaseAcquisitionFailure(creationFailure(12_000), run)).toEqual({ reason: "acquisition_incomplete" });
+  });
+
+  it("ignores an acquisition diagnostic recorded for another run", () => {
+    expect(readTransientLeaseAcquisitionFailure(creationFailure(300_000, "run-2"), run)).toBeNull();
+  });
+
+  it("retries a plugin RPC deadline", () => {
+    const timeout = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT, message: "RPC call timed out" });
+    expect(readTransientLeaseAcquisitionFailure(timeout, run)).toEqual({ acquisitionTimedOut: true });
+  });
+
+  it.each([
+    ["a PostgresError", Object.assign(new Error("terminating connection"), { name: "PostgresError", code: "57P01" })],
+    ["a closed connection", Object.assign(new Error("closed"), { code: "CONNECTION_CLOSED" })],
+    ["a Drizzle query wrapper", new Error("Failed query: select 1\nparams: ")],
+  ])("retries %s while recording the lease", (_label, cause) => {
+    expect(readTransientLeaseAcquisitionFailure(new Error("lease", { cause }), run)).toEqual({ reason: "database_error" });
+  });
+
+  it("does not retry a definite non-transient status, even with other evidence", () => {
+    const refused = Object.assign(new Error("unauthorized", { cause: creationFailure(300_000) }), { status: 401 });
+    expect(readTransientLeaseAcquisitionFailure(refused, run)).toBeNull();
+  });
+
+  it("does not retry an error without structured evidence", () => {
+    expect(readTransientLeaseAcquisitionFailure(new Error("Daytona lease acquisition timed out"), run)).toBeNull();
+  });
+
+  it("names the reason in the board-facing failure", () => {
+    const error = new EnvironmentProviderUnavailableError({ environmentName: "Sandbox", driver: "daytona",
+      evidence: { reason: "database_error" }, cause: null });
+    expect(error.providerFailure).toMatchObject({ category: "overloaded", providerCode: "database_error" });
+    expect(error.message).toContain("a database query failed while recording the lease");
   });
 });
