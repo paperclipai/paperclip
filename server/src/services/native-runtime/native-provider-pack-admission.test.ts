@@ -226,6 +226,28 @@ describe("provider pack admission PostgreSQL fencing", () => {
     } finally { release(); await owner; }
     await expect(recordNativeProviderPackAdmission(db, f)).resolves.toBe(true);
   });
+  it.each([false, true])("waits for a concurrent run-event append's run-row lock instead of losing the admission (waitForClaim: %s)", async waitForClaim => {
+    // Staging failure: a run-event append locks the run row
+    // (FOR NO KEY UPDATE, as appendHeartbeatRunEvent does) for milliseconds. A
+    // NOWAIT admission write failed, left the state pending, and artifact
+    // retention then failed the run as native_provider_artifacts_admission_unverified.
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const append = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)).for("no key update");
+      acquired(); await gate;
+    });
+    await holding;
+    const recording = recordNativeProviderPackAdmission(db, { ...f, waitForClaim } as Parameters<typeof recordNativeProviderPackAdmission>[1])
+      .then(value => ({ value }), error => ({ error }));
+    setTimeout(release, 150);
+    await append;
+    expect(await recording).toEqual({ value: true });
+    expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState)
+      .toEqual({ ...f.profile.nativeProviderPackAdmissionState, state: "verified" });
+  });
   it.each([false, true])("waits within the durable-capture bound and rechecks the claim after its lock (revoked: %s)", async revoked => {
     const f = await fixture();
     let release!: () => void, acquired!: () => void;
