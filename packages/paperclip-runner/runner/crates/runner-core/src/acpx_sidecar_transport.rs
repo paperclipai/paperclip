@@ -21,6 +21,30 @@ pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_BUFFERED_EVENTS: usize = 512;
 const MAX_EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+/// A response wait blocks in slices of at most this long.
+const RESPONSE_WAIT_SLICE: Duration = Duration::from_secs(1);
+/// A slice that returns this much later than it asked was not waiting: this
+/// process was stopped (SIGSTOP, a frozen container, a whole-process stall).
+const STOPPED_TIME_THRESHOLD: Duration = Duration::from_secs(2);
+
+/// Moves `deadline` later by the time a wait slice spent stopped.
+///
+/// The sidecar is a child of this process and is normally stopped with it, so
+/// it could not answer either. Without this, a thaw found the deadline already
+/// past and failed the request before either process ran (chaos t05: a 61 s
+/// freeze failed a turn start against its 30 s bound). Only the overshoot
+/// beyond the requested slice is credited, so each slice still spends its own
+/// length and a slow but running wait reaches its deadline.
+pub(crate) fn credit_stopped_time(
+    deadline: Instant,
+    slice: Duration,
+    elapsed: Duration,
+) -> Instant {
+    match elapsed.checked_sub(slice) {
+        Some(stopped) if stopped > STOPPED_TIME_THRESHOLD => deadline + stopped,
+        _ => deadline,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct AcpxSidecarTransportConfig {
@@ -710,13 +734,18 @@ impl AcpxSidecarTransport {
         request_id: u64,
         deadline: Instant,
     ) -> Result<Option<CommandOutcome>, LocalRunnerError> {
+        let mut deadline = deadline;
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let slice_started = Instant::now();
+            let remaining = deadline.saturating_duration_since(slice_started);
             if remaining.is_zero() {
                 return Ok(None);
             }
-            let Some(line) = self.receive_stdout_line(remaining, command.as_str())? else {
-                return Ok(None);
+            let slice = remaining.min(RESPONSE_WAIT_SLICE);
+            let received = self.receive_stdout_line(slice, command.as_str())?;
+            deadline = credit_stopped_time(deadline, slice, slice_started.elapsed());
+            let Some(line) = received else {
+                continue;
             };
             match parse_frame(&line)? {
                 ParsedFrame::Event(event) => self.buffer_event(event)?,
@@ -1287,6 +1316,26 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn credits_only_a_slice_overshoot_beyond_the_stop_threshold() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let slice = Duration::from_secs(1);
+        // A slice that returned on time, or a little late on a loaded host.
+        assert_eq!(
+            credit_stopped_time(deadline, slice, Duration::from_millis(400)),
+            deadline
+        );
+        assert_eq!(
+            credit_stopped_time(deadline, slice, Duration::from_millis(2_900)),
+            deadline
+        );
+        // A 61 s freeze inside a 1 s slice: all 60 s beyond the slice are credited.
+        assert_eq!(
+            credit_stopped_time(deadline, slice, Duration::from_secs(61)),
+            deadline + Duration::from_secs(60)
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn a_timed_out_turn_start_never_establishes_a_resumable_rejection() {

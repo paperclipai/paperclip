@@ -4064,7 +4064,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
   readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
-  /** Clock of the startup or recovery admission in progress, if any. */
+  /** Clock of the startup, recovery, or turn-start admission in progress, if any. */
   #admissionClock: RunnerStallLedger | null = null;
   #startupSteps: {
     begin(name: RunnerdStartupStep["name"]): void;
@@ -6226,10 +6226,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   /**
-   * One stopped-time clock per admission; a nested startup keeps the outer one.
-   * It covers the Runner command barriers and the provider-identity wait. The
-   * warm-transition and source-attachment reconnect polls keep their own
-   * wall-clock grace deadlines.
+   * One stopped-time clock per admission (startup, recovery, or a turn start);
+   * a nested admission keeps the outer one. It covers the Runner command
+   * barriers, the provider-identity wait, and turn.start with its start-event
+   * and snapshot waits. The warm-transition and source-attachment reconnect
+   * polls keep their own wall-clock grace deadlines.
    */
   async #withAdmissionClock<T>(work: () => Promise<T>): Promise<T> {
     if (this.#admissionClock !== null) return work();
@@ -6244,7 +6245,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
-  /** Wall time, or the admission clock while a startup or recovery runs. */
+  /** Wall time, or the admission clock while a startup, recovery, or turn start runs. */
   #waitNow(): number {
     return this.#admissionClock?.now() ?? Date.now();
   }
@@ -7339,7 +7340,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #startTurn(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.turn_start", () => this.#startTurnWork(params), {inputBytes:Buffer.byteLength(JSON.stringify(params)), tokenDataAvailable:false}) : this.#startTurnWork(params);
+    // turn.start and its start-event and snapshot waits share one deadline, so
+    // they share one stopped-time clock (chaos t05: a 61 s freeze failed a
+    // 30 s turn.start before the Runner or its sidecar could answer).
+    const work = () => this.#withAdmissionClock(() => this.#startTurnWork(params));
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.turn_start", work, {inputBytes:Buffer.byteLength(JSON.stringify(params)), tokenDataAvailable:false}) : work();
   }
 
   /**
@@ -7381,14 +7386,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
-    let commandDeadline = Date.now() + turnStartTimeoutMs;
+    let commandDeadline = this.#waitNow() + turnStartTimeoutMs;
     const heldCalls = this.#core;
     if (typeof heldCalls?.semanticToolResultsSettled === "function" && !heldCalls.semanticToolResultsSettled()) {
       let recovering = true;
       void Promise.resolve(heldCalls.recoverPendingSemanticInputs())
         .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))))
         .finally(() => { recovering = false; });
-      while (recovering && Date.now() < commandDeadline) {
+      while (recovering && this.#waitNow() < commandDeadline) {
         this.#assertStartupOpen();
         this.#throwIfFailed();
         await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
@@ -7396,7 +7401,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#assertStartupOpen();
       this.#throwIfFailed();
       if (recovering) throw new Error("native_turn_start_held_tool_calls_unresolved: recovering an earlier turn's held Paperclip tool calls did not finish before the turn-start deadline");
-      commandDeadline = Date.now() + turnStartTimeoutMs;
+      commandDeadline = this.#waitNow() + turnStartTimeoutMs;
     }
     const compactionTurn = params[COMPACTION_TURN] === true;
     const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
@@ -7498,7 +7503,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // Codex and OpenCode return their provider-assigned identity.
       const deadline =
         this.options.turnStartTimeoutMs === undefined
-          ? Date.now() + 30_000
+          ? this.#waitNow() + 30_000
           : commandDeadline;
       const providerTurnStarted = () =>
         turnStartResponseReady({
@@ -7511,7 +7516,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // the start event early enough to read the runner's snapshot before it.
       const adoptionCheckAt = deadline - Math.min(
         TURN_START_ADOPTION_CHECK_RESERVE_MS,
-        Math.floor(Math.max(0, deadline - Date.now()) / 4),
+        Math.floor(Math.max(0, deadline - this.#waitNow()) / 4),
       );
       // The runner can end the accepted turn before it starts. Its terminal is
       // held for the pending start, so report that real cause at once.
@@ -7526,7 +7531,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           throw new Error(`runnerd failed the provider turn before it started: ${failure}`);
       };
       const waitForStarted = async () => {
-      while (!providerTurnStarted() && Date.now() < adoptionCheckAt) {
+      while (!providerTurnStarted() && this.#waitNow() < adoptionCheckAt) {
         this.#throwIfFailed();
         this.#pumpEvents();
         if (providerTurnStarted()) break;
@@ -7567,7 +7572,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         // Not provably live: keep the original contract and wait for the
         // start event until the configured bound, then fail as before.
-        while (!providerTurnStarted() && Date.now() < deadline) {
+        while (!providerTurnStarted() && this.#waitNow() < deadline) {
           this.#throwIfFailed();
           this.#pumpEvents();
           if (providerTurnStarted()) break;
