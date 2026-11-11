@@ -51,9 +51,6 @@ const envelopeSchema = z.object({
     // The restored Runner failed this turn as lost on restore: its usage can
     // never be reported, so it does not hold the receipt open.
     lostOnRestore: z.literal(true).optional() }).optional(),
-  // Session totals that a converted `session_cumulative` receipt was derived
-  // from. Saved with the charge, so the next run of the same session subtracts
-  // them even when this run never reaches completion.
   sessionUsage: usage.optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
@@ -622,8 +619,6 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     }
   }
   const projectLiveUsage = createLiveRunUsageProjection(initialLiveUsage);
-  // A baseline belongs to the thread that reported the totals. A fresh thread
-  // has no earlier run, so its totals count from zero.
   const sessionBaselines = new Map<string, Promise<ReturnType<typeof normalizeUsageTotals> | undefined>>();
   const readSessionBaseline = (sessionId: string) => {
     let baseline = sessionBaselines.get(sessionId);
@@ -723,8 +718,6 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // can be considered complete, even if a later attempt succeeded.
       receipt.complete = !captureFailed && parts.every(part => part.complete);
     }
-    // Without the reporting thread no baseline is provably its own: keep the
-    // cumulative totals for completion, which resolves the run's session.
     const baseline = receipt.usageBasis === "session_cumulative" && receipt.usageSessionId ? await readSessionBaseline(receipt.usageSessionId) : undefined;
     const journaled = baseline === undefined ? receipt : priceAnthropicReceipt(priceCodexReceipt({ ...receipt, usageBasis: "per_run",
       usage: normalizeAdapterRunUsage(normalizeUsageTotals(receipt.usage), baseline, "session_cumulative") ?? undefined,

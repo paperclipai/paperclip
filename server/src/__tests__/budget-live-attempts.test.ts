@@ -120,13 +120,11 @@ const support = await getEmbeddedPostgresTestSupport();
       const value = Reflect.get(target, property);
       return typeof value === "function" ? value.bind(target) : value;
     } }) as Db;
-    // A run that resumes thread-1, as Codex CLI reports it: thread totals.
     async function startRun() {
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", sessionIdBefore: "thread-1" });
       await db.insert(budgetReservations).values({ companyId, agentId, runId, amountCents: "10" });
       const recorder = await createRunUsageRecorder(proxy, { companyId, runId, adapterType: "codex_local" }, directory);
-      // Fail the session baseline reads, not the recorder handoff before them.
       failingSelects = failedSelects;
       failedSelects = 0;
       const capture = (inputTokens: number, outputTokens: number, usageSessionId: string | null = "thread-1") => recorder.capture({ usageBasis: "session_cumulative",
@@ -166,11 +164,9 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("subtracts only the baseline of the thread that reported the totals", async () => {
     const f = await sessionFixture();
-    // Codex started a fresh thread instead of resuming thread-1: count it from zero.
     await f.capture(1_500_000, 150_000, "thread-2");
     expect(await f.readUsage()).toMatchObject({ inputTokens: 1_500_000, outputTokens: 150_000, usageSource: "per_run",
       accountingReceiptReady: true, rawUsageSessionId: "thread-2" });
-    // No baseline provably belongs to an unnamed thread; completion resolves it.
     const unnamed = await f.startRun();
     await unnamed.capture(1_200_000, 120_000, null);
     expect(await unnamed.readUsage()).toMatchObject({ inputTokens: 1_200_000, usageSource: "session_cumulative", accountingReceiptReady: false });

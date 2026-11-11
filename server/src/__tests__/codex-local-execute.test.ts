@@ -979,8 +979,6 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1500
       expect(result).toMatchObject({ exitCode: 0, sessionId: "codex-thread-1", usageBasis: "session_cumulative",
         usage: { inputTokens: 5000000, cachedInputTokens: 10000000, outputTokens: 500000 } });
       expect(onUsage).toHaveBeenCalled();
-      // The receipt names the thread its totals belong to, so the server never
-      // subtracts another thread's baseline from them.
       for (const [receipt] of onUsage.mock.calls as unknown as Array<[object]>) expect(receipt).toMatchObject({ usageBasis: "session_cumulative", usageSessionId: "codex-thread-1" });
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

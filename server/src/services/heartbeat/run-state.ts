@@ -1295,8 +1295,6 @@ export function createHeartbeatRunState(db: Db) {
   ) {
     const conditions = [
       eq(heartbeatRuns.agentId, agentId),
-      // An interrupted run never gets `sessionIdAfter`, but a usage receipt
-      // charged from session totals saved them with their session.
       or(
         eq(heartbeatRuns.sessionIdAfter, sessionId),
         and(isNull(heartbeatRuns.sessionIdAfter), sql`${heartbeatRuns.usageJson}->>'rawUsageSessionId' = ${sessionId}`),
