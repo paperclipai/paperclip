@@ -95,8 +95,6 @@ describe("server image init", () => {
 });
 
 describe("server image runtime tools", () => {
-  // local-service-supervisor runs lsof (listener and cwd ownership) and ps
-  // (command and process-group checks); the slim base ships neither.
   it.each(["lsof", "procps"])("installs %s in the base stage for local service ownership checks", (pkg) => {
     expect(aptPackages(dockerfile, "base")).toContain(pkg);
   });
