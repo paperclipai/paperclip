@@ -171,7 +171,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       // Model a base transaction that began before the event but committed
       // afterwards, without a wall-clock delay in the suite. PostgreSQL's
       // default now() is transaction-start time, not commit time.
-      await tx.update(chatPublications).set({ createdAt: new Date(Date.now() - 300_000) })
+      await tx.update(chatPublications).set({ createdAt: new Date(Date.now() - 300_000), state: "published" })
         .where(eq(chatPublications.idempotencyKey, `run:${runId}:working:${f.endpointId}`));
       await vi.advanceTimersByTimeAsync(1000); expect(await publications()).toEqual([]);
     });

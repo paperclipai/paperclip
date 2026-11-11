@@ -85,7 +85,7 @@ describe("public native progress", () => {
       expect(publicNativeChatProgressText("item.completed", publicEvent("progress", kind), "run-1")).toBeNull();
   });
   it("keeps two sentences and redacts credentials and broadcast mentions", () => {
-    const input = publicEvent("progress", "agentMessage", "Checking @channel with token=secret123. Testing recovery. More details follow.");
+    const input = publicEvent("progress", "agentMessage", 'Checking @channel with token="secret123". Testing recovery. More details follow.');
     const text = publicNativeChatProgressText("item.completed", input, "run-1");
     expect(text).toContain("Testing recovery.");
     expect(text).not.toContain("More details");
