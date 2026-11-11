@@ -786,6 +786,14 @@ after it lost the durable controller lease; the reason names a closed cause
 (`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
 retries a failed renewal until the lease deadline, so `renewal_error` means the
 attempts still failed with an error when the deadline passed.
+All legacy controllers in one server process renew through a single queue on
+the private lease connection pool. Renewals that arrive while one is in flight
+share the next statement, so a burst of runs costs one renewal statement per
+round instead of one transaction per run, and a renewal waits behind at most
+one other. A run whose row another transaction holds is skipped and retried
+shortly, without delaying the other runs. A renewal only moves the lease
+deadline later, so it does not wake live-run recovery; recovery rereads the
+moved deadline when the earlier one comes due.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and

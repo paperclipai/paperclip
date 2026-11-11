@@ -91,7 +91,7 @@
     "packages/paperclip-runner/src/drivers/acpx/claude-status-banners.test.ts": 100,
     "packages/paperclip-runner/src/drivers/acpx/codex-acpx-driver.test.ts": 893,
     "packages/paperclip-runner/src/drivers/acpx/codex-credentials.test.ts": 6558,
-    "packages/paperclip-runner/src/drivers/acpx/codex-runtime-adapter.test.ts": 2923,
+    "packages/paperclip-runner/src/drivers/acpx/acpx-runtime-adapter.test.ts": 2923,
     "packages/paperclip-runner/src/drivers/acpx/command-lease-owner.test.ts": 100,
     "packages/paperclip-runner/src/drivers/acpx/copilot-events.test.ts": 100,
     "packages/paperclip-runner/src/drivers/acpx/copilot-evidence.test.ts": 100,

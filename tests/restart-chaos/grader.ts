@@ -54,8 +54,9 @@ export function outageOverlapMs(record: TaskRecord, faults: readonly FaultReceip
   }, 0);
 }
 
-/** The status a task rests in when it succeeds: `done`, or `cancelled` for a G1 request the board rejected. */
+/** The status a task rests in when it succeeds: `done`, `cancelled` for a G1 request the board rejected, `in_review` for an H2 hand-off. */
 export function expectedFinalStatus(record: TaskRecord): string {
+  if (record.plan.workload === "H2") return "in_review";
   return record.plan.workload === "G1" && g1Decision(record.plan.nonce) === "reject" ? "cancelled" : "done";
 }
 

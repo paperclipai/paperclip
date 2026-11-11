@@ -21,6 +21,7 @@ import { readTaskDrain } from "./task-admission.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
+import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
@@ -48,6 +49,9 @@ const executionRunColumns = {
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
     'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
+  resultJson: sql<Record<string, unknown>>`jsonb_build_object(
+    'finalizationPhase', ${heartbeatRuns.resultJson}->'finalizationPhase',
+    'finalizationReasonCode', ${heartbeatRuns.resultJson}->'finalizationReasonCode')`,
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
@@ -240,6 +244,18 @@ export async function executionProjectionsForRuns(
     }
   }
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
+  const responseWaitRuns = runs.filter(run => run.status === "succeeded"
+    && run.resultJson?.finalizationReasonCode === NATIVE_RESPONSE_WAKE_WAITING_REASON && issueIdOf(run));
+  const responseWaitIssues = responseWaitRuns.length ? await read(async () => db
+    .select({ id: issues.id, status: issues.status, lastStatusDecisionId: issues.lastStatusDecisionId })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...new Set(responseWaitRuns.map(run => issueIdOf(run)!))])))) : [];
+  const responseWaitIssueById = new Map(responseWaitIssues.map(row => [row.id, row]));
+  const currentResponseWait = (run: Run) => {
+    const issue = responseWaitIssueById.get(issueIdOf(run) ?? "");
+    const decisionId = coordinatorByRun.get(run.id)?.decisionId;
+    return Boolean(issue && decisionId && issue.status === "in_progress" && issue.lastStatusDecisionId === decisionId);
+  };
   for (const run of runs) {
     const issueId = run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
     const matching = recovery.filter(
@@ -261,6 +277,7 @@ export async function executionProjectionsForRuns(
         waitingByRun.get(run.id),
         settlingPredecessorKeys.has(run.id),
         setupByAgent.get(run.agentId),
+        currentResponseWait(run),
       ),
     );
   }
@@ -287,6 +304,7 @@ export function projectExecution(
   waitingForProvider?: WaitingExternalProvider,
   waitingForPredecessor = false,
   setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
+  responseWaitCurrent = false,
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -466,6 +484,11 @@ export function projectExecution(
           ? "Waiting for access"
           : "Waiting for answer",
       );
+    if (responseWaitCurrent && run.resultJson?.finalizationPhase === "committed" &&
+        run.resultJson.finalizationReasonCode === NATIVE_RESPONSE_WAKE_WAITING_REASON) {
+      projection.nextAction = "The agent finished its turn and is waiting for a reply. Comment on the task or change its status to continue.";
+      return set("waiting_for_answer", "Waiting for a reply");
+    }
     return set("completed", "Completed");
   }
   if (["failed", "cancelled", "timed_out", "interrupted"].includes(run.status))

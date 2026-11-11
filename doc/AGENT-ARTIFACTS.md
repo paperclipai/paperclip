@@ -5,6 +5,25 @@ must be attached to the Paperclip issue before the agent chooses a final
 disposition. A local workspace path is not enough, because cloud users and
 reviewers often cannot access the agent's disk.
 
+## Read attached files in native runs
+
+Native runs receive workspace-relative paths for the exact files admitted in
+their current wake. On Linux SSH and command-backed sandbox targets, Paperclip
+copies verified bytes through the bound lease transport before the provider
+turn starts. The agent needs no Paperclip API key to open those paths. Image
+inputs must be opened with the provider's image-capable file reader.
+
+The same transport supports authorized historical external-chat reads. Their
+existing conversation and source-comment checks still apply. External-chat
+history tools do not grant access to unrelated tasks or in-app conversations.
+Targets without a command transport still report attachment access as unavailable.
+
+Temporary slots are isolated per staging operation. Cleanup clears the verified
+file after the turn and refuses symlinks or replacement files. Abrupt controller
+or remote-host failure can interrupt cleanup; sandbox disposal remains the
+backstop for ephemeral environments. Retained provider sessions and checkpoints
+keep their existing format and identity across this change.
+
 ## Upload files from a task
 
 People can open the task's Artifacts tab and use the upload icon, or drop files

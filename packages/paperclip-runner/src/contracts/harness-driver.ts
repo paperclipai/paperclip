@@ -561,6 +561,7 @@ export interface HarnessSessionRecoveryResult {
    * saved state for this session (NativeRunnerResumeStateUnavailableError) and
    * the checkpoint had no turn or runtime request in flight. */
   resumeStateUnavailable?: true;
+  runnerExitConfirmed?: true;
 }
 
 /** Reads the closed class of an authenticated runner command failure, or of a
