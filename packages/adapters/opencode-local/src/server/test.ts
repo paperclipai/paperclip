@@ -418,8 +418,6 @@ export async function testEnvironment(
         const parsed = parseOpenCodeJsonl(probe.stdout);
         const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
         const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
-        // A provider 401 is an authentication rejection whatever its wording
-        // (OpenRouter says "Missing Authentication header" or "User not found.").
         const providerRejectedAuth = openCodeErrorStatusCodes(probe.stdout).includes(401);
 
         if (probe.timedOut) {

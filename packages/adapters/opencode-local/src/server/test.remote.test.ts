@@ -119,7 +119,6 @@ describe("opencode remote environment diagnostics", () => {
     },
   );
 
-  // Recorded from OpenCode 1.18.34 against OpenRouter with an empty and an unknown key.
   it.each(["Missing Authentication header", "User not found."])(
     "reports a provider 401 as missing authentication, not a generic failure (%s)", async message => {
       const successfulProbe = await runAdapterExecutionTargetProcess.getMockImplementation()!();

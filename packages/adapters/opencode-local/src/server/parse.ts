@@ -106,7 +106,6 @@ export function createOpenCodeJsonlParser() {
   };
 }
 
-/** HTTP statuses that OpenCode reports on provider API error events. */
 export function openCodeErrorStatusCodes(stdout: string): number[] {
   const statuses: number[] = [];
   for (const rawLine of stdout.split(/\r?\n/)) {
