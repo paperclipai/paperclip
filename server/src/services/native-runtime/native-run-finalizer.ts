@@ -37,6 +37,7 @@ import { findSupersededExternalReviewRequests } from "./superseded-external-revi
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
+import { COMPLETION_REVIEW_STAGE_REASON, completionHumanReviewStageEntry } from "../issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -1722,6 +1723,13 @@ export async function finalizeNativeRun(input: {
           effect.kind === "enqueue_continuation" ? { ...effect, summary: error.message }
             : effect.kind === "record_finalization_error" ? { ...effect, nextAction: error.message } : effect) };
       }
+    }
+    // A configured human review stage gates Done exactly as the issue route
+    // does: verified work enters that stage instead of closing the task.
+    if (proposedDecision.statusAction === "done" && !isConversation(authoritativeIssue) &&
+        completionHumanReviewStageEntry(authoritativeIssue, run.agentId)) {
+      proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
+        reasonCode: COMPLETION_REVIEW_STAGE_REASON, unblockDescriptor: null };
     }
     const decision = conversationNativeDecision({
       conversation: isConversation(authoritativeIssue), terminalState,

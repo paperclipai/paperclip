@@ -73,6 +73,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
+import { COMPLETION_REVIEW_STAGE_REASON, completionHumanReviewStageEntry } from "../issue-execution-policy.js";
 import { companySkillService } from "../company-skills.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -2337,9 +2338,15 @@ export async function commitNativeStatusDecision(input: {
       if (!updated) throw new NativeStatusRaceError();
     } else {
       failAt("status_projection", input.failpoint);
+      // Start the configured review stage from the locked task, as the issue
+      // route does; a changed policy makes the saved decision stale.
+      const reviewStage = input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON
+        ? completionHumanReviewStageEntry(issue, originRun?.agentId ?? "") : null;
+      if (input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON && !reviewStage) throw new NativeStatusRaceError();
       const projected = await issueService(tx as unknown as Db).update(
         input.issueId,
         {
+          ...reviewStage,
           status: input.decision.toStatus,
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,

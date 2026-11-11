@@ -10,6 +10,7 @@ import { findSupersededExternalReviewRequests } from "./superseded-external-revi
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { issueService } from "../issues.js";
 import { isConversation } from "../agent-conversations.js";
+import { completionHumanReviewStageEntry } from "../issue-execution-policy.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -381,6 +382,14 @@ export async function nativeCompletionFeedback(
       );
     }
   }
+  const reviewStage = issue.executionState?.status !== "pending" && !isConversation(issue) &&
+    completionHumanReviewStageEntry(issue, run.agentId) !== null;
+  if (reviewStage && result.reportedWorkDisposition === "needs_review" &&
+      signals.actionableAttentionRequests.every(request => request.kind === "review" || request.kind === "approval")) {
+    throw new Error(
+      "This task has a configured review stage with its own reviewer. Do not request a separate review. Report done once the work is complete and verified; Paperclip then starts the configured review, and the task stays in review until that reviewer decides.",
+    );
+  }
   if (
     result.reportedWorkDisposition === "needs_review" &&
     signals.actionableAttentionRequests.length === 0
@@ -406,6 +415,9 @@ export async function nativeCompletionFeedback(
   }
   if (result.reportedWorkDisposition === "blocked") {
     return "Blocker report accepted. Explain why work cannot continue, name the blocker owner and give the unblock action in your final response; do not describe the task as completed.";
+  }
+  if (reviewStage && result.reportedWorkDisposition === "done") {
+    return `Completion report accepted. This task's configured review stage starts after this turn, and the task stays in review until its reviewer decides. Describe the delivered work and say it awaits that review on [this task](/issues/${issue.identifier ?? issue.id}); do not say the task is done.`;
   }
   const links = await savedDocumentLinks(db, run, issue);
   const documentGuidance = links.length

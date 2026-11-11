@@ -1237,6 +1237,32 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   return stageResult;
 }
 
+/** Status decision reason when verified native work enters a configured human review stage. */
+export const COMPLETION_REVIEW_STAGE_REASON = "execution_stage_review_required";
+
+/**
+ * The review stage a worker's completion must enter before the task can be
+ * Done, as the issue route would start it for `status: "done"`. Returns the
+ * stage patch (in_review, pending state, reviewer assignment) only when the
+ * next pending stage goes to a person; null when no stage would start.
+ */
+export function completionHumanReviewStageEntry(issue: IssueLike, actorAgentId: string): Record<string, unknown> | null {
+  const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+  if (!policy) return null;
+  let patch: Record<string, unknown>;
+  try {
+    ({ patch } = applyIssueExecutionStageTransition({
+      issue, policy, previousPolicy: policy, requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { agentId: actorAgentId, userId: null },
+    }));
+  } catch {
+    return null;
+  }
+  const state = patch.executionState as Partial<IssueExecutionState> | null | undefined;
+  if (patch.status !== "in_review" || state?.status !== "pending" || state.currentParticipant?.type !== "user") return null;
+  return patch;
+}
+
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
   return { patch: applyMonitorTransition(input, {}) };
 }
