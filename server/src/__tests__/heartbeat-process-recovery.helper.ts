@@ -9524,8 +9524,6 @@ describeEmbeddedPostgres(`heartbeat orphaned process recovery (part ${part}/4)`,
     await db.update(agents).set({ adapterConfig: {
       command: process.execPath, args: ["-e", "console.log('cli input ready');setInterval(() => {}, 1000)"], graceSec: 1,
     } }).where(eq(agents.id, agentId));
-    // Wait for the child's own output instead of a 3 s poll: heartbeat setup
-    // before dispatch can exceed that bound on a loaded runner.
     let reportReady!: () => void;
     const ready = new Promise<void>((resolve) => { reportReady = resolve; });
     mockAdapterExecute.mockImplementationOnce((async (input: unknown) => {
@@ -10253,8 +10251,6 @@ describeEmbeddedPostgres(`heartbeat orphaned process recovery (part ${part}/4)`,
         .where(eq(agents.id, agentId));
       const heartbeat = heartbeatService(db);
       await heartbeat.resumeQueuedRuns();
-      // The child's own output proves spawn-time registration already ran;
-      // a 3 s poll before it can expire on a loaded runner.
       await ready;
       const running = runningProcesses.get(runId);
       expect(running?.child.pid).toBeTruthy();
