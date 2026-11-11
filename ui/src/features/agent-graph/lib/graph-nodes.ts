@@ -66,7 +66,9 @@ export function syncNodes(previous: readonly GraphFlowNode[], input: SyncNodesIn
   for (const agent of agents) {
     if (hidden.has(agent.id)) continue;
     const prev = previousById.get(agent.id);
-    const position = layout.positions[agent.id] ?? autoPositions.get(agent.id) ?? { x: 0, y: 0 };
+    const position = prev?.dragging
+      ? prev.position
+      : layout.positions[agent.id] ?? autoPositions.get(agent.id) ?? { x: 0, y: 0 };
     const live = liveAgentIds.has(agent.id) || agent.status === "running";
     if (
       prev?.type === "agent"
