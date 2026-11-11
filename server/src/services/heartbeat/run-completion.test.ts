@@ -857,7 +857,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
   });
 
-  // PAP-4060: a server restart reattached a remote native runner whose turn was
+  // Staging incident shape: a server restart reattached a remote native runner whose turn was
   // still in flight. A storage outage then failed the reattachment, restart
   // recovery kept the workspace under a no-replay hold, and the run reported
   // "Paperclip will retry automatically when storage is back" with no storage

@@ -80,7 +80,7 @@ export function storageUnavailableHeldMessage(error: unknown): string {
 
 /**
  * Only a run recorded as `storage_unavailable` has a storage wait. Releases
- * before PAP-4060's fix could save the retry promise under another code (a
+ * before this check could save the retry promise under another code (a
  * native recovery hold), where nothing retries. Reads present those rows with
  * the held text, so they are truthful after deploy without a migration.
  */
