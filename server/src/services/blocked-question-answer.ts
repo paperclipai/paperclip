@@ -1,17 +1,37 @@
-import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, issueThreadInteractions, issues, statusDecisions, type Db } from "@paperclipai/db";
 import { queuedInteractionId } from "./queued-interaction-response.js";
+import { ordinaryQuestionCondition } from "./issue-question-context.js";
 
 const AGENT_REPORTED_BLOCKER_REASON_CODES = ["current_track_blocker_waiting", "task_wide_blocker_bound"];
 
-export async function isAnswerToAgentBlockingQuestion(db: Pick<Db, "select">, input: {
+export type AgentBlockingQuestionState = { lastStatusDecisionId: string; statusVersion: number };
+
+export async function questionsAwaitedByAgentBlock(db: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; agentId: string | null | undefined; reasonCode: string | null;
+  toStatus: string; unblockOwner: unknown;
+}): Promise<string[]> {
+  if (!input.agentId || input.toStatus !== "blocked" || input.unblockOwner !== "board"
+    || !AGENT_REPORTED_BLOCKER_REASON_CODES.includes(input.reasonCode ?? "")) return [];
+  const rows = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, input.companyId),
+    eq(issueThreadInteractions.issueId, input.issueId),
+    eq(issueThreadInteractions.createdByAgentId, input.agentId),
+    eq(issueThreadInteractions.status, "pending"),
+    isNull(issueThreadInteractions.dismissedAt),
+    ordinaryQuestionCondition(),
+  ));
+  return rows.map((row) => row.id).sort();
+}
+
+export async function agentBlockingQuestionState(db: Pick<Db, "select">, input: {
   companyId: string; issueId: string; agentId: string; context: unknown;
-}): Promise<boolean> {
+}): Promise<AgentBlockingQuestionState | null> {
   const interactionId = queuedInteractionId(input.context);
-  if (!interactionId) return false;
+  if (!interactionId) return null;
   const interactionStatus = (input.context as Record<string, unknown>).interactionStatus;
-  const rows = await db
-    .select({ id: issueThreadInteractions.id })
+  const [row] = await db
+    .select({ lastStatusDecisionId: statusDecisions.id, statusVersion: issues.statusVersion })
     .from(issueThreadInteractions)
     .innerJoin(issues, and(
       eq(issues.id, issueThreadInteractions.issueId),
@@ -36,15 +56,13 @@ export async function isAnswerToAgentBlockingQuestion(db: Pick<Db, "select">, in
       isNotNull(issueThreadInteractions.resolvedAt),
       eq(issues.status, "blocked"),
       eq(issues.assigneeAgentId, input.agentId),
-      isNotNull(issues.blockedTransitionAt),
       eq(statusDecisions.applicationState, "applied"),
       eq(statusDecisions.toStatus, "blocked"),
       inArray(statusDecisions.reasonCode, AGENT_REPORTED_BLOCKER_REASON_CODES),
-      gte(statusDecisions.createdAt, issueThreadInteractions.createdAt),
-      sql`${statusDecisions.createdAt} <= ${issueThreadInteractions.resolvedAt}`,
-      sql`${statusDecisions.appliedAt} >= ${issues.blockedTransitionAt}`,
+      sql`coalesce(${statusDecisions.decisionJson}->'awaitingInteractionIds', '[]'::jsonb) ? ${interactionId}`,
+      sql`${statusDecisions.decisionJson}->>'projectedStatusVersion' = ${issues.statusVersion}::text`,
       eq(heartbeatRuns.agentId, input.agentId),
     ))
     .limit(1);
-  return rows.length > 0;
+  return row ? { lastStatusDecisionId: row.lastStatusDecisionId, statusVersion: Number(row.statusVersion) } : null;
 }

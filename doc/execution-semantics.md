@@ -4110,15 +4110,20 @@ does not turn the admitted response into an attempt to check out the task.
 A person's answer to the agent's own question also continues a task that the same
 agent blocked while it waited for that answer. The agent can report such a wait as
 a blocker, for example after a later comment from the person moved the question
-into history. Dispatch accepts the Blocked task only through durable linkage: the
-interaction was created by the assignee on this task and resolved by a person,
-and the task's current Blocked status is the applied status decision
-(`current_track_blocker_waiting` or `task_wide_blocker_bound`) of a run of the
-same agent, recorded after the question was asked and before it was answered,
-with no later move into Blocked. The continuation then checks the task out to
-`in_progress` and clears its blocker fields. A task blocked by a person, blocked
-before the question existed, reassigned, done or cancelled still cancels the
-answer's continuation as before.
+into history. When the status committer applies an agent-reported, board-owned
+blocker (`current_track_blocker_waiting` or `task_wide_blocker_bound`), it records
+in the same transaction the agent's own pending, undismissed ordinary questions on
+the task as `awaitingInteractionIds` in the decision. Dispatch accepts the Blocked
+task only when the answered interaction is in that list, was created by the
+assignee and resolved by a person, the decision is still the task's
+`lastStatusDecisionId`, and the task's `statusVersion` still equals the decision's
+`projectedStatusVersion`. The checkout repeats the decision and version comparison
+in its guarded update, so a person who re-blocks the task in between keeps the new
+block. The continuation then checks the task out to `in_progress` and clears its
+blocker fields. If the blocker was about something else, the agent receives the
+answer and reports its blocker again. A task blocked by a person, blocked before
+the question existed, blocked by a decision saved before this rule, reassigned,
+done or cancelled still cancels the answer's continuation, and Retry remains.
 Task interruption notices ignore Retry receipts for a superseded run. A later
 successful conversation must not inherit the old failure banner. This read-only
 projection neither retires Retry authority nor acknowledges independent saved input.

@@ -13,10 +13,12 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  statusDecisions,
   workAssessments,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
 
@@ -53,7 +55,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     await tempDb?.cleanup();
   });
 
-  async function seed() {
+  async function seed(options: { askAfterBlock?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Question fixture",
       issuePrefix: `Q${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
@@ -65,6 +67,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Write the brief", status: "in_review",
       assigneeAgentId: agentId, responsibleUserId: userId });
+    if (options.askAfterBlock) await agentReportsBlocker({ companyId, agentId, issueId });
     const askingRunId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: askingRunId, companyId, agentId, status: "succeeded",
       runtimeMode: "native", nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system",
@@ -78,7 +81,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     return { companyId, agentId, issueId, question: question! };
   }
 
-  async function agentReportsBlocker(input: { companyId: string; agentId: string; issueId: string }) {
+  async function agentReportsBlocker(input: { companyId: string; agentId: string; issueId: string }): Promise<void> {
     const runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: input.companyId, issueId: input.issueId,
       revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
@@ -130,7 +133,10 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     mockAdapterExecute.mockClear();
     const { agentId, issueId, question, companyId } = await seed();
     await agentReportsBlocker({ companyId, agentId, issueId });
-    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("blocked");
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(blocked!.status).toBe("blocked");
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.id, blocked!.lastStatusDecisionId!));
+    expect(decision!.decisionJson).toMatchObject({ awaitingInteractionIds: [question.id] });
     await answer(question);
     const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
     expect({ status: run?.status, errorCode: run?.errorCode ?? null, error: run?.error ?? null })
@@ -146,21 +152,17 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     mockAdapterExecute.mockClear();
     const { agentId, issueId, question, companyId } = await seed();
     await agentReportsBlocker({ companyId, agentId, issueId });
-    await db.update(issues).set({ status: "in_review", blockedTransitionAt: null }).where(eq(issues.id, issueId));
-    await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date(Date.now() + 1_000) })
-      .where(eq(issues.id, issueId));
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date() }).where(eq(issues.id, issueId));
     await answer(question);
     const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
     expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   }, 60_000);
 
-  it("keeps cancelling the answer when the agent blocked before asking", async () => {
+  it("keeps cancelling the answer when the question did not exist when the agent blocked", async () => {
     mockAdapterExecute.mockClear();
-    const { agentId, issueId, question, companyId } = await seed();
-    await agentReportsBlocker({ companyId, agentId, issueId });
-    await db.update(issueThreadInteractions).set({ createdAt: new Date(Date.now() + 1_000) })
-      .where(eq(issueThreadInteractions.id, question.id));
+    const { agentId, issueId, question } = await seed({ askAfterBlock: true });
     await answer(question);
     const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
     expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
@@ -176,5 +178,20 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
     if (run) expect(run).toMatchObject({ status: "cancelled" });
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("does not check out a task whose verified block changed before checkout", async () => {
+    const { agentId, issueId, question, companyId } = await seed();
+    await agentReportsBlocker({ companyId, agentId, issueId });
+    await answer(question);
+    const [verified] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const blockedState = { lastStatusDecisionId: verified!.lastStatusDecisionId!, statusVersion: Number(verified!.statusVersion) };
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await db.update(issues).set({ status: "blocked", unblockDescriptor: { owner: "board", action: "Person's new blocker" } })
+      .where(eq(issues.id, issueId));
+    await expect(issueService(db).checkout(issueId, agentId, ["in_progress", "in_review", "blocked"], null, { blockedState }))
+      .rejects.toThrow();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "blocked", unblockDescriptor: { owner: "board", action: "Person's new blocker" } });
   }, 60_000);
 });
