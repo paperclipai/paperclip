@@ -1113,7 +1113,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             enableDiscordGateway: discordOwnership !== null,
             callbacks: {
               onMessage: (event) => handleSdkMessage(event, context),
-              ...createPhotonRuntimeCallbacks(db, { endpointId: endpoint.id, connectionId: endpoint.connectionId, companyId: record.endpoint.companyId, assignedAgentId: record.endpoint.assignedAgentId, context, lineId: credentials.lineId, runtimeCallbackRecord, runtimeCallbackEndpoint, renewDiscordGatewayOwnershipForMessageAdmission }),
+              ...createPhotonRuntimeCallbacks(db, { endpointId: endpoint.id, connectionId: endpoint.connectionId, companyId: record.endpoint.companyId, assignedAgentId: record.endpoint.assignedAgentId, context, lineId: credentials.lineId, runtimeCallbackRecord, runtimeCallbackEndpoint, renewDiscordGatewayOwnershipForMessageAdmission,
+                failureOwners: {
+                  retireClosedLocal: () => retiredLocalFailure(record.endpoint, context, photonConstructionAllocation === null),
+                  recordFailure: (error) => handlePhotonFailure(endpoint.id, error, context),
+                  retainCleanup: () => photonExternalRuntimeOwner.cleanupFailure(endpoint.id, context),
+                },
+              }),
               onPhotonUsefulClientDebt: () => photonExternalRuntimeOwner.senderDebt(endpoint.id, context),
               onPhotonSenderRuntimeClosed: photonSenderAllocation
                 ? () => photonExternalRuntimeOwner.senderRuntimeClosed(photonSenderAllocation, context) : undefined,
@@ -1123,14 +1129,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 return external ? { kind: "cloud", bindingId: external.binding.bindingId } : { kind: "local" };
               },
               onPhotonEvent: (event) => handlePhotonEvent(endpoint.id, event, context),
-              onPhotonFailure: async (error, cleanup) => {
-                if (cleanup?.localClosed) {
-                  const retired = await retiredLocalFailure(record.endpoint, context, photonConstructionAllocation === null);
-                  if (retired.kind === "retired-local") return retired;
-                }
-                const result = await handlePhotonFailure(endpoint.id, error, context);
-                return result?.kind === "recorded" ? result : photonExternalRuntimeOwner.cleanupFailure(endpoint.id, context);
-              },
               onDiscordRootMentionAdmission:
                 record.endpoint.provider === "discord"
                   ? (event) =>

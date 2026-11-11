@@ -6,6 +6,7 @@ import { PhotonState } from "../../photon/state.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, toolConnections } from "@paperclipai/db";
 import type { ChatSdkRuntimeCallbacks } from "../../chat-sdk-runtime.js";
+import type { PhotonFailureResponsibility } from "../../photon/receiver.js";
 import type { Db } from "@paperclipai/db";
 import type { RuntimeContext, EndpointRow, EndpointRecord, LiveInboundMessage } from "../runtime-types.js";
 import type { createChatReceiverOwnership } from "../runtime/ownership.js";
@@ -15,10 +16,23 @@ type PhotonRuntimeOptions = {
   runtimeCallbackRecord: (endpointId: string, context: RuntimeContext, statuses: EndpointRow["status"][]) => Promise<EndpointRecord | null>;
   runtimeCallbackEndpoint: Parameters<typeof createChatMessageLifecycle>[1]["runtimeCallbackEndpoint"];
   renewDiscordGatewayOwnershipForMessageAdmission: ReturnType<typeof createChatReceiverOwnership>["renewDiscordGatewayOwnershipForMessageAdmission"];
+  failureOwners: {
+    retireClosedLocal: () => Promise<PhotonFailureResponsibility>;
+    recordFailure: (error: unknown) => Promise<void | PhotonFailureResponsibility>;
+    retainCleanup: () => Promise<PhotonFailureResponsibility>;
+  };
 };
-export function createPhotonRuntimeCallbacks(db: Db, options: PhotonRuntimeOptions): Pick<ChatSdkRuntimeCallbacks, "onPhotonAssertOwned" | "onPhotonCheckpoint"> {
+export function createPhotonRuntimeCallbacks(db: Db, options: PhotonRuntimeOptions): Pick<ChatSdkRuntimeCallbacks, "onPhotonAssertOwned" | "onPhotonCheckpoint" | "onPhotonFailure"> {
   const { endpointId, connectionId, companyId, assignedAgentId, context, lineId, runtimeCallbackRecord, runtimeCallbackEndpoint, renewDiscordGatewayOwnershipForMessageAdmission } = options;
   return {
+    onPhotonFailure: async (error, cleanup) => {
+      if (cleanup?.localClosed) {
+        const retired = await options.failureOwners.retireClosedLocal();
+        if (retired.kind === "retired-local") return retired;
+      }
+      const result = await options.failureOwners.recordFailure(error);
+      return result?.kind === "recorded" ? result : options.failureOwners.retainCleanup();
+    },
     onPhotonAssertOwned: async (activeThreadId) => {
       if (!(await runtimeCallbackRecord(endpointId, context, ["verifying", "active", "attention"]))) throw new Error("Photon receiver ownership changed");
       if (activeThreadId) {
