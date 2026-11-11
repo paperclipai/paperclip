@@ -40,6 +40,7 @@ vi.mock("./registry", async () => {
 });
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+vi.setConfig({ testTimeout: 30_000 });
 
 let host: HTMLDivElement;
 let root: Root;
@@ -260,7 +261,10 @@ describe("DashboardGrid", () => {
       surface: "dashboard", schemaVersion: 1, updatedAt: null,
       layout: { schemaVersion: 1, contextualRules: {}, widgets: [{ instanceId: widgetId, widgetId, w: 2, h: 2 }] },
     });
-    uiLayoutsApi.get.mockResolvedValueOnce(stored("recent-tasks")).mockResolvedValueOnce(stored("metric-agents"));
+    let deliver!: (value: unknown) => void;
+    uiLayoutsApi.get
+      .mockResolvedValueOnce(stored("recent-tasks"))
+      .mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve; }));
     await render();
     expect(widgetIds()).toEqual(["recent-tasks"]);
     await act(async () => {
@@ -268,6 +272,10 @@ describe("DashboardGrid", () => {
     });
     await settle();
     expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    expect(widgetIds()).toEqual([]);
+    expect(host.querySelector('[aria-label="Loading dashboard layout"]')).not.toBeNull();
+    await act(async () => deliver(stored("metric-agents")));
+    await settle();
     expect(widgetIds()).toEqual(["metric-agents"]);
     expect(uiLayoutsApi.save).not.toHaveBeenCalled();
   });

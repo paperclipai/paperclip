@@ -64,7 +64,8 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
     resolve: resolveStoredLayout,
   });
   const defaultLayout = useMemo(() => buildDefaultLayout(DEFAULT_WIDGET_IDS, WIDGET_CATALOG), []);
-  const [layout, setLayout] = useState<DashboardLayout | null>(null);
+  const [loadedLayout, setLayout] = useState<DashboardLayout | null>(null);
+  const [layoutOwner, setLayoutOwner] = useState<string | null>(null);
   const layoutRef = useRef<DashboardLayout | null>(null);
   const [editing, setEditing] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -73,16 +74,24 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
   const wasBlocked = useRef(false);
   const loadedOwner = useRef<string | null>(null);
 
+  const layout = layoutOwner === owner ? loadedLayout : null;
+
   useEffect(() => {
+    if (loadedOwner.current !== owner) {
+      if (loadedOwner.current !== null) {
+        layoutRef.current = null;
+        setLayout(null);
+      }
+      loadedOwner.current = owner;
+    }
     if (!isLoaded) return;
     const recovered = wasBlocked.current && blocked === null && stored !== null;
     wasBlocked.current = blocked !== null;
-    const ownerChanged = loadedOwner.current !== null && loadedOwner.current !== owner;
-    loadedOwner.current = owner;
-    if (layoutRef.current && !recovered && !ownerChanged) return;
+    if (layoutRef.current && !recovered) return;
     const initial = stored ?? defaultLayout;
     layoutRef.current = initial;
     setLayout(initial);
+    setLayoutOwner(owner);
   }, [isLoaded, stored, blocked, defaultLayout, owner]);
 
   const update = useCallback(
