@@ -656,7 +656,7 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
-const POSTGRES_UUID_RE = /^\{?[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\}?$/i;
+const POSTGRES_UUID_RE = /^(?:[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}|\{[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\})$/i;
 
 export function projectService(db: Db, options: { captureWorkspaceUpdates?: boolean } = {}) {
   const createProject = async (
@@ -710,11 +710,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
-    // projects.id is a uuid column; a reference Postgres cannot parse as a
-    // uuid (e.g. an unresolved project shortname like "onboarding") can never
-    // match and would make the query fail with "invalid input syntax for type
-    // uuid". Use the column's own syntax rather than the stricter RFC version
-    // check in isUuidLike, so any stored id (v7, nil-style, etc.) still loads.
     if (!POSTGRES_UUID_RE.test(id)) return null;
     const row = await db
       .select()
