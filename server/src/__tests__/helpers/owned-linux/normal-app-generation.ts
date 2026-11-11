@@ -14,8 +14,7 @@ import { initializeAdapterSettings } from "../../../services/adapter-settings.js
 import { initializeCloudRuntimeConfig } from "../../../services/cloud-runtime-config.js";
 import { createCloudWarmStandby } from "../../../services/cloud-warm-standby.js";
 import { getCloudRuntimeIdentity, initializeCloudRuntimeIdentity, resetCloudRuntimeIdentityForTests, resetCloudControlReplayFenceForTests } from "../../../services/cloud-runtime-identity.js";
-import { createStorageService } from "../../../storage/service.js";
-import { createLocalDiskStorageProvider } from "../../../storage/local-disk-provider.js";
+import { getStorageService } from "../../../storage/index.js";
 import { isIdleTaskDrainActive, idleWorkSnapshot } from "../../../services/task-admission.js";
 import { registerNativeCancellationDelivery } from "../../../services/native-runtime/native-cancellation-delivery.js";
 import { registerNativeRuntimeResponseDelivery } from "../../../services/native-runtime/native-runtime-response-delivery.js";
@@ -66,14 +65,16 @@ export async function startNormalDotAppGeneration(input: {
     const standby=await createCloudWarmStandby(db);assert.equal(standby(),input.generation===1);
     const {createApp}=await import("../../../app.js");
     const budgetResumeDelivery:BudgetResumeDelivery={};
+    const storageService=getStorageService(); // Same normal configured owner used by Native durable restoration.
     app=await createApp(db,{...linuxBootstrap.appOptions,budgetResumeDelivery,uiMode:"none",serverPort:3100,
-      storageService:createStorageService(createLocalDiskStorageProvider(path.join(input.home,"objects"))),
+      storageService,
       deploymentMode:"authenticated",deploymentExposure:"private",bindHost:"127.0.0.1",allowedHostnames:[new URL(input.origin).hostname],
       authPublicBaseUrl:input.origin,authReady:true,companyDeletionEnabled:false,cloudWarmStandby:standby,
       decisionServiceOptions:{wakeOriginAgent:async()=>{unexpectedDecisionWakes++;throw new Error("Unexpected Decision dependency in closed Dot journey");}},
       resolveSession:async req=>{sessionCalls++;if(req.get("x-selected-operator")!==input.userId)return null;
         const [user]=await db.select().from(authUsers).where(eq(authUsers.id,input.userId));
         return user?{session:{id:"principal-hop-session",userId:input.userId},user}:null;}});
+    assert.equal(getStorageService(),storageService,"App and Native must share the normal configured storage owner");
     await app.locals.bundledPluginsStartup;
     const actualApp=app;
     appServer=createServer((req,res)=>{

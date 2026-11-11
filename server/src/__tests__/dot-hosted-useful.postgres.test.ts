@@ -22,6 +22,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import request from "supertest";
+import { startMinio, objectStoreServerEnvironment, type ObjectStore } from "../../../tests/restart-chaos/object-store.js";
+import { startStorageFaultProxy } from "../../../tests/restart-chaos/storage-proxy.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations, createDb, closeRegisteredClients, authUsers, companies, mcpOauthGrants, agents, dotAgentBindings, dotRunnerAssignments, dotRunnerOperations, mcpOauthRequests, mcpOauthTokens, mcpOauthClientChanges, mcpOauthClientMirrorState, mcpOauthDeviceRequests, heartbeatRuns, agentWakeupRequests, completionContracts, nativeRunResults, nativeRunFinalizations, issues, mcpEventDeliveries, mcpEventSubscriptions } from "@paperclipai/db";
@@ -106,6 +108,9 @@ const closedUnavailable=(response:{status:number;body:unknown;text?:string;heade
 const listen=async(server:Server)=>{server.listen(0,"127.0.0.1");await once(server,"listening");const address=server.address();if(!address||typeof address==="string")throw new Error("Missing owned principal listener");return `http://127.0.0.1:${address.port}`;};
 const close=async(server:Server|undefined)=>{if(!server?.listening)return;await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));};
 describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device/subscription and genuine useful Retry",()=>{
+  let objectStore:ObjectStore|undefined;
+  let storageProxy:Awaited<ReturnType<typeof startStorageFaultProxy>>|undefined;
+  let objectStoreRequests=0;
   let physicalApp:Awaited<ReturnType<typeof forkNormalDotApp>>|undefined;
   let childControl:ReturnType<typeof attachDotChild>|undefined;
   let childSnapshot:ChildSnapshot|undefined;
@@ -349,6 +354,17 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     CloudStackRouter=routing.CloudStackRouter;metadataCompany=identity.tenantPaperclipCompanyIdForStack;
     const envelopeModule=await load("assistant-mcp/crypto.js");decodeDeviceRegistration=raw=>new envelopeModule.AssistantEnvelope(Buffer.alloc(32,9),resource).open("device-upstream",raw);
     home=await mkdtemp(path.join(tmpdir(),"dot-principal-hop-"));vi.stubEnv("PAPERCLIP_HOME",home);vi.stubEnv("PAPERCLIP_CONFIG",path.join(home,"runtime-config.json"));vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY",randomBytes(32).toString("base64"));
+    const minio=process.env.PAPERCLIP_DOT_MINIO_BINARY;
+    if(!minio||!path.isAbsolute(minio))throw new Error("Explicit verified normal MinIO fixture binary required");
+    await access(minio);
+    const storageSetupRemaining=Math.floor(setupDeadline-performance.now());
+    if(storageSetupRemaining<=0)throw new Error("Original setup deadline expired before normal object-store startup");
+    objectStore=await startMinio({binary:minio,root:path.join(home,"s3"),bucket:`dot-${randomUUID()}`,readyTimeoutMs:Math.min(30_000,storageSetupRemaining)});
+    storageProxy=await startStorageFaultProxy(objectStore.endpoint);
+    storageProxy.observe(()=>{objectStoreRequests++;}); // Existing pass-through port: no rule, fabricated response, key or header logging.
+    for(const [key,value] of Object.entries(objectStoreServerEnvironment(objectStore,storageProxy.endpoint,"dot-qualification")))vi.stubEnv(key,value);
+    vi.stubEnv("DATABASE_URL",url!);
+
     const ownBinary=process.env.PAPERCLIP_DOT_HOSTED_RUNNER_BINARY;if(!ownBinary||!path.isAbsolute(ownBinary))throw new Error("Explicit current own source-matched Runner required before normal App bootstrap");await access(ownBinary);
     vi.stubEnv("PAPERCLIP_RUNNER_BINARY",ownBinary);vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR",path.join(home,"runner-state"));vi.stubEnv("PAPERCLIP_IN_WORKTREE","false");
     const control=generateKeyPairSync("ed25519"),sign=generateKeyPairSync("ed25519"),seal=generateKeyPairSync("x25519"),kid="principal-hop-current";
@@ -420,7 +436,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         cloudOrigin,cloudLoopback,callbackPublicOrigin,callbackLoopback:callbackOrigin,linuxInput}),{mode:0o600,flag:"wx"});
       const closedEnv=Object.fromEntries(Object.entries(process.env).filter(([key,value])=>value!==undefined&&
         (key.startsWith("PAPERCLIP_")||["PATH","HOME","TMPDIR","LANG","TZ","NODE_OPTIONS","NODE_EXTRA_CA_CERTS",
-          "MCP_SLEEP_GUARD_LOG","MCP_SLEEP_GUARD_PG_PORTS","CLOUD_SUITE_ATTEST_LOG","CLOUD_SUITE_ENTRY_MANIFEST"].includes(key)))) as Record<string,string>;
+          "MCP_SLEEP_GUARD_LOG","MCP_SLEEP_GUARD_PG_PORTS","CLOUD_SUITE_ATTEST_LOG","CLOUD_SUITE_ENTRY_MANIFEST",
+          "DATABASE_URL","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_CREDENTIAL_EXPIRATION","AWS_EC2_METADATA_DISABLED"].includes(key)))) as Record<string,string>;
       closedEnv.PAPERCLIP_DOT_CHILD_INPUT=inputFile;
       physicalApp=await forkNormalDotApp({entry:new URL("./helpers/owned-linux/normal-app-child.ts",import.meta.url),
         nodeExecutable:process.execPath,normalTsxImport:new URL("../../node_modules/tsx/dist/loader.mjs",import.meta.url),
@@ -459,6 +476,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     }catch(error){errors.push(error);}
     try{await cloudService?.stopBackgroundTasks();await close(cloudServer);await close(callback);await registry?.close();}catch(error){errors.push(error);}
     try{if(db)await db.$client.end({timeout:1});if(url)await closeRegisteredClients(url,{scope:"database"});}catch(error){errors.push(error);}
+    try{await storageProxy?.close();}catch(error){errors.push(error);}
+    try{await objectStore?.stop();}catch(error){errors.push(error);}
     try{restoreLinuxCA?.();}catch(error){errors.push(error);}
     restoreGateObservation?.();restoreOAuth?.();restoreEventFactory?.();setCloudRuntimeConfigSnapshot(null);resetCloudRuntimeIdentityForTests();resetCloudControlReplayFenceForTests();vi.unstubAllEnvs();vi.unstubAllGlobals();
     process.stdout.write(JSON.stringify({scope:"credential-free actual principal fixture transport",records:transportRecords,overflow:transportOverflow})+"\n");
@@ -755,7 +774,9 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const totalTenantSnapshot=async(deadline=childDeadline())=>{
       const connections=await passiveConnectionSnapshot(deadline);
       const all=[...retiredChildren,childSnapshot!];
-      return{queryCount:databaseObservation.queries+all.reduce((n,v)=>n+v.database.queries,0),callbacks:callbacks.length,connections};
+      if(!storageProxy)throw new Error("Missing normal owned object-store observation");
+      expect(storageProxy.counts().injected).toBe(0);
+      return{queryCount:databaseObservation.queries+all.reduce((n,v)=>n+v.database.queries,0),callbacks:callbacks.length,connections,objectStoreRequests};
     };
     const awaitPassiveConnectionClosure=async(deadline:number)=>{
       expect(databaseObservation.connectionsOpened).toBeGreaterThan(0);
@@ -892,9 +913,10 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         retryOfRunId:actualSuccessor?.retryOfRunId,invocationSource:actualSuccessor?.invocationSource,
         assignmentCount:successorAssignments.length,assignmentStatus:settledAssignment.status,resultCount:successorResults.length,taskStatus:settledTask.status},
       operation:{requestId:writeId,journalCount:writeJournals.length,journalStatus:journal.status,sourceEventPresent:journal.sourceEventId!==null},
-      quiet:{elapsedMs:quietTraceEnd-quietTraceStart,queryCountBefore:before.queryCount,queryCountAfter:quietAfter?.queryCount,
+      quiet:{elapsedMs:quietTraceEnd-quietTraceStart,queryCountBefore:before.queryCount,queryCountAfter:quietAfter?.queryCount,objectStoreRequestsBefore:before.objectStoreRequests,objectStoreRequestsAfter:quietAfter?.objectStoreRequests,
         callbackCountBefore:before.callbacks,
         callbackCountAfter:quietAfter?.callbacks,connectionCountsBefore:before.connections,connectionCountsAfter:quietAfter?.connections,allCreatedClientsObserved:before.connections.clients,closedDedicatedOwners:before.connections.dedicated,closedListenerOwners:before.connections.listeners},
+      managedStorage:{normalMinio:true,requests:objectStoreRequests,proxyInjected:storageProxy?.counts().injected,preservedAcrossAppProcessRestart:true,providerDeploymentProof:false},
       errorsCount:errors.length,revocationChecksCompleted:true,
       successorAccounting:{finalRecorded:false,reason:"No added post-settlement accounting query; original443had no final accounting assertion"},
       reconstruction:{appOwners:appOwnerGenerations,cloudOwners:cloudOwnerGenerations,newDbOwners:true,fullProcessRestart:true,physicalRestart:{first:physicalFollowon.firstIdentity,second:physicalFollowon.secondIdentity},freshUseful2:{taskId:physicalFollowon.taskId,runId:physicalFollowon.runId,assignmentId:physicalFollowon.assignmentId,requestId:physicalFollowon.requestId,lostCommittedReply:physicalFollowon.committedReplyLoss},masterKeyProvider:"controlled provider port retained outside reconstructed owners",quiet:{elapsedMs:resumedElapsed,before:resumedBefore,after:resumedAfter}},
