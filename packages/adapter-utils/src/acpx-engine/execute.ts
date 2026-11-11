@@ -131,7 +131,7 @@ import type {
   TurnCompletion,
 } from "./run-contracts.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
-import { acpxAccountingModel } from "./accounting-model.js";
+import { acpxAccountingModel, acpxContextWindow } from "./accounting-model.js";
 import { settleAcpRun, type SettlementSteps } from "./settlement-sequence.js";
 import {
   runAttempt,
@@ -1489,6 +1489,47 @@ function normalizeRequestedThinkingEffort(config: Record<string, unknown>): stri
   ).trim();
 }
 
+// The agent's context window is the hard ceiling every prompt — including the
+// auto-compact request, which always sends the full current history for
+// summarization — must stay under. The local sglang Qwen3.8-27B lane (128k
+// raw window) has no VRAM headroom to grow, so we bound the prompt instead of
+// raising the ceiling: cap the effective context window at 95% and fire
+// auto-compact at 60% of that, ~30% of headroom below the ceiling, so the
+// compact request can never exceed the provider window and a session can
+// never wedge unrecoverable on `ContextWindowExceeded` while compacting
+// (EYW-692, root-caused 2026-10-23). Operator-configured values in an
+// existing `CODEX_CONFIG` are honored over these defaults.
+// Apply the engine's context bounds only where the operator has not already
+// set a value, so an explicit CODEX_CONFIG model_context_window or
+// model_auto_compact_token_limit always wins over the defaults.
+function codexContextBounds(existing: Record<string, unknown>): Record<string, unknown> {
+  const bounds: Record<string, unknown> = {};
+  if (existing.model_context_window == null) bounds.model_context_window = 121600;
+  if (existing.model_auto_compact_token_limit == null) bounds.model_auto_compact_token_limit = 72960;
+  if (existing.model_auto_compact_token_limit_scope == null) bounds.model_auto_compact_token_limit_scope = "Total";
+  return bounds;
+}
+
+/**
+ * The context window the host explicitly configured into a Codex run's
+ * `CODEX_CONFIG` — an operator value from the environment, or the ACPX
+ * engine's own `codexContextBounds()` default when no operator value is
+ * present. Null for non-codex lanes or a missing/unparseable config; the
+ * runtime's own reported window always wins over this fallback.
+ */
+function codexConfiguredContextWindow(env: Record<string, string | undefined>): number | null {
+  const raw = env.CODEX_CONFIG;
+  if (!raw) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseObject(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+  const value = parsed.model_context_window;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
+
 function buildCodexStartupConfig(input: {
   existingConfig: string | undefined;
   requestedModel: string;
@@ -1519,6 +1560,7 @@ function buildCodexStartupConfig(input: {
       ...(input.requestedThinkingEffort
         ? { model_reasoning_effort: input.requestedThinkingEffort }
         : {}),
+      ...codexContextBounds(existing),
       ...(input.fastMode
         ? {
             service_tier: "fast",
@@ -4822,6 +4864,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let runPrompt = "";
       let preTurnStatus: AcpRuntimeStatus | null = null;
       let accountingModel: string | null = prepared.requestedModel || null;
+      // Failure diagnostics for context-window overflows (EYW-692): the
+      // per-turn request token count and the model's context-window limit,
+      // resolved once at terminal finalization, so an `acpx_turn_failed`
+      // stream death is diagnosable from the run log in seconds.
+      let contextDiagnostics: { requestTokens: number; modelContextWindow: number } | null = null;
       // Phase-timing markers for the prepare_turn and turn phases. The prepare
       // phase covers the prompt build and the pre-turn usage snapshot; the turn
       // phase covers the started turn and the event relay.
@@ -5118,6 +5165,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventBreakdown,
           eventCostUsd,
         });
+        const contextWindow = acpxContextWindow(
+          preTurnStatus,
+          postTurnStatus,
+          (codexConfiguredContextWindow(prepared.env) ?? undefined),
+        );
+        const requestTokens = asNumber(turnUsage.usageDetail?.totalTokens, 0) || (turnUsage.usage
+          ? turnUsage.usage.inputTokens + turnUsage.usage.outputTokens
+          : 0);
+        if ((requestTokens > 0 || contextWindow !== null) && terminal.status === "failed") {
+          contextDiagnostics = {
+            requestTokens,
+            modelContextWindow: contextWindow ?? 0,
+          };
+        }
         // An interrupted stream is provisional unless the runtime supplies its
         // post-terminal receipt. An in-stream usage_update alone cannot close it.
         const usageComplete = !channelLost && (turnSucceeded || postTurnStatus?.usage != null);
@@ -5182,6 +5243,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
           stopReason: terminalStopReason,
           message: errorMessage,
+          ...(contextDiagnostics
+            ? { contextDiagnostics: { ...contextDiagnostics, contextExceeded: contextDiagnostics.requestTokens > contextDiagnostics.modelContextWindow } }
+            : {}),
         });
         // The one clean-completion path clears the run failure flag; every other
         // path keeps it set, so the run root span closes with error status. A
@@ -5232,6 +5296,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
+              : {}),
+            ...(contextDiagnostics
+              ? { contextDiagnostics: { ...contextDiagnostics, contextExceeded: contextDiagnostics.requestTokens > contextDiagnostics.modelContextWindow } }
               : {}),
           },
           summary: buildAcpxRunSummary({

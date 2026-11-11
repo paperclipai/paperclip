@@ -603,6 +603,9 @@ describe("shared ACPX engine runtime behavior", () => {
       model_reasoning_effort: "high",
       service_tier: "fast",
       features: { fast_mode: true },
+      model_context_window: 121600,
+      model_auto_compact_token_limit: 72960,
+      model_auto_compact_token_limit_scope: "Total",
     });
     expect(configOptions).toEqual([]);
     expect(result.pricingContext).toEqual({ serviceTier: "fast" });
@@ -662,9 +665,32 @@ describe("shared ACPX engine runtime behavior", () => {
       approval_policy: "never",
       service_tier: "fast",
       features: { experimental_feature: true, fast_mode: true },
+      model_context_window: 121600,
+      model_auto_compact_token_limit: 72960,
+      model_auto_compact_token_limit_scope: "Total",
     });
   });
 
+
+  it("bounds the Codex context window and auto-compact threshold by default so compaction can never exceed the provider window (EYW-692)", async () => {
+    const { meta } = await runExecutor({ agent: "codex", model: "gpt-5.6-sol" });
+    const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG)) as Record<string, unknown>;
+    expect(config.model_context_window).toBe(121600);
+    expect(config.model_auto_compact_token_limit).toBe(72960);
+    expect(config.model_auto_compact_token_limit_scope).toBe("Total");
+    expect((config.model_auto_compact_token_limit as number) <= (config.model_context_window as number) * 0.6).toBe(true);
+  });
+
+  it("honors an operator-configured CODEX_CONFIG context bounds over the defaults", async () => {
+    const { meta } = await runExecutor({
+      agent: "codex",
+      model: "gpt-5.6-sol",
+      env: { CODEX_CONFIG: JSON.stringify({ model_context_window: 64000, model_auto_compact_token_limit: 38400 }) },
+    });
+    const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG)) as Record<string, unknown>;
+    expect(config.model_context_window).toBe(64000);
+    expect(config.model_auto_compact_token_limit).toBe(38400);
+  });
   it("warns when runtime settings replace malformed user CODEX_CONFIG", async () => {
     const { logs, meta } = await runExecutor({
       agent: "codex",
@@ -674,6 +700,9 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
       model: "gpt-runtime",
+      model_context_window: 121600,
+      model_auto_compact_token_limit: 72960,
+      model_auto_compact_token_limit_scope: "Total",
     });
     expect(logs).toContainEqual({
       stream: "stderr",
