@@ -199,6 +199,37 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     expect(task!.assigneeAgentId).toBe(change === "parked" ? agentId : otherAgentId);
   });
 
+  it("keeps an accepted non-assignee mention through a directory wait and runs it once files are free", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const assigneeId = randomUUID(), issueId = randomUUID();
+    await db.insert(agents).values({ id: assigneeId, companyId, name: "AssigneeCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Shared review", status: "in_progress", priority: "medium",
+      responsibleUserId: "busy-directory-user", assigneeAgentId: assigneeId, issueNumber: 5 });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "on_demand", status: "queued",
+      responsibleUserId: "busy-directory-user",
+      contextSnapshot: { issueId, wakeReason: "issue_comment_mentioned", commentId: randomUUID() } }).returning();
+    busyPrepares.remaining = 1;
+    busyPrepares.calls = 0;
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON,
+      contextSnapshot: { preparationWaitDeferredWhileAssignee: false } });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.assigneeAgentId).toBe(assigneeId);
+
+    const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);
+    expect((await heartbeat.promoteDueScheduledRetries(afterDue)).runIds).toContain(retry!.id);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(retry!.id))?.status).toBe("succeeded");
+    expect(executedRunIds).toContain(retry!.id);
+  });
+
   it("defers the first run of a task instead of failing it, then runs it", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

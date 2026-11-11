@@ -113,7 +113,8 @@ export function isNonAssigneeWorkspaceBusyRetry(
     (retryReason === WORKSPACE_BUSY_RETRY_REASON &&
       contextSnapshot.workspaceBusyDeferredWhileAssignee === false) ||
     ((retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) &&
-      contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false)
+      contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false) ||
+    (isPreparationWaitRetryReason(retryReason) && contextSnapshot.preparationWaitDeferredWhileAssignee === false)
   );
 }
 

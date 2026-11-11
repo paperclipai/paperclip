@@ -1601,6 +1601,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
   ): Promise<boolean> {
     if (executionRetryAttemptCount(run, AGENT_DIRECTORY_BUSY_RETRY_REASON) >= AGENT_DIRECTORY_BUSY_MAX_DEFERRALS) return false;
     const now = new Date();
+    const runContext = parseObject(run.contextSnapshot);
+    const admittedNonAssignee = parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true
+      || isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, runContext);
+    const waitIssueId = readNonEmptyString(runContext.issueId);
+    const wasIssueAssignee = admittedNonAssignee ? false : !waitIssueId || await db.select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, waitIssueId)))
+      .then(rows => rows[0]?.assigneeAgentId === run.agentId);
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message, errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE, finishedAt: now,
       resultJson: {
@@ -1613,6 +1620,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           recordedAt: now.toISOString(),
         },
       },
+      contextSnapshot: { ...runContext, preparationWaitDeferredWhileAssignee: wasIssueAssignee },
     });
     if (!cancelled.updated) return true;
     await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: deferral.message }).catch(() => undefined);
