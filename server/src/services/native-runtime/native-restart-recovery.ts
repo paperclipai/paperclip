@@ -102,6 +102,7 @@ export type NativeRestartRecoveryClaim =
         | { kind: "plugin_task"; leaseId: string };
       /** Discovery evidence only; executor revalidates the encrypted header. */
       stagedAttachment?: Pick<NativeStagedAttachmentRecovery, "sourceIdentity" | "targetIdentity" | "templateDigest">;
+      exitedBeforeSessionOpen?: true;
     }
   | {
       kind: "resume_dead_runner";
@@ -1985,6 +1986,8 @@ export async function claimNativeRestartRecoveries(input: {
             providerLeaseId: remoteWorkspace!.providerLeaseId,
             remoteCwd: remoteWorkspace!.remoteCwd,
           },
+          ...(!pluginTask && row.coordinator.failureDetail?.runnerExitedBeforeSessionOpen === true
+            ? { exitedBeforeSessionOpen: true as const } : {}),
         } satisfies NativeRestartRecoveryClaim;
       }
       if (claimKind === "reattach_existing_runner") {

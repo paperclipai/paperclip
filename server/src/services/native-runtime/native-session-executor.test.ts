@@ -446,6 +446,7 @@ import {
   NATIVE_PROVIDER_SESSION_CLOSED,
   NATIVE_PROVIDER_STARTUP_REJECTED,
   nativeRemoteStartupRejectionCode,
+  nativeRunnerExitedBeforeSessionOpen,
   nativeRepeatedStartupFailureAction,
   nativePreviousStartupFailureSignature,
   nativeStartupFailureSignature,
@@ -1020,6 +1021,26 @@ describe("remote controller restart adoption", () => {
   it.each([2, 3])("resumes scheduled attempt %i whose runner exited after its previous attempt suspended it", async providerAttempt => {
     await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension) as never, identity,
       runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
+  });
+  const exitedBeforeOpen = { lifecycle: "ready", outbox: [{ id: 127 }], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+  it("starts a new runner when the previous attempt's runner exited before answering session.open", async () => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(exitedBeforeOpen) as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "ready", runnerSettled: false });
+    await expect(verifyRemoteRunnerOrSettledExit({ claim: { ...claim, exitedBeforeSessionOpen: true },
+      target: exitedRunner(exitedBeforeOpen) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt: 2 }))
+      .resolves.toBeUndefined();
+  });
+  it.each([
+    ["a pending provider cleanup", { ...exitedBeforeOpen, pendingProviderCleanup: { pid: 7 } }, 2],
+    ["a pending terminal delivery", { ...exitedBeforeOpen, pendingTerminalDelivery: { eventId: "event" } }, 2],
+    ["a runner that stopped mid-turn", { ...exitedBeforeOpen, lifecycle: "turn_active" }, 2],
+    ["an exhausted attempt budget", exitedBeforeOpen, 4],
+  ] as const)("keeps a runner that exited before session.open fail-closed after %s", async (_case, state, providerAttempt) => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim: { ...claim, exitedBeforeSessionOpen: true },
+      target: exitedRunner(state) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
   });
   it.each([
     ["an unsettled suspension", { ...settledSuspension, outbox: [{ id: 1 }] }, 2],
@@ -14241,6 +14262,14 @@ describe("native session bounded recovery", () => {
       });
     });
 
+    it("records a runner proven to have exited before answering session.open as a failed fresh start", () => {
+      const proven = (message: string) => Object.defineProperty(new Error(message), "runnerExitConfirmed", { value: true });
+      expect(nativeRunnerExitedBeforeSessionOpen(new Error("native_session_recovery_failed", {
+        cause: proven("runnerd exited while waiting for session.open") }))).toBe(true);
+      expect(nativeRunnerExitedBeforeSessionOpen(new Error("runnerd exited while waiting for session.open"))).toBe(false);
+      expect(nativeRunnerExitedBeforeSessionOpen(proven("PRP command session.open rejected: {}"))).toBe(false);
+    });
+
     it("stops a remote startup rejection at once because a remote same-run bootstrap cannot be verified", () => {
       const failure = sessionOpenFailure(startupFailure({ message: "Query closed before response received" }));
       expect(nativeRemoteStartupRejectionCode(nativeSessionFailureSourceCode(failure), failure, true))
@@ -15655,7 +15684,7 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "suspension-receipt", "suspension-active-owner", "changed", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
+  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "suspension-receipt", "suspension-active-owner", "changed", "changed-external-checkpoint", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
     const plugin = scenario === "plugin-replaced" || scenario === "plugin-managed-github";
     const suspensionReceipt = scenario.startsWith("suspension-");
     const reusable = suspensionReceipt || ["unchanged", "external-checkpoint", "plugin-managed-github"].includes(scenario);
@@ -15704,13 +15733,16 @@ describe("runnerd provider runtime wiring", () => {
     // Use the real control plane and persistence callback, not a handwritten marker.
     const saved = new Map<string, import("../../vendor/paperclip-runner/index.js").DurablePrpCheckpoint>();
     let persistedController: DurablePrpControlPlane | undefined;
-    const restore = scenario === "external-checkpoint"
+    const restore = scenario === "external-checkpoint" || scenario === "changed-external-checkpoint"
       ? vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockImplementation(async (_db, binding, directory) => {
           const checkpoint = saved.get(binding.runId);
           if (!checkpoint) throw new Error("missing test checkpoint");
           checkpoint.restoreSessionDirectory(directory);
           return checkpoint;
         }) : undefined;
+    const loadSaved = scenario === "changed-external-checkpoint"
+      ? vi.spyOn(runnerCheckpoint, "loadNativeRunnerCheckpoint").mockImplementation(async (_db, binding) => saved.get(binding.runId) ?? null)
+      : undefined;
     if (restore) {
       const completeIdentity = { ...identity, turnId: "turn-first", itemId: "item-first" };
       // The authority must begin from a complete real state envelope.
@@ -15723,8 +15755,16 @@ describe("runnerd provider runtime wiring", () => {
     const firstSession = { close: vi.fn(async () => {
       order.push("retire");
       if (failRetirement) throw new Error("retirement unconfirmed");
+      if (scenario === "changed-external-checkpoint") {
+        persistedController!.queueCommand("runner.drain", {}, "command_close_drain_fixture");
+        persistedController!.queueCommand("runner.suspend", {}, "command_close_suspend_fixture");
+        await persistedController!.flushCheckpoint();
+        await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(identity, "suspended")));
+        return;
+      }
       await writeRunnerAuthority(root, identity, "suspended");
     }) };
+    let launchedJournal: string[] | undefined;
     const nextSession = { close: vi.fn(async () => undefined) };
     const validated = validatePrpStructuredRunResult({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
       summary: "done", completionClaim: { contractRevision: first.completionContract.contract.revision, objectiveSatisfied: true,
@@ -15749,7 +15789,10 @@ describe("runnerd provider runtime wiring", () => {
       return result;
     }).mockImplementationOnce(async options => {
       order.push("execute-next");
-      if (persistedController) {
+      if (scenario === "changed-external-checkpoint") {
+        launchedJournal = (JSON.parse(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).commands as
+          Array<{ type: string }>).map(command => command.type);
+      } else if (persistedController) {
         persistedController.rotateRunIdentity({ ...identity, runId: next.binding.runId, turnId: "turn-next", itemId: "item-next" });
         await persistedController.flushCheckpoint();
         await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(
@@ -15817,6 +15860,9 @@ describe("runnerd provider runtime wiring", () => {
         }
         if (scenario === "plugin-managed-github") expect(rebind).toHaveBeenCalledOnce();
         expect(order).toEqual(reusable ? ["execute-next"] : ["retire", "execute-next"]);
+        if (scenario === "changed-external-checkpoint") {
+          expect(launchedJournal?.slice(-2)).toEqual(["runner.drain", "runner.suspend"]);
+        }
         if (["unchanged", "external-checkpoint", "suspension-receipt"].includes(scenario)) {
           if (!persistedController) await writeRunnerAuthority(root, { ...identity, runId: next.binding.runId }, "ready");
           if (suspensionReceipt) await rm(join(root, "runner/runner-state.json"));
@@ -15850,6 +15896,7 @@ describe("runnerd provider runtime wiring", () => {
       }
     } finally {
       restore?.mockRestore();
+      loadSaved?.mockRestore();
       await persistedController?.stop();
       failRetirement = false;
       resume?.mockRestore();owners?.mockRestore();feedback.mockRestore();
