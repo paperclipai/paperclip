@@ -47,12 +47,16 @@ function providerFailureOf(payload: unknown) {
   return readProviderFailure(direct) ?? readProviderFailure(wrapped);
 }
 
-export type ProviderLimitReset = { resetAt: Date; observedAt: Date };
+export type ProviderLimitReset = {
+  resetAt: Date; observedAt: Date;
+  /** False for a reset further out than Paperclip waits by itself (a monthly limit). */
+  withinAutomaticWait: boolean;
+};
 
 /**
  * When the provider said the usage limit resets, from the run's own durable
  * events. Null unless the last turn event is a provider-observed settlement
- * reporting an exhausted allowance with a reset within the bounded wait.
+ * reporting an exhausted allowance with a reset after it.
  */
 export async function readNativeUsageLimitReset(
   db: Pick<Db, "select">,
@@ -71,9 +75,9 @@ export async function readNativeUsageLimitReset(
   const observedAt = lastTurn.createdAt;
   const typed = failure.retryAt ? new Date(failure.retryAt) : null;
   const resetAt = typed && Number.isFinite(typed.getTime()) ? typed : parseProviderQuotaClockReset(failure.message, observedAt);
-  if (!resetAt || resetAt.getTime() <= observedAt.getTime()
-    || resetAt.getTime() - observedAt.getTime() > PROVIDER_LIMIT_RESUME_MAX_WAIT_MS) return null;
-  return { resetAt, observedAt };
+  if (!resetAt || resetAt.getTime() <= observedAt.getTime()) return null;
+  return { resetAt, observedAt,
+    withinAutomaticWait: resetAt.getTime() - observedAt.getTime() <= PROVIDER_LIMIT_RESUME_MAX_WAIT_MS };
 }
 
 /** The user whose authority Retry uses: the requester, else the run's accountable user. */
@@ -95,7 +99,8 @@ export async function planProviderLimitResume(db: Pick<Db, "select">, runId: str
   if (!run) return { automatic: false, resetAt: null };
   const reset = await readNativeUsageLimitReset(db, run);
   if (!reset) return { automatic: false, resetAt: null };
-  const actorId = await accountableUser(db, run);
+  // A reset beyond the bounded wait is still reported; only the automatic Retry is bounded.
+  const actorId = reset.withinAutomaticWait ? await accountableUser(db, run) : null;
   return actorId ? { automatic: true, resetAt: reset.resetAt, actorId } : { automatic: false, resetAt: reset.resetAt };
 }
 
@@ -164,6 +169,18 @@ export async function requestProviderLimitResumeRetry(db: Db, input: {
     return done("source_run_mismatch");
   const reset = await readNativeUsageLimitReset(db, run);
   if (!reset) return done("reset_unknown");
+  if (!reset.withinAutomaticWait) {
+    // Too far out to wait by itself: the hold names the reset and leaves the
+    // Retry to the user; it never promised an automatic one.
+    await db.update(issueRecoveryActions).set({
+      nextAction: providerLimitNextAction({ automatic: false, resetAt: reset.resetAt }),
+      evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResetAt', ${reset.resetAt.toISOString()}::text)`,
+      updatedAt: now,
+    }).where(and(eq(issueRecoveryActions.id, action.id), eq(issueRecoveryActions.status, "active")));
+    await settle(db, action.id, { state: "not_requested", reason: "reset_beyond_wait", resetAt: reset.resetAt.toISOString(),
+      decidedAt: now.toISOString() });
+    return { requested: false, reason: "reset_beyond_wait" };
+  }
   if (reset.resetAt.getTime() > now.getTime()) {
     // A hold saved by an earlier release names no reset; tell its reader when work resumes.
     if (!action.evidence?.providerLimitResetAt) {
@@ -230,28 +247,29 @@ export function registerProviderLimitResumeWork(
     prepareChatRetry?: () => PrepareChatRetry | undefined },
   canRun: () => boolean,
 ) {
+  const cursors = new Map<string, string>();
   return registerScopedDeadlineWork<Entry, Scope>(coordinator, {
     queue: DELIVERY_QUEUES.providerLimitResume,
     decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as Scope,
     matches: (entry, scope) => !scope || entry.companyId === scope.companyId,
     load: async scope => {
-      // Every waiting hold, a page at a time: a hold left out would never retry.
-      const entries: Entry[] = [];
-      for (let after: string | null = null; ;) {
-        const rows: Array<{ id: string; companyId: string }> = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId })
-          .from(issueRecoveryActions).where(and(
-            scope ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
-            eq(issueRecoveryActions.status, "active"), eq(issueRecoveryActions.kind, "active_run_watchdog"),
-            eq(issueRecoveryActions.cause, NATIVE_PROVIDER_USAGE_LIMIT),
-            sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`,
-            isNull(issueRecoveryActions.resolvedAt),
-            after ? gt(issueRecoveryActions.id, after) : undefined,
-          )).orderBy(asc(issueRecoveryActions.id)).limit(LOAD_PAGE_SIZE);
-        // check() reads each hold's reset and returns its real deadline.
-        entries.push(...rows.map(row => ({ ...row, dueAt: 0 })));
-        if (rows.length < LOAD_PAGE_SIZE) return entries;
-        after = rows.at(-1)!.id;
-      }
+      // One bounded page per pass, resumed from a stable cursor until every
+      // waiting hold is loaded: a hold left out would never retry.
+      const key = scope ? JSON.stringify(scope) : "*";
+      const cursor = cursors.get(key);
+      const rows = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId })
+        .from(issueRecoveryActions).where(and(
+          scope ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
+          eq(issueRecoveryActions.status, "active"), eq(issueRecoveryActions.kind, "active_run_watchdog"),
+          eq(issueRecoveryActions.cause, NATIVE_PROVIDER_USAGE_LIMIT),
+          sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`,
+          isNull(issueRecoveryActions.resolvedAt),
+          cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
+        )).orderBy(asc(issueRecoveryActions.id)).limit(LOAD_PAGE_SIZE);
+      const complete = rows.length < LOAD_PAGE_SIZE;
+      if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
+      // check() reads each hold's reset and returns its real deadline.
+      return { rows: rows.map(row => ({ ...row, dueAt: 0 })), complete };
     },
     check: async entry => {
       if (await owner.schedulingSuppressed()) return { ...entry, dueAt: Date.now() + 5 * 60_000 };

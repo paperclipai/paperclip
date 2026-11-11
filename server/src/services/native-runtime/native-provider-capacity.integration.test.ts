@@ -564,4 +564,24 @@ describe("native provider capacity failure persistence", () => {
     }
     expect(errors).toEqual([]);
   }, 40_000);
+
+  it("reports a reset beyond the automatic wait without retrying by itself", async () => {
+    // A monthly limit, typed by the provider, three weeks out.
+    const resetAt = new Date(Date.now() + 21 * 24 * 60 * 60_000);
+    resetAt.setUTCMinutes(0, 0, 0);
+    const payload = weeklyLimit(resetAt);
+    (payload.error.providerFailure as Record<string, unknown>).retryAt = resetAt.toISOString();
+    const userId = `user-${randomUUID()}`;
+    const { issueId } = await failTurn({ payload, responsibleUserId: userId });
+    const hold = await holdFor(issueId);
+    expect(hold.nextAction).toBe(`The provider usage limit resets at ${resetAt.toISOString()}. `
+      + "Retry the task after that time, or sooner if usage capacity is restored.");
+    expect(hold.evidence).toMatchObject({ providerLimitResetAt: resetAt.toISOString() });
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id },
+      new Date(resetAt.getTime() + 1000))).resolves.toEqual({ requested: false, reason: "reset_beyond_wait" });
+    expect((await holdFor(issueId)).nextAction).toBe(hold.nextAction);
+    const receipts = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.requestedByActorId, userId)));
+    expect(receipts).toEqual([]);
+  });
 });
