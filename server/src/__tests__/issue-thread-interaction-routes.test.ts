@@ -801,7 +801,7 @@ describe("issue thread interaction routes", () => {
     const result = await request(await createApp()).post(path).send({});
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
-    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" });
+    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" }, expect.any(Function));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "issue.thread_interaction_dismissed" }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     mockInteractionService.dismissInteraction.mockClear();
@@ -810,9 +810,18 @@ describe("issue thread interaction routes", () => {
   });
 
   it("wakes the assignee when the dismissed question was the only thing its task waited on", async () => {
-    mockInteractionService.dismissInteraction.mockResolvedValue({ id: "request-1", kind: "ask_user_questions", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
-    mockOwnQuestionWaitReleasedByDismissal.mockResolvedValueOnce({ agentId: CREATED_AGENT_ID });
+    const dismissed = { id: "request-1", kind: "ask_user_questions", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" };
+    mockInteractionService.dismissInteraction.mockResolvedValue(dismissed);
     const path = "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss";
+    expect((await request(await createApp()).post(path).send({})).status).toBe(200);
+    expect(mockOwnQuestionWaitReleasedByDismissal).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    mockOwnQuestionWaitReleasedByDismissal.mockResolvedValueOnce({ agentId: CREATED_AGENT_ID });
+    mockInteractionService.dismissInteraction.mockImplementationOnce(
+      async (_issue: unknown, _id: string, _actor: unknown, afterDismissed?: (tx: unknown) => Promise<void>) => {
+        await afterDismissed?.({});
+        return dismissed;
+      });
     expect((await request(await createApp()).post(path).send({})).status).toBe(200);
     expect(mockOwnQuestionWaitReleasedByDismissal).toHaveBeenCalledWith(expect.anything(),
       { companyId: "company-1", issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", interactionId: "request-1" });

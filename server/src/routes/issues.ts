@@ -19094,20 +19094,24 @@ export function issueRoutes(
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
+      let released: { agentId: string } | null = null;
       const interaction = await issueThreadInteractionService(db).dismissInteraction(
         issue, req.params.interactionId as string,
         { userId: actor.actorType === "user" ? actor.actorId : null },
+        async (tx) => {
+          released = await ownQuestionWaitReleasedByDismissal(tx, {
+            companyId: issue.companyId, issueId: issue.id, interactionId: req.params.interactionId as string,
+          });
+        },
       );
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
         action: "issue.thread_interaction_dismissed", entityType: "issue", entityId: issue.id,
         details: { interactionId: interaction.id, interactionKind: interaction.kind },
       });
-      const released = await ownQuestionWaitReleasedByDismissal(db, {
-        companyId: issue.companyId, issueId: issue.id, interactionId: interaction.id,
-      });
-      if (released) {
-        await heartbeat.wakeup(released.agentId, {
+      const releasedWait = released as { agentId: string } | null;
+      if (releasedWait) {
+        await heartbeat.wakeup(releasedWait.agentId, {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_question_dismissed",

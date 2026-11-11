@@ -5677,6 +5677,7 @@ export function issueThreadInteractionService(
       issue: { id: string; companyId: string },
       interactionId: string,
       actor: InteractionActor,
+      afterDismissed?: (tx: Db) => Promise<void>,
     ) => {
       if (!actor.userId || actor.agentId || actor.runId || actor.systemId) {
         throw forbidden("Only a human can dismiss a request");
@@ -5712,6 +5713,7 @@ export function issueThreadInteractionService(
         const [updated] = await tx.update(issueThreadInteractions)
           .set({ dismissedAt: now, dismissedByUserId: actor.userId, updatedAt: now })
           .where(eq(issueThreadInteractions.id, interactionId)).returning();
+        await afterDismissed?.(tx as unknown as Db);
         return hydrateInteraction(updated!);
       });
     },
