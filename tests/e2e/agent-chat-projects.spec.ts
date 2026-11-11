@@ -1,4 +1,6 @@
+import { once } from "node:events";
 import { createServer } from "node:http";
+import { promisify } from "node:util";
 import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 import { idle, json, send, setup } from "./agent-chat.shared";
@@ -719,10 +721,9 @@ for (const cancellationStatus of [200, 500]) {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(body));
     });
-    const listening = Promise.withResolvers<void>();
-    server.once("error", listening.reject);
-    server.listen(0, "127.0.0.1", listening.resolve);
-    await listening.promise;
+    const listening = once(server, "listening");
+    server.listen(0, "127.0.0.1");
+    await listening;
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture server address");
     const request = await playwright.request.newContext({
@@ -750,9 +751,7 @@ for (const cancellationStatus of [200, 500]) {
       )).toHaveLength(2);
     } finally {
       await request.dispose();
-      const closed = Promise.withResolvers<void>();
-      server.close((error) => error ? closed.reject(error) : closed.resolve());
-      await closed.promise;
+      await promisify(server.close.bind(server))();
     }
   });
 }

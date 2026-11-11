@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { context, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
@@ -7,6 +7,7 @@ import { agents, authUsers, companyMemberships, createDb, heartbeatRuns, issueCo
 import type { NativeRunIdentity, NativeSession, NativeSessionBackend, PrpEvent } from "@paperclipai/paperclip-runner";
 import { describe, expect, it, vi } from "vitest";
 import { heartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat.js";
+import * as preparationTiming from "../services/execution-preparation-timing.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { closeIdleWarmNativeSessionsForRestart } from "../services/native-runtime/native-session-executor.js";
 import { nativeRestartFixture, waitForCondition } from "./helpers/native-restart-fixture.js";
@@ -66,7 +67,7 @@ function completingBackend(db: ReturnType<typeof createDb>): NonNullable<Heartbe
 describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
   const fixture = nativeRestartFixture({});
 
-  it("emits spans for the work between the named preparation phases", async () => {
+  it("keeps preparation spans under their attempt when native history replays the same phases", async () => {
     const { companyId, agentId, temporary } = fixture.current;
     const db = createDb(temporary.connectionString, { maxConnections: 4 });
     const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
@@ -77,6 +78,13 @@ describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
     expect(context.setGlobalContextManager(manager)).toBe(true);
     expect(trace.setGlobalTracerProvider(provider)).toBe(true);
     const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: completingBackend(db) });
+    const replayedPhase = "heartbeat.prepare.chat_retry_admission";
+    const originalDrain = preparationTiming.drainRunPreparationPhases;
+    const drainPreparation = vi.spyOn(preparationTiming, "drainRunPreparationPhases").mockImplementation(runId => {
+      const phases = originalDrain(runId);
+      const endedAtMs = Date.now();
+      return [...phases, { name: replayedPhase, startedAtMs: endedAtMs - 50, endedAtMs, outcome: "ok" as const }];
+    });
     try {
       const userId = randomUUID();
       await db.insert(authUsers).values({ id: userId, name: "Task owner", email: `${userId}@example.invalid`,
@@ -101,7 +109,8 @@ describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
 
       await provider.forceFlush();
       const spans = exporter.getFinishedSpans();
-      const names = new Set(spans.map(span => span.name));
+      const livePreparation = spans.filter(span => span.instrumentationScope.name === "paperclip.heartbeat-preparation");
+      const controllers = spans.filter(span => span.instrumentationScope.name === "paperclip.native-controller");
       const preparation = [
         "heartbeat.prepare.chat_retry_admission",
         "heartbeat.prepare.workspace_selection",
@@ -119,13 +128,44 @@ describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
         "native.controller.span_persistence",
         "native.controller.state_migration",
       ];
-      for (const name of [...preparation, ...controller]) expect(names, name).toContain(name);
+      for (const name of preparation) expect(livePreparation.map(span => span.name), name).toContain(name);
+      for (const name of controller) expect(controllers.map(span => span.name), name).toContain(name);
+      expect(drainPreparation).toHaveBeenCalledOnce();
+      expect(drainPreparation).toHaveBeenCalledWith(run!.id);
+      const runIdHash = createHash("sha256").update(run!.id).digest("hex").slice(0, 12);
       const attempts = spans.filter(span => span.name === "task.execution_attempt");
       expect(attempts).toHaveLength(1);
-      for (const span of spans.filter(span => preparation.includes(span.name))) {
-        expect(span.parentSpanContext?.spanId, span.name).toBe(attempts[0]!.spanContext().spanId);
+      const attempt = attempts[0]!.spanContext();
+      expect(attempts[0]!.attributes["paperclip.task.run.run_id"]).toBe(runIdHash);
+      for (const span of [...livePreparation, ...controllers]) {
+        expect(span.attributes["paperclip.task.run.run_id"], span.name).toBe(runIdHash);
+        expect(span.spanContext().traceId, span.name).toBe(attempt.traceId);
+      }
+      for (const span of livePreparation.filter(span => preparation.includes(span.name))) {
+        expect(span.parentSpanContext?.spanId, span.name).toBe(attempt.spanId);
+      }
+
+      const nativeSpans = spans.filter(span => span.instrumentationScope.name === "paperclip.native-runner");
+      const providerSessions = nativeSpans.filter(span => span.name === "task.provider_session");
+      const nativePreparation = nativeSpans.filter(span => span.name === "task.prepare");
+      const replayed = nativeSpans.filter(span => span.name === replayedPhase);
+      const runtime = spans.filter(span => span.name === "execution.runtime");
+      expect(providerSessions).toHaveLength(1);
+      expect(nativePreparation).toHaveLength(1);
+      expect(replayed.length).toBeGreaterThan(0);
+      expect(runtime).toHaveLength(1);
+      expect(runtime[0]!.parentSpanContext?.spanId).toBe(attempt.spanId);
+      expect(runtime[0]!.spanContext().traceId).toBe(attempt.traceId);
+      expect(providerSessions[0]!.attributes["paperclip.task.run.run_id"]).toBe(runIdHash);
+      expect(providerSessions[0]!.links.map(link => link.context)).toContainEqual(runtime[0]!.spanContext());
+      expect(nativePreparation[0]!.parentSpanContext?.spanId).toBe(providerSessions[0]!.spanContext().spanId);
+      expect(nativePreparation[0]!.spanContext().traceId).toBe(providerSessions[0]!.spanContext().traceId);
+      for (const span of replayed) {
+        expect(span.parentSpanContext?.spanId, span.name).toBe(nativePreparation[0]!.spanContext().spanId);
+        expect(span.spanContext().traceId, span.name).toBe(providerSessions[0]!.spanContext().traceId);
       }
     } finally {
+      drainPreparation.mockRestore();
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();
       await db.$client.end();

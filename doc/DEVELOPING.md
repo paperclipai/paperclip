@@ -1299,6 +1299,13 @@ is not retried or ignored. Run
 `pnpm test:e2e tests/e2e/agent-chat-projects.spec.ts --grep "fixture restore"`
 to check both successful cancellation and an HTTP 500 response without leaking
 experimental settings into the following tests.
+The HTTP fixture uses Node's event and callback adapters for server listen/close,
+so it also typechecks under the E2E project's existing ES2023 library target.
+
+Preparation tracing tests distinguish live heartbeat phases from native historical
+replay by instrumentation scope. A forced slow-phase record checks the native
+`task.prepare` hierarchy while live phases retain their exact execution-attempt
+parent, trace and run identity checks.
 
 Plugin scheduling tests advance settlement to the coordinator's registered wake.
 They do not add a virtual second on every assertion retry while PostgreSQL reads
