@@ -6692,7 +6692,7 @@ describe("executeNativeSession recovery", () => {
     function harness(options: {
       checkpoint?: PersistedNativeSession;
       recovery?: Awaited<ReturnType<NonNullable<NativeSessionBackend["recoverSession"]>>>;
-      proof?: boolean | null;
+      proof?: boolean | null | "rejects" | "hangs";
       replay?: PrpEvent[];
     } = {}) {
       const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-fresh" }));
@@ -6717,7 +6717,12 @@ describe("executeNativeSession recovery", () => {
         openSession, openReplacementSession, recoverSession,
       };
       const events: PrpEvent[] = [];
-      const provesNoRunProviderWork = vi.fn(async () => options.proof === true);
+      const provesNoRunProviderWork = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+        if (options.proof === "rejects") throw new Error("database unavailable");
+        if (options.proof === "hangs") return await new Promise<boolean>((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+        return options.proof === true;
+      });
       const openRun = vi.fn(async () => undefined);
       const replay = options.replay ?? [];
       const controlPlane: ControlPlanePort = {
@@ -6770,6 +6775,7 @@ describe("executeNativeSession recovery", () => {
     it.each([
       ["the control plane cannot prove the run started no provider work", { proof: false }],
       ["the control plane predates the provider-work proof", { proof: null }],
+      ["the provider-work proof fails", { proof: "rejects" }],
       ["the saved state is incompatible for another reason", { proof: true, recovery: {
         recovered: false as const, failureClass: PROVIDER_STATE_INCOMPATIBLE, reason: "saved launch profile changed" } }],
       ["the checkpoint requires the same session", { proof: true,
@@ -6798,6 +6804,20 @@ describe("executeNativeSession recovery", () => {
       await expect(h.run()).rejects.toThrow();
       expect(h.openReplacementSession).not.toHaveBeenCalled();
       expect(h.startTurn).not.toHaveBeenCalled();
+    });
+
+    it("keeps the named refusal when the provider-work proof does not answer in time", async () => {
+      vi.useFakeTimers();
+      try {
+        const h = harness({ proof: "hangs" });
+        const failure = h.run().catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(30_001);
+        expect(await failure).toBeInstanceOf(NativeProviderStateIncompatibleError);
+        expect(h.provesNoRunProviderWork).toHaveBeenCalledOnce();
+        expect(h.openReplacementSession).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("stops by name when the follow-up's saved session still owns a runtime request", async () => {

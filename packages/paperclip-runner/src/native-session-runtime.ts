@@ -1929,6 +1929,8 @@ function checkpointCursor(cursor: string | null | undefined): number {
  * no provider event, tool invocation or accepted result. A control plane
  * without that proof, or a checkpoint missing those fields, keeps the refusal.
  */
+const GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS = 30_000;
+
 async function governedWaitFollowUpMayStartFresh(input: {
   input: NativeExecutionInput;
   checkpoint: PersistedNativeSession;
@@ -1956,11 +1958,18 @@ async function governedWaitFollowUpMayStartFresh(input: {
     !input.controlPlane.provesNoRunProviderWork
   ) return false;
   const controlPlane = input.controlPlane;
-  return await runAbortableOperationWithin({
-    timeoutMs: input.timeoutMs,
-    timeoutMessage: `native session provider-work proof timed out after ${input.timeoutMs}ms`,
-    operation: (signal) => controlPlane.provesNoRunProviderWork!({ signal }),
-  }) === true;
+  // A proof that fails or expires is no proof: keep the named refusal and its
+  // Retry rather than surfacing a generic interruption.
+  const timeoutMs = Math.min(input.timeoutMs, GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS);
+  try {
+    return await runAbortableOperationWithin({
+      timeoutMs,
+      timeoutMessage: `native session provider-work proof timed out after ${timeoutMs}ms`,
+      operation: (signal) => controlPlane.provesNoRunProviderWork!({ signal }),
+    }) === true;
+  } catch {
+    return false;
+  }
 }
 
 async function reconcileRecoveryCheckpoint(input: {
