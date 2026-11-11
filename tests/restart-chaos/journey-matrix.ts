@@ -15,6 +15,7 @@ import { WORKLOAD_TRIGGERS } from "./journeys.js";
 import { withProviderFaultRules } from "./provider-faults.js";
 import { createRng, k4HoldRange, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
+import { classRHoldMs, isClassRFault } from "./class-r.js";
 import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
 import { isRepeatedRestartFault, planRestartSteps } from "./repeated-restarts.js";
 import { workloadDefinitions } from "./workloads.js";
@@ -44,7 +45,7 @@ export function matrixMayLaunch(next: Pick<TaskPlan, "fault">, inFlight: Readonl
   return inFlight.every(task => (task.fault === "K0") === baseline);
 }
 
-export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" | "adapters" | "faults" | "providerFaults" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "rrGapMs">): TaskPlan[] {
+export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" | "adapters" | "faults" | "providerFaults" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "rrGapMs" | "cr1HoldMs" | "cr2HoldMs" | "cr3StallMs">): TaskPlan[] {
   const rng = createRng((options.seed ^ 0x6a6d7478) >>> 0);
   return matrixCells(options).map((cell, index) => {
     const definition = workloadDefinitions[cell.workload];
@@ -62,7 +63,8 @@ export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" 
       holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs))
         : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
         : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
-        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
+        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int)
+          : isClassRFault(cell.fault) ? classRHoldMs(cell.fault, options, rng.int) : 0,
       ...(isRepeatedRestartFault(cell.fault) ? { restartSteps: planRestartSteps(cell.fault, rng.int, options.rrGapMs) } : {}),
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),

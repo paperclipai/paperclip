@@ -9,6 +9,7 @@ import { parseK15DeployShape, parseK15HoldSeconds } from "./redeploy.js";
 import { validateRecoveryStep } from "./recovery-step-faults.js";
 import { parseLongTurnMinutes } from "./long-turn.js";
 import { isRewakeWorkload } from "./rewake.js";
+import { parseClassROptions } from "./class-r.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
@@ -145,13 +146,17 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "tm1-hold-seconds": { type: "string" },
       "fail-recovery-step": { type: "string" },
       "long-turn-minutes": { type: "string" },
+      "sandbox-watch-seconds": { type: "string" },
+      "cr1-hold-seconds": { type: "string" },
+      "cr2-hold-seconds": { type: "string" },
+      "cr3-stall-seconds": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes", "cr1-hold-seconds", "cr2-hold-seconds", "cr3-stall-seconds", "sandbox-watch-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -251,6 +256,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (baseline && (stormMinutes || crashPoint)) throw new Error("--faults K0 plans cells with no fault; a storm or crash-point wave has its own faults");
   Object.assign(options, validateRecoveryStep(options, values["fail-recovery-step"]));
   Object.assign(options, parseLongTurnMinutes(values["long-turn-minutes"]));
+  if (values["sandbox-watch-seconds"] !== undefined) {
+    if (env !== "daytona") throw new Error("--sandbox-watch-seconds captures Daytona sandboxes; run it with --env daytona");
+    options.sandboxWatchMs = integer(values["sandbox-watch-seconds"], "sandbox-watch-seconds", 30, 10, 600) * 1000;
+  }
   // The matrix planner builds its own task plans; a long turn would silently drop out of them.
   if (options.longTurnMinutes && values.matrix) throw new Error("--long-turn-minutes is not a --matrix option; run it as a planned wave");
   if (providerFaults.length) {
@@ -309,6 +318,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
   Object.assign(options, parseK15HoldSeconds(options, values["k15-hold-seconds"]));
   Object.assign(options, parseK15DeployShape(options, values["k15-overlap-seconds"], values["k15-fresh-home"] === true));
+  Object.assign(options, parseClassROptions(options, { cr1: values["cr1-hold-seconds"], cr2: values["cr2-hold-seconds"], cr3: values["cr3-stall-seconds"] }));
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
