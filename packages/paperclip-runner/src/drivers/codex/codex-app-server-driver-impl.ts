@@ -20,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -403,20 +403,26 @@ export class CodexAppServerDriver implements HarnessDriver {
     // policy decides: a replacement in the assigned workspace, or the
     // permanent named refusal when the checkpoint requires the same session.
     // Retrying cannot move the saved session, so this is incompatible state,
-    // not a transient failure. In-flight provider work keeps the stricter
-    // admission refusal, because nothing here can prove its side effects settled.
+    // not a transient failure. A session with an in-flight turn or runtime
+    // request may have an external effect nothing here can prove settled, so
+    // it is never replaced: it stops by name for an operator to reconcile.
     if (
       snapshot.workingDirectory &&
-      !snapshot.activeTurnId &&
-      !(snapshot.pendingRuntimeRequests?.length) &&
       this.#options.workingDirectoryAuthority === "remote_runner" &&
       remoteRunnerWorkingDirectoryMoved(snapshot.workingDirectory, this.#options.environment)
     ) {
-      return {
-        recovered: false,
-        reason: "persisted session working directory is not the assigned remote workspace",
-        failureClass: PROVIDER_STATE_INCOMPATIBLE,
-      };
+      const inFlight = Boolean(snapshot.activeTurnId) || Boolean(snapshot.pendingRuntimeRequests?.length);
+      return inFlight
+        ? {
+            recovered: false,
+            reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
+            failureClass: PROVIDER_SIDE_EFFECT_PENDING,
+          }
+        : {
+            recovered: false,
+            reason: "persisted session working directory is not the assigned remote workspace",
+            failureClass: PROVIDER_STATE_INCOMPATIBLE,
+          };
     }
     const transport = this.#transport({
       workingDirectory: snapshot.workingDirectory

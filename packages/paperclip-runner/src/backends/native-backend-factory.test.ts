@@ -32,7 +32,7 @@ import {
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
-import { PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
+import { PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
 import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
@@ -434,10 +434,23 @@ describe("native backend factory", () => {
   it.each([
     ["an active turn", { activeTurnId: "turn-in-flight" }],
     ["a pending runtime request", { pendingRuntimeRequests: [{ requestId: "request-1" }] }],
-  ])("keeps refusing a moved-root session that holds %s", async (_label, inFlight) => {
+  ])("stops a moved-root session that holds %s for reconciliation, never replacing it", async (_label, inFlight) => {
     const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
-    const failure = await backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal })
-      .catch((error: unknown) => error);
+    await expect(backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal }))
+      .resolves.toEqual({
+        recovered: false,
+        reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
+        failureClass: PROVIDER_SIDE_EFFECT_PENDING,
+      });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("names the agent generically when a remote Claude session opens outside its workspace", async () => {
+    const { factory, backend } = movedRootRecovery(acpxExecution("claude"));
+    const failure = await backend.openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+      workingDirectory: "/home/daytona/paperclip-workspace/.paperclip-workspaces/elsewhere",
+    }).catch((error: unknown) => error);
     // A Claude run must not be told its working directory is a Codex one.
     expect((failure as Error).message).toBe("Remote agent working directory does not match the assigned workspace");
     expect(factory).not.toHaveBeenCalled();
