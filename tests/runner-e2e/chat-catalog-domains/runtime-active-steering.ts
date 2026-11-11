@@ -9,6 +9,7 @@ import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { renderRuntimeArtifact } from "./runtime-rendered-artifact.js";
 import { runtimeQueueCases } from "./runtime-queue.js";
+import { deliveryRevisionBound } from "./runtime-interruption.js";
 import { runtimeDefinition, observeRuntime, runtimeObservation } from "./runtime-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 export function isBlueColor(color: string) {
@@ -81,9 +82,9 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, humanId: session.user.id, queueBefore: before, targetId, ...controls };
 }, gradeActiveSteering, {
-  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v3",
+  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v4",
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
-  sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
+  sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
     await pollUntil({ label: "Canonical steering guidance while the original native owner remains active", deadlineAt: Date.now() + 150_000,
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
@@ -160,9 +161,8 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
       if (artifact?.contentVerified) {
         state.actualBlueArtifact = hasVisibleBlueDesign(await renderRuntimeArtifact(ctx, artifact.content));
       }
-      // The rendered page proves the colour; the document only has to be the consuming run's saved delivery record.
-      state.deliveryRevisionBound = o.revisions.some(row => row.createdByRunId === state.outputRunId && row.createdByAgentId === (state.worker as Entity).id
-        && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
+      // The rendered page proves the colour; the document must be the requested website-delivery record, current at the consuming run's revision.
+      state.deliveryRevisionBound = deliveryRevisionBound(o, task.id, String(state.outputRunId), (state.worker as Entity).id);
     }
     return o;
   },

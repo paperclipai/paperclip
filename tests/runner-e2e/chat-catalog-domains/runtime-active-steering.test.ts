@@ -68,3 +68,12 @@ it("rejects an advertised Steer control that the page does not enable", () => { 
 it("accepts a delivery document that names the colour another way, since the rendered page proves it", () => { const o = valid(); o.state.deliveryRevisionBound = true; expect(gradeActiveSteering(o).passed).toBe(true); o.state.deliveryRevisionBound = false; expect(gradeActiveSteering(o).passed).toBe(false); });
 it.each([["available", 200, "same-run-acknowledged"], ["available", 409, "provider-rejected-normal-continuation"], ["unsupported", 409, "unsupported-queued-normal-continuation"], ["temporarily_unavailable", 409, "not-advertised"]] as const)(
   "maps %s capability and status %s to its branch", (disposition, status, branch) => expect(steeringBranch(disposition, status)).toBe(branch));
+
+it("binds only the requested website-delivery document written by the consuming run", async () => {
+  const { deliveryRevisionBound } = await import("./runtime-interruption.js");
+  const o = { documents: [{ id: "note", key: "notes", issueId: "website", latestRevisionId: "n1" }, { id: "d", key: "website-delivery", issueId: "website", latestRevisionId: "d1" }],
+    revisions: [{ id: "n1", documentId: "note", createdByRunId: "ordinary", createdByAgentId: "morgan" }, { id: "d1", documentId: "d", createdByRunId: "ordinary", createdByAgentId: "morgan" }] };
+  expect(deliveryRevisionBound(o, "website", "ordinary", "morgan")).toBe(true);
+  o.documents = o.documents.filter(doc => doc.key !== "website-delivery");
+  expect(deliveryRevisionBound(o, "website", "ordinary", "morgan")).toBe(false);
+});
