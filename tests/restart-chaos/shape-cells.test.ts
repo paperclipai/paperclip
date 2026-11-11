@@ -8,6 +8,7 @@ import { parseRecoveryStep, parseRecoveryStepReceipts, recoveryStepControlSpec, 
 import { generationHome, parseK15DeployShape, redeployEnvironment, redeployIdentity } from "./redeploy.js";
 import { awaitingRewake, gradeRewake, noteMarker, rewakeKind, rewakeMarker, rewakeStep, type RewakeArtifacts } from "./rewake.js";
 import { planTasks, planWave, taskFaultSchedule } from "./scheduler.js";
+import { stableRequestId } from "./observer.js";
 import type { OracleArtifacts, RunSample, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -223,6 +224,9 @@ describe("K15 staging deploy shape", () => {
     expect(workloadDefinitions.W2.startComment?.("n1")).toContain("CHAOS-n1");
     expect(workloadDefinitions.W2C.startComment).toBeDefined();
     expect(workloadDefinitions.W2Q.startComment).toBeUndefined();
+    expect(stableRequestId("start-t01-n1")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(stableRequestId("start-t01-n1")).toBe(stableRequestId("start-t01-n1"));
+    expect(stableRequestId("start-t02-n1")).not.toBe(stableRequestId("start-t01-n1"));
     expect(wave(["--env", "daytona", "--daytona-image", image, "--faults", "K15", "--k15-fresh-home"]))
       .toMatchObject({ ephemeralServer: true, storage: "s3", k15FreshHome: true });
     expect(() => wave(["--env", "daytona", "--daytona-image", image, "--storage", "local", "--faults", "K15", "--k15-fresh-home"]))
