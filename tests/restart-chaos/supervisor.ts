@@ -16,7 +16,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, readFileSync, statSync, writeFileSync, type WriteStream } from "node:fs";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -39,7 +39,8 @@ import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, r
   type RepeatedRestartRecord, type RestartStep } from "./repeated-restarts.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
-import { nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
+import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
+import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -93,7 +94,9 @@ export function readCrashPointReceipt(receiptPath: string, pid: number | undefin
   try { text = readFileSync(receiptPath, "utf8"); } catch { return null; }
   for (const line of text.split("\n").reverse()) {
     try {
-      const parsed = JSON.parse(line) as { point?: unknown; hit?: unknown; pid?: unknown };
+      const parsed = JSON.parse(line) as { point?: unknown; hit?: unknown; pid?: unknown; mode?: unknown };
+      // A fail-mode hit (`--fail-recovery-step`) threw in the server; it did not kill it.
+      if (parsed.mode === "fail") continue;
       if (pid !== undefined && parsed.pid === pid && typeof parsed.point === "string" && typeof parsed.hit === "number") {
         const token = (parsed as { token?: unknown }).token;
         return { name: parsed.point, hit: parsed.hit, pid, ...(typeof token === "string" ? { token } : {}) };
@@ -115,6 +118,8 @@ async function prepareProviderPath(repositoryRoot: string, temporaryRoot: string
   const manifest = JSON.parse(await readFile(codexPackage, "utf8")) as { bin?: string | Record<string, string> };
   const codexBin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.codex;
   if (!codexBin) throw new Error("Pinned Codex executable not found");
+  // A K15 with a fresh home or an overlap prepares the environment again: replace the link.
+  await rm(path.join(toolBin, "codex"), { force: true });
   await symlink(path.resolve(path.dirname(codexPackage), codexBin), path.join(toolBin, "codex"));
   return [toolBin, path.join(repositoryRoot, "packages/paperclip-runner/node_modules/.bin"), inherited].filter(Boolean).join(path.delimiter);
 }
@@ -162,6 +167,15 @@ export class ChaosSupervisor {
    * before the next deploy starts, while the server is down. It must not throw.
    */
   redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
+  /** K15 deploy shape (redeploy.ts `parseK15DeployShape`); main.ts sets it before `start`. */
+  deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
+  /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
+  private serverHome: { home: string; configPath: string };
+  /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
+  private edge: EdgeProxy | null = null;
+  private backendPort: number;
+  /** `--fail-recovery-step`: "<point>:<nth>", armed in fail mode when the first restart fault starts its replacement. */
+  private pendingRecoveryStep: string | null = null;
   /** Wave secrets, kept across a K14 switch as an in-place upgrade keeps its configuration. */
   private readonly secrets = { PAPERCLIP_AGENT_JWT_SECRET: secret(), PAPERCLIP_DECISION_SIGNING_SECRET: secret(),
     PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: secret(), BETTER_AUTH_SECRET: secret() };
@@ -169,6 +183,8 @@ export class ChaosSupervisor {
   private constructor(readonly repositoryRoot: string, readonly port: number, readonly paths: SupervisorPaths,
     private readonly timeline: Timeline, upgradeFrom: string | null, redeployWaveId: string | null) {
     this.serverRoot = upgradeFrom ?? repositoryRoot;
+    this.serverHome = { home: paths.home, configPath: paths.configPath };
+    this.backendPort = port;
     if (redeployWaveId) this.redeploy = { waveId: redeployWaveId, identity: redeployIdentity(redeployWaveId, 0) };
     this.baseUrl = `http://127.0.0.1:${port}`;
     this.log = createWriteStream(paths.serverLogPath, { flags: "a", mode: 0o600 });
@@ -211,6 +227,12 @@ export class ChaosSupervisor {
     this.database = await prepareControllerDatabase(configPath, temporaryRoot);
     this.timeline.add("database_started", {});
     this.extraEnvironment = extraEnvironment;
+    if (this.deployShape.overlap) {
+      // The wave's port becomes the edge; each generation listens behind it on its own port.
+      this.backendPort = await reserveRunnerE2EServerPort();
+      this.edge = await startEdgeProxy(this.port, this.backendPort);
+      this.timeline.add("edge_proxy_started", { port: this.port, target: this.backendPort });
+    }
     await this.prepareServerEnvironment(this.serverRoot);
     const child = await this.spawnServer();
     await this.waitForHealth(child);
@@ -224,7 +246,8 @@ export class ChaosSupervisor {
    * switch, as an in-place upgrade keeps them.
    */
   private async prepareServerEnvironment(root: string): Promise<void> {
-    const { temporaryRoot, home, configPath } = this.paths;
+    const { temporaryRoot } = this.paths;
+    const { home, configPath } = this.serverHome;
     const extraEnvironment = this.extraEnvironment;
     const runnerBinary = resolvePaperclipRunnerBinaryForHarness(
       [{ profile: { generation: "native" } } as unknown as MatrixExecution], root);
@@ -239,7 +262,7 @@ export class ChaosSupervisor {
       PAPERCLIP_VITE_CACHE_DIR: path.join(temporaryRoot, "vite-cache"),
     };
     const overrides = {
-      NODE_ENV: "test", PORT: String(this.port), XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),
+      NODE_ENV: "test", PORT: String(this.backendPort), XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),
       PAPERCLIP_HOME: home, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "default",
       ...this.secrets,
       PAPERCLIP_BIND: "loopback", PAPERCLIP_BIND_HOST: "127.0.0.1", PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
@@ -254,7 +277,7 @@ export class ChaosSupervisor {
       ...waveServerUrlEnvironment(this.port),
       ...extraEnvironment,
       // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
-      ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, home) : {}),
+      ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, this.deployShape.freshHome ? null : home) : {}),
     };
     const environment = buildPaperclipServerEnvironment(source, overrides);
     const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
@@ -474,6 +497,8 @@ export class ChaosSupervisor {
       let outage: ControllerOutageReceipt | undefined;
       if (kind === "TM1" || kind === "TM2") await this.freeze(kind, previous, holdMs, receipt);
       else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
+      // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
+      else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
       else outage = await replaceController({
         requestId: `chaos-${receipt.faultId}-${requestedBy}`,
         previousPid: previous.pid,
@@ -506,8 +531,9 @@ export class ChaosSupervisor {
           if (kind === "K15") {
             // After the hold, before the next deploy starts: what its recovery will find in the sandboxes.
             await this.redeployEvidence?.(receipt.faultId, "before_start");
-            receipt.redeploy = this.advanceDeploy(receipt.faultId);
+            receipt.redeploy = await this.advanceDeploy(receipt.faultId);
           }
+          this.armPendingRecoveryStep(receipt);
           this.timeline.add("fault_restarting", { faultId: receipt.faultId });
           return this.spawnServer();
         },
@@ -693,16 +719,83 @@ export class ChaosSupervisor {
   }
 
   /** K15: move the next server to the next deploy generation (redeploy.ts). */
-  private advanceDeploy(faultId: string): NonNullable<FaultReceipt["redeploy"]> {
+  private async advanceDeploy(faultId: string): Promise<NonNullable<FaultReceipt["redeploy"]>> {
     if (!this.redeploy || !this.environment) throw new Error("K15 needs a redeploy wave (ChaosSupervisor.create redeployWaveId)");
     const from = this.redeploy.identity;
     const to = nextRedeployIdentity(this.redeploy.waveId, from);
     this.redeploy.identity = to;
-    Object.assign(this.environment, redeployEnvironment(to, this.paths.home));
+    if (this.deployShape.freshHome) this.serverHome = await this.freshGenerationHome(faultId, to.generation);
+    if (this.deployShape.overlap) this.backendPort = await reserveRunnerE2EServerPort();
+    if (this.deployShape.freshHome || this.deployShape.overlap) await this.prepareServerEnvironment(this.serverRoot);
+    else Object.assign(this.environment, redeployEnvironment(to, this.paths.home));
     const receipt = redeployReceipt(from, to);
     this.timeline.add("redeploy_switched", { faultId, ...receipt });
     this.log.write(`\n[restart-chaos] ${faultId} K15 redeploy ${from.hostname}/${from.deploymentId} -> ${to.hostname}/${to.deploymentId}\n`);
     return receipt;
+  }
+
+  /**
+   * `--k15-fresh-home`: a new, empty instance home for the next generation. Only what a hosted deploy gets from
+   * outside its container is carried over: the configuration (database, storage) and the secrets master key.
+   */
+  private async freshGenerationHome(faultId: string, generation: number): Promise<{ home: string; configPath: string }> {
+    const home = generationHome(this.paths.temporaryRoot, this.paths.home, generation);
+    const instanceRoot = path.join(home, "instances", "default");
+    await mkdir(path.join(instanceRoot, "secrets"), { recursive: true, mode: 0o700 });
+    const config = JSON.parse(await readFile(this.paths.configPath, "utf8")) as Record<string, any>;
+    const keyFile = path.join(instanceRoot, "secrets", "master.key");
+    await copyFile(String(config.secrets?.localEncrypted?.keyFilePath ?? path.join(path.dirname(this.paths.configPath), "secrets", "master.key")), keyFile);
+    config.secrets = { ...config.secrets, localEncrypted: { ...config.secrets?.localEncrypted, keyFilePath: keyFile } };
+    config.logging = { ...config.logging, logDir: path.join(instanceRoot, "logs") };
+    const configPath = path.join(instanceRoot, "config.json");
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+    this.timeline.add("k15_fresh_home", { faultId, generation, home });
+    return { home, configPath };
+  }
+
+  /**
+   * `--k15-overlap-seconds`: the staging deploy shape. The next generation boots beside the old server on its own
+   * port; once it is ready, the edge sends new connections to it; the old server keeps running for the overlap and
+   * then gets SIGTERM. There is no outage.
+   */
+  private async rollingRedeploy(previous: ChildProcess, overlapMs: number, receipt: FaultReceipt): Promise<void> {
+    if (!this.edge) throw new Error("--k15-overlap-seconds needs the edge proxy started with the wave");
+    const fromPort = this.backendPort;
+    receipt.redeploy = await this.advanceDeploy(receipt.faultId);
+    this.armPendingRecoveryStep(receipt);
+    receipt.restartedAt = Date.now();
+    this.timeline.add("fault_restarting", { faultId: receipt.faultId, overlapMs });
+    const next = await this.spawnServer();
+    const backendUrl = `http://127.0.0.1:${this.backendPort}`;
+    receipt.healthyAt = await this.waitForHealth(next, receipt.phases, backendUrl);
+    const deadline = Date.now() + READY_TIMEOUT_MS;
+    while (await this.readPhase(backendUrl) !== "ready") {
+      if (this.shuttingDown) throw new Error("Harness shutdown interrupted the rolling redeploy");
+      if (this.exited(next)) throw new Error(`Next deploy exited during startup (code=${next.exitCode} signal=${next.signalCode})`);
+      if (Date.now() > deadline) throw new Error(`Next deploy did not report ready within ${READY_TIMEOUT_MS}ms`);
+      await delay(250);
+    }
+    this.edge.target = this.backendPort;
+    this.timeline.add("k15_traffic_switched", { faultId: receipt.faultId, fromPort, toPort: this.backendPort, overlapMs });
+    for (const until = Date.now() + overlapMs; Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
+    await this.stopper(previous, "SIGTERM");
+    receipt.stoppedAt = Date.now();
+    this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    await this.redeployEvidence?.(receipt.faultId, "stopped");
+  }
+
+  /** `--fail-recovery-step`: arm the step in fail mode for the wave's first restart fault only. */
+  armRecoveryStepOnFirstFault(spec: string, control: CrashPointControl): void {
+    this.useCrashPointControl(control);
+    this.pendingRecoveryStep = spec;
+  }
+
+  private armPendingRecoveryStep(receipt: FaultReceipt): void {
+    if (!this.pendingRecoveryStep) return;
+    const token = `rs-${receipt.faultId}`;
+    this.armCrashPoint(token, `${this.pendingRecoveryStep} fail`);
+    receipt.recoveryStep = { spec: this.pendingRecoveryStep, token };
+    this.pendingRecoveryStep = null;
   }
 
   /**
@@ -836,6 +929,7 @@ export class ChaosSupervisor {
     this.shuttingDown = true;
     const errors: string[] = [];
     try { await this.stopper.stopAll(); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    await this.edge?.close().catch(error => { errors.push(error instanceof Error ? error.message : String(error)); });
     try { await this.database?.cleanup(); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
     await new Promise<void>(resolve => this.log.end(resolve));
     this.timeline.add("supervisor_stopped", { errors });

@@ -3853,10 +3853,11 @@ export function environmentRuntimeService(
       )`,
     )).returning(), { companyId: input.leaseRow.companyId, runId: input.leaseRow.heartbeatRunId ?? undefined });
     if (!claimed) return null;
-    crashPoint("environment.teardown.after_claim_before_destroy");
     const lease = toEnvironmentLeaseSnapshot(claimed);
     const renewal = renewCleanupClaim(lease.id, attemptId, "scoped cleanup ownership renewal failed");
     try {
+      // Kill mode leaves the claim in flight; fail mode (restart chaos only) is a provider destroy that did not finish.
+      crashPoint("environment.teardown.after_claim_before_destroy", { fail: () => new Error("sandbox teardown incomplete: provider destroy did not finish") });
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
       const released = await driver.destroyRunLease({

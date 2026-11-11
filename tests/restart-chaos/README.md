@@ -22,9 +22,11 @@ node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 ```
 
 Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below),
-`--workloads A1,B1,B5,C1` (opt-in: G1, H1, L1, R1, S1), `--db-pressure <writers>` (below), `--budget-cents` (company hard cap,
+`--workloads A1,B1,B5,C1` (opt-in: G1, H1, L1, R1, S1, W2, W2Q, W2C), `--db-pressure <writers>` (below), `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
+`--faults K0` plans cells with no fault, for workloads whose shape is the fault (W2, below). `--fail-recovery-step`,
+`--long-turn-minutes`, `--k15-overlap-seconds` and `--k15-fresh-home` are described in their own sections.
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 `--matrix` crosses every selected workload with every fault kind (below), and `--server-from <dir>`
@@ -388,6 +390,35 @@ minutes. In staging class R, recovery then found the remote Runner gone
   that much to the outage. A capture that hits the deadline is recorded as
   `deadlineExceeded`, and the restart continues. A probe that answers after the
   deadline writes nothing, because its evidence is from after the outage window.
+
+### Redeploy without a volume, with overlap (`--k15-fresh-home`, `--k15-overlap-seconds`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 --storage s3 \
+  --adapters codex,opencode --workloads A1,C1 --faults K15 --k15-fresh-home --k15-overlap-seconds 30-150 --concurrency 3 --tasks 6 --seed 9320
+```
+
+Staging's deploys after 07:25Z on 2026-11-11 reported `volumeId: null`, and the old container kept running
+for a while after the new one was up. Plain K15 restarts on the same instance home and has no overlap.
+
+- **`--k15-fresh-home`** (Daytona only): every deploy generation gets a new, empty instance home
+  (`home-g<N>` in the wave's temporary root) and no `RAILWAY_VOLUME_*` variables. Only what a hosted
+  deploy gets from outside its container is carried over: the configuration (database, storage) and the
+  secrets master key. Controller-local files such as `runtime-context-assets` bundles and runtime caches
+  are gone, as in staging class A-deploy (`ENOENT … runtime-context-assets/bundles/…`). Use
+  `--storage s3`, as staging does. A local run keeps its workspace and runner under the instance home, so
+  the option refuses `--env local`.
+- **`--k15-overlap-seconds <n>` or `<min>-<max>`** (5–600 s; staging's shape is 30–150): the wave's port
+  becomes an edge proxy (`edge-proxy.ts`), and each server listens on its own port behind it. A K15 boots
+  the next generation beside the old server, sends new connections to it once its `/api/ready` reports
+  `ready`, keeps the old server running for the seeded overlap, then stops the old one with SIGTERM. There
+  is no outage, so the seeded K15 hold is the overlap; it does not combine with `--k15-hold-seconds`.
+  The timeline records `k15_fresh_home`, `k15_traffic_switched` and `fault_server_down` (the old server's
+  stop).
+
+Pass is the usual grade: no Retry (R3), no stuck record (R6), and the oracle. Staging's terminal errors here
+were `ENOENT` on a runtime asset, `Agent directory operation is already active` after a 9.5-minute
+`controller_lease_held` wait.
 
 ## Absolute symlink in the workspace (F1)
 
@@ -957,6 +988,99 @@ plus `predecessor_unretirable_fell_back` and `follow_up_fresh_sandbox` (the succ
 on a different sandbox than the asking run). SR1U needs `--env daytona --daytona-warm`, and it arms
 its fault for the whole server, so it does not share a wave with SR1.
 
+## Re-wake after success (W2, W2Q, W2C)
+
+```sh
+# Ten tasks on one Codex agent with warm sandboxes; each task is woken again 0–60 s after its run succeeded.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 3 \
+  --adapters codex --workloads W2,W2Q,W2C --faults K0 --concurrency 10 --tasks 10 --seed 5201
+# The same locally (warm local Runners).
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --lifecycle warm \
+  --adapters codex --workloads W2,W2Q,W2C --faults K0 --concurrency 10 --tasks 10 --seed 5101
+```
+
+In one 8-hour staging window (2026-11-11), 20 of 25 failures happened with no restart at all. One agent had
+10–13 runs at once on reused sandboxes, and 30–60 s after a 20–43 minute run of a task succeeded, an
+ordinary wake (`issue_commented`, `issue_monitor_due`) started the next run of that task. That run had to
+retire the previous run's warm owner first, and failed before any provider work: `Controller journal drain
+timed out`, `runner did not durably suspend before checkpoint` (class C+), or
+`journal_tool_input_unanswered` after a predecessor that ended on an unanswered question (class C3).
+
+The workload is the fault, so these cells usually run with `--faults K0` (no fault). Every task of an
+adapter runs on that adapter's one agent: `--adapters codex --tasks 10 --concurrency 10` is ten tasks on one
+agent. Phase 1 ends with the task left `in_progress` (`in_review` would gate completion on a review). Then the harness, as the board, wakes the same task the
+seeded 0–60 s after that run settled (`rewake.ts`):
+
+- **W2**: a board comment, or, by the task's nonce, a board-scheduled issue monitor due now, so the
+  scheduler's own `issue_monitor_due` wake starts the run.
+- **W2Q**: phase 1 asks one `request_human_input` question and parks. A board comment (a note to include,
+  not the answer) wakes the task while the question is pending. The board answers after that run settled.
+- **W2C**: as W2, and first the board changes the agent's `adapterConfig.idleTimeoutMs`, so the next run
+  cannot resume the saved session. SR1 (`session-faults.ts`, #20844) is the same change while a question
+  is parked; W2C is the change after a run succeeded.
+
+Until the wake is served (and, for W2Q, answered), the task waits on the board: not a rest, no Retry. The
+oracle checks that phase 1 succeeded, the wake was sent and a run created after it succeeded,
+`no_failed_attempt` (no run of the task failed or timed out), the task is `done`, and the brief's markers.
+A task left blocked gets the usual Retry (R3), which fails the grade. A restart fault (for example K2)
+may also join; it lands around the first run or the wake.
+
+Add `--long-turn-minutes 20` for staging's long predecessor turns.
+
+## Fail the Nth recovery step (`--fail-recovery-step`)
+
+```sh
+# Local: K1, then the replacement's first runnerd start fails once (spawn EAGAIN).
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --adapters codex --workloads A1 \
+  --faults K1 --fail-recovery-step runnerd-start:1 --fault-after-seconds 10 --concurrency 1 --tasks 1 --seed 5303
+# Daytona: K1, then the replacement's first sandbox teardown does not finish.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters codex --workloads A1 --faults K1 --fail-recovery-step teardown:1 --fault-after-seconds 30 --concurrency 1 --tasks 1 --seed 5312
+```
+
+Every other fault hits the control plane once and lets recovery run. On staging the first fault was often
+harmless and a later step failed: a bootstrap retry met a missing runtime asset, a reattach met
+`Agent directory operation is already active`, a bounded retry met an unfinished teardown.
+
+`--fail-recovery-step <step>[:<nth>]` lets the wave's first restart fault (K1, K2, K4, K6, K14, K15 or
+RR1–RR3) fire normally. When that fault's replacement server starts, the harness arms one crash point in
+fail mode: the nth hit of the point in the replacement throws, once, the error its real step throws. `nth`
+1 fails recovery's first attempt at the step, 2 its second, 3 its third. Steps:
+
+| Step | Crash point | Error thrown | Environments |
+| --- | --- | --- | --- |
+| `runnerd-start` | `native.process_start.after_requested_before_spawn` | `spawn paperclip-runnerd EAGAIN` | local, Daytona |
+| `teardown` | `environment.teardown.after_claim_before_destroy` | `sandbox teardown incomplete: provider destroy did not finish` | Daytona |
+| `directory-lock` | `agent_directory.operation_lock.before_acquire` | `Agent directory operation is already active` (409) | Daytona |
+
+Any other registered crash point name also works; without its own error it throws
+`CrashPointInjectedFailure`. Hits count across the server, so with several tasks in flight the nth hit can
+belong to any of them: run one task per wave to aim at one task's nth attempt. A step that recovery calls
+only once is never reached with `nth` 2 or more, and the task fails `recovery_step_failed_once`. On
+2026-11-11 an A1 task with K2 on Daytona never reached `directory-lock`: pick a workload whose recovery
+collects remote agent files.
+
+Every task the armed fault crossed gets two more checks: `recovery_step_failed_once` (the receipt in
+`recovery-step-receipts.jsonl`; a step never reached tested nothing) and `no_failed_attempt`. The fault's
+receipt in `faults.json` names the armed step (`recoveryStep`).
+
+## Long turn (`--long-turn-minutes`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 3 \
+  --adapters codex --workloads W2 --faults K0 --long-turn-minutes 20 --concurrency 4 --tasks 4 --seed 5401
+```
+
+Staging's failures followed turns of 14–43 minutes; every other workload finishes in a few. With
+`--long-turn-minutes <n>` (15–60, opt-in), every task's first turn first runs n minutes of real tool work:
+rounds of one foreground shell command each (about 90 s of hashing and sleeping, short of provider
+shell-tool timeouts) that append `ROUND <i> <start> <end>` to a log in the working directory. The agent
+saves the log as the issue document `long-turn` and then does its workload in the same turn
+(`long-turn.ts`). Any workload and fault can take it; the task's time budget grows by n minutes. Two checks
+join the oracle: `long_turn_rounds` (every round reported, spanning n minutes) and `long_turn_run_observed`
+(the harness saw one run of the task last n minutes). Use `--fault-after-seconds` to land a fault late in
+the turn. Waves get long and expensive: keep them small.
+
 ## Database contention (L1, `--db-pressure`)
 
 ```sh
@@ -1473,6 +1597,10 @@ and grades only (no server logs).
    registered point has a call site and every kind id exists.
 4. Run the point: `node scripts/crash-points.mjs --points <name>`. A
    `not_reached` result means the workload never crosses it.
+
+**Fail mode.** A control-file line may end in `fail` (`<token> <name>:<nth> fail`): the nth hit then
+throws once instead of killing the server. A call site can name the error its real step throws
+(`crashPoint("<name>", { fail: () => conflict("...") })`). `--fail-recovery-step` uses it.
 
 Disarmed, a point costs one comparison (about 4 ns), and the arming variables
 (`PAPERCLIP_CRASH_POINT`, `PAPERCLIP_CRASH_POINT_CONTROL`) are ignored under
