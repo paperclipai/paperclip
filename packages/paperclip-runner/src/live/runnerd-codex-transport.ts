@@ -8605,11 +8605,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     >,
   ): void {
     let checking = false;
+    let unverifiedSince: number | null = null;
     this.#adoptedRunnerMonitor = setInterval(() => {
       if (checking || this.#closed || (this.#releaseEpisode && !this.#releaseEpisode.claimed)) return;
       checking = true;
       void Promise.resolve(adoptedRunner.isAlive())
         .then((alive) => {
+          unverifiedSince = null;
           if (alive || this.#closed || (this.#releaseEpisode && !this.#releaseEpisode.claimed)) return;
           this.#evidence.runnerExited = true;
           this.#publish();
@@ -8620,6 +8622,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           );
         })
         .catch(() => {
+          const now = Date.now();
+          unverifiedSince ??= now;
+          if ((this.#core?.activeRunnerConnectionCount() ?? 0) > 0
+            && now - unverifiedSince < (this.options.runnerReconnectGraceMs ?? 0)) return;
           if (!this.#closed && !(this.#releaseEpisode && !this.#releaseEpisode.claimed)) {
             this.#failTransport(
               new Error(

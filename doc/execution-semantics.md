@@ -4881,7 +4881,12 @@ transport failures keep the 30-second budget. At the launch of a new remote
 runner, a launch call that stalls this way is not retried. The controller reads
 the identity marker for the launch nonce instead, so the one launched runner is
 adopted or cleaned up by its nonce. The identity read uses the same 3-minute
-stall budget. Each answer that the sandbox gives keeps its current meaning. Monitoring checks the saved process generation when available.
+stall budget. Each answer that the sandbox gives keeps its current meaning.
+
+After the controller adopts a remote runner, it checks the runner's liveness every 250 ms. A check that
+fails without an answer does not fail the run while the runner holds its authenticated connection. The
+bound is the remote runner reconnect grace (7 minutes). A check that reports the process gone still fails
+the run at once. A local adopted runner, which has no reconnect grace, keeps the old rule. Monitoring checks the saved process generation when available.
 Only a matching ownership marker and confirmed process exit permit automatic
 replacement. Missing or conflicting identity evidence, failed reads, and an
 exhausted probe budget retain the existing ownership and recovery safeguards.
