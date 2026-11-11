@@ -107,10 +107,12 @@ export async function captureWaveRunnerLogs(input: {
       const rows: DaytonaSandboxRow[] = [];
       for await (const row of client.list({ labels: { "paperclip-company-id": wave.companyId, "paperclip-environment-id": wave.environmentId } })) rows.push(row);
       if (!live()) return;
-      for (const row of selectWaveSandboxes(rows, wave)) {
+      // Every wave sandbox gets its entry before any probe, so a deadline marks the ones it never reached.
+      const targets = selectWaveSandboxes(rows, wave).map(row => ({ row,
+        entry: { id: row.id, name: row.name ?? null, state: row.state ?? null, file: null, exitCode: null, error: null } as RunnerLogCapture["sandboxes"][number] }));
+      capture.sandboxes.push(...targets.map(target => target.entry));
+      for (const { row, entry } of targets) {
         if (expired) return;
-        const entry: RunnerLogCapture["sandboxes"][number] = { id: row.id, name: row.name ?? null, state: row.state ?? null, file: null, exitCode: null, error: null };
-        capture.sandboxes.push(entry);
         if (!probeableSandbox(row)) continue;
         if (!live()) { if (!expired) entry.error = "deadline"; continue; }
         try {

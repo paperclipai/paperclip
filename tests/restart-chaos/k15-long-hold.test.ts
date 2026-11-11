@@ -190,7 +190,7 @@ describe("Daytona Runner log capture", () => {
     const labels = { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT };
     const executeCommand = vi.fn(async () => ({ exitCode: 0, result: "late evidence" }));
     let release: (() => void) | undefined;
-    const late = { async *list() { yield { id: "late", state: "started", labels }; },
+    const late = { async *list() { yield { id: "late", state: "started", labels }; yield { id: "unreached", state: "started", labels }; },
       get: () => new Promise<{ process: { executeCommand: typeof executeCommand } }>(resolve => {
         release = () => resolve({ process: { executeCommand } });
       }) };
@@ -201,7 +201,7 @@ describe("Daytona Runner log capture", () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(executeCommand).not.toHaveBeenCalled();
     expect((await readdir(path.join(outDir, "f04-before_start"))).sort()).toEqual(["index.json"]);
-    expect(capture.sandboxes.map(sandbox => [sandbox.id, sandbox.file, sandbox.error])).toEqual([["late", null, "deadline"]]);
+    expect(capture.sandboxes.map(sandbox => [sandbox.id, sandbox.file, sandbox.error])).toEqual([["late", null, "deadline"], ["unreached", null, "deadline"]]);
   });
 
   it("drops a probe result that arrives after the deadline, and records an unusable label instead of throwing", async () => {
