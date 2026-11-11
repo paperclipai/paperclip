@@ -17,6 +17,7 @@ import type { NativeRunIdentity } from "./contracts/types.js";
 import type {
   NativeSession,
   NativeSessionBackend,
+  NativeSessionRecoveryResult,
   PersistedNativeSession,
 } from "./contracts/native-session-backend.js";
 import {
@@ -6685,8 +6686,8 @@ describe("executeNativeSession recovery", () => {
       pendingRuntimeRequests: [], dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null,
       lineage: [],
     });
-    const stateUnavailable = {
-      recovered: false as const, failureClass: PROVIDER_STATE_INCOMPATIBLE, resumeStateUnavailable: true as const,
+    const stateUnavailable: NativeSessionRecoveryResult = {
+      recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE, resumeStateUnavailable: true,
       reason: "Error: NativeRunnerResumeStateUnavailableError: PRP provider resume state is unavailable",
     };
     function harness(options: {
@@ -6800,7 +6801,7 @@ describe("executeNativeSession recovery", () => {
 
     it("never replaces a session whose checkpoint records this run's own governed wait", async () => {
       const h = harness({ proof: true, checkpoint: { ...reboundCheckpoint(),
-        governedWait: { sourceEvent: runnerEvent(1, "tool.started"), result: yieldedResult } } });
+        governedWait: { sourceEvent: runnerEvent(1, "turn.started"), result: yieldedResult } } });
       await expect(h.run()).rejects.toThrow();
       expect(h.openReplacementSession).not.toHaveBeenCalled();
       expect(h.startTurn).not.toHaveBeenCalled();
