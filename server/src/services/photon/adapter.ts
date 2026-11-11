@@ -144,7 +144,23 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   async initialize(_chat: ChatInstance): Promise<void> {
     await this.authentication.token();
   }
+  private disconnectAttempt?: Promise<void>;
+  private disconnectRunning = false;
+  /** Observe exactly the normal Chat SDK's last disconnect invocation. This
+   * does not start another close or convert missing ownership into success. */
+  async joinDisconnectAttempt(): Promise<void> {
+    if (!this.disconnectAttempt) throw new Error("Photon normal adapter disconnect was not attempted");
+    await this.disconnectAttempt;
+  }
   async disconnect(): Promise<void> {
+    if (this.disconnectRunning) return await this.disconnectAttempt;
+    const attempt = this.disconnectResources();
+    this.disconnectAttempt = attempt;
+    this.disconnectRunning = true;
+    try { await attempt; }
+    finally { if (this.disconnectAttempt === attempt) this.disconnectRunning = false; }
+  }
+  private async disconnectResources(): Promise<void> {
     this.closed = true;
     for (const timer of this.typing.values()) clearTimeout(timer);
     this.typing.clear();

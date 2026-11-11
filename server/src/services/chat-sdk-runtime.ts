@@ -3163,8 +3163,18 @@ export class ChatSdkEndpointRuntime {
       await this.initialization?.catch(() => undefined);
       await this.discordGatewayTask?.catch(() => undefined);
       this.discordGatewayAbort = null;
-      await this.photonReceiver?.close();
-      await this.chat.shutdown();
+      const failures: unknown[] = [];
+      try { await this.photonReceiver?.close(); } catch (error) { failures.push(error); }
+      // Receiver admission has joined (including its failure path) before the
+      // independently owned normal SDK/adapter teardown is attempted.
+      try { await this.chat.shutdown(); } catch (error) { failures.push(error); }
+      if (this.adapter instanceof PhotonChatAdapter) {
+        // Chat4.39 logs/swallow disconnect rejections. Observe the SAME normal
+        // adapter attempt, never an implicit second physical-close retry.
+        try { await this.adapter.joinDisconnectAttempt(); } catch (error) { failures.push(error); }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, "Chat SDK runtime shutdown remains incomplete");
       this.shutdownCompleted = true;
     })();
     this.shutdownTask = task;
