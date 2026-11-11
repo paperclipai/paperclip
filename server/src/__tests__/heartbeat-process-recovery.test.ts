@@ -3557,10 +3557,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
-  // Staging shape: this process claimed a legacy remote run, its lease lapsed
-  // during a stall while setup was still "preparing", and its executor ended
-  // without settling the row. Revocation fences the in-memory controller as it
-  // fences a dead boot, so "preparing" proves no provider work either way.
   it.each([
     ["an assignment", {}],
     ["a due monitor", { wakeReason: "issue_monitor_due" }],
@@ -3594,7 +3590,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId),
     ))).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
-    // A later sweep must not park the retried task for reconciliation.
     await heartbeat.reapOrphanedRuns();
     expect(await db.select().from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);

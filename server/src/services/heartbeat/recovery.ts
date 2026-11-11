@@ -2661,13 +2661,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       }
       // A legacy controller persists "dispatching" in the same lease renewal
       // that admits the adapter. An expired lease that is still "preparing"
-      // proves setup stopped before provider work. Use the state committed with
-      // the revocation, not the earlier snapshot: the old controller may have
-      // dispatched before its lease expired. The revocation matched the
-      // snapshot's boot ID before replacing it, so no controller can renew it
-      // into "dispatching" afterwards. That holds for this boot too: a lease
-      // this process let lapse (a stall) with no local executor left is fenced
-      // the same way as a dead boot's, and needs the same retry.
+      // proves setup stopped before provider work.
+      // Use the state committed with the revocation, not the earlier snapshot:
+      // the old controller may have dispatched before its lease expired.
+      // The revocation matched the snapshot's boot ID before replacing it.
       const restartInterruptedBeforeDispatch =
         run.runtimeMode === "legacy" &&
         revokedState.executionStage === "preparing" &&
