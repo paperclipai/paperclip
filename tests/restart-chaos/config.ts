@@ -234,6 +234,11 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // Each K1 kills the whole control plane: a second task in flight would lose its held message to the
     // first task's restart and miss its own, so a restart wave runs one task at a time.
     if (options.providerFaultRestart && options.concurrency !== 1) throw new Error("--provider-fault-restart restarts the whole control plane per task; run it with --concurrency 1");
+    // The board holds its answers until the planned restart fires, but Q4's fault lands only after the
+    // first answer: the restart would wait for an answer that waits for the restart.
+    if ((options.providerFaultRestart || options.providerFaultRestartKinds?.length) && options.workloads.includes("Q4")) {
+      throw new Error("--provider-fault-restart does not cover Q4: its fault needs the first answer, which the board holds until the restart; run Q4 without it");
+    }
   } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
     || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");

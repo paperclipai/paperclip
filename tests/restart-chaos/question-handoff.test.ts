@@ -38,7 +38,7 @@ describe("Q4 second saved question from a continuation", () => {
     expect(plain.options.workloads).not.toContain("Q4");
     const [planned] = withProviderFaultRules([{ taskId: "t01", index: 0, workload: "Q4", adapter: "codex", fault: "PV2",
       fireAfterMs: 0, holdMs: 0, followUpAfterMs: null, nonce: NONCE }], {});
-    expect(planned!.providerFault).toMatchObject({ kind: "PV2", message: "terminal", occurrence: 2 });
+    expect(planned!.providerFault).toMatchObject({ kind: "PV2", message: "terminal", occurrence: 2, stallShutdownMs: 45_000 });
   });
 
   it("answers each question once, after its asking run settled, with the nonce's options", async () => {
@@ -63,17 +63,30 @@ describe("Q4 second saved question from a continuation", () => {
     expect(task.question?.answers?.map(answer => answer.code)).toEqual([q1Code(NONCE), q4Tone(NONCE)]);
   });
 
+  const sequenceArtifacts = (status: string, errorCode: string | null, secondAsker = "run-2"): OracleArtifacts => ({ issueStatus: "done",
+    agentComments: [], files: {}, commands: {}, workspacePath: null,
+    documents: { brief: `${q1AnswerMarker(NONCE, q1Code(NONCE))}\n${q4ToneMarker(NONCE, q4Tone(NONCE))}\n- a\n- b\n- c\n` },
+    question: { interactionIds: ["q1", "q2"], seenAt: 1, askedByRunId: "run-1", pendingNow: false, statuses: { q1: "answered", q2: "answered" },
+      answers: [{ at: 2_000, interactionId: "q1", code: q1Code(NONCE), httpStatus: 200, error: null, askedByRunId: "run-1" },
+        { at: 4_000, interactionId: "q2", code: q4Tone(NONCE), httpStatus: 200, error: null, askedByRunId: secondAsker }],
+      runs: [{ id: "run-1", status: "succeeded", errorCode: null, createdAt: new Date(500).toISOString() },
+        { id: "run-2", status, errorCode, createdAt: new Date(2_500).toISOString() },
+        { id: "run-3", status: "succeeded", errorCode: null, createdAt: new Date(4_500).toISOString() }] } });
+
   it("fails a cancelled run, as staging run e892cf75 ended", () => {
-    const artifacts = (status: string, errorCode: string | null): OracleArtifacts => ({ issueStatus: "done", agentComments: [], files: {}, commands: {},
-      workspacePath: null, documents: { brief: `${q1AnswerMarker(NONCE, q1Code(NONCE))}\n${q4ToneMarker(NONCE, q4Tone(NONCE))}\n- a\n- b\n- c\n` },
-      question: { interactionIds: ["q1", "q2"], seenAt: 1, askedByRunId: "run-1", pendingNow: false, statuses: { q1: "answered", q2: "answered" },
-        answers: [{ at: 2, interactionId: "q1", code: q1Code(NONCE), httpStatus: 200, error: null, askedByRunId: "run-1" },
-          { at: 4, interactionId: "q2", code: q4Tone(NONCE), httpStatus: 200, error: null, askedByRunId: "run-2" }],
-        runs: [{ id: "run-1", status: "succeeded", errorCode: null, createdAt: null }, { id: "run-2", status, errorCode, createdAt: null },
-          { id: "run-3", status: "succeeded", errorCode: null, createdAt: null }] } });
-    expect(gradeQuestionSequence(NONCE, artifacts("succeeded", null)).verdict).toBe("pass");
-    const cancelled = gradeQuestionSequence(NONCE, artifacts("cancelled", "execution_reconciliation_required"));
+    expect(gradeQuestionSequence(NONCE, sequenceArtifacts("succeeded", null)).verdict).toBe("pass");
+    const cancelled = gradeQuestionSequence(NONCE, sequenceArtifacts("cancelled", "execution_reconciliation_required"));
     expect(cancelled.checks.filter(check => !check.ok).map(check => check.name)).toEqual(["asking_runs_settled", "no_failed_or_cancelled_run"]);
+  });
+
+  it("fails when one run asked both questions, so no continuation saved the second wait", () => {
+    const sameRun = gradeQuestionSequence(NONCE, sequenceArtifacts("succeeded", null, "run-1"));
+    expect(sameRun.checks.filter(check => !check.ok).map(check => check.name)).toEqual(["second_asked_by_continuation"]);
+  });
+
+  it("rejects --provider-fault-restart, whose restart would wait for an answer that waits for it", () => {
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q4", "--faults", "PV2", "--provider-fault-restart", "K1",
+      "--concurrency", "1"])).toThrow(/does not cover Q4/);
   });
 });
 

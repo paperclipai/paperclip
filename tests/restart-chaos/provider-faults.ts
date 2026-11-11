@@ -51,6 +51,11 @@ export interface ProviderFaultRule {
    */
   occurrence?: number;
   /**
+   * Codex: after the fault applies, hold stop requests to the provider this long, so shutdown of the
+   * retained execution cannot be confirmed in time (Q4 sets it beyond the 30 s settlement bound).
+   */
+  stallShutdownMs?: number;
+  /**
    * `--provider-fault-restart K1|K2|K4` (PV1, PV2): restart the control plane this long after the fault
    * applied, so the held or dropped message straddles a restart. `holdMs` is the K4 outage.
    */
@@ -64,7 +69,7 @@ export const DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS = 3_000;
 export interface ProviderFaultEvent {
   at: number;
   pid: number;
-  event: "spawned" | "bound" | "interrupt_requested" | "passed" | "applied" | "released" | "held_message_discarded" | "exited" | "spawn_failed";
+  event: "spawned" | "bound" | "interrupt_requested" | "passed" | "shutdown_stalled" | "applied" | "released" | "held_message_discarded" | "exited" | "spawn_failed";
   nonce?: string | null;
   kind?: ProviderFaultKind;
   message?: ProviderMessage;
@@ -84,6 +89,8 @@ export interface ProviderFaultEvent {
 export const PROVIDER_FAULT_WORKLOADS: readonly WorkloadId[] = ["Q1", "Q4", "S1"];
 /** Q4's fault targets its second saved question, the one asked inside the answer's continuation run. */
 export const Q4_PROVIDER_FAULT_OCCURRENCE = 2;
+/** Q4 (Codex): the provider stops this late, beyond the runner's 30 s governed-wait settlement bound. */
+export const Q4_STALL_SHUTDOWN_MS = 45_000;
 
 export function isProviderFault(value: string): value is ProviderFaultKind {
   return (PROVIDER_FAULT_KINDS as readonly string[]).includes(value);
@@ -147,7 +154,8 @@ export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOpti
     const rule: ProviderFaultRule = { kind: task.fault,
       message: options.providerFaultMessageByWorkload?.[task.workload] ?? options.providerFaultMessage ?? "terminal",
       ...(task.fault === "PV1" ? { delayMs: delays[pv1++ % delays.length]! } : {}),
-      ...(task.workload === "Q4" ? { occurrence: Q4_PROVIDER_FAULT_OCCURRENCE } : {}),
+      ...(task.workload === "Q4" ? { occurrence: Q4_PROVIDER_FAULT_OCCURRENCE,
+        ...(task.adapter === "codex" ? { stallShutdownMs: Q4_STALL_SHUTDOWN_MS } : {}) } : {}),
       ...(restartKind
         ? { restart: { kind: restartKind, afterAppliedMs: options.providerFaultRestartAfterMs ?? DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS,
           ...(restartKind === "K4" ? { holdMs: PROVIDER_FAULT_K4_HOLD_MS } : {}) } } : {}) };
@@ -157,6 +165,7 @@ export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOpti
 
 export function describeProviderFault(rule: ProviderFaultRule): string {
   return `${rule.kind} ${PROVIDER_FAULT_ACTIONS[rule.kind]} ${rule.message}${rule.occurrence && rule.occurrence > 1 ? ` #${rule.occurrence}` : ""}`
+    + `${rule.stallShutdownMs ? ` stall${rule.stallShutdownMs}ms` : ""}`
     + `${rule.delayMs !== undefined ? ` ${rule.delayMs}ms` : ""}`
     + (rule.restart ? ` +${rule.restart.kind}@${rule.restart.afterAppliedMs}ms${rule.restart.holdMs ? `/hold${rule.restart.holdMs}ms` : ""}` : "");
 }

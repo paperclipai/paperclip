@@ -258,6 +258,10 @@ export function gradeQuestionSequence(nonce: string, artifacts: OracleArtifacts)
     { name: "both_answered_by_board", ok: answers.length === 2 && answers.every(answer => answer.httpStatus === 200),
       detail: answers.map(answer => `${answer.code}:${answer.httpStatus}${answer.error ? ` ${answer.error}` : ""}`).join(",") || "none" },
     { name: "questions_settled", ok: statuses.length === 2 && statuses.every(status => status === "answered"), detail: statuses.join(",") || "none" },
+    // The second question must come from the run the first answer woke, the case under test.
+    { name: "second_asked_by_continuation", ok: askers.length === 2 && Boolean(askers[0] && askers[1]) && askers[0]!.id !== askers[1]!.id
+        && Boolean(askers[1]!.createdAt) && Date.parse(askers[1]!.createdAt!) > answers[0]!.at,
+      detail: askers.map(run => run ? `${run.id}@${run.createdAt ?? "?"}` : "unknown").join(",") || "none" },
     { name: "asking_runs_settled", ok: askers.length === 2 && askers.every(run => run?.status === "succeeded"),
       detail: askers.map((run, index) => run ? `${run.id}:${run.status}${run.errorCode ? `:${run.errorCode}` : ""}`
         : `run=${answers[index]?.askedByRunId ?? "unknown"}`).join(",") || "none" },
