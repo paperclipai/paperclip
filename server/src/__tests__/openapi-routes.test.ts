@@ -653,6 +653,16 @@ describe("openapi routes", () => {
     }
   });
 
+  it("names the Experimental settings page where an instance admin turns a feature on", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const experimental = res.body.paths["/api/instance/settings/experimental"];
+    for (const operation of [experimental.get, experimental.patch]) {
+      expect(operation.description).toContain("[Experimental settings](/<prefix>/company/settings/instance/experimental)");
+      expect(operation.description).toContain("Agent credentials cannot read or change these settings");
+      expect(operation.description).toContain("Cases via enableCases");
+    }
+  });
+
   it("tells agents that archiving keeps a status card and where a person restores it", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const patch = res.body.paths["/api/status-cards/{id}"].patch;

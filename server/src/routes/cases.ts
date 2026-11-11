@@ -49,6 +49,7 @@ import {
 } from "@paperclipai/shared";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
 import { HttpError, badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { documentAnnotationService, logActivity } from "../services/index.js";
@@ -80,7 +81,16 @@ function eventActorValues(actor: CaseActor) {
 async function assertCasesEnabled(db: Db) {
   const experimental = await instanceSettingsService(db).getExperimental();
   if (!experimental.enableCases) {
-    throw forbidden("Cases are disabled");
+    // An operator can hide the Experimental page, so link it only while it is visible.
+    const where = getHiddenSettings().has("instance.experimental")
+      ? "An instance operator controls it."
+      : "An instance admin turns them on with Cases in [Experimental settings](/<prefix>/company/settings/instance/experimental), "
+        + "with this conversation's company prefix as <prefix>.";
+    throw forbidden("Cases are disabled", {
+      code: "cases_disabled",
+      remediation: "Cases are an experimental feature that is turned off on this instance, so this denial is final and no other route reaches cases. "
+        + `${where} Agent credentials cannot change that setting. Reply now.`,
+    });
   }
 }
 
