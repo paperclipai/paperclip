@@ -9212,6 +9212,10 @@ function closedAcpxRejection(message: unknown): string | null {
  */
 export const RUNNER_STALL_THRESHOLD_MS = 5_000;
 const RUNNER_STALL_TICK_MS = 1_000;
+/** After a stop, the thawed Runner keeps at least this long to answer. */
+export const RUNNER_POST_STOP_GRACE_MS = 5_000;
+/** One admission never credits more stopped time than this in total. */
+export const RUNNER_MAX_STOPPED_CREDIT_MS = 15 * 60_000;
 
 /**
  * The clock for one startup or recovery admission. Time this process spends
@@ -9224,9 +9228,11 @@ const RUNNER_STALL_TICK_MS = 1_000;
  * `now()` is wall time minus the stopped time observed since the ledger
  * started. Poll loops and a 1 s ticker share one last-observation time, so a
  * stop is credited once, wherever the process was when it stopped (a poll
- * loop, a checkpoint flush, a spawn). Only the part of a gap beyond the
- * threshold is credited, so a slow but running process still reaches its
- * deadlines. Deadlines compared with `now()` must be taken from `now()`.
+ * loop, a checkpoint flush, a spawn). A stop is credited in full plus a
+ * grace, so a stop near a deadline still leaves the Runner time to answer
+ * after the thaw. Gaps below the threshold are running time, and total credit
+ * is capped, so a slow process still reaches its deadlines. Deadlines
+ * compared with `now()` must be taken from `now()`.
  */
 export class RunnerStallLedger {
   #creditedMs = 0;
@@ -9241,7 +9247,10 @@ export class RunnerStallLedger {
 
   now(): number {
     const at = this.wallNow();
-    if (at - this.#last > RUNNER_STALL_THRESHOLD_MS) this.#creditedMs += at - this.#last - RUNNER_STALL_THRESHOLD_MS;
+    if (at - this.#last > RUNNER_STALL_THRESHOLD_MS) {
+      this.#creditedMs = Math.min(RUNNER_MAX_STOPPED_CREDIT_MS,
+        this.#creditedMs + at - this.#last + RUNNER_POST_STOP_GRACE_MS);
+    }
     this.#last = Math.max(this.#last, at);
     return at - this.#creditedMs;
   }

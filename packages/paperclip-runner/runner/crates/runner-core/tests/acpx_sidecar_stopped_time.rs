@@ -16,16 +16,24 @@ use serde_json::json;
 /// stopped together (SIGSTOP, a host-sleep stand-in) past the sidecar request
 /// bound. On thaw the bound had already passed, so the Runner failed the turn
 /// start before the sidecar could answer. Here the sidecar stops this process
-/// for 6 s against a 3 s bound and answers 0.5 s after the thaw.
+/// for 6 s against a 3 s bound and answers 0.5 s after the thaw: once early in
+/// the wait, and once in its last half second. Both cases share one test so
+/// no other test thread runs while this process is stopped.
 #[test]
 fn a_request_answered_after_this_process_was_stopped_past_its_bound_succeeds() {
+    for stop_after in ["0", "2.5"] {
+        answered_after_stop(stop_after);
+    }
+}
+
+fn answered_after_stop(stop_after: &str) {
     let response = json!({
         "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
         "id": 1, "ok": true, "result": { "answered": true },
     });
     let runner = std::process::id();
     let script = format!(
-        "IFS= read -r request; \
+        "IFS= read -r request; sleep {stop_after}; \
          (sleep 6; kill -CONT {runner}; sleep 0.5; printf '%s\\n' '{response}') & \
          kill -STOP {runner}; wait; IFS= read -r next"
     );

@@ -26,24 +26,40 @@ const RESPONSE_WAIT_SLICE: Duration = Duration::from_secs(1);
 /// A slice that returns this much later than it asked was not waiting: this
 /// process was stopped (SIGSTOP, a frozen container, a whole-process stall).
 const STOPPED_TIME_THRESHOLD: Duration = Duration::from_secs(2);
+/// After a stop, the thawed sidecar keeps at least this long to answer.
+const POST_STOP_GRACE: Duration = Duration::from_secs(5);
+/// One request never credits more stopped time than this in total.
+const MAX_STOPPED_CREDIT: Duration = Duration::from_secs(15 * 60);
 
-/// Moves `deadline` later by the time a wait slice spent stopped.
+/// Moves `deadline` later after a wait slice that this process spent stopped.
 ///
 /// The sidecar is a child of this process and is normally stopped with it, so
 /// it could not answer either. Without this, a thaw found the deadline already
 /// past and failed the request before either process ran (chaos t05: a 61 s
-/// freeze failed a turn start against its 30 s bound). Only the overshoot
-/// beyond the requested slice is credited, so each slice still spends its own
-/// length and a slow but running wait reaches its deadline.
+/// freeze failed a turn start against its 30 s bound). The slice overshoot is
+/// credited, and the deadline is at least `POST_STOP_GRACE` after the thaw, so
+/// a stop in the last slice still leaves the sidecar time to answer. Total
+/// credit is capped, so a process that never runs normally still times out.
+/// `credited` carries the request's total credit between slices.
 pub(crate) fn credit_stopped_time(
     deadline: Instant,
     slice: Duration,
+    slice_ended: Instant,
     elapsed: Duration,
+    credited: &mut Duration,
 ) -> Instant {
-    match elapsed.checked_sub(slice) {
-        Some(stopped) if stopped > STOPPED_TIME_THRESHOLD => deadline + stopped,
-        _ => deadline,
+    let Some(stopped) = elapsed.checked_sub(slice) else {
+        return deadline;
+    };
+    if stopped <= STOPPED_TIME_THRESHOLD || *credited >= MAX_STOPPED_CREDIT {
+        return deadline;
     }
+    let extended = (deadline + stopped).max(slice_ended + POST_STOP_GRACE);
+    let credit = extended
+        .saturating_duration_since(deadline)
+        .min(MAX_STOPPED_CREDIT - *credited);
+    *credited += credit;
+    deadline + credit
 }
 
 #[derive(Clone, Debug)]
@@ -735,6 +751,7 @@ impl AcpxSidecarTransport {
         deadline: Instant,
     ) -> Result<Option<CommandOutcome>, LocalRunnerError> {
         let mut deadline = deadline;
+        let mut credited = Duration::ZERO;
         loop {
             let slice_started = Instant::now();
             let remaining = deadline.saturating_duration_since(slice_started);
@@ -743,7 +760,14 @@ impl AcpxSidecarTransport {
             }
             let slice = remaining.min(RESPONSE_WAIT_SLICE);
             let received = self.receive_stdout_line(slice, command.as_str())?;
-            deadline = credit_stopped_time(deadline, slice, slice_started.elapsed());
+            let slice_ended = Instant::now();
+            deadline = credit_stopped_time(
+                deadline,
+                slice,
+                slice_ended,
+                slice_ended.saturating_duration_since(slice_started),
+                &mut credited,
+            );
             let Some(line) = received else {
                 continue;
             };
@@ -1317,22 +1341,57 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn credits_only_a_slice_overshoot_beyond_the_stop_threshold() {
-        let deadline = Instant::now() + Duration::from_secs(30);
+    fn credits_a_stop_and_leaves_the_sidecar_time_to_answer() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(30);
         let slice = Duration::from_secs(1);
+        let mut credited = Duration::ZERO;
         // A slice that returned on time, or a little late on a loaded host.
+        for elapsed in [Duration::from_millis(400), Duration::from_millis(2_900)] {
+            assert_eq!(
+                credit_stopped_time(deadline, slice, start + elapsed, elapsed, &mut credited),
+                deadline
+            );
+        }
+        assert_eq!(credited, Duration::ZERO);
+        // A 61 s freeze inside a 1 s slice early in the wait: 60 s are credited.
+        let ended = start + Duration::from_secs(61);
         assert_eq!(
-            credit_stopped_time(deadline, slice, Duration::from_millis(400)),
-            deadline
-        );
-        assert_eq!(
-            credit_stopped_time(deadline, slice, Duration::from_millis(2_900)),
-            deadline
-        );
-        // A 61 s freeze inside a 1 s slice: all 60 s beyond the slice are credited.
-        assert_eq!(
-            credit_stopped_time(deadline, slice, Duration::from_secs(61)),
+            credit_stopped_time(
+                deadline,
+                slice,
+                ended,
+                Duration::from_secs(61),
+                &mut credited
+            ),
             deadline + Duration::from_secs(60)
+        );
+        // A freeze in the last 0.5 s slice still leaves the grace after thaw.
+        let mut credited = Duration::ZERO;
+        let last = start + Duration::from_millis(29_500);
+        let half = Duration::from_millis(500);
+        let ended = last + Duration::from_secs(60);
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                half,
+                ended,
+                Duration::from_secs(60),
+                &mut credited
+            ),
+            ended + POST_STOP_GRACE
+        );
+        // Total credit is capped.
+        let mut credited = MAX_STOPPED_CREDIT;
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                slice,
+                ended,
+                Duration::from_secs(61),
+                &mut credited
+            ),
+            deadline
         );
     }
 
