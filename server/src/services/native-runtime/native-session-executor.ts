@@ -25,7 +25,7 @@ import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HAR
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
-import { rehydratePinnedSkillAssets } from "./runtime-context.js";
+import { rehydratePinnedInstructionAsset, rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
@@ -44,7 +44,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
-import { nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
+import { nativeProviderPackAdmissionFailureCode, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
@@ -12075,8 +12075,12 @@ async function executePaperclipNativeSessionAttempt(
                     claim: { leaseOwner, attempt, controllerGeneration, controllerBootId: controller.bootId },
                     waitForClaim: runnerdBackend?.providerAdmissionRequired?.() === true,
                   });
-                } catch {
-                  try { await input.onLog?.("stderr", "[paperclip-runner] native provider-pack admission receipt could not be saved\n"); } catch {}
+                } catch (error) {
+                  // Name the database cause (a SQLSTATE only), so a lost
+                  // admission is diagnosable from the run log.
+                  const cause = nativeProviderPackAdmissionFailureCode(error)
+                    ?? (error instanceof Error && /^native_[a-z_]+$/.test(error.message) ? error.message : "unknown");
+                  try { await input.onLog?.("stderr", `[paperclip-runner] native provider-pack admission receipt could not be saved (cause=${cause})\n`); } catch {}
                 }
                 await runnerdBackend?.providerAdmissionPersisted?.();
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
@@ -15220,6 +15224,9 @@ async function createRunnerdBackendWithinSessionClaim(
   retainedTransition?: VerifiedWarmTransitionBinding,
 ): Promise<ManagedRunnerdBackend> {
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
+  if ("runtimeContext" in input.execution) {
+    await rehydratePinnedInstructionAsset(input.db, input.execution.binding, input.execution.runtimeContext).catch(() => undefined);
+  }
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
   const remoteTarget = target.kind === "remote" ? target : null;

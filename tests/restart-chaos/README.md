@@ -658,6 +658,19 @@ runs once per image. A copy that fails part-way, or stalls past its 20-minute bo
 (`RESTART_CHAOS_SKOPEO_ATTEMPT_TIMEOUT_MS`), retries from an empty directory.
 Run it alone with `node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/daytona-image.ts <image>`.
 
+**Provider-pack mismatch.** Because the controller takes its pack from the
+same image the sandboxes start from, the preinstalled pack always verifies and
+the upload path (`provider_pack.select` with `stateSource: uploaded`, reason
+`cached_packs_unverified`) and its session admission never run. Staging runs
+there whenever a deploy is newer than the sandbox image. `--daytona-pack-mismatch
+<registry/repository@sha256:…>` starts every sandbox from that other image (an
+older runner image) while the controller keeps `--daytona-image`'s runnerd and
+pack. Every fresh sandbox then uploads and verifies the controller's pack, and
+the session must record its admission before artifact retention. Pass: every
+task finishes with no Retry and no run ends with
+`native_provider_artifacts_admission_unverified`. The timeline records
+`daytona_pack_mismatch`.
+
 Before starting, the harness compares the image's `io.paperclip.runner.content-id`
 label with the content ID of this checkout (`pnpm test:e2e:runner:image-id`,
 which hashes every runner input) and refuses to run on a mismatch. To get an
@@ -751,6 +764,24 @@ run ends before any live turn is seen, the Stop is recorded as missed once the t
 A live turn is seen only when a poll (`--poll-ms`, 2–5 s) lands inside it, so a turn shorter than the
 poll interval can still be missed. A runner replacement or stop clears the live-turn mark, as it does for
 an open tool.
+
+**A tool result that never reaches the agent (`tool_completed`, Codex only).**
+`--provider-fault-message tool_completed` drops (PV2), holds (PV1) or repeats (PV3) Codex's
+`item/completed` for the turn's first Paperclip tool call other than `paperclip_finish` and
+`paperclip_block`. The model has the result, but the runner never records that it reached the model,
+as when Codex cancels the nested exec cell that made the call. In two staging Codex runs
+(2026-11-11) every later `paperclip_finish` was then refused with
+`terminal_call_before_results`, the turn ended with no semantic result, and the same-run recovery
+failed the run. No turn is interrupted, so the workloads are those that save a document and then
+finish (A1, C1):
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads A1 --faults PV2 --provider-fault-message tool_completed --concurrency 1 --tasks 1 --seed 301
+```
+
+The task passes when the fault applied once and the ordinary A1 grade passes (the brief is saved and
+the task is `done`).
 
 | Adapter | `terminal` | `interrupt_ack` |
 | --- | --- | --- |
