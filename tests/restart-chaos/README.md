@@ -292,6 +292,76 @@ receipt names both commits (`upgrade` in `faults.json`, `upgrade_switched` in th
 timeline). K14 is local-only, because a Daytona runner must match its image, and
 it is never part of a storm's default faults.
 
+## Redeploy (K15, `redeploy.ts`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters opencode,claude --workloads A1,C1 --faults K15 --daytona-reuse-lease --concurrency 3 --tasks 6 --seed 9301
+```
+
+The hosted staging stack deploys about every 40 minutes. Each deploy replaces
+the server's container. The replacement has the same database and volume, but it
+runs in another process space (host name, kernel boot and PID namespace) and
+has a new Railway deployment id. The server's PID-based proof that an earlier
+owner exited (`controller-process-identity.ts`, `owner-proof.ts`) never applies
+across a deploy. Recovery must use the deployment proof or the lease deadlines
+instead. K1 and K2 restart on the same machine, so every PID proof succeeds and
+that path stays untested. See `doc/plans/2026-11-11-staging-failures-vs-chaos-coverage.md`.
+
+K15 emulates the container replacement without a container:
+
+- Every server in a wave that has a K15 is launched with a `--import` preload
+  (`redeploy-preload.mjs`). The preload makes `os.hostname()` return a
+  per-generation name, which changes the process-space hash.
+- Every server gets Railway-shaped variables: `RAILWAY_PROJECT_ID`,
+  `RAILWAY_ENVIRONMENT_ID`, `RAILWAY_SERVICE_ID` and `RAILWAY_DEPLOYMENT_ID`,
+  plus `RAILWAY_VOLUME_ID` and `RAILWAY_VOLUME_MOUNT_PATH`, which is the
+  instance home.
+- A K15 stops the server with SIGTERM, like K2. The replacement starts as the
+  next generation, with a new host name and deployment id, on the same project,
+  service and volume.
+- Other faults in the same wave restart within the current generation, like a
+  platform restart of the same deployment.
+- Identities derive from the wave id; a replay uses the source wave id, so it sees the same ones.
+- Each K15 receipt records `redeploy` (both generations) in `faults.json`, and
+  `redeploy_switched` in the timeline.
+
+Limits:
+
+- The Daytona sandboxes and remote runners survive, as they do on staging.
+- Local runners are stopped with the server's process tree.
+- The cloud stop-proof service (`PAPERCLIP_CLOUD_*`) is not emulated, so stop
+  proofs that need it stay unsupported, as on any self-hosted Railway deploy.
+- K15 does not combine with MS1–MS3, because a second server would run in the
+  real host's process space.
+- Combine K15 with `--adapters opencode` and `--daytona-reuse-lease` or
+  `--daytona-warm` to match staging's workload mix.
+
+## Absolute symlink in the workspace (F1)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters codex,opencode --workloads F1 --faults K2 --storage s3 --concurrency 2 --tasks 2 --seed 9304
+```
+
+F1 is opt-in. The agent creates `hosts-link-<nonce>`, which is an absolute
+symlink to `/etc/hosts`, in its repository workspace and keeps it. It also
+writes a notes file, and then marks the task done.
+
+On staging, a remote save-back refused such a link
+(`remote_workspace_archive_unsafe_symlink`). The save-back then used up its
+retries and left the task blocked. Agents create absolute links in ordinary
+work, for example in tool caches or `node_modules/.bin`.
+
+The oracle passes when:
+
+- the task is `done`;
+- the notes file is saved, without a Retry.
+
+How the product saves the link itself (skip it, keep it, or record it) is not
+graded. F1 is meaningful with a remote workspace (`--env daytona`, with
+`--storage s3` as on staging). Locally it is a plain repository task.
+
 ## Config faults (CF1–CF3, `config-wave.ts`)
 
 ```sh
@@ -991,7 +1061,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `grader.ts` | Pure R1–R6 grading over the samples, plus the universal checks. |
 | `universal.ts`, `universal-audit.ts` | U1–U4 on every task, and their audit over saved waves. |
 | `contention.ts` | L1 workload, its accounting oracle and the `--db-pressure` writers. |
-| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
+| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, with their T-oracles. |
 | `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
@@ -1001,6 +1071,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
 | `multi-server.ts` | MS1–MS3: the second server's steps, the seeded holds, and the cross-server invariant over the wave database. |
 | `repeated-restarts.ts` | RR1–RR3: seeded restart steps, `--rr-gap-seconds`, and the stop-and-replace loop the supervisor runs. |
+| `redeploy.ts`, `redeploy-preload.mjs` | K15: per-generation emulated host name and Railway deployment identity, and the preload that applies the host name. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
 ## Output (gitignored)

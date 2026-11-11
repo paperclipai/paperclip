@@ -45,6 +45,7 @@ import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
 import { createAntigravityAdmission } from "./antigravity-admission.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
+import { isAcpPromptRequest, type AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
@@ -122,6 +123,8 @@ interface AcpxRuntimeExtensionBoundary {
   active: AcpxRuntimeExtensionTurn | null;
   sessionIds: Set<string>;
   steering: AcpxRuntimeSteeringCapability | null;
+  /** The started turn whose first session/prompt request is not yet written. */
+  promptDispatch: { turn: AcpxRuntimeExtensionTurn; journal: AcpxTurnDispatchJournal } | null;
 }
 
 /**
@@ -326,7 +329,7 @@ export async function openQualifiedAcpxRuntime(
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const promptUsage = options.profile.agent === "grok" ? createGrokPromptUsageCollector() : undefined;
   const extensionBoundary: AcpxRuntimeExtensionBoundary = {
-    active: null, sessionIds: new Set(), steering: null,
+    active: null, sessionIds: new Set(), steering: null, promptDispatch: null,
   };
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
@@ -508,6 +511,13 @@ export async function openQualifiedAcpxRuntime(
     onSessionNotification: acceptGoalNotification,
     onAcpMessage: (direction, message) => {
       const active = extensionBoundary.active;
+      // ACPX calls this synchronously before it writes an outbound message to
+      // the provider stream, so a thrown journal error aborts the prompt write.
+      const dispatch = extensionBoundary.promptDispatch;
+      if (direction === "outbound" && dispatch && dispatch.turn === active && isAcpPromptRequest(message)) {
+        extensionBoundary.promptDispatch = null;
+        dispatch.journal.markDispatched();
+      }
       if (active && (direction === "inbound" || !active.signal.aborted)) promptUsage?.observe(direction, message);
     },
     spawnEnvironment: () => ({
@@ -1552,6 +1562,8 @@ function runtimePort(
       if (providerProcessLost) throw new AcpxProviderProcessLostError();
       assertPromptPolicy?.(input.text);
       if (extensionBoundary.active) throw new Error("ACPX runtime already has an active turn");
+      // Record the turn before any provider work can send its prompt.
+      const dispatchJournal = input.dispatchJournal?.markReceived() ? input.dispatchJournal : null;
       const approval = new AbortController();
       const controller = new AbortController();
       const providerDeath = new AbortController();
@@ -1563,6 +1575,7 @@ function runtimePort(
         onPlanProposal: input.onPlanProposal,
       };
       extensionBoundary.active = extensionTurn;
+      extensionBoundary.promptDispatch = dispatchJournal ? { turn: extensionTurn, journal: dispatchJournal } : null;
       promptUsage?.begin(input.requestId, identity.backendSessionId);
       // A guardian can outlive the provider while ACP awaits a callback.
       // Native exit or a typed ACP agent disconnect retires this turn; losing
@@ -1585,6 +1598,7 @@ function runtimePort(
         stopWatchingProviderExit();
         controller.abort(new Error("ACPX extension turn expired"));
         if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
+        if (extensionBoundary.promptDispatch?.turn === extensionTurn) extensionBoundary.promptDispatch = null;
       };
       permissionBoundary.hasAdmittedTurn = true;
       permissionBoundary.active = approval;

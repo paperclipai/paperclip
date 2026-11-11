@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
-import { validateMultiServerOptions } from "./multi-server.js";
+import { isMultiServerFault, validateMultiServerOptions } from "./multi-server.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
@@ -17,7 +17,10 @@ import {
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
 } from "./types.js";
 
-/** A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`). */
+/**
+ * A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`),
+ * and K15, which changes the deploy identity of every later server (pass `--faults` to include it).
+ */
 export const STORM_DEFAULT_FAULTS: FaultKind[] = ["K1", "K2", "K4", "K6"];
 
 export const CREDENTIAL_FOR_ADAPTER: Record<AdapterId, "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"> = {
@@ -176,7 +179,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q3) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1"
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1"
       && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
@@ -233,6 +236,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
   }
   validateMultiServerOptions(options);
+  // K15 emulates one deploy identity per generation; a second server beside it would run in the real host's process space.
+  if (options.faults.includes("K15") && options.faults.some(isMultiServerFault)) {
+    throw new Error("K15 (redeploy) does not combine with MS1-MS3: the second server would not share the emulated deploy identity");
+  }
   Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
   const upgradeFrom = values["upgrade-from"];

@@ -35,7 +35,7 @@ export type JourneyTrigger = (typeof JOURNEY_TRIGGERS)[number];
 /** Each workload's own fault boundaries, for the journey × fault matrix. */
 export const WORKLOAD_TRIGGERS: Record<WorkloadId, readonly TriggerId[]> = {
   A1: ["time"], B1: ["time"], B5: ["tool"], C1: ["comment", "result"], M1: ["time"], G1: ["approval"],
-  H1: ["paused"], R1: ["time"], S1: ["stop"], L1: ["time"], Q1: JOURNEY_TRIGGERS, Q2: JOURNEY_TRIGGERS, Q3: JOURNEY_TRIGGERS,
+  H1: ["paused"], R1: ["time"], S1: ["stop"], L1: ["time"], F1: ["time"], Q1: JOURNEY_TRIGGERS, Q2: JOURNEY_TRIGGERS, Q3: JOURNEY_TRIGGERS,
 };
 
 /** Q3 reviews must survive a delay longer than the implicit deadline #20340 removed. */
