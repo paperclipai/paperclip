@@ -5700,6 +5700,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const release = this.#controlPlaneRelease;
     let checkpointFailed = false;
     let releaseFailed = false;
+    let processStopFailed = false;
     try {
       await releaseRunnerProcessOwnership({
         runnerSettled,
@@ -5722,7 +5723,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           // Do not release the session for reuse until its process monitor has
           // settled: the successor would otherwise overwrite that ownership
           // marker while the previous runner still holds the fixed listener.
-          const result = await waitForProcess(handle, 15_000);
+          let result: Awaited<ReturnType<typeof waitForProcess>>;
+          try {
+            result = await waitForProcess(handle, 15_000);
+          } catch (error) {
+            processStopFailed = true;
+            throw error;
+          }
           this.#evidence.runnerExited = true;
           this.#evidence.runnerExitCode = result.code;
           this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
@@ -5738,7 +5745,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         retireController: () => this.#stopAndDrainAuthority(closeDeadline),
       });
     } catch (error) {
-      if (checkpoint && checkpointFailed && !releaseFailed) {
+      if (checkpoint && checkpointFailed && !releaseFailed && !processStopFailed) {
         this.#pendingCloseCheckpointRetry = {
           checkpoint: () => checkpoint(runnerSettled ? "settled" : "unsettled"),
           finish: finishClose,

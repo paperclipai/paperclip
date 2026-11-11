@@ -63,11 +63,12 @@ describe("ST4 and ST7 planning", () => {
   });
 
   it("plans ST8 as a seeded SlowDown run on provider-session backup uploads, longer than one request's retries", async () => {
-    expect(storageFaultRules("ST8", () => 0)).toEqual([{ fault: { kind: "errors", rate: 1, status: 503, slowDown: true }, methods: ["PUT"],
-      pathIncludes: "native-harness-backups", remaining: 9 }]);
+    expect(storageFaultRules("ST8", () => 0)).toEqual([{ fault: { kind: "throttle" }, methods: ["PUT"],
+      pathIncludes: "native-harness-backups", firstObjectOnly: true, remaining: 9 }]);
     expect(storageFaultRules("ST8", () => 0.99)[0]!.remaining).toBe(12);
     expect(unexercisedFaults(["ST8"], { "PutObject:outage": 1 })).toEqual(["ST8"]);
-    expect(unexercisedFaults(["ST8"], { "PutObject:errors": 9 })).toEqual([]);
+    expect(unexercisedFaults(["ST8"], { "PutObject:errors": 9, "UploadPart:errors": 2 })).toEqual(["ST8"]);
+    expect(unexercisedFaults(["ST8"], { "PutObject:throttle": 9 })).toEqual([]);
     expect(auditsStorage({ storage: "s3", storageFaults: ["ST8"] })).toBe(true);
     let received = 0;
     const server = createServer((incoming, outgoing) => { received += 1; incoming.resume(); outgoing.writeHead(200).end(); });
@@ -78,10 +79,14 @@ describe("ST4 and ST7 planning", () => {
       const statuses: number[] = [];
       for (let attempt = 0; attempt < 10; attempt += 1) {
         statuses.push((await fetch(`${proxy.endpoint}/b/c/native-harness-backups/s/id.pchn`, { method: "PUT", body: "x" })).status);
+        if (attempt === 0) {
+          expect((await fetch(`${proxy.endpoint}/b/c/native-harness-backups/s/other.pchn`, { method: "PUT", body: "x" })).status).toBe(200);
+        }
       }
       expect((await fetch(`${proxy.endpoint}/b/c/workspace-snapshots/k`, { method: "PUT", body: "x" })).status).toBe(200);
       expect(statuses).toEqual([...Array(9).fill(503), 200]);
-      expect(received).toBe(2);
+      expect(received).toBe(3);
+      expect(proxy.counts().injectedBy).toEqual({ "PutObject:throttle": 9 });
     } finally {
       await proxy.close();
       server.closeAllConnections(); server.close();

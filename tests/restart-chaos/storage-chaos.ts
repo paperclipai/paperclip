@@ -30,8 +30,8 @@ export function storageFaultRules(kind: StorageFaultKind, random: () => number):
     case "ST4": return multipartFaultRules(random);
     case "ST5": case "ST5R": return credentialFaultRules(kind, random);
     case "ST7": return lagFaultRules(random);
-    case "ST8": return [{ fault: { kind: "errors", rate: 1, status: 503, slowDown: true }, methods: ["PUT"],
-      pathIncludes: "native-harness-backups", remaining: 9 + Math.floor(random() * 4) }];
+    case "ST8": return [{ fault: { kind: "throttle" }, methods: ["PUT"], pathIncludes: "native-harness-backups",
+      firstObjectOnly: true, remaining: 9 + Math.floor(random() * 4) }];
   }
 }
 
