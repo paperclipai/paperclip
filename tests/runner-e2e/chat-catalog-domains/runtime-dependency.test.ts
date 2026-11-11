@@ -35,7 +35,6 @@ it("reads Website's saved state only from completed product reads tied to Websit
   expect(readTaskState([{ eventType: "item.completed", payload: { prpEvent: { sourceKind: "runner", payload: { text: "I read paperclip_get_task website" } } } }], website)).toBe(false);
 });
 
-// gha-43069861174: the CEO's comment on the blocked Website woke Morgan in the product's bounded interaction mode.
 const interaction = (overrides: Record<string, unknown> = {}) => ({ id: "triage", status: "succeeded", agentId: "morgan",
   contextSnapshot: { issueId: "website", dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: ["design"], wakeReason: "issue_commented", ...overrides } });
 function withInteraction(run = interaction()) { const o = valid(); o.runs.splice(1, 0, run); o.state.preApprovalInteractionRunIds = [run.id]; return o; }

@@ -113,9 +113,6 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
     const worker = await fixtureWorker(ctx); const reviewer = await fixtureWorker(ctx); await ctx.input.api.patch(`/api/agents/${reviewer.id}`, { name: "Riley" });
     for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, ...[worker.id, reviewer.id].map(scopeId => ({ scopeType: "agent", scopeId }))])
       await ctx.input.api.post(`/api/companies/${ctx.input.fixtures.company.id}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
-    // After release the app serves this case's own source: no further customer evidence yet. (gha-43069861174: the shared
-    // website-prerequisite text told Morgan to complete an unrelated task, so Morgan asked the board for the evidence,
-    // the task went to review, and the later board handoff was correctly refused.)
     const gate = await startRunBriefGate(ctx, worker.id, "Customer evidence for Acorn Test Shop: no further reproduction evidence has been received yet. The affected device is still unconfirmed.");
     settings.get(ctx)!.gate = gate;
     const kickoff = await ctx.input.api.post<HandoffCaseResult>(`/api/companies/${ctx.input.fixtures.company.id}/case-handoffs`, {

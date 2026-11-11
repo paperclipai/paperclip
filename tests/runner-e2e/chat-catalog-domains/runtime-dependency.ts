@@ -34,12 +34,6 @@ async function chooseStatus(page: Page, status: "Todo" | "Done") {
   await page.getByRole("button").filter({ visible: true, hasText: new RegExp(`^\\s*${status}\\s*$`) }).first().click();
 }
 type RunLike = { id: string; agentId?: string | null; status: string; contextSnapshot?: Record<string, unknown> | null };
-/**
- * A comment on a dependency-blocked task wakes its assignee in the product's bounded interaction mode so it can
- * answer or triage while the blocker holds (server/src/services/heartbeat/queue.ts, `dependencyBlockedInteraction`).
- * Such a run is not admission of the blocked work. It counts as one only when the server stamped it as a blocked
- * interaction on this Website task, naming the Design blocker, and it settled successfully.
- */
 export function isBlockedInteractionRun(run: RunLike, task: { id: string }, design: { id: string }, workerId: string) {
   const context = run.contextSnapshot ?? {};
   return run.agentId === workerId && run.status === "succeeded" && context.dependencyBlockedInteraction === true && context.issueId === task.id
@@ -81,8 +75,6 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
   expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v8",
   sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
-    // The CEO may tell Morgan about the gate in a Website comment; the product then wakes Morgan in its bounded
-    // blocked-interaction mode (gha-43069861174). Wait for that reply to settle too, and reject any other run.
     const workerId = (state.worker as Entity).id, websiteTask = state.task as Entity, gate = state.design as Entity;
     const settled = await pollUntil({ label: "Saved dependency and canonical reply before human approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
