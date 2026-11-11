@@ -3020,6 +3020,18 @@ replacement behavior. When a replacement does archive remote continuity state
 and the remote move fails, the local state is not moved, and the run error keeps
 the bounded, redacted exit status and output of that move.
 
+When the provider state backup fails to save after the run's result was
+accepted, and the run used a per-turn sandbox (no reusable lease), that backup
+was the only copy of the provider session. The server records
+`nativeProviderStateUnsaved` with the code `native_provider_state_incompatible`
+in that run's runner profile. The run's status, result and task outcome do not
+change. The next run on the session does not rebind that checkpoint: it starts
+a fresh provider session in the same workspace with the full task context,
+without first trying to resume, and its transcript shows the session as started
+rather than resumed. A failure before the result is accepted, a backup that
+saves after a retry, a retained sandbox, an SSH host, and records saved without
+the key keep the resume path described next.
+
 A Runner that keeps no control-plane state for the saved session (none is live
 and no archived authority epoch matches it) reports a typed refusal. This
 happens when a follow-up run starts in a new sandbox and the previous run's
@@ -4926,8 +4938,12 @@ and identify `inheritedFromRunId`. The first receipt is immutable history.
 `nativeProviderPackAdmissionState` separately describes current admission proof:
 `pending`, `verified` or `unknown`, with an opaque admission epoch. The mandatory
 coordinator claim atomically sets a new pending epoch before session admission.
-Only the matching owner and epoch can publish post-attachment proof. Failed
-receipt writes leave pending evidence; changed or unsupported admission leaves
+Only the matching owner and epoch can publish post-attachment proof. A write
+that waits for its claim retries a contended write (lock timeout, deadlock or
+serialization abort) up to five times, because the runner's durable checkpoint
+writes hold the same coordinator row. Each attempt re-proves the claim, run and
+epoch in a new transaction. The run log names the database cause of a write
+that still fails. Failed receipt writes leave pending evidence; changed or unsupported admission leaves
 unknown evidence and does not prevent authorized execution. A missing legacy
 receipt remains unknown; the current release cannot supply that missing history.
 Retained recovery needs positively verified prior provenance, captured before
