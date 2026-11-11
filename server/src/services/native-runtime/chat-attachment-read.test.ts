@@ -344,9 +344,26 @@ describe("native same-conversation historical attachment reading", () => {
     app.use(runnerAttachmentDownloadRoutes(db, storage, env));
     const downloadRemoteAttachment = vi.fn(async (source: Parameters<typeof createRunnerAttachmentGrant>[1]) => {
       const grant = createRunnerAttachmentGrant(binding, source, "test-turn", "https://tenant.example/file", env);
-      const response = await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH)
-        .set("Authorization", `Bearer ${grant.token}`).expect(200);
-      expect(response.body).toEqual(sourceBody);
+      let lockAcquired!: () => void;
+      let unlock!: () => void;
+      const acquired = new Promise<void>(resolve => { lockAcquired = resolve; });
+      const released = new Promise<void>(resolve => { unlock = resolve; });
+      const holder = db.transaction(async tx => {
+        await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+        lockAcquired();
+        await released;
+      });
+      await acquired;
+      const releaseTimer = setTimeout(unlock, 150);
+      try {
+        const response = await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH)
+          .set("Authorization", `Bearer ${grant.token}`).expect(200);
+        expect(response.body).toEqual(sourceBody);
+      } finally {
+        clearTimeout(releaseTimer);
+        unlock();
+        await holder;
+      }
       const mismatched = createRunnerAttachmentGrant(binding, { ...source, sourceCommentId: randomUUID() }, "test-turn", grant.url, env);
       await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH)
         .set("Authorization", `Bearer ${mismatched.token}`).expect(404);

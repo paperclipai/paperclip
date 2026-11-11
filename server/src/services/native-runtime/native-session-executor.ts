@@ -10268,11 +10268,11 @@ export async function executePaperclipNativeSession(input: {
         stageRemoteAttachment,
         downloadRemoteAttachment,
       });
-      let wakeStage: Promise<NativeRunnerAttachmentStage> | undefined;
+      const wakeStages: Promise<NativeRunnerAttachmentStage>[] = [];
       let closed = false;
       const prepareAttachmentPrompt = async () => {
         if (closed) throw new Error("paperclip_runner_attachment_staging_scope_closed");
-        wakeStage ??= stageNativeRunnerWakeAttachments({
+        const wakeStage = stageNativeRunnerWakeAttachments({
           db: input.db,
           stageRemoteAttachment,
           downloadRemoteAttachment,
@@ -10285,13 +10285,14 @@ export async function executePaperclipNativeSession(input: {
             executionTargetKind: targetKind,
           },
         });
+        wakeStages.push(wakeStage);
         return renderNativeRunnerStagedAttachmentPrompt((await wakeStage).attachments);
       };
       cleanupStagedAttachments = async () => {
         closed = true;
         const cleanupResults = await Promise.allSettled([
           chatAttachmentReadScope.close(),
-          wakeStage?.then(stage => stage.cleanup(), () => undefined),
+          ...wakeStages.map(wake => wake.then(stage => stage.cleanup(), () => undefined)),
         ]);
         await stageRemoteAttachment?.close();
         if (cleanupResults.some(result => result.status === "rejected")) {
@@ -11973,14 +11974,11 @@ async function executePaperclipNativeSessionAttempt(
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
-            getFirstTurnQueuedInput: async () => {
-              const staged = await input.prepareAttachmentPrompt?.();
-              const queued = await claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
-                logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
-                return null;
-              });
-              return [staged, queued].filter(Boolean).join("\n\n") || null;
-            },
+            prepareWakeAttachmentPrompt: input.prepareAttachmentPrompt,
+            getFirstTurnQueuedInput: () => claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
+              logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
+              return null;
+            }),
             getUnreadSteeredMessages: () => readUnreadSteeredMessages(input.db, {
               companyId: input.execution.binding.companyId,
               runId: input.execution.binding.runId,

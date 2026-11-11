@@ -229,6 +229,12 @@ impl AttachmentDownloads {
         }
     }
 
+    pub(crate) fn finish_turn(&mut self) {
+        if !self.closed {
+            self.reset();
+        }
+    }
+
     pub(crate) fn open_next_turn(&mut self) {
         if self.closed {
             self.reset();

@@ -1,3 +1,4 @@
+import type { RunnerAttachmentDownloadGrant } from "../contracts/harness-driver.js";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
 import { confirmAntigravityProbeNativeRetirement } from "../drivers/acpx/antigravity-probe-retirement.js";
 import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../drivers/acpx/grok-web-search.js";
@@ -3988,14 +3989,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #attachmentDownloadSupport?: Promise<boolean>;
   #attachmentDownloadTail = Promise.resolve();
 
-  downloadAttachment(grant: (turnId: string) => import("../contracts/harness-driver.js").RunnerAttachmentDownloadGrant) {
+  downloadAttachment(grant: (turnId: string) => RunnerAttachmentDownloadGrant) {
     const turnId = this.#durableTurnId;
     const download = this.#attachmentDownloadTail.then(() => this.#downloadAttachment(turnId, grant));
     this.#attachmentDownloadTail = download.then(() => undefined, () => undefined);
     return download;
   }
 
-  async #downloadAttachment(turnId: string, grant: (turnId: string) => import("../contracts/harness-driver.js").RunnerAttachmentDownloadGrant) {
+  async #downloadAttachment(turnId: string, grant: (turnId: string) => RunnerAttachmentDownloadGrant) {
     if (!turnId || this.#durableTurnId !== turnId || !this.#core) return null;
     this.#attachmentDownloadSupport ??= this.#commandResult("session.snapshot", {}, this.#waitNow() + 5_000, true)
       .then(result => result.attachmentDownloadVersion === 1);

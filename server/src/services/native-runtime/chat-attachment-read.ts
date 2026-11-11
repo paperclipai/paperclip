@@ -40,7 +40,7 @@ export const READ_CHAT_ATTACHMENT_TOOL_DEFINITION = Object.freeze({
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function authorizeHistoricalRunnerAttachment(
+async function authorizeHistoricalRunnerAttachmentOnce(
   db: Db,
   binding: ChatReuseBinding,
   input: { sourceCommentId: string; attachmentId: string },
@@ -56,6 +56,33 @@ export function authorizeHistoricalRunnerAttachment(
       db: tx, binding, contextSnapshot: run!.contextSnapshot, allowEmpty: true, ...input,
     });
   });
+}
+
+export async function authorizeHistoricalRunnerAttachment(
+  db: Db,
+  binding: ChatReuseBinding,
+  input: { sourceCommentId: string; attachmentId: string },
+  signal?: AbortSignal,
+): Promise<ChatAttachmentReuseSource> {
+  const deadline = Date.now() + 1_000;
+  for (;;) {
+    signal?.throwIfAborted();
+    try {
+      const source = await authorizeHistoricalRunnerAttachmentOnce(db, binding, input);
+      signal?.throwIfAborted();
+      return source;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!isExternalChatWaitAuthorizationContention(error)) throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(
+          "paperclip_runner_chat_attachment_read_busy: chat authorization is temporarily busy; retry this read shortly",
+        );
+      }
+      await delay(Math.min(50, remaining), undefined, { signal });
+    }
+  }
 }
 
 /** A server-owned lifetime: never persist workspace paths in a replay receipt. */
@@ -113,41 +140,13 @@ export class NativeChatAttachmentReadScope {
     return pending;
   }
 
-  async #authorized(input: {
-    sourceCommentId: string;
-    attachmentId: string;
-  }): Promise<ChatAttachmentReuseSource> {
-    // Run-event persistence also briefly locks heartbeat_runs. A NOWAIT miss
-    // is not evidence of policy revocation: retry the whole authorization in
-    // a fresh transaction, never hold partial locks while backing off.
-    const deadline = Date.now() + 1_000;
-    for (;;) {
-      this.#assertOpen();
-      try {
-        return await this.#authorizeOnce(input);
-      } catch (error) {
-        this.#assertOpen();
-        if (!isExternalChatWaitAuthorizationContention(error)) throw error;
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) {
-          throw new Error(
-            "paperclip_runner_chat_attachment_read_busy: chat authorization is temporarily busy; retry this read shortly",
-          );
-        }
-        await delay(Math.min(50, remaining), undefined, {
-          signal: this.#abort.signal,
-        }).catch(() => this.#assertOpen());
-      }
-    }
-  }
-
-  async #authorizeOnce(input: {
-    sourceCommentId: string;
-    attachmentId: string;
-  }): Promise<ChatAttachmentReuseSource> {
-    const source = await authorizeHistoricalRunnerAttachment(this.options.db, this.options.binding, input);
+  async #authorized(input: { sourceCommentId: string; attachmentId: string }) {
     this.#assertOpen();
-    return source;
+    try {
+      return await authorizeHistoricalRunnerAttachment(this.options.db, this.options.binding, input, this.#abort.signal);
+    } finally {
+      this.#assertOpen();
+    }
   }
 
   async #read(input: { sourceCommentId: string; attachmentId: string }) {

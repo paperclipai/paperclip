@@ -388,12 +388,15 @@ describe("executeNativeSession recovery", () => {
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
       completeRun,
     };
+    const prepareWakeAttachmentPrompt = vi.fn(async () => "Read the fresh attachment at /run/attachments/restarted.png.");
     const execution = executeNativeSession({
-      input: executionInput, backend, controlPlane: port, persistedSession: checkpoint,
+      input: executionInput, backend, controlPlane: port, persistedSession: checkpoint, prepareWakeAttachmentPrompt,
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", resumeInterruptedTurn: true,
     });
     void execution.catch(() => undefined);
     await vi.waitFor(() => expect(turnStarts()).toHaveLength(1));
+    expect(prepareWakeAttachmentPrompt).toHaveBeenCalledOnce();
+    expect(JSON.stringify(turnStarts()[0]!.params)).toContain("/run/attachments/restarted.png");
     // Like the RC-60 Claude turns: the continuation ends saying it will wait
     // for a background command, with no paperclip_finish.
     recoveredTransport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });

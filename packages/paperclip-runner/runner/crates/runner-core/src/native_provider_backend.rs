@@ -4,7 +4,9 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
-use crate::attachment_download::{AttachmentDownloadPoll, AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND};
+use crate::attachment_download::{
+    AttachmentDownloadPoll, AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND,
+};
 use crate::credential_observer::CredentialObserver;
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
@@ -258,7 +260,7 @@ impl NativeProviderCommandExecutor {
             )
         });
         if terminal {
-            self.attachments.close();
+            self.attachments.finish_turn();
         }
         self.credentials.poll(terminal)?;
         Ok(self
@@ -427,8 +429,8 @@ impl CommandExecutor for NativeProviderCommandExecutor {
             }
             let invalid = || DurableRunnerError::invalid("attachment download command is invalid");
             if command.payload.get("downloadId").is_some() {
-                let poll: AttachmentDownloadPoll = serde_json::from_value(command.payload.clone())
-                    .map_err(|_| invalid())?;
+                let poll: AttachmentDownloadPoll =
+                    serde_json::from_value(command.payload.clone()).map_err(|_| invalid())?;
                 let id = uuid::Uuid::parse_str(&poll.download_id).map_err(|_| invalid())?;
                 let result = match self.attachments.poll(id)? {
                     Some(path) => json!({"status": "ready", "path": path}),
@@ -436,10 +438,12 @@ impl CommandExecutor for NativeProviderCommandExecutor {
                 };
                 return Ok(CommandExecution::result(result));
             }
-            let grant: AttachmentGrant = serde_json::from_value(command.payload.clone())
-                .map_err(|_| invalid())?;
+            let grant: AttachmentGrant =
+                serde_json::from_value(command.payload.clone()).map_err(|_| invalid())?;
             let download_id = self.attachments.start(grant, &self.config.turn_id)?;
-            return Ok(CommandExecution::result(json!({"status": "pending", "downloadId": download_id.to_string()})));
+            return Ok(CommandExecution::result(
+                json!({"status": "pending", "downloadId": download_id.to_string()}),
+            ));
         }
         if self.selected.is_none()
             && matches!(command.command_type.as_str(), "run.prepare" | "run.attach")
