@@ -114,8 +114,9 @@ const support = await getEmbeddedPostgresTestSupport();
       metric: "billed_cents", windowKind: "lifetime", amount: 100_000, notifyEnabled: false }).returning();
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "budget-live-attempts-"));
     directories.push(directory);
+    let failingSelects = 0;
     const proxy = new Proxy(db, { get(target, property) {
-      if (property === "select" && failedSelects > 0) { failedSelects--; return () => { throw new Error("Database unavailable"); }; }
+      if (property === "select" && failingSelects > 0) { failingSelects--; return () => { throw new Error("Database unavailable"); }; }
       const value = Reflect.get(target, property);
       return typeof value === "function" ? value.bind(target) : value;
     } }) as Db;
@@ -125,6 +126,9 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", sessionIdBefore: "thread-1" });
       await db.insert(budgetReservations).values({ companyId, agentId, runId, amountCents: "10" });
       const recorder = await createRunUsageRecorder(proxy, { companyId, runId, adapterType: "codex_local" }, directory);
+      // Fail the session baseline reads, not the recorder handoff before them.
+      failingSelects = failedSelects;
+      failedSelects = 0;
       const capture = (inputTokens: number, outputTokens: number, usageSessionId: string | null = "thread-1") => recorder.capture({ usageBasis: "session_cumulative",
         usageSessionId, provider: "openai", biller: "openai", billingType: "metered_api", model: "gpt-6.1-sol", complete: true,
         usage: { inputTokens, cachedInputTokens: 0, outputTokens } });
