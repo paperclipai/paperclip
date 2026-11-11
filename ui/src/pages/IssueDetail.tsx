@@ -6018,7 +6018,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     breadcrumbTitle,
     breadcrumbIdentifier,
     breadcrumbParent,
-    isMobile,
     rememberBreadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,
