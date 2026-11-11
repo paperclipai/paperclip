@@ -251,6 +251,21 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
+function mergeCodexFilesystemRules(rules: string[]): string[] {
+  const levels = new Map<string, string>();
+  for (const rule of rules) {
+    const separator = rule.lastIndexOf("=");
+    if (separator < 0) continue;
+    const key = rule.slice(0, separator);
+    const value = rule.slice(separator + 1);
+    const previous = levels.get(key);
+    if (previous === undefined || value === `"none"` || (previous !== `"none"` && value === `"write"`)) {
+      levels.set(key, value);
+    }
+  }
+  return [...levels.entries()].map(([key, value]) => `${key}=${value}`);
+}
+
 export const CODEX_UPDATE_PLAN_TOOL_CONFIG = "tools.update_plan.enabled=true";
 
 export function createIsolatedCodexAppServerArgs(
@@ -301,7 +316,7 @@ export function createIsolatedCodexAppServerArgs(
   const generatedImageRoots = generatedImagesRoot
     && !(preconfiguredHome && codexPathInside(preconfiguredHome, generatedImagesRoot))
     ? [generatedImagesRoot] : [];
-  const filesystemRules = [
+  const filesystemRules = mergeCodexFilesystemRules([
     `":root"="none"`,
     `":minimal"="read"`,
     `":tmpdir"="none"`,
@@ -316,12 +331,12 @@ export function createIsolatedCodexAppServerArgs(
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="write"}`,
-  ].join(",");
-  const planningFilesystemRules = externalRunnerSandbox ? [
+  ]).join(",");
+  const planningFilesystemRules = externalRunnerSandbox ? mergeCodexFilesystemRules([
     `":root"="read"`,
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
-  ].join(",") : [
+  ]).join(",") : mergeCodexFilesystemRules([
     `":root"="none"`,
     `":minimal"="read"`,
     `":tmpdir"="none"`,
@@ -335,7 +350,7 @@ export function createIsolatedCodexAppServerArgs(
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="read"}`,
-  ].join(",");
+  ]).join(",");
   const commandEnv = Object.entries(commandEnvironment)
     .map(([key, value]) => `${key}=${tomlString(value)}`)
     .join(",");

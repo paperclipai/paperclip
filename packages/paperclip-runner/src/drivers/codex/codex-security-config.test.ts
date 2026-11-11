@@ -351,6 +351,32 @@ describe("Codex security configuration", () => {
     expect(args.match(/"\/legacy\/.config\/gh"="read"/g)).toHaveLength(2);
   });
 
+  it("keeps a denied host root ahead of a colliding broker grant (#20485)", () => {
+    const args = createIsolatedCodexAppServerArgs({
+      HOME: "/shared", CODEX_HOME: "/shared", PATH: "/usr/bin:/bin", PAPERCLIP_GITHUB_AUTH_MODE: "broker",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "broker-token", GH_CONFIG_DIR: "/shared",
+    }).join("\n");
+    for (const profile of ["paperclip-runner-workspace-only", "paperclip-runner-workspace-read-only"]) {
+      const rules = args.split("\n").find((arg) => arg.startsWith(`permissions.${profile}.filesystem=`))!;
+      expect(rules.match(/"\/shared"="none"/g), profile).toHaveLength(1);
+      expect(rules).not.toContain('"/shared"="write"');
+      expect(rules).not.toContain('"/shared"="read"');
+    }
+  });
+
+  it("emits each filesystem path once when host Git and the broker share a directory (#20485)", () => {
+    const args = createIsolatedCodexAppServerArgs({
+      HOME: "/provider", CODEX_HOME: "/provider", PATH: "/usr/bin:/bin", PAPERCLIP_GITHUB_AUTH_MODE: "broker",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "broker-token", GH_CONFIG_DIR: "/shared/gh",
+      PAPERCLIP_GIT_METADATA_ROOTS: '["/shared/gh","/repo/.git"]',
+    }).join("\n");
+    for (const profile of ["paperclip-runner-workspace-only", "paperclip-runner-workspace-read-only"]) {
+      const rules = args.split("\n").find((arg) => arg.startsWith(`permissions.${profile}.filesystem=`))!;
+      expect(rules.match(/"\/shared\/gh"="write"/g), profile).toHaveLength(1);
+      expect(rules).not.toContain('"/shared/gh"="read"');
+    }
+  });
+
   it("disables host extensions and makes collaboration instructions explicit", () => {
     expect(createSkilllessCodexThreadConfig("/workspace", {}, false)).toEqual({
       "skills.include_instructions": false,
