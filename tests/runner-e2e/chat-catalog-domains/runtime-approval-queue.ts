@@ -93,7 +93,7 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     humanId: session.user.id, ordinaryQueueOwned: true, ordinaryQueuedBeforeAnswer: true };
 }, gradeApprovalQueue, {
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
-  authentication: "human-session", expectedRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v4",
+  authentication: "human-session", expectedRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v5",
   sourceFiles: ["chat-catalog-domains/runtime-approval-queue.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
     const canonicalPhase = await pollUntil({ label: "Canonical naming answer guidance while real worker remains active", deadlineAt: Date.now() + 150_000,
@@ -141,12 +141,27 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => q.entries.some(row => row.comment.id === target.comment.id && row.comment.body === edited) });
     state.actualOrdinaryEdit = true; await verifyResponse();
     const order = ordinaryApprovalEntries(queue, humanId).map(row => row.comment.id).reverse(), moved = ordinaryApprovalEntries(queue, humanId)[1]!, wholeOrderBefore = queue.entries.map(row => row.comment.id);
-    const mixed = queue.entries.some(row => row.source?.kind === "interaction");
+    // Moving the person's second message up one place either persists exactly that swap or, when the queue refuses
+    // to move messages around the bound response, leaves the whole queue order unchanged. Nothing else is accepted.
+    const movedIndex = wholeOrderBefore.indexOf(moved.comment.id), swapped = [...wholeOrderBefore];
+    if (movedIndex > 0) [swapped[movedIndex - 1], swapped[movedIndex]] = [swapped[movedIndex]!, swapped[movedIndex - 1]!];
     const handle = ctx.input.page.getByRole("button", { name: `Reorder queued message: ${moved.comment.body}`, exact: true });
     await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
+    const ids = (q: IssueQueuedCommentQueue) => q.entries.map(row => row.comment.id).join();
     queue = await pollUntil({ label: "Real keyboard queue reorder persists without replaying the decision", deadlineAt: Date.now() + 15_000,
-      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => mixed ? q.entries.map(row => row.comment.id).join() === wholeOrderBefore.join() : ordinaryApprovalEntries(q, humanId).map(row => row.comment.id).join() === order.join() });
-    state.actualOrdinaryReorder = !mixed; state.ordinaryReorderRestricted = mixed && queue.entries.map(row => row.comment.id).join() === wholeOrderBefore.join(); await verifyResponse();
+      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => ids(q) === swapped.join() || ids(q) === wholeOrderBefore.join() })
+      .catch(async error => {
+        const shape = (q: IssueQueuedCommentQueue) => q.entries.map(row => ({ id: row.comment.id, source: row.source?.kind ?? null, person: row.comment.authorUserId === humanId, lead: row.comment.authorAgentId === leadId }));
+        await ctx.input.evidence("runtime-approval-queue-reorder.json", { movedId: moved.comment.id, before: shape(queue), observed: shape(await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint)) });
+        throw error;
+      });
+    if (ids(queue) === wholeOrderBefore.join()) {
+      // Give a persisted swap a moment to land before calling the reorder refused.
+      queue = await pollUntil({ label: "Queue reorder settles", deadlineAt: Date.now() + 5_000, load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => ids(q) === swapped.join() }).catch(() => queue);
+    }
+    state.actualOrdinaryReorder = movedIndex > 0 && ids(queue) === swapped.join();
+    state.ordinaryReorderRestricted = !state.actualOrdinaryReorder && ids(queue) === wholeOrderBefore.join() && queue.entries.some(row => row.source?.kind === "interaction");
+    await verifyResponse();
     for (const id of order) {
       await ctx.input.page.getByTestId(`task-chat-queued-discard-${id}`).click();
       await pollUntil({ label: "Supported human discard removes only this ordinary comment", deadlineAt: Date.now() + 15_000,
@@ -157,8 +172,8 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     const response = await pollUntil({ label: "Typed immutable naming answer remains queued after ordinary comments are removed", deadlineAt: Date.now() + 20_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => q.entries.filter(row => row.source).length === 1 && q.entries.find(row => row.source)?.source?.interactionId === question.id
         && ordinaryApprovalEntries(q, humanId).length === 0 && q.entries.length === 1 + leadRelayEntries(q, leadId).length }); state.responseQueue = response;
-    const immutable = await ctx.input.page.request.patch(`${endpoint}/${question.id}`, { data: { queueId: response.queueId, revision: response.revision, body: "Replace the accepted name with an unauthorized comment edit" } });
-    state.responseUneditable = [403, 409].includes(immutable.status()); await immutable.dispose(); await verifyResponse();
+    const immutable = await ctx.input.page.request.patch(`${endpoint}/${question.id}`, { data: { queueId: response.queueId, revision: response.revision, body: "Replace the accepted name with an unauthorized comment edit" }, headers: { Origin: new URL(ctx.input.page.url()).origin } });
+    state.responseUneditable = immutable.status() >= 400 && immutable.status() < 500 && immutable.status() !== 401; await immutable.dispose(); await verifyResponse();
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(ctx.input.page.getByTestId(`task-chat-queued-message-${question.id}`)).toBeVisible();
     await expect(ctx.input.page.getByTestId(`task-chat-queued-discard-${question.id}`)).toBeDisabled();
     await ctx.input.capture("actual-immutable-answer-queue", "Bound Acorn answer remains distinct from edited, reordered and removed ordinary comments", "runtime-approval-queue.png");

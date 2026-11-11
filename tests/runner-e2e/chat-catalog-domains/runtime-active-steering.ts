@@ -82,7 +82,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, humanId: session.user.id, queueBefore: before, targetId, ...controls };
 }, gradeActiveSteering, {
-  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v5",
+  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v6",
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
@@ -104,7 +104,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
     if ((state.queueBefore as IssueQueuedCommentQueue).steeringDisposition === "unsupported") {
       // This harness cannot steer, and the page offers no Steer control. Attempt it once with the person's own session to
       // prove the product refuses rather than claiming delivery, then leave the message for normal admission.
-      const attempt = await ctx.input.page.request.post(`${endpoint}/${targetId}/steer`, { data: mutation }); state.humanSteerAttempted = true;
+      const attempt = await ctx.input.page.request.post(`${endpoint}/${targetId}/steer`, { data: mutation, headers: { Origin: new URL(ctx.input.page.url()).origin } }); state.humanSteerAttempted = true;
       state.steerStatus = attempt.status(); const body = await attempt.json().catch(() => ({})) as { code?: string; details?: { code?: string } }; await attempt.dispose();
       state.steerFailureCode = body.code ?? body.details?.code; state.steerObservedBranch = steeringBranch("unsupported", state.steerStatus);
       const after = await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint); state.queueAfterAction = after;
@@ -122,7 +122,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
         const run = await ctx.input.api.get<{ resultJson?: { queuedSteeringAcknowledgements?: Record<string, { status?: string; queueId?: string; turnId?: string }> } }>(`/api/heartbeat-runs/${state.workerRunId}`);
         const ack = run.resultJson?.queuedSteeringAcknowledgements?.[targetId];
         state.acknowledgedSameRun = ack?.status === "acknowledged" && ack.queueId === before.queueId && typeof ack.turnId === "string" && ack.turnId.length > 0;
-        const retry = await ctx.input.page.request.post(`${endpoint}/${targetId}/steer`, { data: mutation }); state.idempotentRetryStatus = retry.status(); await retry.dispose();
+        const retry = await ctx.input.page.request.post(`${endpoint}/${targetId}/steer`, { data: mutation, headers: { Origin: new URL(ctx.input.page.url()).origin } }); state.idempotentRetryStatus = retry.status(); await retry.dispose();
       } else {
         if (result.status() !== 409) throw new Error("Steering failed outside its supported visible rejection contract");
         state.steerObservedBranch = "provider-rejected-normal-continuation";
