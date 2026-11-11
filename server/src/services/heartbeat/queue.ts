@@ -153,6 +153,7 @@ import {
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
+  NATIVE_STATUS_COMMITTER_ACTOR_ID,
 } from "../issue-rewake-throttle.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import {
@@ -4388,9 +4389,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               forceFreshSession:
                 enrichedContextSnapshot.forceFreshSession === true,
               hasExplicitResume: Boolean(explicitResumeSession),
+              declaredContinuationKind: readNonEmptyString(parseObject(payload).continuationKind),
             })
           ) {
             const throttleNow = new Date();
+            const notNativeStatusCommitterActivity = sql`not (${activityLog.actorType} = 'system' and ${activityLog.actorId} = ${NATIVE_STATUS_COMMITTER_ACTOR_ID})`;
             const recentTerminalRuns = await tx
               .select({
                 id: heartbeatRuns.id,
@@ -4430,6 +4433,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                       activityLog.action,
                       ISSUE_PROGRESS_ACTIVITY_ACTIONS,
                     ),
+                    notNativeStatusCommitterActivity,
                   ),
                 );
               const lastRunFinishedAt =
@@ -4445,6 +4449,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                         eq(activityLog.entityId, issue.id),
                         gt(activityLog.createdAt, lastRunFinishedAt),
                         sql`coalesce(${activityLog.details}->>'origin', '') <> 'fast_response'`,
+                        notNativeStatusCommitterActivity,
                         inArray(
                           activityLog.action,
                           ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,

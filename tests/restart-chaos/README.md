@@ -1142,9 +1142,9 @@ that lock the run row still fail under the same contention on master. The conten
 (`contention_produced`) fired only on tasks whose runs failed before any usage was reported; a run
 that finished produced 208 log events and 20 receipts, well above the 40 and 6 thresholds.
 
-## Universal checks (U1–U4)
+## Universal checks (U1–U5)
 
-Every task of every wave is also graded on four scenario-independent rules (`universal.ts`), whatever
+Every task of every wave is also graded on five scenario-independent rules (`universal.ts`), whatever
 its workload. They catch a stuck or misleading task that no scenario anticipated.
 
 | Rule | Fails when | Bound (env override) |
@@ -1153,8 +1153,9 @@ its workload. They catch a stuck or misleading task that no scenario anticipated
 | U2 retry loop | more than N consecutive failed runs with the same status and code while the issue status stays the same | 3 (`RESTART_CHAOS_U2_SAME_FAILURE_RUNS`) |
 | U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...) and no recorded `failureCause` (a bounded code such as `40001`, `exit_code_137` or `provider_http_429`; a bare `Error` or `unknown_error` does not count), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
 | U4 stale notice | a Retry or failed notice stays on a task after its latest run succeeded, longer than the bound or at rest | 60 s (`RESTART_CHAOS_U4_STALE_SECONDS`) |
+| U5 run budget | one task created more runs than the bound | 10 (`RESTART_CHAOS_U5_MAX_RUNS`) |
 
-U1, U2 and U4 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
+U1, U2, U4 and U5 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
 (`grade.universal`), the ledger (`universal`, `universalWarnings`) and the wave's `SUMMARY.md`, and
 never fails a task. U3 reads run error text and recovery-action causes from the wave database at
 wave end, because the board's run list hides most error text.
@@ -1172,6 +1173,13 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts <r
 | U2 | 1 | 0 | 0 |
 | U3 | 30 | 3 | 0 |
 | U4 | 0 | 0 | 0 |
+
+U5 came later, from the 2026-11-11 `response_wake` self-wake loop: a yielded run with
+`continuation.kind: "response_wake"` and no admitted response source enqueued an immediate
+`issue_status_changed` wake to the same agent, so W2/W2C tasks ran 30 to 66 times ~12 s apart.
+Over the saved waves, passing tasks outside that loop created at most 5 runs, and some looping
+tasks still passed every other rule. A task with more than 10 runs now fails as
+`U5:run_budget_exceeded`.
 
 On passing tasks the longest ownerless stretch was 19 s, the longest queue wait 136 s (p99 40 s),
 the longest accepted-Retry wait 278 s, and no failure repeated more than twice; with the 3-minute

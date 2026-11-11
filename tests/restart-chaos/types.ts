@@ -464,7 +464,7 @@ export interface TaskGrade {
   crossingFaults: string[];
   rules: Record<RuleId, RuleResult>;
   T: OracleResult;
-  /** Universal checks U1–U4 (universal.ts); absent on grades written before them. */
+  /** Universal checks U1–U5 (universal.ts); absent on grades written before them. */
   universal?: import("./universal.js").UniversalGrade;
   pass: boolean;
   signature: string | null;
