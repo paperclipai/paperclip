@@ -3806,18 +3806,6 @@ export function issueRoutes(
     if (!req.actor.agentId || !req.actor.runId)
       throw crossIssueInfluenceRunContextError();
 
-    // If the agent is the assignee and this run owns the checkout/execution lock,
-    // allow the write without cross-issue influence counting. The run's
-    // contextSnapshot may not yet carry the issueId (e.g. timer wakeup adopted
-    // via checkout), but the issue row proves ownership.
-    if (
-      issue.assigneeAgentId === req.actor.agentId &&
-      (issue.checkoutRunId === req.actor.runId ||
-        issue.executionRunId === req.actor.runId)
-    ) {
-      return true;
-    }
-
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.
     const decision = await observeCrossIssueInfluence(db, {
@@ -17257,6 +17245,29 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
+      // The checkout run id is caller-supplied. Verify it is a persisted run
+      // owned by the authenticated agent and company before persisting it into
+      // the issue row; otherwise an agent could bind another agent's run to
+      // this issue and later use it to bypass the cross-issue cap.
+      if (req.actor.type === "agent" && checkoutRunId) {
+        const checkoutRun = await db
+          .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, checkoutRunId),
+            eq(heartbeatRuns.companyId, issue.companyId),
+            eq(heartbeatRuns.agentId, req.actor.agentId),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!checkoutRun) {
+          res.status(403).json({
+            error: "Checkout run id does not belong to the authenticated agent",
+            details: { issueId: issue.id, checkoutRunId },
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          });
+          return;
+        }
+      }
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.
