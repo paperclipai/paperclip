@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { gradeInternal, internalChatCatalogCases } from "./internal.js";
 import type { Entity, InternalObservation } from "./internal-support.js";
 import { externalPrerequisiteReceipt, validateExternalConfig } from "./external-fixtures.js";
+import { unmetPriorDeliveryReview } from "./internal-task-completion.js";
 
 function base(scenarioId: string): InternalObservation {
   const p = { id: "p", companyId: "company", name: "Launch" };
@@ -150,7 +151,7 @@ function valid(scenario: string): InternalObservation {
       o.state.task = structuredClone(t); o.state.worker = { id: "morgan" }; o.state.reviewerId = "riley"; o.tasks[0] = t;
       o.runs.push({ id: "implementation", companyId: "company", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "task" } });
       Object.assign(o, { reviewTask: t, attachments: [{ id: "html", sha256: "a".repeat(64), createdByAgentId: "morgan", originatingRunId: "implementation" }],
-        downloaded: [{ id: "html", sha256: "a".repeat(64), body: "<html><body><h1>Acorn Notes</h1></body></html>" }], interactions: [] });
+        downloaded: [{ id: "html", sha256: "a".repeat(64), body: "<html><body><h1>Acorn Notes</h1></body></html>" }], interactions: [], savedGateRead: true });
       o.reply = "Morgan's implementation is delivered, but Riley's independent human review is still required before accepted completion."; break;
     }
     case "tasks.attachment-brief": {
@@ -870,9 +871,55 @@ describe("governed completion calibration", () => {
   it("rejects a fabricated implementation delivery without actual bytes", () => {
     const o = valid("tasks.completion-with-gate"); Object.assign(o, { downloaded: [] }); expect(gradeInternal(o).passed).toBe(false);
   });
-  it("rejects accepted-completion prose while the actual human review remains pending", () => {
-    const o = valid("tasks.completion-with-gate"); o.reply = "Review is required, but I marked the task done.";
+  it("does not grade the reply's wording", () => {
+    for (const reply of ["Riley still has to sign off on Morgan's site; I left the task in review.",
+      "The website is built and attached. It can't close yet: the configured reviewer hasn't decided."]) {
+      const o = valid("tasks.completion-with-gate"); o.reply = reply; expect(gradeInternal(o).passed).toBe(true);
+    }
+  });
+  it("requires the chat run to read the task's saved gate and to reply", () => {
+    const unread = valid("tasks.completion-with-gate"); Object.assign(unread, { savedGateRead: false }); expect(gradeInternal(unread).passed).toBe(false);
+    const silent = valid("tasks.completion-with-gate"); silent.reply = " "; expect(gradeInternal(silent).passed).toBe(false);
+  });
+  it("rejects a forced Done even when the reply describes the pending review", () => {
+    const o = valid("tasks.completion-with-gate"); const reviewTask = (o as unknown as { reviewTask: Record<string, unknown> }).reviewTask;
+    Object.assign(reviewTask, { status: "done", executionState: { ...(reviewTask.executionState as object), status: "completed" } });
     expect(gradeInternal(o).passed).toBe(false);
+  });
+  it("accepts a product continuation run of Morgan's implementation", () => {
+    const o = valid("tasks.completion-with-gate");
+    o.runs.push({ id: "continuation", companyId: "company", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "task" } });
+    (o as unknown as { attachments: Array<{ originatingRunId: string }> }).attachments[0]!.originatingRunId = "continuation";
+    expect(gradeInternal(o).passed).toBe(true);
+    o.runs.push({ id: "failed", companyId: "company", agentId: "morgan", status: "failed", contextSnapshot: { issueId: "task" } });
+    expect(gradeInternal(o).passed).toBe(false);
+  });
+});
+
+describe("completion gate setup readiness", () => {
+  const review = { status: "pending", currentStageId: "stage", currentStageType: "review", currentParticipant: { type: "user", userId: "riley" } };
+  const ready = () => ({ task: { id: "task", status: "in_review", executionState: structuredClone(review) },
+    runs: [{ id: "run", agentId: "morgan", status: "succeeded" }],
+    attachments: [{ id: "html", sha256: "a", createdByAgentId: "morgan", originatingRunId: "run" }] });
+  it("accepts the configured review pending after a delivered implementation", () => {
+    expect(unmetPriorDeliveryReview(ready(), "morgan", "riley")).toEqual([]);
+    const continued = ready(); continued.runs.push({ id: "next", agentId: "morgan", status: "succeeded" });
+    expect(unmetPriorDeliveryReview(continued, "morgan", "riley")).toEqual([]);
+  });
+  it("names each unmet field of a review requested outside the configured stage", () => {
+    const generic = ready(); Object.assign(generic.task, { executionState: null });
+    expect(unmetPriorDeliveryReview(generic, "morgan", "riley")).toEqual([
+      "executionState.status=null (want pending)", "executionState.currentParticipant=null (want the configured reviewer)"]);
+  });
+  it("names a bypassed review, an active run and a missing delivery", () => {
+    const bypassed = ready(); Object.assign(bypassed.task, { status: "done", executionState: null });
+    bypassed.runs.push({ id: "live", agentId: "morgan", status: "running" }); bypassed.attachments = [];
+    expect(unmetPriorDeliveryReview(bypassed, "morgan", "riley")).toEqual([
+      "task.status=done (want in_review)", "executionState.status=null (want pending)",
+      "executionState.currentParticipant=null (want the configured reviewer)", "active worker runs=1 (want 0)",
+      "worker deliveries from a succeeded worker run=0 of 0 attachments (want at least 1)"]);
+    const other = ready(); other.task.executionState.currentParticipant.userId = "someone";
+    expect(unmetPriorDeliveryReview(other, "morgan", "riley")).toEqual(["executionState.currentParticipant=user:other (want the configured reviewer)"]);
   });
 });
 
