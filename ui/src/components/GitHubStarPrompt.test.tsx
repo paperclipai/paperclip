@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type { HealthStatus } from "@/api/health";
@@ -22,10 +23,14 @@ vi.mock("@/api/issues", () => ({ issuesApi: {
 describe("GitHub star prompt", () => {
   let container: HTMLDivElement;
   let root: Root;
-  const render = async (health: Partial<HealthStatus> | null = { deploymentMode: "local_trusted" }) => {
+  let navigate: NavigateFunction | null = null;
+  function NavigateHandle() { navigate = useNavigate(); return null; }
+  const render = async (health: Partial<HealthStatus> | null = { deploymentMode: "local_trusted" }, path = "/CHA/dashboard") => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     if (health) client.setQueryData(["health"], health);
-    await act(async () => root.render(<QueryClientProvider client={client}><GitHubStarPrompt /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>
+      <NavigateHandle /><GitHubStarPrompt />
+    </MemoryRouter></QueryClientProvider>));
     // Let the onboarding and done-count queries settle, however slow the run.
     for (let idle = 0, tick = 0; idle < 2 && tick < 100; tick++) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
@@ -62,6 +67,32 @@ describe("GitHub star prompt", () => {
     await render();
     expect(visible()).toBe(false);
     await act(async () => { other.remove(); });
+    expect(visible()).toBe(true);
+  });
+
+  it("never covers a task's Retry: it waits until no Retry banner is on screen", async () => {
+    const banner = document.createElement("div");
+    banner.setAttribute("role", "status"); banner.setAttribute("aria-label", "Task status");
+    banner.innerHTML = '<span>Couldn’t finish this attempt. Your message is saved.</span><button data-testid="task-execution-retry">Retry</button>';
+    document.body.append(banner);
+    try {
+      await render();
+      expect(visible()).toBe(false);
+      // An open modal hides everything else from assistive technology, so a
+      // covered Retry is unreachable by role as well as by pointer.
+      expect(banner.closest('[aria-hidden="true"]')).toBeNull();
+      await act(async () => { banner.remove(); });
+      expect(visible()).toBe(true);
+    } finally { banner.remove(); }
+  });
+
+  it("does not interrupt while the user is looking at a task or a chat", async () => {
+    await render(undefined, "/CHA/issues/CHA-4");
+    expect(visible()).toBe(false);
+    await act(async () => { navigate!("/CHA/chats/claude"); });
+    expect(visible()).toBe(false);
+    expect(window.localStorage.getItem(STAR_PROMPT_SEEN_KEY)).toBeNull();
+    await act(async () => { navigate!("/CHA/issues"); });
     expect(visible()).toBe(true);
   });
 
