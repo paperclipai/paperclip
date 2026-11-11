@@ -33,13 +33,13 @@ export function useBoardColumnCounts({
   });
   const columnCounts = Object.fromEntries(statuses.flatMap((status, index) => {
     if (!includesStatus(status)) return [[status, 0]];
-    // A failed refetch keeps the last server total; only a missing total falls back to a lower bound.
+    // A failed refetch keeps the last server total and reports the error; a missing total falls back to a lower bound.
     const count = queries[index]?.data?.count;
     return canCount && count !== undefined ? [[status, count]] : [];
   })) as Partial<Record<IssueDisplayStatus, number>>;
   return {
     columnCounts,
     cappedStatuses: statuses.filter((status, index) => enabled && includesStatus(status) && columnPageLengths[index] === cardLimit),
-    hasError: canCount && queries.some((query, index) => includesStatus(statuses[index]!) && query.data === undefined && query.isError),
+    hasError: canCount && queries.some((query, index) => includesStatus(statuses[index]!) && query.isError),
   };
 }

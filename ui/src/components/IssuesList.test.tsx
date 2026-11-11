@@ -1758,7 +1758,7 @@ describe("IssuesList", () => {
     localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "board" }));
     mockIssuesApi.count.mockRejectedValue(new Error("Count unavailable"));
     const { root } = renderWithQueryClient(<IssuesList issues={[]} viewStateKey="paperclip:test-issues" onUpdateIssue={() => undefined} />, container);
-    await waitForAssertion(() => expect(container.textContent).toContain("Totals could not be loaded"));
+    await waitForAssertion(() => expect(container.textContent).toContain("Totals could not be refreshed"));
     expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({ columnCounts: {} }));
     act(() => root.unmount());
   });

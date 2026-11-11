@@ -1982,7 +1982,7 @@ export function IssuesList({
         </p>
       )}
       {boardCountError && (
-        <p className="text-xs text-destructive">Totals could not be loaded. Capped columns show a lower bound.</p>
+        <p className="text-xs text-destructive">Totals could not be refreshed. Columns show the last loaded total or a lower bound.</p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
