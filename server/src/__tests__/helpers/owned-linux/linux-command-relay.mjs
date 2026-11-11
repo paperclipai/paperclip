@@ -44,7 +44,7 @@ try {
   witnessStage="parse_launch";
   const launch = launchFromActualCommand(descriptor, request);
   witnessStage="open_custody";
-  const ledgerDirectory = path.join(root, ".qualification-custody"); await mkdir(ledgerDirectory, { recursive: true, mode: 0o700 });
+  const ledgerDirectory = path.join(root, ".paperclip-runtime", ".qualification-custody"); await mkdir(ledgerDirectory, { recursive: true, mode: 0o700 });
   if (!/^[a-f0-9-]{36}$/.test(request.requestId)) throw fail("request_identity_invalid");
   const journal = path.join(ledgerDirectory, request.requestId + ".json");
   // Exclusive record before dispatch: unknown response must not silently reexecute.

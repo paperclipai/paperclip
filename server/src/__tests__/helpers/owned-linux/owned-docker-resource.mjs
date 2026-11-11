@@ -93,7 +93,7 @@ export class OwnedDockerResources {
     resource = { id, hostRoot, root: "/workspace", companyId: params.companyId, environmentId: params.environmentId,
       runId: params.runId, creationOperationId: params.creationOperationId, nonce: randomUUID(), containerName: id,
       containerId: null, status: "dispatch_recorded", expectedRunnerSHA256: this.config.runnerSHA256,
-      launchDescriptor: "/workspace/.qualification-custody/active-launch.json" };
+      launchDescriptor: "/workspace/.paperclip-runtime/.qualification-custody/active-launch.json" };
     await this.save(resource); // durable before creating anything
     for (const name of ["workspace", "descriptor"]) await mkdir(path.join(hostRoot, name), { mode: 0o700 });
     const args = ["create", "--name", id, "--init", "--read-only", "--network", "none", "--cpus", "2", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "256",
@@ -133,7 +133,7 @@ export class OwnedDockerResources {
       // Retain the previous launch witness before a new launch can own this
       // exact workspace. Container stop proved the whole prior PID namespace
       // ended. Do not delete a marker/checkpoint or acquire a replacement.
-      const custody = path.join(resource.hostRoot, "workspace/.qualification-custody");
+      const custody = path.join(resource.hostRoot, "workspace/.paperclip-runtime/.qualification-custody");
       const active = path.join(custody, "active-launch.json");
       try { await rename(active, path.join(custody, "retired-launch-" + randomUUID() + ".json")); }
       catch (error) { if (error.code !== "ENOENT") throw error; }

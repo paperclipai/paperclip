@@ -26,7 +26,7 @@ export async function stopCheckpointedOwnedRun(input: { db: Db; workerManager: P
     environmentId: z.literal(input.environmentId), runId: z.literal(input.runId),
     containerId: z.string().regex(/^[a-f0-9]{64}$/), status: z.literal("active") }).passthrough()
     .parse(JSON.parse(await readFile(path.join(root, "resource.json"), "utf8")));
-  const custody = path.join(root, "workspace/.qualification-custody");
+  const custody = path.join(root, "workspace/.paperclip-runtime/.qualification-custody");
   const names = (await readdir(custody)).filter(name => /^[a-f0-9-]{36}\.json$/.test(name));
   if (names.length > 128) throw new Error("owned_fault_custody_inventory_overflow");
   const journals = await Promise.all(names.map(async name => JSON.parse(await readFile(path.join(custody, name), "utf8"))));
