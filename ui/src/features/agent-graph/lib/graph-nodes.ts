@@ -81,7 +81,7 @@ export function syncNodes(previous: readonly GraphFlowNode[], input: SyncNodesIn
   for (const sticky of layout.stickies) {
     const id = stickyNodeId(sticky.id);
     const prev = previousById.get(id);
-    const position = { x: sticky.x, y: sticky.y };
+    const position = prev?.dragging ? prev.position : { x: sticky.x, y: sticky.y };
     if (
       prev?.type === "sticky"
       && prev.data.sticky === sticky
@@ -105,7 +105,9 @@ export function syncNodes(previous: readonly GraphFlowNode[], input: SyncNodesIn
   for (const agent of agents) {
     if (hidden.has(agent.id)) continue;
     const prev = previousById.get(agent.id);
-    const position = layout.positions[agent.id] ?? autoPositions.get(agent.id) ?? { x: 0, y: 0 };
+    const position = prev?.dragging
+      ? prev.position
+      : layout.positions[agent.id] ?? autoPositions.get(agent.id) ?? { x: 0, y: 0 };
     const live = liveAgentIds.has(agent.id) || agent.status === "running";
     if (
       prev?.type === "agent"
@@ -129,7 +131,7 @@ export function syncNodes(previous: readonly GraphFlowNode[], input: SyncNodesIn
   for (const draft of layout.drafts) {
     const id = draftNodeId(draft.id);
     const prev = previousById.get(id);
-    const position = { x: draft.x, y: draft.y };
+    const position = prev?.dragging ? prev.position : { x: draft.x, y: draft.y };
     const managerName = draft.reportsTo ? agentNames.get(draft.reportsTo) ?? null : null;
     if (
       prev?.type === "draft"

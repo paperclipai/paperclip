@@ -17,7 +17,7 @@ import {
 export type GraphHistoryEntry = HistoryEntry<AgentGraphLayout>;
 
 export function useAgentGraphDocument(companyId: string) {
-  const { stored, isLoaded, save, stage, saveState, loadError, blocked, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, stage, flush, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad, owner } = useUiLayout({
     companyId,
     surface: "agent_graph",
     resolve: resolveAgentGraphLayout,
@@ -26,11 +26,24 @@ export function useAgentGraphDocument(companyId: string) {
   const [history, setHistory] = useState<HistoryState<AgentGraphLayout>>(() => emptyHistory());
   const layoutRef = useRef<AgentGraphLayout | null>(null);
   const historyRef = useRef(history);
+  const groupRef = useRef<{ key: string; entry: GraphHistoryEntry } | null>(null);
   const hadStoredLayout = useRef(false);
+  const [restoreCount, setRestoreCount] = useState(0);
 
   const wasBlocked = useRef(false);
+  const loadedOwner = useRef<string | null>(null);
+  const ownerReload = useRef(false);
+  const [layoutOwner, setLayoutOwner] = useState<string | null>(null);
 
   useEffect(() => {
+    if (loadedOwner.current !== owner) {
+      if (loadedOwner.current !== null) {
+        layoutRef.current = null;
+        setLayout(null);
+        ownerReload.current = true;
+      }
+      loadedOwner.current = owner;
+    }
     if (!isLoaded) return;
     const recovered = wasBlocked.current && blocked === null && stored !== null;
     wasBlocked.current = blocked !== null;
@@ -39,11 +52,14 @@ export function useAgentGraphDocument(companyId: string) {
     const initial = stored ?? defaultAgentGraphLayout();
     layoutRef.current = initial;
     setLayout(initial);
-    if (recovered) {
+    setLayoutOwner(owner);
+    if (recovered || ownerReload.current) {
+      setRestoreCount((count) => count + 1);
       historyRef.current = emptyHistory();
       setHistory(historyRef.current);
     }
-  }, [isLoaded, stored, blocked]);
+    ownerReload.current = false;
+  }, [isLoaded, stored, blocked, owner]);
 
   const write = useCallback(
     (next: AgentGraphLayout) => {
@@ -55,20 +71,31 @@ export function useAgentGraphDocument(companyId: string) {
   );
 
   const apply = useCallback(
-    (update: (current: AgentGraphLayout) => AgentGraphLayout, options: { record?: boolean } = {}) => {
+    (update: (current: AgentGraphLayout) => AgentGraphLayout, options: { record?: boolean; group?: string } = {}) => {
       const before = layoutRef.current;
       if (!before) return;
       const after = update(before);
       if (after === before) return;
       write(after);
-      if (options.record !== false) {
-        const next = pushHistory(historyRef.current, { kind: "document", before, after });
-        historyRef.current = next;
-        setHistory(next);
-      }
+      if (options.record === false) return;
+      const past = historyRef.current.past;
+      const open = groupRef.current;
+      const merged = options.group !== undefined && open !== null && open.key === options.group
+        && past[past.length - 1] === open.entry && open.entry.kind === "document"
+        ? open.entry
+        : null;
+      const entry: GraphHistoryEntry = { kind: "document", before: merged ? merged.before : before, after };
+      const next = pushHistory(merged ? { past: past.slice(0, -1), future: [] } : historyRef.current, entry);
+      groupRef.current = options.group === undefined ? null : { key: options.group, entry };
+      historyRef.current = next;
+      setHistory(next);
     },
     [write],
   );
+
+  const closeGroup = useCallback(() => {
+    groupRef.current = null;
+  }, []);
 
   const setViewport = useCallback(
     (viewport: NonNullable<AgentGraphLayout["viewport"]>) => {
@@ -85,6 +112,7 @@ export function useAgentGraphDocument(companyId: string) {
   );
 
   const replaceHistory = useCallback((next: HistoryState<AgentGraphLayout>) => {
+    groupRef.current = null;
     historyRef.current = next;
     setHistory(next);
   }, []);
@@ -142,8 +170,10 @@ export function useAgentGraphDocument(companyId: string) {
   );
 
   return {
-    layout,
+    layout: layoutOwner === owner ? layout : null,
     apply,
+    closeGroup,
+    flush,
     setViewport,
     recordReparent,
     settleReparentStep,
@@ -153,9 +183,12 @@ export function useAgentGraphDocument(companyId: string) {
     canUndo: history.past.length > 0,
     canRedo: history.future.length > 0,
     saveState,
+    saveError,
+    retrySave,
+    restoreCount,
     loadError,
     blocked,
-    allowOverwrite,
+    allowOverwrite: useCallback(() => allowOverwrite(layoutRef.current ?? undefined), [allowOverwrite]),
     retryLoad,
     hadStoredLayout: hadStoredLayout.current,
   };

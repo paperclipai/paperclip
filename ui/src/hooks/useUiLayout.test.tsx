@@ -4,8 +4,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
-import { useUiLayout } from "./useUiLayout";
+import { UI_LAYOUT_SAVE_RETRY_DELAYS_MS, useUiLayout } from "./useUiLayout";
 
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
 
@@ -18,7 +19,7 @@ vi.mock("../api/uiLayouts", () => ({ uiLayoutsApi }));
 type Layout = { name: string };
 type Preference = { surface: string; schemaVersion: number | null; layout: Layout | null; updatedAt: null };
 
-const resolve = (raw: unknown) => raw as Layout;
+const resolve = (raw: unknown) => ((raw as { unreadable?: boolean }).unreadable ? null : (raw as Layout));
 const empty: Preference = { surface: "dashboard", schemaVersion: null, layout: null, updatedAt: null };
 
 let host: HTMLDivElement;
@@ -79,6 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   act(() => root.unmount());
   host.remove();
   queryClient.clear();
@@ -98,7 +100,7 @@ describe("useUiLayout", () => {
     await settle();
     expect(order).toEqual(["put custom start", "put custom end", "delete"]);
     expect(current.stored).toBeNull();
-    expect(queryClient.getQueryData<Preference>(queryKeys.uiLayouts.mine("company-1", "dashboard"))?.layout).toBeNull();
+    expect(queryClient.getQueryData<Preference>(queryKeys.uiLayouts.mine("company-1", "dashboard", "user-1"))?.layout).toBeNull();
     expect(current.saveState).toBe("idle");
   });
 
@@ -155,12 +157,170 @@ describe("useUiLayout", () => {
     });
     expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
     expect(uiLayoutsApi.save.mock.calls[1]).toEqual(["company-1", "dashboard", { name: "latest" }, { keepalive: true }]);
+    expect(uiLayoutsApi.save.mock.calls[0]![3].signal.aborted).toBe(true);
 
-    await act(async () => {
-      releaseSave[0]!();
-      releaseSave[1]!();
-    });
+    await act(async () => releaseSave[1]!());
+    await settle();
+    await act(async () => releaseSave[0]!());
     await settle();
     expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(current.stored).toEqual({ name: "latest" });
+    expect(current.saveState).toBe("saved");
+
+    await startSave("after");
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(3);
+    expect(uiLayoutsApi.save.mock.calls[2]![2]).toEqual({ name: "after" });
+  });
+
+  it("loads the layout of the new account after the session changes and drops the pending layout of the previous one", async () => {
+    const mine: Preference = { ...empty, schemaVersion: 1, layout: { name: "mine" } };
+    const theirs: Preference = { ...empty, schemaVersion: 1, layout: { name: "theirs" } };
+    uiLayoutsApi.get.mockResolvedValueOnce(mine).mockResolvedValueOnce(theirs);
+    await render();
+    expect(current.owner).toBe("user-1");
+    expect(current.stored).toEqual({ name: "mine" });
+    await act(async () => current.save({ name: "draft of user-1" }));
+    expect(current.saveState).toBe("pending");
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    });
+    await settle();
+    expect(current.owner).toBe("user-2");
+    expect(current.stored).toEqual({ name: "theirs" });
+    expect(current.saveState).toBe("idle");
+    expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    await act(async () => current.flush());
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await settle();
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData<Preference>(queryKeys.uiLayouts.mine("company-1", "dashboard", "user-1"))?.layout).toEqual({ name: "mine" });
+
+    await startSave("edit of user-2");
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2]).toEqual({ name: "edit of user-2" });
+  });
+
+  it("saves the replacement layout when the user replaces a layout that cannot be read", async () => {
+    uiLayoutsApi.get.mockResolvedValue({ ...empty, schemaVersion: 99, layout: { unreadable: true } });
+    await render();
+    expect(current.blocked).toBe("unreadable");
+    await act(async () => current.save({ name: "ignored while blocked" }));
+    await act(async () => current.flush());
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+
+    await act(async () => current.allowOverwrite({ name: "replacement" }));
+    await settle();
+    expect(current.blocked).toBeNull();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2]).toEqual({ name: "replacement" });
+    await act(async () => releaseSave[0]!());
+    await settle();
+    expect(current.stored).toEqual({ name: "replacement" });
+    expect(current.saveState).toBe("saved");
+  });
+
+  it("reports a failed reset without offering to save again", async () => {
+    uiLayoutsApi.reset.mockRejectedValueOnce(new Error("network down"));
+    await render();
+    await act(async () => current.reset());
+    await settle();
+    expect(current.saveState).toBe("error");
+    expect(current.saveError).toBeNull();
+    expect(current.resetting).toBe(false);
+  });
+
+  it("sends a debounced or staged layout with keepalive on pagehide when no save is in flight", async () => {
+    await render();
+    await act(async () => current.save({ name: "edited" }));
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(uiLayoutsApi.save.mock.calls).toEqual([["company-1", "dashboard", { name: "edited" }, { keepalive: true }]]);
+    await act(async () => releaseSave[0]!());
+    await settle();
+    expect(current.stored).toEqual({ name: "edited" });
+    expect(current.saveState).toBe("saved");
+
+    await act(async () => current.stage({ name: "viewport" }));
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]).toEqual(["company-1", "dashboard", { name: "viewport" }, { keepalive: true }]);
+  });
+
+  it("sends the save in flight again with keepalive on pagehide", async () => {
+    await render();
+    await startSave("only");
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[0]![3].signal.aborted).toBe(true);
+    expect(uiLayoutsApi.save.mock.calls[1]).toEqual(["company-1", "dashboard", { name: "only" }, { keepalive: true }]);
+  });
+
+  it("keeps a failed save pending, reports the error and saves it on a manual retry", async () => {
+    const rejected = new ApiError("Layout is not valid", 400, { error: "Layout is not valid" });
+    uiLayoutsApi.save.mockRejectedValueOnce(rejected);
+    await render();
+    await startSave("kept");
+    expect(current.saveState).toBe("error");
+    expect(current.saveError).toBe(rejected);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+
+    await act(async () => current.retrySave());
+    await settle();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]![2]).toEqual({ name: "kept" });
+    await act(async () => releaseSave[0]!());
+    await settle();
+    expect(current.stored).toEqual({ name: "kept" });
+    expect(current.saveState).toBe("saved");
+    expect(current.saveError).toBeNull();
+  });
+
+  it("retries a save that failed for a transient reason a limited number of times", async () => {
+    vi.useFakeTimers();
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    };
+    uiLayoutsApi.save.mockRejectedValue(new ApiError("Service unavailable", 503, null));
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>);
+    });
+    await advance(0);
+    await act(async () => {
+      current.save({ name: "offline" });
+      current.flush();
+    });
+    await advance(0);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(current.saveState).toBe("error");
+
+    let expected = 1;
+    for (const delay of UI_LAYOUT_SAVE_RETRY_DELAYS_MS) {
+      await advance(delay - 1);
+      expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected);
+      await advance(1);
+      expected += 1;
+      expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected);
+      expect(uiLayoutsApi.save.mock.calls[expected - 1]![2]).toEqual({ name: "offline" });
+    }
+    await advance(10 * 60_000);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected);
+    expect(current.saveState).toBe("error");
+
+    uiLayoutsApi.save.mockResolvedValue({ surface: "dashboard", schemaVersion: 1, layout: { name: "offline" }, updatedAt: null });
+    await act(async () => current.retrySave());
+    await advance(0);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(expected + 1);
+    expect(current.saveState).toBe("saved");
+    expect(current.stored).toEqual({ name: "offline" });
   });
 });

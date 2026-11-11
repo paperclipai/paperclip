@@ -369,6 +369,15 @@ vi.mock("./native-runner-file-handoff.js", () => ({
     state.renderNativeRunnerStagedAttachmentPrompt,
 }));
 
+const providerStateUnsaved = vi.hoisted(() => ({
+  mark: vi.fn(async (_db: unknown, _binding: unknown) => true),
+  clear: vi.fn(async (_db: unknown, _binding: unknown) => undefined),
+}));
+vi.mock("./native-provider-state-unsaved.js", () => ({
+  markAcceptedRunProviderStateUnsaved: providerStateUnsaved.mark,
+  clearRunProviderStateUnsaved: providerStateUnsaved.clear,
+}));
+
 vi.mock("./current-wake-comments.js", async importOriginal => ({
   ...await importOriginal<typeof import("./current-wake-comments.js")>(),
   resolveCurrentWakeCommentsBinding: state.resolveCurrentWakeCommentsBinding,
@@ -435,6 +444,8 @@ import {
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
   NATIVE_PROVIDER_SESSION_CLOSED,
+  NATIVE_PROVIDER_STARTUP_REJECTED,
+  nativeRemoteStartupRejectionCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -2218,7 +2229,7 @@ describe("native provider usage normalization", () => {
     expect(resolveNativeBilling({ kind: "codex", model: "gpt-6.1-sol" } as NativeExecutionInput["provider"], { CODEX_API_KEY: "fixture" }))
       .toEqual({ provider: "openai", biller: "openai", billingType: "metered_api" });
     expect(resolveNativeBilling({ kind: "acpx", agent: "claude", model: "claude-test", permissionMode: "approve-all",
-      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "claude", agentProfileVersion: 1,
         agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
         agentRuntimeVersion: null, commandDigest: "fixture" },
     }, { ANTHROPIC_API_KEY: "test" }))
@@ -2324,7 +2335,7 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-new-durable-store-failed", "opencode-new-durable-publish-failed", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
     const firstDurable = provider.startsWith("opencode-new-durable");
     // A sandbox connection drops once while the settled state is read out.
     let checkpointReadResets = provider === "opencode-new-durable-reset" ? 1 : 0;
@@ -2348,7 +2359,7 @@ describe("remote provider pack manifest", () => {
       compatibility: { opencode: 1, acpx: 1 }, contractDigest: digest,
       target: { platform: "linux", architecture }, runnerSourceRevision: "a".repeat(40),
       pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
-        opencode: "1.18.34", acpx: "0.13.1", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
+        opencode: "1.18.34", acpx: "0.22.0", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
         claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
       acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent =>
         [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
@@ -2420,6 +2431,10 @@ describe("remote provider pack manifest", () => {
       const capture = vi.spyOn(providerArtifactCapture, "captureRemoteNativeProviderArtifacts");
       const backup = vi.spyOn(harnessStorage, "persistNativeHarnessBackup").mockImplementation(async input => {
         expect(JSON.parse(await readFile(join(input.root, "manifest.json"), "utf8")).providerArtifacts).toEqual(newReceipt);
+        // Only the first save fails; a later checkpoint of the same run saves.
+        if (provider === "opencode-new-durable-store-failed" && backup.mock.calls.length === 1) throw new Error("SlowDown: Please reduce your request rate.");
+        // The durable backup is stored; only the later local publication fails.
+        if (provider === "opencode-new-durable-publish-failed") await rm(input.root, { recursive: true, force: true });
         return undefined as never;
       });
       onTestFinished(() => { storage.mockRestore(); owner.mockRestore(); validate.mockRestore(); retain.mockRestore(); capture.mockRestore(); backup.mockRestore(); });
@@ -2523,7 +2538,27 @@ describe("remote provider pack manifest", () => {
         expect(providerArtifactStorage.retainNativeProviderArtifacts).toHaveBeenCalledWith(expect.objectContaining({
           owner: expect.objectContaining({ runId: remoteExecution.binding.runId }), source: expect.objectContaining({ manifest: installed, launchRoot, accountUid: 1000 }) }));
         if (inspectionReset) inspectionResets = 1;
+        // Each case starts with no recorded mark or clear calls.
+        providerStateUnsaved.mark.mockClear();
+        providerStateUnsaved.clear.mockClear();
+        if (provider === "opencode-new-durable-store-failed" || provider === "opencode-new-durable-publish-failed") {
+          await expect(driver.mock.calls.at(-1)![0].checkpoint!("settled")).rejects.toThrow();
+          // Only a backup that was never stored makes the next run start fresh.
+          if (provider === "opencode-new-durable-store-failed") {
+            expect(providerStateUnsaved.mark).toHaveBeenCalledWith(preparedDb, remoteExecution.binding);
+            // A later checkpoint of the same run that saves clears the mark once.
+            providerStateUnsaved.clear.mockClear();
+            await driver.mock.calls.at(-1)![0].checkpoint!("settled");
+            expect(providerStateUnsaved.clear).toHaveBeenCalledTimes(1);
+            expect(providerStateUnsaved.clear).toHaveBeenCalledWith(preparedDb, remoteExecution.binding);
+          } else {
+            expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
+            expect(providerStateUnsaved.clear).not.toHaveBeenCalled();
+          }
+          return;
+        }
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");
+        expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
         expect(harnessStorage.persistNativeHarnessBackup).toHaveBeenCalledTimes(1);
         expect(checkpointReadResets).toBe(0);
         expect(inspectionResets).toBe(0);
@@ -2823,7 +2858,7 @@ describe("remote provider pack manifest", () => {
         nodeMinimum: "24.11.0",
         codex: "0.160.0",
         opencode: "1.18.34",
-        acpx: "0.13.1",
+        acpx: "0.22.0",
         claudeAcp: "0.73.0",
         codexAcp: "1.6.2",
         grok: "1.0.13",
@@ -6726,7 +6761,7 @@ describe("stopped native conversation physical cleanup", () => {
     process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
     const input = parseNativeExecutionInput({ ...execution,
       provider: provider === "codex" ? execution.provider : { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionPolicy: "interactive",
-        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "claude", agentProfileVersion: 1,
           agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
           agentRuntimeVersion: null, commandDigest: "fixture" } },
       session: { ...execution.session, driverKind: provider === "codex" ? "codex_app_server" : "acpx_runtime" },
@@ -7663,7 +7698,7 @@ describe("native startup cancellation fence", () => {
       productionLock: "pnpm-lock.yaml", opencodeCommand: "node_modules/.bin/opencode", opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
       opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs", acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs" }).map(([name, path]) => [name, { path, sha256: sha }]));
     const payload = { compatibility: { opencode: 1, acpx: 1 }, contractDigest: sha, target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: "a".repeat(40),
-      pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion, opencode: "1.18.34", acpx: "0.13.1",
+      pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion, opencode: "1.18.34", acpx: "0.22.0",
         grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion, claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
       acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent => [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
       artifacts, distDigest: sha, bridgeDigest: "sha256:" + createHash("sha256").update(sha + "\n" + sha + "\n" + sha).digest("hex") };
@@ -14060,6 +14095,62 @@ describe("native session bounded recovery", () => {
     });
   });
 
+  describe("a session.open the provider itself rejected before any provider work", () => {
+    const sessionOpenFailure = (providerFailure: Record<string, unknown>) => {
+      const commandResult = { commandId: "command_prp_00000002", commandType: "session.open", controllerSeq: 2,
+        result: { code: "command_execution_failed", message: String(providerFailure.message), providerFailure }, status: "failed" };
+      const reported = { ...commandResult, result: { code: "command_execution_failed", message: "Provider request failed" } };
+      return Object.defineProperty(new Error(`PRP command session.open failed: ${JSON.stringify(reported)}`),
+        "runnerCommandResult", { value: commandResult, enumerable: false });
+    };
+    const startupFailure = (fields: Record<string, unknown>) => ({ schema: "paperclip.provider-failure.v1", provider: "openai",
+      phase: "startup", category: "unknown", retryability: "unknown",
+      message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+      ...fields });
+
+    it.each(["authentication", "permission", "invalid_request"])("stops on the first %s rejection and hands the run to the board", (category) => {
+      const code = nativeSessionFailureSourceCode(sessionOpenFailure(startupFailure({ category, retryability: "requires_action" })));
+      expect(code).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+      expect(disposition).toEqual({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null });
+      expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+        issueStatus: "blocked", recoveryOwner: { kind: "board" },
+      });
+    });
+
+    it("keeps bounded same-run retries for a local startup failure without a definite permanent cause", () => {
+      for (const fields of [
+        {},
+        { message: "Query closed before response received" },
+        { category: "overloaded", retryability: "transient", httpStatus: 503 },
+        { category: "timeout", retryability: "transient", httpStatus: 504 },
+        { category: "rate_limit", httpStatus: 429 },
+        { category: "quota_exhausted", retryability: "requires_action", providerCode: "usageLimitExceeded" },
+        { category: "model_unavailable", retryability: "requires_action" },
+        { phase: "turn", category: "authentication", retryability: "requires_action" },
+      ]) {
+        const failure = sessionOpenFailure(startupFailure(fields));
+        const code = nativeSessionFailureSourceCode(failure);
+        expect(code).toBe("provider_session_open_rejected");
+        expect(nativeRemoteStartupRejectionCode(code, failure, false)).toBe("provider_session_open_rejected");
+      }
+      expect(nativeSessionFailureDisposition(2, new Date(), "provider_session_open_rejected")).toMatchObject({ phase: "retryable_failure" });
+      expect(nativeSessionFailureDisposition(3, new Date(), "provider_session_open_rejected")).toEqual({
+        phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
+      });
+    });
+
+    it("stops a remote startup rejection at once because a remote same-run bootstrap cannot be verified", () => {
+      const failure = sessionOpenFailure(startupFailure({ message: "Query closed before response received" }));
+      expect(nativeRemoteStartupRejectionCode(nativeSessionFailureSourceCode(failure), failure, true))
+        .toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      const unreported = new Error(`PRP command session.open failed: {"result":{"code":"command_execution_failed","message":"Provider request failed"},"status":"failed"}`);
+      expect(nativeRemoteStartupRejectionCode(nativeSessionFailureSourceCode(unreported), unreported, true))
+        .toBe("provider_session_open_rejected");
+      expect(nativeRemoteStartupRejectionCode("native_session_interrupted", failure, true)).toBe("native_session_interrupted");
+    });
+  });
+
   it("stops same-run retries for an operator while a saved side-effecting call has no result", () => {
     const failure = new NativeProviderSideEffectPendingError(
       "Error: native_runner_source_semantic_reconciliation_required",
@@ -16499,7 +16590,7 @@ describe("runnerd provider runtime wiring", () => {
       const payload = { compatibility: { opencode: 1, acpx: 1 }, contractDigest: digest,
         target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: "a".repeat(40),
         pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
-          opencode: "1.18.34", acpx: "0.13.1", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
+          opencode: "1.18.34", acpx: "0.22.0", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
           claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
         acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent =>
           [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
@@ -16614,7 +16705,7 @@ describe("runnerd provider runtime wiring", () => {
       const payload = { compatibility: { opencode: 1, acpx: 1 }, contractDigest: digest,
         target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: "a".repeat(40),
         pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
-          opencode: "1.18.34", acpx: "0.13.1", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
+          opencode: "1.18.34", acpx: "0.22.0", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
           claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
         acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent =>
           [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
@@ -17684,6 +17775,70 @@ describe("runnerd provider runtime wiring", () => {
       // Without a completed rotation, missing live state still fails closed.
       await rm(join(remoteSession, "runner/runner-state.json"));
       await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch: resumed_unavailable");
+    }
+  });
+
+  it.each([
+    ["a per-turn sandbox", false, true],
+    ["a retained sandbox", true, false],
+  ] as const)("marks the provider state unsaved when the close checkpoint fails in %s", async (_name, reusable, marked) => {
+    providerStateUnsaved.mark.mockClear();
+    const remoteCwd = join(isolatedStateDirectory, `remote-unsaved-${reusable}`);
+    const current: NativeExecutionInputV1 = { ...execution,
+      binding: { ...execution.binding, companyId: randomUUID(), agentId: randomUUID(), issueId: randomUUID(), runId: randomUUID() },
+      session: { ...execution.session, normalizedSessionId: randomUUID(), lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    };
+    const runnerInstanceId = "unsaved-state-runner";
+    const priorIdentity = { runnerInstanceId, environmentLeaseId: "lease-unsaved", runId: randomUUID(),
+      normalizedSessionId: current.session.normalizedSessionId!, turnId: "turn-prior", itemId: "item-prior" };
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      if (command.args?.[0] === "--build-metadata") return { exitCode: 0, timedOut: false, stderr: "", stdout: JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+      }) };
+      if (command.args?.[0] === "--version") return { exitCode: 0, timedOut: false, stdout: "codex-cli 0.160.0", stderr: "" };
+      if (command.args?.[1]?.includes("base64")) {
+        try { return { exitCode: 0, timedOut: false, stdout: execFileSync("sh", command.args, { encoding: "utf8" }), stderr: "" }; }
+        catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
+      }
+      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+    });
+    const controllerArtifact = join(isolatedStateDirectory, `unsaved-fixture-runnerd-${reusable}`);
+    await writeFile(controllerArtifact, "fixture bootstrap artifact");
+    const logs: string[] = [];
+    await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId, runnerIngressAuthorized: true,
+      runnerRemoteBinaryPath: controllerArtifact, runnerRemoteCodexPath: controllerArtifact,
+      onLog: async (_stream: string, chunk: string) => { logs.push(chunk); },
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd, environmentId: "environment",
+        leaseId: priorIdentity.environmentLeaseId, providerKey: "daytona", reusableLeaseConfigured: reusable,
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "unsaved-sandbox" },
+        runner: { execute: remoteExecute, syncIn: vi.fn(async () => undefined) },
+        getRunnerIngressEndpoint: async () => ({ kind: "authenticated_websocket", websocketUrl: "wss://sandbox.invalid/runner",
+          secretHeaders: [{ name: "Authorization", value: "fixture-ingress" }], generation: "1", refresh: vi.fn(), close: vi.fn(async () => undefined) }),
+      } as never,
+    } as never);
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
+      controlPlaneRegistration: NonNullable<import("../../vendor/paperclip-runner/index.js").RunnerExecutionDriver["controlPlaneRegistration"]>;
+    };
+    // The sandbox holds no suspended Runner state, so no backup can be saved.
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(options.stateDirectory!, "control-plane"),
+      identity: options.prpIdentity! as ConstructorParameters<typeof DurablePrpControlPlane>[0]["identity"],
+      expectedRunnerVersion: "unsaved-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    let registration: Awaited<ReturnType<typeof options.controlPlaneRegistration>> | undefined;
+    onTestFinished(async () => { await registration?.release(); await controller.stop(); });
+    registration = await options.controlPlaneRegistration(controller);
+    await expect(registration.checkpoint!("settled")).rejects.toThrow("runner_remote_checkpoint_incomplete");
+    if (marked) {
+      expect(providerStateUnsaved.mark).toHaveBeenCalledTimes(1);
+      expect(providerStateUnsaved.mark.mock.calls[0]![1]).toEqual(current.binding);
+      expect(logs.join("")).toContain("the next run starts a fresh provider session");
+    } else {
+      // A retained sandbox keeps the live state, so the resume path stays.
+      expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
+      expect(logs.join("")).not.toContain("fresh provider session");
     }
   });
 
@@ -21072,7 +21227,7 @@ describe("runnerd provider runtime wiring", () => {
         profile: {
           driverKind: "acpx_runtime",
           protocolVersion: 1,
-          acpxVersion: "0.13.1",
+          acpxVersion: "0.22.0",
           agent: "codex",
           agentProfileVersion: 1,
           agentServerPackage: "@agentclientprotocol/codex-acp",

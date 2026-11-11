@@ -82,7 +82,7 @@ function TaskBreadcrumbs({
   useEffect(() => {
     setBreadcrumbs([
       { label: "Tasks", href: sourceHref },
-      ...(parentTitle ? [{ label: parentTitle, identifier: "PAP-120", href: "/issues/PAP-120" }] : []),
+      ...(parentTitle ? [{ label: parentTitle, href: "/issues/PAP-120" }] : []),
       {
         label: title,
         identifier,
@@ -273,8 +273,9 @@ describe("BreadcrumbBar", () => {
       <BreadcrumbProvider><TaskBreadcrumbs taskDetailLayout parentTitle="Prepare the engineering team" /></BreadcrumbProvider>,
     ));
     const parent = container.querySelector<HTMLAnchorElement>('a[href="/issues/PAP-120"]');
-    expect(parent?.textContent).toContain("Prepare the engineering team");
-    expect(parent?.getAttribute("aria-label")).toBe("Prepare the engineering team PAP-120");
+    expect(parent?.textContent).toBe("Prepare the engineering team");
+    expect(parent?.querySelector('[data-slot="task-title-identifier"]')).toBeNull();
+    expect(parent?.getAttribute("aria-label")).toBe("Prepare the engineering team");
     expect(container.querySelector('[aria-current="page"]')?.textContent).toContain("PAP-16679");
     if (mobile) {
       expect(container.querySelector('a[href="/issues"]')).toBeNull();

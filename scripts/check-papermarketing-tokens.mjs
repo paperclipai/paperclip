@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 // The pinned upstream has token-gate debt. Report it and reject violations in
 // every file changed by this fork; do not describe this as a clean global gate.
 const cwd = fileURLToPath(new URL("../", import.meta.url));
-const base = "bc453342ef4a93e3ddc7fd4bc8cf177311f5c5c6";
+const base = "c8ae02e5ce42c254e1d56dd4d1b34bd73e1a415b";
 const changed = new Set([
   ...execFileSync("git", ["diff", "--name-only", base], { cwd, encoding: "utf8" }).trim().split(/\r?\n/),
   ...execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd, encoding: "utf8" }).trim().split(/\r?\n/),

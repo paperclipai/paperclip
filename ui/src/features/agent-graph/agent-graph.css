@@ -8,20 +8,20 @@
   --xy-handle-background-color: var(--muted-foreground);
   --xy-handle-border-color: var(--background);
   --xy-minimap-background-color: var(--card);
-  --xy-minimap-mask-background-color: color-mix(in oklab, var(--muted) 70%, transparent);
+  --xy-minimap-mask-background-color: var(--agent-graph-minimap-mask);
   --xy-minimap-node-background-color: var(--muted-foreground);
   --xy-controls-button-background-color: var(--card);
   --xy-controls-button-background-color-hover: var(--accent);
   --xy-controls-button-color: var(--foreground);
   --xy-controls-button-color-hover: var(--accent-foreground);
   --xy-controls-button-border-color: var(--border);
-  --xy-selection-background-color: color-mix(in oklab, var(--primary) 10%, transparent);
-  --xy-selection-border: 1px dashed var(--primary);
+  --xy-selection-background-color: var(--agent-graph-selection-background);
+  --xy-selection-border: var(--agent-graph-selection-border);
   --xy-attribution-background-color: transparent;
 }
 
 .agent-graph .react-flow__edge.agent-graph-edge .react-flow__edge-path {
-  stroke-width: 1.5;
+  stroke-width: var(--agent-graph-edge-stroke-width);
 }
 
 .agent-graph .react-flow__edge.agent-graph-edge.animated .react-flow__edge-path {
@@ -33,29 +33,29 @@
 }
 
 .agent-graph .react-flow__node:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+  outline: var(--agent-graph-focus-outline-width) solid var(--ring);
+  outline-offset: var(--agent-graph-focus-outline-offset);
   border-radius: var(--radius);
 }
 
 .agent-graph-node-live {
-  animation: agent-graph-live-pulse 1.8s ease-in-out infinite;
+  animation: agent-graph-live-pulse var(--motion-agent-graph-live-pulse) var(--motion-ease-agent-graph-live-pulse) infinite;
 }
 
 @keyframes agent-graph-live-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--status-agent-running) 45%, transparent);
+    box-shadow: var(--shadow-agent-graph-live-rest);
   }
   50% {
-    box-shadow: 0 0 0 6px color-mix(in oklab, var(--status-agent-running) 0%, transparent);
+    box-shadow: var(--shadow-agent-graph-live-peak);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .agent-graph-node-live {
     animation: none;
-    box-shadow: 0 0 0 2px color-mix(in oklab, var(--status-agent-running) 45%, transparent);
+    box-shadow: var(--shadow-agent-graph-live-static);
   }
 
   .agent-graph .react-flow__edge.animated .react-flow__edge-path {

@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   parseUiLayoutForSurface,
@@ -6,16 +6,18 @@ import {
   upsertUiLayoutSchema,
   type UiLayoutSurface,
 } from "@paperclipai/shared";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { uiLayoutService } from "../services/index.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { logActivity, uiLayoutService } from "../services/index.js";
+import { assertBoard, getActorInfo, hasCompanyAccess } from "./authz.js";
 
-function requireBoardUserId(req: Request, res: Response): string | null {
+function requireLayoutOwner(req: Request, companyId: string): string {
   assertBoard(req);
-  if (!req.actor.userId) {
-    res.status(403).json({ error: "Board user context required" });
-    return null;
+  if (!hasCompanyAccess(req, companyId)) throw forbidden("User does not have access to this company");
+  if (!req.actor.userId) throw forbidden("Board user access required");
+  if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin
+    && !req.actor.memberships?.some((member) => member.companyId === companyId && member.status === "active")) {
+    throw forbidden("User does not have active company access");
   }
   return req.actor.userId;
 }
@@ -30,12 +32,34 @@ export function uiLayoutRoutes(db: Db) {
   const router = Router();
   const svc = uiLayoutService(db);
 
+  async function logLayoutActivity(
+    req: Request,
+    companyId: string,
+    userId: string,
+    surface: UiLayoutSurface,
+    action: "ui_layout.created" | "ui_layout.reset",
+  ) {
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action,
+      entityType: "company",
+      entityId: companyId,
+      details: { userId, surface },
+    });
+  }
+
   router.get("/companies/:companyId/ui-layouts/:surface/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const userId = requireBoardUserId(req, res);
-    if (!userId) return;
-    res.json(await svc.get(companyId, userId, requireSurface(req)));
+    const userId = requireLayoutOwner(req, companyId);
+    const preference = await svc.get(companyId, userId, requireSurface(req));
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(preference);
   });
 
   router.put(
@@ -43,31 +67,29 @@ export function uiLayoutRoutes(db: Db) {
     validate(upsertUiLayoutSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      const userId = requireBoardUserId(req, res);
-      if (!userId) return;
+      const userId = requireLayoutOwner(req, companyId);
       const surface = requireSurface(req);
 
       const parsed = parseUiLayoutForSurface(surface, req.body.layout);
       if (!parsed.ok) throw badRequest(parsed.error);
 
-      const result = await svc.upsert(companyId, userId, surface, {
+      const { preference, created } = await svc.upsert(companyId, userId, surface, {
         layout: parsed.layout as Record<string, unknown>,
         schemaVersion: parsed.schemaVersion,
       });
-      res.json(result);
+      if (created) await logLayoutActivity(req, companyId, userId, surface, "ui_layout.created");
+      res.json(preference);
     },
   );
 
   router.delete("/companies/:companyId/ui-layouts/:surface/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const userId = requireBoardUserId(req, res);
-    if (!userId) return;
+    const userId = requireLayoutOwner(req, companyId);
     const surface = requireSurface(req);
 
-    const result = await svc.remove(companyId, userId, surface);
-    res.json(result);
+    const { preference, removed } = await svc.remove(companyId, userId, surface);
+    if (removed) await logLayoutActivity(req, companyId, userId, surface, "ui_layout.reset");
+    res.json(preference);
   });
 
   return router;

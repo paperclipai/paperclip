@@ -19,6 +19,10 @@ export const DASHBOARD_MAX_ROW_SPAN = 6;
 const coordinateSchema = z.number().finite().min(-1_000_000).max(1_000_000);
 const idSchema = z.string().trim().min(1).max(64);
 
+function hasUniqueIds(items: Array<{ id: string }>): boolean {
+  return new Set(items.map((item) => item.id)).size === items.length;
+}
+
 const pointSchema = z.object({ x: coordinateSchema, y: coordinateSchema }).strict();
 
 export const agentGraphStickySchema = z.object({
@@ -58,8 +62,14 @@ export const agentGraphLayoutSchema = z.object({
     { message: `At most ${AGENT_GRAPH_MAX_POSITIONS} node positions are allowed` },
   ),
   hiddenAgentIds: z.array(z.string().guid()).max(AGENT_GRAPH_MAX_POSITIONS),
-  stickies: z.array(agentGraphStickySchema).max(AGENT_GRAPH_MAX_STICKIES),
-  drafts: z.array(agentGraphDraftSchema).max(AGENT_GRAPH_MAX_DRAFTS),
+  stickies: z.array(agentGraphStickySchema).max(AGENT_GRAPH_MAX_STICKIES).refine(
+    hasUniqueIds,
+    { message: "Sticky note ids must be unique" },
+  ),
+  drafts: z.array(agentGraphDraftSchema).max(AGENT_GRAPH_MAX_DRAFTS).refine(
+    hasUniqueIds,
+    { message: "Hire draft ids must be unique" },
+  ),
 }).strict();
 
 export const AGENT_GRAPH_CLIPBOARD_KIND = "paperclip.agent-graph";
@@ -143,7 +153,7 @@ export function parseUiLayoutForSurface(surface: (typeof UI_LAYOUT_SURFACES)[num
 
 export const upsertUiLayoutSchema = z.object({
   layout: z.unknown(),
-});
+}).strict();
 
 export type UpsertUiLayout = z.infer<typeof upsertUiLayoutSchema>;
 

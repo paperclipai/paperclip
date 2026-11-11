@@ -1,5 +1,28 @@
 # Database
 
+### Better Auth 1.7.16 upgrade
+
+Better Auth 1.7.3 and later identify accounts by `provider_id` and `account_id`.
+They no longer write the `issuer` column that 1.7.0–1.7.2 required. Apply the
+schema migration before starting the updated server. It makes `issuer` nullable,
+keeps its existing values, removes the old issuer index, and adds a unique index
+on the provider/account pair. This permits new credential signups and preserves
+existing accounts.
+
+Before the upgrade, check for duplicate provider/account pairs:
+
+```sql
+SELECT provider_id, account_id, count(*)
+FROM account
+GROUP BY provider_id, account_id
+HAVING count(*) > 1;
+```
+
+Resolve any duplicates before migration. Keep different users separate. A duplicate
+causes index creation to fail rather than leaving an ambiguous login identity.
+Do not restore the issuer `NOT NULL` constraint on rollback while new rows have
+null issuers. See the [Better Auth upgrade guide](https://better-auth.com/docs/guides/1-7-upgrade-guide).
+
 ### Durable native provider backups
 
 `native_harness_backups` journals encrypted provider-session archives in object
@@ -2261,6 +2284,19 @@ It uses disposable embedded PostgreSQL by default. A disposable local database
 named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
+
+An issue list or inbox request reads the waits of all its tasks in one pass.
+That pass checks the requester provenance of every waiting run with
+`chatRunSourceMessageIds`. The runs that need the same kind of provenance read
+share one statement, so the statement count follows the longest requester
+lineage, not the number of waits. Each run gets the decision of a separate
+`chatRunSourceMessageId` call: both use the same walk and the same reads. The
+benchmark counts the statements of one request and measures its wall and CPU
+time against a pre-fix commit:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-review-wait-provenance.ts --baseline-ref=<pre-fix commit>
+```
 
 
 ### Sandbox creation ownership

@@ -37,6 +37,12 @@ const BOARD_ACTOR = {
   memberships: [{ companyId: "company-1", status: "active", membershipRole: "owner" }],
 };
 
+const VIEWER_ACTOR = {
+  ...BOARD_ACTOR,
+  userId: "viewer-1",
+  memberships: [{ companyId: "company-1", status: "active", membershipRole: "viewer" }],
+};
+
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 
 const GRAPH_LAYOUT = {
@@ -69,16 +75,12 @@ describe("ui layout routes", () => {
       updatedAt: null,
     });
     mockUiLayoutService.upsert.mockImplementation(async (_companyId, _userId, surface, input) => ({
-      surface,
-      schemaVersion: input.schemaVersion,
-      layout: input.layout,
-      updatedAt: null,
+      created: false,
+      preference: { surface, schemaVersion: input.schemaVersion, layout: input.layout, updatedAt: null },
     }));
     mockUiLayoutService.remove.mockImplementation(async (_companyId, _userId, surface) => ({
-      surface,
-      schemaVersion: null,
-      layout: null,
-      updatedAt: null,
+      removed: false,
+      preference: { surface, schemaVersion: null, layout: null, updatedAt: null },
     }));
   });
 
@@ -87,10 +89,20 @@ describe("ui layout routes", () => {
     const res = await request(app).get("/api/companies/company-1/ui-layouts/agent_graph/me");
     expect(res.status).toBe(200);
     expect(res.body.layout).toEqual(GRAPH_LAYOUT);
+    expect(res.headers["cache-control"]).toBe("private, no-store");
     expect(mockUiLayoutService.get).toHaveBeenCalledWith("company-1", "user-1", "agent_graph");
   });
 
-  it("saves a valid layout for the caller only and keeps this personal preference out of the company activity log", async () => {
+  it("rejects a save body with keys other than the layout", async () => {
+    const app = await createApp(BOARD_ACTOR);
+    const res = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT, userId: "user-2" });
+    expect(res.status).toBe(400);
+    expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
+  });
+
+  it("saves a valid layout for the caller only and writes no activity entry when the layout already exists", async () => {
     const app = await createApp(BOARD_ACTOR);
     const res = await request(app)
       .put("/api/companies/company-1/ui-layouts/dashboard/me")
@@ -157,6 +169,48 @@ describe("ui layout routes", () => {
     expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
   });
 
+  it("lets a viewer read, save and reset their own layout", async () => {
+    const app = await createApp(VIEWER_ACTOR);
+    const read = await request(app).get("/api/companies/company-1/ui-layouts/agent_graph/me");
+    const write = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    const reset = await request(app).delete("/api/companies/company-1/ui-layouts/dashboard/me");
+    expect(read.status).toBe(200);
+    expect(write.status).toBe(200);
+    expect(reset.status).toBe(200);
+    expect(mockUiLayoutService.get).toHaveBeenCalledWith("company-1", "viewer-1", "agent_graph");
+    expect(mockUiLayoutService.upsert).toHaveBeenCalledWith("company-1", "viewer-1", "dashboard", {
+      layout: DASHBOARD_LAYOUT,
+      schemaVersion: 1,
+    });
+    expect(mockUiLayoutService.remove).toHaveBeenCalledWith("company-1", "viewer-1", "dashboard");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects a viewer of another company and a member whose access is not active", async () => {
+    const outsider = await createApp(VIEWER_ACTOR);
+    const outsiderWrite = await request(outsider)
+      .put("/api/companies/company-2/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    const outsiderReset = await request(outsider).delete("/api/companies/company-2/ui-layouts/dashboard/me");
+    const suspended = await createApp({
+      ...VIEWER_ACTOR,
+      memberships: [{ companyId: "company-1", status: "suspended", membershipRole: "viewer" }],
+    });
+    const suspendedRead = await request(suspended).get("/api/companies/company-1/ui-layouts/dashboard/me");
+    const suspendedWrite = await request(suspended)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    expect(outsiderWrite.status).toBe(403);
+    expect(outsiderReset.status).toBe(403);
+    expect(suspendedRead.status).toBe(403);
+    expect(suspendedWrite.status).toBe(403);
+    expect(mockUiLayoutService.get).not.toHaveBeenCalled();
+    expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
+    expect(mockUiLayoutService.remove).not.toHaveBeenCalled();
+  });
+
   it("rejects agent callers", async () => {
     const app = await createApp({
       type: "agent",
@@ -169,12 +223,67 @@ describe("ui layout routes", () => {
     const write = await request(app)
       .put("/api/companies/company-1/ui-layouts/agent_graph/me")
       .send({ layout: GRAPH_LAYOUT });
+    const reset = await request(app).delete("/api/companies/company-1/ui-layouts/agent_graph/me");
     expect(read.status).toBe(403);
     expect(write.status).toBe(403);
+    expect(reset.status).toBe(403);
+    expect(mockUiLayoutService.get).not.toHaveBeenCalled();
     expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
+    expect(mockUiLayoutService.remove).not.toHaveBeenCalled();
   });
 
-  it("resets the caller's layout without a company activity entry", async () => {
+  it("writes one activity entry for the first save of a layout and none for the saves that follow", async () => {
+    const app = await createApp(BOARD_ACTOR);
+    mockUiLayoutService.upsert.mockResolvedValueOnce({
+      created: true,
+      preference: { surface: "dashboard", schemaVersion: 1, layout: DASHBOARD_LAYOUT, updatedAt: null },
+    });
+    const first = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ surface: "dashboard", schemaVersion: 1, layout: DASHBOARD_LAYOUT, updatedAt: null });
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity.mock.calls[0]![1]).toMatchObject({
+      companyId: "company-1",
+      actorType: "user",
+      actorId: "user-1",
+      action: "ui_layout.created",
+      entityType: "company",
+      entityId: "company-1",
+      details: { userId: "user-1", surface: "dashboard" },
+    });
+
+    const second = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    expect(second.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes one activity entry for a reset that removes a layout and none when nothing was saved", async () => {
+    const app = await createApp(BOARD_ACTOR);
+    mockUiLayoutService.remove.mockResolvedValueOnce({
+      removed: true,
+      preference: { surface: "agent_graph", schemaVersion: null, layout: null, updatedAt: null },
+    });
+    const res = await request(app).delete("/api/companies/company-1/ui-layouts/agent_graph/me");
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity.mock.calls[0]![1]).toMatchObject({
+      action: "ui_layout.reset",
+      entityType: "company",
+      entityId: "company-1",
+      details: { userId: "user-1", surface: "agent_graph" },
+    });
+    expect(JSON.stringify(mockLogActivity.mock.calls[0]![1])).not.toContain("positions");
+
+    const again = await request(app).delete("/api/companies/company-1/ui-layouts/agent_graph/me");
+    expect(again.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets the caller's layout and answers with an empty preference", async () => {
     const app = await createApp(BOARD_ACTOR);
     const res = await request(app).delete("/api/companies/company-1/ui-layouts/dashboard/me");
     expect(res.status).toBe(200);

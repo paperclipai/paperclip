@@ -100,6 +100,7 @@ const apiPrefixes: Record<string, string> = {
   "tool-access.ts": "/api",
   "voice-sessions.ts": "/api",
   "tool-gateway.ts": "/api",
+  "ui-layouts.ts": "/api",
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
   "ui-layouts.ts": "/api",
@@ -1259,6 +1260,28 @@ describe("openapi routes", () => {
       properties: { primaryAgentId: { type: "string", format: "uuid" } },
     });
     expect(path.put.responses["422"]).toBeDefined();
+  });
+
+  it("documents the personal UI layout contract for every company member", () => {
+    const { spec } = loadSpecRoutes();
+    const path = spec.paths["/api/companies/{companyId}/ui-layouts/{surface}/me"];
+    for (const operation of [path.get, path.put, path.delete]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.description).toContain("viewers included");
+      const surface = operation.parameters.find((parameter: { name: string }) => parameter.name === "surface");
+      expect(surface.schema.enum).toEqual(["agent_graph", "dashboard"]);
+      const response = operation.responses["200"].content["application/json"].schema;
+      expect(response.required).toEqual(["surface", "schemaVersion", "layout", "updatedAt"]);
+      for (const code of ["401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
+    }
+    expect(path.put.requestBody.content["application/json"].schema).toMatchObject({
+      additionalProperties: false,
+      required: ["layout"],
+    });
+    expect(path.put.responses["400"]).toBeDefined();
+    expect(path.get.requestBody).toBeUndefined();
+    expect(path.delete.requestBody).toBeUndefined();
   });
 
   it("documents Muse operator management separately from receiver credentials", () => {

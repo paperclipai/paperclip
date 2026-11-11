@@ -1,7 +1,9 @@
 # Integração da base de marketing e da interface visual
 
 A integração reúne a base de marketing, o grafo de agentes e o dashboard do PR #1.
-Inclui o estado da branch principal em `bc453342ef4a93e3ddc7fd4bc8cf177311f5c5c6`.
+Inclui a revisão do PR #1 `e10ee0f71cbab1a1a4951d5242ffc10a797016cb`, que
+incorporou o upstream em `c8ae02e5ce42c254e1d56dd4d1b34bd73e1a415b` e reservou
+o número 0467 para a migração de layouts.
 Este documento descreve o comportamento e a validação exigida; não é um registro
 de testes aprovados.
 

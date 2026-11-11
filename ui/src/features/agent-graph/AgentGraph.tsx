@@ -67,6 +67,8 @@ import { useAgentGraphDocument } from "./useAgentGraphDocument";
 const SNAP_GRID: [number, number] = [16, 16];
 const FIT_VIEW_OPTIONS = { padding: 0.15, maxZoom: 1.25 };
 const EMPTY_LIVE_IDS: ReadonlySet<string> = new Set();
+const NO_NODES: GraphFlowNode[] = [];
+const NO_EDGES: Edge[] = [];
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -120,6 +122,7 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
   const clipboardRef = useRef<string | null>(null);
   const pasteCountRef = useRef(0);
   const fittedRef = useRef(false);
+  const viewportRestoreRef = useRef(-1);
 
   const liveRunsQuery = useQuery({
     queryKey: queryKeys.liveRuns(companyId),
@@ -140,7 +143,12 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
     for (const agent of graphAgents) index.set(agent.id, agent);
     return index;
   }, [graphAgents]);
-  const managerIndex = useMemo(() => buildManagerIndex(graphAgents), [graphAgents]);
+  const reportingAgentsById = useMemo(() => {
+    const index = new Map<string, Agent>();
+    for (const agent of agents) if (agent.status !== "terminated") index.set(agent.id, agent);
+    return index;
+  }, [agents]);
+  const managerIndex = useMemo(() => buildManagerIndex([...reportingAgentsById.values()]), [reportingAgentsById]);
   const reportCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const agent of graphAgents) {
@@ -167,18 +175,23 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
   managerIdsRef.current = managerIds;
 
   useEffect(() => {
-    if (!layout) return;
+    if (!layout) {
+      setNodes((current) => (current.length === 0 ? current : NO_NODES));
+      setEdges((current) => (current.length === 0 ? current : NO_EDGES));
+      return;
+    }
     const input = { agents: graphAgents, layout, autoPositions, liveAgentIds, managerNames };
     setNodes((current) => syncNodes(current, input));
     setEdges((current) => syncEdges(current, input));
   }, [graphAgents, layout, autoPositions, liveAgentIds, managerNames]);
 
   useEffect(() => {
-    if (fittedRef.current || !nodesInitialized || !layout) return;
+    if (viewportRestoreRef.current === document.restoreCount || !nodesInitialized || !layout) return;
+    viewportRestoreRef.current = document.restoreCount;
     fittedRef.current = true;
     if (layout.viewport) void flow.setViewport(layout.viewport);
     else void flow.fitView(FIT_VIEW_OPTIONS);
-  }, [nodesInitialized, layout, flow]);
+  }, [nodesInitialized, layout, flow, document.restoreCount]);
 
   useEffect(() => {
     if (panelAgentId && !agentsById.has(panelAgentId)) setPanelAgentId(null);
@@ -212,18 +225,18 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
         pushToast({ tone: "warn", title: "Reporting line not changed", body: REPARENT_REJECTION_MESSAGES[check.reason] });
         return;
       }
-      const agent = agentsById.get(agentId)!;
+      const agent = reportingAgentsById.get(agentId)!;
       setPendingReparent({
         agentId,
         agentName: agent.name,
         fromId: agent.reportsTo,
-        fromName: agent.reportsTo ? agentsById.get(agent.reportsTo)?.name ?? null : null,
+        fromName: agent.reportsTo ? reportingAgentsById.get(agent.reportsTo)?.name ?? null : null,
         toId,
-        toName: toId ? agentsById.get(toId)?.name ?? null : null,
+        toName: toId ? reportingAgentsById.get(toId)?.name ?? null : null,
         origin,
       });
     },
-    [managerIndex, agentsById, pushToast, document.settleReparentStep],
+    [managerIndex, reportingAgentsById, pushToast, document.settleReparentStep],
   );
 
   const reparentMutation = useMutation({
@@ -248,6 +261,18 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
           ...current,
           stickies: current.stickies.map((sticky) => (sticky.id === id ? { ...sticky, ...patch } : sticky)),
         })),
+      editStickyText: (id, text) =>
+        apply(
+          (current) => ({
+            ...current,
+            stickies: current.stickies.map((sticky) => (sticky.id === id && sticky.text !== text ? { ...sticky, text } : sticky)),
+          }),
+          { group: `sticky-text:${id}` },
+        ),
+      finishStickyText: () => {
+        document.closeGroup();
+        document.flush();
+      },
       requestHire: (draftId) => {
         setReviewingHireProfile(false);
         setHireDraftId(draftId);
@@ -255,7 +280,7 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
       removeDraft: (draftId) =>
         apply((current) => ({ ...current, drafts: current.drafts.filter((draft) => draft.id !== draftId) })),
     }),
-    [apply],
+    [apply, document.closeGroup, document.flush],
   );
 
   const selectionClipboard = useCallback(() => {
@@ -534,8 +559,8 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
         onPaste={onPaste}
       >
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={layout ? nodes : NO_NODES}
+          edges={layout ? edges : NO_EDGES}
           nodeTypes={AGENT_GRAPH_NODE_TYPES}
           colorMode={theme === "dark" ? "dark" : "light"}
           onNodesChange={onNodesChange}
@@ -569,6 +594,8 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
               subject="graph"
               onRetry={document.retryLoad}
               onOverwrite={document.allowOverwrite}
+              saveError={document.saveError}
+              onRetrySave={document.retrySave}
             />
             <AgentGraphToolbar
               direction={direction}

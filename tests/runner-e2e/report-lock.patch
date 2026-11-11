@@ -1,8 +1,8 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 6d825f97..08670089 100644
+index 83b26545..1c5410a6 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -1285,6 +1285,9 @@ importers:
+@@ -1282,6 +1282,9 @@ importers:
        '@xterm/xterm':
          specifier: ^6.0.0
          version: 6.0.0
@@ -12,7 +12,7 @@ index 6d825f97..08670089 100644
        class-variance-authority:
          specifier: ^0.7.1
          version: 0.7.1
-@@ -5835,6 +5838,22 @@ packages:
+@@ -5890,6 +5893,22 @@ packages:
    '@xterm/xterm@6.0.0':
      resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
  
@@ -35,7 +35,7 @@ index 6d825f97..08670089 100644
    abort-controller-x@0.5.0:
      resolution: {integrity: sha512-yTt9CI0x+nRfX6BFMenEGP8ooPvErGH6AbFz20C2IeOLIlDsrw/VHpgne3GsCEuTA410IiFiaLVFKmgM4bKEPQ==}
  
-@@ -6236,6 +6255,9 @@ packages:
+@@ -6283,6 +6302,9 @@ packages:
    class-variance-authority@0.7.1:
      resolution: {integrity: sha512-Ka+9Trutv7G8M6WT6SeiRWz792K5qEqIGEGzXKhAE6xOWAY6pPH8U+9IY3oCMv6kqTmLsv7Xh/2w2RigkePMsg==}
  
@@ -45,7 +45,7 @@ index 6d825f97..08670089 100644
    classnames@2.5.1:
      resolution: {integrity: sha512-saHYOzhIQs6wy2sVxTM6bUDsQO4F50V9RQ22qBpEdCW+I+/Wmke2HOl6lS6dTpdxVhb88/I6+Hs+438c3lfUow==}
  
-@@ -9375,6 +9397,21 @@ packages:
+@@ -9447,6 +9469,21 @@ packages:
    zod@4.6.7:
      resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
  
@@ -67,7 +67,7 @@ index 6d825f97..08670089 100644
    zustand@5.0.15:
      resolution: {integrity: sha512-MpSEjRiBkA9crSYeOUH32rJC7SVqAbm0Fqcqge/bUi2PPoLcBWKOsG+C8mevmpr8TwXHBVkChbbJiyvkE+i/3A==}
      engines: {node: '>=12.20.0'}
-@@ -13891,6 +13928,31 @@ snapshots:
+@@ -13998,6 +14035,31 @@ snapshots:
  
    '@xterm/xterm@6.0.0': {}
  
@@ -99,7 +99,7 @@ index 6d825f97..08670089 100644
    abort-controller-x@0.5.0: {}
  
    accepts@2.0.0:
-@@ -14234,6 +14296,8 @@ snapshots:
+@@ -14329,6 +14391,8 @@ snapshots:
      dependencies:
        clsx: 2.1.1
  
@@ -108,7 +108,7 @@ index 6d825f97..08670089 100644
    classnames@2.5.1: {}
  
    cliui@8.0.1:
-@@ -17827,6 +17891,13 @@ snapshots:
+@@ -17961,6 +18025,13 @@ snapshots:
  
    zod@4.6.7: {}
  

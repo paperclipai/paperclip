@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_LAYOUT_SAVE_DEBOUNCE_MS } from "@/hooks/useUiLayout";
+import { queryKeys } from "@/lib/queryKeys";
 
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
 const data = vi.hoisted(() => ({
@@ -49,6 +50,7 @@ vi.mock("./registry", async () => {
 });
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+vi.setConfig({ testTimeout: 30_000 });
 
 let host: HTMLDivElement;
 let root: Root;
@@ -70,6 +72,7 @@ beforeEach(() => {
   }));
   uiLayoutsApi.reset.mockResolvedValue({ surface: "dashboard", schemaVersion: null, layout: null, updatedAt: null });
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -188,6 +191,25 @@ describe("DashboardGrid", () => {
     expect(host.querySelector('[data-widget-id="agent-errors"]')!.getAttribute("data-highlighted")).toBe("true");
   });
 
+  it("disables pinning and says why when the dashboard already holds the maximum number of widgets", async () => {
+    const widgets = Array.from({ length: 60 }, (_, index) => ({ instanceId: `m${index}`, widgetId: "metric-agents", w: 1, h: 1 }));
+    uiLayoutsApi.get.mockResolvedValue({
+      surface: "dashboard", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, contextualRules: {}, widgets },
+    });
+    data.liveRuns = [{ status: "running" }];
+    await render();
+    const contextual = host.querySelector('[data-widget-id="live-runs"]')!;
+    expect(contextual.getAttribute("data-contextual")).toBe("true");
+    const pin = button("Pin to dashboard", contextual);
+    expect(pin.disabled).toBe(true);
+    expect(contextual.textContent).toContain("The dashboard is full (60 widgets). Remove a widget to pin this one.");
+    await act(async () => pin.click());
+    await waitForSave();
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+    expect(contextual.getAttribute("data-contextual")).toBe("true");
+  });
+
   it("does not show a contextual widget whose rule is turned off", async () => {
     uiLayoutsApi.get.mockResolvedValue({
       surface: "dashboard", schemaVersion: 1, updatedAt: null,
@@ -218,7 +240,24 @@ describe("DashboardGrid", () => {
         { instanceId: "recent-tasks", widgetId: "recent-tasks", w: 3, h: 2 },
         { instanceId: "agent-errors", widgetId: "agent-errors", w: 2, h: 3 },
       ],
-    });
+    }, { signal: expect.any(AbortSignal) });
+  });
+
+  it("shows a failed save and sends the same layout again from the notice", async () => {
+    uiLayoutsApi.save.mockRejectedValueOnce(new Error("Layout is not valid"));
+    await render();
+    await act(async () => button("Customize", host).click());
+    await act(async () => button("Remove Agents Enabled", host).click());
+    await waitForSave();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("Your latest dashboard layout changes are not saved yet.");
+
+    await act(async () => button("Retry saving", host).click());
+    await settle();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]![2]).toEqual(uiLayoutsApi.save.mock.calls[0]![2]);
+    expect(host.textContent).not.toContain("are not saved yet");
+    expect(widgetIds()).toEqual(["recent-tasks"]);
   });
 
   it("restores the default layout through the reset endpoint", async () => {
@@ -287,11 +326,38 @@ describe("DashboardGrid", () => {
     expect(uiLayoutsApi.save).not.toHaveBeenCalled();
 
     await act(async () => button("Replace saved layout", host).click());
+    await settle();
     expect(host.textContent).not.toContain("cannot be read");
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2].widgets).toEqual([{ instanceId: "recent-tasks", widgetId: "recent-tasks", w: 2, h: 2 }]);
     await act(async () => button("Increase Recent Tasks width", host).click());
     await waitForSave();
-    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
-    expect(uiLayoutsApi.save.mock.calls[0]![2].widgets).toEqual([{ instanceId: "recent-tasks", widgetId: "recent-tasks", w: 3, h: 2 }]);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]![2].widgets).toEqual([{ instanceId: "recent-tasks", widgetId: "recent-tasks", w: 3, h: 2 }]);
+  });
+
+  it("shows the layout of the new account after the session changes", async () => {
+    const stored = (widgetId: string) => ({
+      surface: "dashboard", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, contextualRules: {}, widgets: [{ instanceId: widgetId, widgetId, w: 2, h: 2 }] },
+    });
+    let deliver!: (value: unknown) => void;
+    uiLayoutsApi.get
+      .mockResolvedValueOnce(stored("recent-tasks"))
+      .mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve; }));
+    await render();
+    expect(widgetIds()).toEqual(["recent-tasks"]);
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    });
+    await settle();
+    expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    expect(widgetIds()).toEqual([]);
+    expect(host.querySelector('[aria-label="Loading dashboard layout"]')).not.toBeNull();
+    await act(async () => deliver(stored("metric-agents")));
+    await settle();
+    expect(widgetIds()).toEqual(["metric-agents"]);
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
   });
 
   it("sends one save at a time and lets the latest layout win when a save is slow", async () => {

@@ -590,7 +590,7 @@ const support = await getEmbeddedPostgresTestSupport();
         svc.update(f.input.projectId, {
           executionWorkspacePolicy: { storageProviderPluginId: null },
         }),
-      ).rejects.toThrow("stays attached");
+      ).rejects.toMatchObject({ status: 409, details: { code: "project_storage_locked" } });
       await expect(
         svc.updateWorkspace(f.input.projectId, f.input.projectWorkspaceId, {
           repoUrl: "https://github.com/example/other.git",

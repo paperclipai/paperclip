@@ -67,21 +67,32 @@ function resolveStoredLayout(raw: unknown): DashboardLayout | null {
 }
 
 export function DashboardGrid({ companyId }: { companyId: string }) {
-  const { stored, isLoaded, save, reset, resetting, saveState, blocked, loadError, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, reset, resetting, saveState, saveError, retrySave, blocked, loadError, allowOverwrite, retryLoad, owner } = useUiLayout({
     companyId,
     surface: "dashboard",
     resolve: resolveStoredLayout,
   });
   const defaultLayout = useMemo(() => buildDefaultLayout(DEFAULT_WIDGET_IDS, WIDGET_CATALOG), []);
-  const [layout, setLayout] = useState<DashboardLayout | null>(null);
+  const [loadedLayout, setLayout] = useState<DashboardLayout | null>(null);
+  const [layoutOwner, setLayoutOwner] = useState<string | null>(null);
   const layoutRef = useRef<DashboardLayout | null>(null);
   const [editing, setEditing] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const columns = useDashboardColumns();
 
   const wasBlocked = useRef(false);
+  const loadedOwner = useRef<string | null>(null);
+
+  const layout = layoutOwner === owner ? loadedLayout : null;
 
   useEffect(() => {
+    if (loadedOwner.current !== owner) {
+      if (loadedOwner.current !== null) {
+        layoutRef.current = null;
+        setLayout(null);
+      }
+      loadedOwner.current = owner;
+    }
     if (!isLoaded) return;
     const recovered = wasBlocked.current && blocked === null && stored !== null;
     wasBlocked.current = blocked !== null;
@@ -89,7 +100,8 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
     const initial = stored ?? defaultLayout;
     layoutRef.current = initial;
     setLayout(initial);
-  }, [isLoaded, stored, blocked, defaultLayout]);
+    setLayoutOwner(owner);
+  }, [isLoaded, stored, blocked, defaultLayout, owner]);
 
   const update = useCallback(
     (change: (current: DashboardLayout) => DashboardLayout) => {
@@ -161,7 +173,9 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
         error={loadError}
         subject="dashboard"
         onRetry={retryLoad}
-        onOverwrite={allowOverwrite}
+        onOverwrite={() => allowOverwrite(layoutRef.current ?? undefined)}
+        saveError={saveError}
+        onRetrySave={retrySave}
       />
       <div className="flex flex-wrap items-center justify-end gap-2">
         <span
@@ -249,6 +263,7 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
                     onResize={onResize}
                     onRemove={onRemove}
                     onPin={onPin}
+                    pinDisabled={atLimit}
                     onConfigChange={onConfigChange}
                   />
                 );

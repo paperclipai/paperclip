@@ -25,7 +25,7 @@ import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HAR
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
-import { rehydratePinnedSkillAssets } from "./runtime-context.js";
+import { rehydratePinnedInstructionAsset, rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
@@ -44,7 +44,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
-import { nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
+import { nativeProviderPackAdmissionFailureCode, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
@@ -271,6 +271,7 @@ import {
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
 import { NATIVE_PROVIDER_SIDE_EFFECT_PENDING, NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { clearRunProviderStateUnsaved, markAcceptedRunProviderStateUnsaved } from "./native-provider-state-unsaved.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { reportRunFailure } from "../run-failure-report.js";
@@ -8443,7 +8444,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
     sourceFailureCode === "native_provider_usage_limit" ||
-    sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED;
+    sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED ||
+    sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -8496,6 +8498,26 @@ export const NATIVE_PROVIDER_SESSION_CLOSED_ACTION =
   "The provider session closed after a turn start that may have reached the provider, and this run cannot reopen it. Retry starts a new run with a fresh provider conversation and the saved task context.";
 const RUNNER_PROVIDER_SESSION_CLOSED = "provider_session_closed";
 
+export const NATIVE_PROVIDER_STARTUP_REJECTED = "native_provider_startup_rejected";
+export const NATIVE_PROVIDER_STARTUP_REJECTED_ACTION =
+  "The provider refused to start a session, so no provider work began. Read the provider message and fix its cause in the agent's environment or AI connection if needed, then Retry. Retry starts a new run with a fresh provider session.";
+
+function deterministicProviderStartupFailure(error: unknown): boolean {
+  const failure = providerFailureFromError(error);
+  return failure?.phase === "startup" && failure.retryability === "requires_action"
+    && ["authentication", "permission", "invalid_request"].includes(failure.category);
+}
+
+export function nativeRemoteStartupRejectionCode<Code extends string>(
+  sourceFailureCode: Code,
+  error: unknown,
+  remoteTarget: boolean,
+): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED {
+  return remoteTarget && sourceFailureCode === "provider_session_open_rejected"
+    && providerFailureFromError(error)?.phase === "startup"
+    ? NATIVE_PROVIDER_STARTUP_REJECTED : sourceFailureCode;
+}
+
 /** Reads the Runner's closed class from an authenticated turn.start failure. */
 function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
   if (!error || typeof error !== "object" || depth > 5) return false;
@@ -8522,6 +8544,7 @@ export function nativeSessionFailureSourceCode(
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
   | typeof NATIVE_PROVIDER_SESSION_CLOSED
+  | typeof NATIVE_PROVIDER_STARTUP_REJECTED
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
@@ -8663,6 +8686,7 @@ export function nativeSessionFailureSourceCode(
     if (/classification=(?:requested_model_unsupported|grok_model_mismatch)\)/.test(message)) {
       return "native_provider_model_rejected";
     }
+    if (deterministicProviderStartupFailure(error)) return NATIVE_PROVIDER_STARTUP_REJECTED;
     return "provider_session_open_rejected";
   }
   // The controller stopped waiting for session.open while runner startup was
@@ -8811,6 +8835,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_request_protocol_error",
     "native_runner_process_exited",
     "provider_session_open_rejected",
+    NATIVE_PROVIDER_STARTUP_REJECTED,
     "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode);
@@ -12051,8 +12076,12 @@ async function executePaperclipNativeSessionAttempt(
                     claim: { leaseOwner, attempt, controllerGeneration, controllerBootId: controller.bootId },
                     waitForClaim: runnerdBackend?.providerAdmissionRequired?.() === true,
                   });
-                } catch {
-                  try { await input.onLog?.("stderr", "[paperclip-runner] native provider-pack admission receipt could not be saved\n"); } catch {}
+                } catch (error) {
+                  // Name the database cause (a SQLSTATE only), so a lost
+                  // admission is diagnosable from the run log.
+                  const cause = nativeProviderPackAdmissionFailureCode(error)
+                    ?? (error instanceof Error && /^native_[a-z_]+$/.test(error.message) ? error.message : "unknown");
+                  try { await input.onLog?.("stderr", `[paperclip-runner] native provider-pack admission receipt could not be saved (cause=${cause})\n`); } catch {}
                 }
                 await runnerdBackend?.providerAdmissionPersisted?.();
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
@@ -12297,7 +12326,7 @@ async function executePaperclipNativeSessionAttempt(
           ? classifiedFailureCode
           : providerUsageLimitObserved
             ? "native_provider_usage_limit"
-            : classifiedFailureCode;
+            : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote");
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
           && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
           ? {
@@ -12456,6 +12485,8 @@ async function executePaperclipNativeSessionAttempt(
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
                   : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
                   ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
+                  : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
+                  ? NATIVE_PROVIDER_STARTUP_REJECTED_ACTION
                   : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
@@ -12731,6 +12762,8 @@ async function executePaperclipNativeSessionAttempt(
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
               : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
               ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
+              : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
+              ? NATIVE_PROVIDER_STARTUP_REJECTED_ACTION
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? nativeCleanupRefusalAction(completedTurnCleanup)
               : sourceFailureCode === "runner_task_admission_rejected"
@@ -15192,6 +15225,9 @@ async function createRunnerdBackendWithinSessionClaim(
   retainedTransition?: VerifiedWarmTransitionBinding,
 ): Promise<ManagedRunnerdBackend> {
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
+  if ("runtimeContext" in input.execution) {
+    await rehydratePinnedInstructionAsset(input.db, input.execution.binding, input.execution.runtimeContext).catch(() => undefined);
+  }
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
   const remoteTarget = target.kind === "remote" ? target : null;
@@ -16620,15 +16656,50 @@ async function createRunnerdBackendWithinSessionClaim(
     );
   };
 
+  // A per-turn sandbox is released after the run, so the backup is the only
+  // copy of the provider session. When it is not saved after the result was
+  // accepted, mark the checkpoint not resumable: the next run starts a fresh
+  // provider session instead of failing once on the missing state. A retained
+  // sandbox or SSH host keeps the live state, so it keeps the resume path.
+  let providerStateUnsavedMarked = false;
+  // Set once the durable backup is stored. A later local publication, stamp,
+  // or cleanup failure leaves that backup restorable, so it is not marked.
+  let checkpointBackupStored = false;
   const checkpointRemoteRunner = async (
     settlement: "settled" | "unsettled",
   ) => {
+    let saved: boolean;
+    checkpointBackupStored = false;
+    try {
+      saved = await persistRemoteRunnerCheckpoint(settlement);
+    } catch (error) {
+      if (!checkpointBackupStored && remoteTarget?.transport === "sandbox" && remoteTarget.reusableLeaseConfigured !== true) {
+        providerStateUnsavedMarked = await markAcceptedRunProviderStateUnsaved(input.db, input.execution.binding)
+          .catch(() => false) || providerStateUnsavedMarked;
+        // A log failure cannot replace the checkpoint error.
+        if (providerStateUnsavedMarked) await Promise.resolve(input.onLog?.(
+          "stderr",
+          "[paperclip-runner] provider state was not saved after the accepted result; the next run starts a fresh provider session\n",
+        )).catch(() => undefined);
+      }
+      throw error;
+    }
+    // A later save of this run's state restores the resume path. If clearing
+    // fails, the next run still starts fresh, which is safe.
+    if (saved && providerStateUnsavedMarked) {
+      await clearRunProviderStateUnsaved(input.db, input.execution.binding).catch(() => undefined);
+      providerStateUnsavedMarked = false;
+    }
+  };
+  const persistRemoteRunnerCheckpoint = async (
+    settlement: "settled" | "unsettled",
+  ): Promise<boolean> => {
     if (
       !remoteCommandRunner ||
       !remoteStateDirectory ||
       !remoteRunnerFilesystemRoot
     )
-      return;
+      return false;
     const durableStorage = durableNativeHarnessStorage();
     const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId);
     const backupOwner = durableStorage && currentAuthority ? sessionHarnessBackupOwners.get(currentAuthority) : null;
@@ -16669,7 +16740,7 @@ async function createRunnerdBackendWithinSessionClaim(
         `[paperclip-runner] remote checkpoint ${incompleteFailure ? "failed" : "skipped"}: exact suspended harness state unavailable (process=${settlement} reason=${checkpointable.incompleteReason})\n`,
       );
       if (incompleteFailure) throw incompleteFailure;
-      return;
+      return false;
     }
     const backupSpanAttributes = {
       provider: input.execution.provider.kind,
@@ -16767,6 +16838,10 @@ async function createRunnerdBackendWithinSessionClaim(
                     scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), root: pendingRoot,
                     signal: AbortSignal.timeout(300_000) });
                 }
+                // Without durable storage the local publication below is the
+                // save; its result is uncertain once it starts, so keep the
+                // resume path rather than discard a backup that may exist.
+                checkpointBackupStored = true;
                 await publishNativeHarnessBackup({
                   db: input.db, companyId: input.execution.binding.companyId,
                   scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), backupRoot, pendingRoot,
@@ -16798,6 +16873,7 @@ async function createRunnerdBackendWithinSessionClaim(
       );
       throw error;
     }
+    return true;
   };
 
   const prepareExternalRunnerState =

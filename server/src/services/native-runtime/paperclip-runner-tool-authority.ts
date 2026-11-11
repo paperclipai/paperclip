@@ -1907,7 +1907,7 @@ export class PaperclipRunnerToolAuthority {
         key: requiredString(input.key),
         title: requiredString(input.title),
         format: "markdown",
-        body: requiredString(input.body),
+        body: requiredUntrimmedString(input.body),
         baseRevisionId: nullableProviderId(input.baseRevisionId),
         changeSummary: input.changeSummary === null || input.changeSummary === undefined
           ? null
@@ -3324,8 +3324,12 @@ export class PaperclipRunnerToolAuthority {
 }
 
 function requiredString(value: unknown): string {
+  return requiredUntrimmedString(value).trim();
+}
+
+function requiredUntrimmedString(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error("paperclip_runner_tool_input_invalid");
-  return value.trim();
+  return value;
 }
 
 /**

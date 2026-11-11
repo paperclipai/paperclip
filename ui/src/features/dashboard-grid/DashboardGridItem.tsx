@@ -2,7 +2,7 @@ import { Suspense, useRef, useState, type CSSProperties, type PointerEvent } fro
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Minus, Pin, Plus, Settings2, Sparkles, X } from "lucide-react";
-import { DASHBOARD_GRID_COLUMNS, DASHBOARD_MAX_ROW_SPAN } from "@paperclipai/shared";
+import { DASHBOARD_GRID_COLUMNS, DASHBOARD_MAX_ROW_SPAN, DASHBOARD_MAX_WIDGETS } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -47,6 +47,7 @@ export function DashboardGridItem({
   onResize,
   onRemove,
   onPin,
+  pinDisabled,
   onConfigChange,
 }: {
   item: VisibleWidget;
@@ -57,6 +58,7 @@ export function DashboardGridItem({
   onResize: (instanceId: string, size: WidgetSize) => void;
   onRemove: (instanceId: string) => void;
   onPin: (ruleId: string) => void;
+  pinDisabled: boolean;
   onConfigChange: (instanceId: string, key: string, value: number | boolean) => void;
 }) {
   const { placement, contextualRuleId, highlighted } = item;
@@ -115,8 +117,9 @@ export function DashboardGridItem({
       data-widget-id={placement.widgetId}
       data-contextual={contextual ? "true" : undefined}
       data-highlighted={highlighted ? "true" : undefined}
+      data-editing={editing ? "true" : undefined}
       className={cn(
-        "relative flex min-w-0 flex-col rounded-lg",
+        "group/widget relative flex min-w-0 flex-col rounded-lg",
         sortable.isDragging && "z-10 opacity-80",
         highlighted && "ring-2 ring-primary/60 ring-offset-2 ring-offset-background",
         editing && "border border-dashed border-muted-foreground",
@@ -126,9 +129,11 @@ export function DashboardGridItem({
         <div className="flex items-center justify-between gap-2 px-1 pb-1 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
             <Sparkles className="size-3" aria-hidden />
-            Shown automatically
+            {pinDisabled
+              ? `Shown automatically. The dashboard is full (${DASHBOARD_MAX_WIDGETS} widgets). Remove a widget to pin this one.`
+              : "Shown automatically"}
           </span>
-          <Button variant="ghost" size="xs" onClick={() => onPin(contextualRuleId)}>
+          <Button variant="ghost" size="xs" disabled={pinDisabled} onClick={() => onPin(contextualRuleId)}>
             <Pin aria-hidden />
             Pin to dashboard
           </Button>
