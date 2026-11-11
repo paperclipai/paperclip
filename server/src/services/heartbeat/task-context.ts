@@ -338,9 +338,6 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     taskPlan,
     includeWakeComments: false,
   }) + chatCompletionInstruction(context);
-  // The plan document route serves a quarantined plan's raw body. A
-  // higher-trust resumed turn keeps the withheld-body notice instead of an
-  // instruction to read that document.
   const compactPlanBody = !exposeLowTrustRaw && isLowTrustQuarantined(taskPlan?.sourceTrust);
   const taskMarkdownCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
