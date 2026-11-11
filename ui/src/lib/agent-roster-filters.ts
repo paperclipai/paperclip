@@ -60,6 +60,33 @@ export function buildAgentRosterIndex(agents: readonly Agent[], accounts?: AiCon
   return { byAgentId, options };
 }
 
+// Membership is many-to-many, so a department cannot be one value on the agent
+// the way harness or status is. An agent in two departments matches either
+// filter. Unassigned is the absence of every membership, not a department row.
+export const AGENT_DEPARTMENT_UNASSIGNED = "__unassigned__";
+
+export function matchesDepartmentFilter(
+  agentId: string,
+  departmentId: string,
+  departments: readonly { id: string; agentIds: readonly string[] }[],
+): boolean {
+  if (!departmentId) return true;
+  if (departmentId === AGENT_DEPARTMENT_UNASSIGNED) {
+    return !departments.some((department) => department.agentIds.includes(agentId));
+  }
+  return departments.some((department) => department.id === departmentId && department.agentIds.includes(agentId));
+}
+
+export function departmentNamesForAgent(
+  agentId: string,
+  departments: readonly { id: string; name: string; agentIds: readonly string[] }[],
+): string[] {
+  return departments
+    .filter((department) => department.agentIds.includes(agentId))
+    .map((department) => department.name)
+    .sort((left, right) => left.localeCompare(right));
+}
+
 export function matchesAgentRosterFilters(
   values: Record<AgentRosterFilterField, AgentRosterOption> | undefined,
   filters: AgentRosterFilters,

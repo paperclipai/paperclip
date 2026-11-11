@@ -369,6 +369,7 @@ export function Agents() {
         )}
       </>
     ) : null;
+    const departmentLabel = rosterFilters.departmentLabel(agent.id);
     return (
       <EntityRow
         key={agent.id}
@@ -382,7 +383,7 @@ export function Agents() {
         titleClassName="flex-1"
         titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}${departmentLabel ? ` · ${departmentLabel}` : ""}`}
         to={agentUrl(agent)}
         className="agent-roster-identity group py-3"
         leading={hasInvalidOrgChain ? (
