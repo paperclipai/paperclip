@@ -708,6 +708,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+    // projects.id is a uuid column; a non-UUID reference (e.g. an unresolved
+    // project shortname like "onboarding") can never match and would make
+    // Postgres reject the query with "invalid input syntax for type uuid".
+    if (!isUuidLike(id)) return null;
     const row = await db
       .select()
       .from(projects)
