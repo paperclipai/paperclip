@@ -963,7 +963,7 @@ function historyEntry(input: {
   } satisfies Record<string, unknown>;
 }
 
-function appendBoundedRecoveryHistory(entry: Record<string, unknown>) {
+export function appendBoundedRecoveryHistory(entry: Record<string, unknown>) {
   const encoded = JSON.stringify(entry);
   return sql`(
     select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)

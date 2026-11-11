@@ -3349,9 +3349,14 @@ that process is gone. Second, the resume claimed a provider attempt within the
 three-attempt budget from a `retryable_failure` coordinator. Third, that failure
 saved `recoveryMode: "exact_checkpoint_resume"`, `recoverable`,
 `providerSessionEstablished` and `checkpointExists`, with no replacement recorded,
-and the runner restores that same checkpointed conversation. A remote run, a
-bootstrap retry, an ambiguous state, a missing or superseded stop record, an
-exhausted budget, or a replacement session keeps the existing failure.
+and the runner restores that same checkpointed conversation. The resume reconciler
+clears the saved failure when it claims the run. So it first appends a
+`same_run_resume` entry to `recovery_history` that copies those fields, together
+with its controller boot. The executor then reads that entry. It must be the last
+entry, and it must name the executor's boot. A remote run, a bootstrap retry, an
+ambiguous state, a missing or superseded stop record, an exhausted budget, a
+replacement session, or a claim entry from another boot or followed by another
+entry keeps the existing failure.
 
 A restart can also land after the agent proposed its result but before the
 provider turn ended. When the restored runner proves that turn ended with the
