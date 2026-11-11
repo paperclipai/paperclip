@@ -7,6 +7,7 @@ import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
 import { isRepeatedRestartFault, planRestartSteps, type RestartStep } from "./repeated-restarts.js";
 import { k15HoldMs } from "./redeploy.js";
+import { classRHoldMs, isClassRFault } from "./class-r.js";
 import { K4_MIN_HOLD_MS, type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
@@ -98,7 +99,7 @@ function pinnedFireAfterMs(faultAfterMs: number | undefined, drawn: number): num
   return faultAfterMs ?? drawn;
 }
 
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "rrGapMs" | "baseline">): TaskPlan[] {
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "rrGapMs" | "baseline" | "cr1HoldMs" | "cr2HoldMs" | "cr3StallMs">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
@@ -131,7 +132,8 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       fireAfterMs: cell.fault === "K13" || cell.fault === "K0" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
       holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
         : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
-        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
+        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int)
+          : isClassRFault(cell.fault) ? classRHoldMs(cell.fault, options, rng.int) : 0,
       // Drawn only for RR tasks, so the plans of existing seeds do not change.
       ...(isRepeatedRestartFault(cell.fault) ? { restartSteps: planRestartSteps(cell.fault, rng.int, options.rrGapMs) } : {}),
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,

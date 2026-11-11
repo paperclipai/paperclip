@@ -104,6 +104,7 @@ import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js"
 import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
+import { reconcileControllerJournalWithRunner, refreshRetiredWarmOwnerProjection } from "./warm-controller-journal.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
 import { syncManagedAiCredentials, type ManagedAiCredentialWritebackBinding } from "../managed-ai-credential-writeback.js";
@@ -218,6 +219,7 @@ import {
 } from "../../vendor/paperclip-runner/index.js";
 import { adapterExecutionTargetEnablesSandboxDuplexBridge, type AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
+import { createRemoteAttachmentStager } from "./remote-attachment-staging.js";
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -278,10 +280,10 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { reportRunFailure } from "../run-failure-report.js";
 import {
   REMOTE_RECOVERY_MARKER_READ_SCRIPT, REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
-  RemoteRunnerRecoveryError, attachRemoteRunnerRecoveryDiagnostic, describeExitedRemoteRunner, readRemoteRunnerRecoveryError,
-  remoteRecoveryProbeReason,
+  REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, RemoteRunnerRecoveryError, attachRemoteRunnerRecoveryDiagnostic, boundRemoteRunnerExitEvidence,
+  describeExitedRemoteRunner, describeExitedRemoteRunnerReason, readRemoteRunnerRecoveryError, remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
-import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
+import { isPluginRpcTimeout, readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS, remoteRunnerPluginStall, type RemoteRunnerPluginStall } from "./remote-runner-recovery-probe.js";
 import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
@@ -7325,6 +7327,7 @@ export async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     state = await readRemoteRunnerState({ runner: target.runner,
       stateDirectory: remoteRunnerStateDirectory(retained.remoteCwd, nativeSessionKey(input.execution)) });
   }
+  await reconcileControllerJournalWithRunner({ ...controllerProjectionInput(input, { runId: prior.runId, issueId: input.execution.binding.issueId }), runnerState: state });
   // A running warm source keeps the existing live-adoption identity, idle,
   // controller-fencing and physical-process checks. Only suspension is cached.
   if (!movedAllocation && input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
@@ -7361,6 +7364,18 @@ function isUndeliveredSuspendReceipt(state: Record<string, unknown>, root: strin
   } catch {
     return false;
   }
+}
+
+function controllerProjectionInput(input: { db: Db; execution: NativeExecutionInput }, owner: { runId: string; issueId: string }) {
+  const root = scopedRunnerdStateRoot(input.execution);
+  const statePath = resolve(root, "control-plane", "control-plane-state.json");
+  return {
+    db: input.db, root, normalizedSessionId: nativeSessionKey(input.execution),
+    binding: { companyId: input.execution.binding.companyId, issueId: owner.issueId, runId: owner.runId },
+    readControlState: () => existsSync(statePath)
+      ? readBoundedNativeFile(statePath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "native_runner_checkpoint_invalid").toString("utf8")
+      : null,
+  };
 }
 
 /** Materialize opaque controller state before ordinary warm admission reads it.
@@ -8560,7 +8575,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
     sourceFailureCode === "native_provider_usage_limit" ||
     sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED ||
-    sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED;
+    sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED ||
+    sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -8613,6 +8629,9 @@ export const NATIVE_PROVIDER_SESSION_CLOSED_ACTION =
   "The provider session closed after a turn start that may have reached the provider, and this run cannot reopen it. Retry starts a new run with a fresh provider conversation and the saved task context.";
 const RUNNER_PROVIDER_SESSION_CLOSED = "provider_session_closed";
 
+export const NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER = "native_controller_journal_behind_runner";
+export const NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER_ACTION =
+  "The saved controller journal was behind its Runner, so the Runner refused this run's commands and no provider work began. Retry starts a new run, which reconciles the journal from the saved checkpoint before it opens the session, or stops with a precise error if it cannot.";
 export const NATIVE_PROVIDER_STARTUP_REJECTED = "native_provider_startup_rejected";
 export const NATIVE_PROVIDER_STARTUP_REJECTED_ACTION =
   "The provider refused to start a session, so no provider work began. Read the provider message and fix its cause in the agent's environment or AI connection if needed, then Retry. Retry starts a new run with a fresh provider session.";
@@ -8630,6 +8649,18 @@ export function nativeRunnerExitConfirmed(error: unknown, depth = 0): boolean {
   if (value.runnerExitConfirmed === true) return true;
   return nativeRunnerExitConfirmed(value.cause, depth + 1)
     || (Array.isArray(value.errors) && value.errors.slice(0, 3).some(item => nativeRunnerExitConfirmed(item, depth + 1)));
+}
+
+function runnerExitBeforeSessionOpenMessage(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  if (typeof value.message === "string" && /runnerd exited (?:while waiting for session\.open|unexpectedly)/.test(value.message)) return true;
+  return runnerExitBeforeSessionOpenMessage(value.cause, depth + 1)
+    || (Array.isArray(value.errors) && value.errors.slice(0, 3).some(item => runnerExitBeforeSessionOpenMessage(item, depth + 1)));
+}
+
+export function nativeRunnerExitedBeforeSessionOpen(error: unknown): boolean {
+  return nativeRunnerExitConfirmed(error) && runnerExitBeforeSessionOpenMessage(error);
 }
 
 /** Same provider, category and message (numbers ignored): a retry would meet the same fault. */
@@ -8708,6 +8739,7 @@ export function nativeSessionFailureSourceCode(
   | "native_provider_usage_limit"
   | typeof NATIVE_PROVIDER_SESSION_CLOSED
   | typeof NATIVE_PROVIDER_STARTUP_REJECTED
+  | typeof NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
@@ -8774,6 +8806,7 @@ export function nativeSessionFailureSourceCode(
   }
   if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
+  if (/"code":"controller_sequence_mismatch"/.test(message)) return NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
   if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
     return "runner_task_admission_rejected";
   }
@@ -10196,17 +10229,31 @@ export async function executePaperclipNativeSession(input: {
         && nativeWarmIngressAllocation(entry.ingressOwner.ingress) === nativeWarmIngressAllocation(physicalIngress)));
     const prepareAttachments = async () => {
       const admissionSha256 = nativeSha256(input.execution);
-      const targetKind = input.runnerExecutionTarget?.kind ?? "local";
+      const target = input.runnerExecutionTarget;
+      const targetKind = target?.kind ?? "local";
+      const remoteRunner = target?.kind === "remote"
+        ? target.transport === "ssh"
+          ? createNativeSshCommandRunner({ spec: target.spec, defaultCwd: target.remoteCwd })
+          : target.runnerTask ? undefined : target.runner
+        : undefined;
+      const stageRemoteAttachment = target?.kind === "remote" && remoteRunner
+        ? createRemoteAttachmentStager(target.remoteCwd, remoteRunner)
+        : undefined;
       const chatAttachmentReadScope = new NativeChatAttachmentReadScope({
         db: input.db,
         binding: input.execution.binding,
         workspaceRoot,
         executionTargetKind: targetKind,
+        stageRemoteAttachment,
       });
       preparedInput = { ...input, chatAttachmentReadScope };
-      cleanupStagedAttachments = () => chatAttachmentReadScope.close();
+      cleanupStagedAttachments = async () => {
+        try { await chatAttachmentReadScope.close(); }
+        finally { await stageRemoteAttachment?.close(); }
+      };
       const attachmentStage = await stageNativeRunnerWakeAttachments({
         db: input.db,
+        stageRemoteAttachment,
         binding: {
           companyId: input.execution.binding.companyId,
           issueId: input.execution.binding.issueId,
@@ -10221,6 +10268,7 @@ export async function executePaperclipNativeSession(input: {
           chatAttachmentReadScope.close(),
           attachmentStage.cleanup(),
         ]);
+        await stageRemoteAttachment?.close();
         if (cleanupResults.some((result) => result.status === "rejected")) {
           throw new Error("paperclip_runner_attachment_staging_cleanup_failed");
         }
@@ -11590,6 +11638,9 @@ async function executePaperclipNativeSessionAttempt(
           forgetWarmNativeSession(warmSessionId, entry);
         } finally { entry.busy = false; }
         if (preparedCopy) throw new Error("native_instruction_preparation_configuration_changed");
+        if (input.useRunnerd && input.runnerExecutionTarget?.kind === "remote") {
+          await refreshRetiredWarmOwnerProjection(controllerProjectionInput(input, { runId: entry.runId, issueId: entry.issueId }));
+        }
         persistedWarmSession = loadWarmNativeCheckpoint(
           input.execution,
           warmConfigDigest,
@@ -12672,6 +12723,8 @@ async function executePaperclipNativeSessionAttempt(
               // with this proof that the failed runner is gone.
               ...(recoveryEvidence.recoveryMode === "bootstrap_retry" && nativeRunnerExitConfirmed(error)
                 ? { runnerExitConfirmed: true } : {}),
+              ...(input.runnerExecutionTarget?.kind === "remote" && nativeRunnerExitedBeforeSessionOpen(error)
+                ? { runnerExitedBeforeSessionOpen: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -12686,6 +12739,8 @@ async function executePaperclipNativeSessionAttempt(
                   ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
                   ? startupRejectedAction
+                  : sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER
+                  ? NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER_ACTION
                   : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
@@ -12965,6 +13020,8 @@ async function executePaperclipNativeSessionAttempt(
               ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
               ? startupRejectedAction
+              : sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER
+              ? NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER_ACTION
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? nativeCleanupRefusalAction(completedTurnCleanup)
               : sourceFailureCode === "runner_task_admission_rejected"
@@ -14475,6 +14532,7 @@ export async function readRemoteRunnerState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
   recoveryDeadline?: number;
+  stall?: RemoteRunnerPluginStall;
 }): Promise<Record<string, unknown>> {
   const statePath = posix.join(input.stateDirectory, "runner-state.json");
   const escapedPath = statePath.replaceAll("'", "'\\''");
@@ -14488,7 +14546,7 @@ export async function readRemoteRunnerState(input: {
     ? await input.runner.execute(request)
     : await readRemoteRunnerRecoveryProbe({
         runner: input.runner, request, stage: "runner_state",
-        deadline: input.recoveryDeadline, readOnly: true,
+        deadline: input.recoveryDeadline, readOnly: true, stall: input.stall,
       });
   if (result.exitCode !== 0 || result.timedOut) {
     const error = new Error(
@@ -14556,10 +14614,44 @@ export const REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT =
   'elif test -f "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3" && command -v cmp >/dev/null 2>&1 && cmp -s "$1" "$3"; then rm -f -- "$1"; ' +
   'else exit 1; fi; base64 < "$3"';
 
+/**
+ * A detached remote runnerd has no controller-side stderr. Its stderr goes to
+ * this file in its private diagnostics directory instead of /dev/null, so the
+ * reason a Runner exited stays in the sandbox for recovery to read. The file
+ * never leaves the sandbox on its own; recovery reads a short redacted tail.
+ */
+export const REMOTE_RUNNER_PROCESS_STDERR_FILE = "runnerd.process-stderr.log";
+/** Above this size the file is rotated once at launch, so each runnerd starts with a fresh file. */
+export const REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES = 1_048_576;
+/** The disk backstop for one runnerd's lifetime: above this size the trimmer keeps the last 1 MiB. */
+export const REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES = 8_388_608;
+const REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES = 1_048_576;
+
+/**
+ * The disk backstop for a running runnerd's stderr file ($1 pid, $2 file). It
+ * runs detached from runnerd (double fork) with its own argv and ends with
+ * runnerd. Rewriting the kept tail can drop a line runnerd appends between the
+ * copy and the rewrite, so it acts only past 8 MiB, which ordinary stderr
+ * volume never reaches. runnerd's own exit reason is not on this stream: it
+ * writes that to `runnerd.stderr.log` itself, which no trimmer touches.
+ */
+const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
+  `pid=$1; log=$2; while kill -0 "$pid" 2>/dev/null; do sleep 15; size=$(wc -c 2>/dev/null < "$log" | tr -d " "); ` +
+  `if test "\${size:-0}" -gt ${REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES} && test -f "$log" && test ! -L "$log"; then ` +
+  `tail -c ${REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES} -- "$log" > "$log.trim" && cat -- "$log.trim" > "$log"; rm -f -- "$log.trim"; fi; done`;
+
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
   'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
   REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
-  '; then :; else process_fingerprint=""; fi; identity_tmp="${identity_path}.tmp.$$"; printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "$identity_nonce" "$$" "$started_at" "$runner_instance_id" "$process_fingerprint" > "$identity_tmp"; chmod 0600 "$identity_tmp"; mv -f -- "$identity_tmp" "$identity_path"; exec "$@"';
+  '; then :; else process_fingerprint=""; fi; ' +
+  // Bounded stderr evidence: rotate an oversized file once, then trim it in place while runnerd runs.
+  // A symlink or non-file at the path keeps the old /dev/null behavior.
+  `stderr_log="$diagnostics_directory/${REMOTE_RUNNER_PROCESS_STDERR_FILE}"; ` +
+  'if test -L "$stderr_log" || { test -e "$stderr_log" && test ! -f "$stderr_log"; }; then stderr_log=/dev/null; else ' +
+  'stderr_size=0; if test -f "$stderr_log"; then stderr_size=$(wc -c < "$stderr_log" | tr -d " "); fi; ' +
+  `if test "\${stderr_size:-0}" -gt ${REMOTE_RUNNER_PROCESS_STDERR_MAX_BYTES}; then mv -f -- "$stderr_log" "$stderr_log.1"; fi; ` +
+  `( ( exec sh -c '${REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT}' paperclip-runner-stderr-trim "$pid" "$stderr_log" </dev/null >/dev/null 2>&1 ) & ); fi; ` +
+  'identity_tmp="${identity_path}.tmp.$$"; printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "$identity_nonce" "$$" "$started_at" "$runner_instance_id" "$process_fingerprint" > "$identity_tmp"; chmod 0600 "$identity_tmp"; mv -f -- "$identity_tmp" "$identity_path"; exec "$@" 2>>"$stderr_log"';
 
 const REMOTE_RUNNER_FAILED_IDENTITY_CLEANUP_SCRIPT =
   'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; marker_wait=0; while { test ! -f "$identity_path" || test -L "$identity_path"; } && test "$marker_wait" -lt 50; do marker_wait=$((marker_wait + 1)); sleep 0.1; done; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test -n "$started_at" || exit 4; case "$pid" in ""|*[!0-9]*) exit 4 ;; esac; test "$pid" -gt 0 || exit 4; if kill -0 "$pid" 2>/dev/null; then if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi; signal_target=$pid; if command -v ps >/dev/null 2>&1; then session_id=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d " ") || true; if test "$session_id" = "$pid"; then signal_target="-$pid"; fi; fi; kill -TERM -- "$signal_target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; term_wait=0; while kill -0 "$pid" 2>/dev/null && test "$term_wait" -lt 50; do term_wait=$((term_wait + 1)); sleep 0.1; done; if kill -0 "$pid" 2>/dev/null; then kill -KILL -- "$signal_target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; kill_wait=0; while kill -0 "$pid" 2>/dev/null && test "$kill_wait" -lt 50; do kill_wait=$((kill_wait + 1)); sleep 0.1; done; fi; kill -0 "$pid" 2>/dev/null && exit 5; fi; test -f "$identity_path" && test ! -L "$identity_path" || exit 4; { IFS= read -r final_nonce; IFS= read -r final_pid; IFS= read -r final_started_at; IFS= read -r final_runner_id; } < "$identity_path"; test "$final_nonce" = "$nonce" && test "$final_pid" = "$pid" && test "$final_started_at" = "$started_at" && test "$final_runner_id" = "$runner_id" || exit 4; rm -f -- "$identity_path"';
@@ -14613,6 +14705,7 @@ export async function verifyRemoteRunnerReattachment(input: {
   normalizedSessionId: string;
   requireIdle?: boolean;
   recoveryDeadline?: number;
+  stall?: RemoteRunnerPluginStall;
 }) {
   const { claim, target, identity } = input;
   if (claim.remote.kind === "plugin_task") throw remoteRecoveryLeaseMismatch("runner_verification", "plugin_task");
@@ -14629,8 +14722,9 @@ export async function verifyRemoteRunnerReattachment(input: {
   const runner = target.runner;
   const probeDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
+  const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
   const stateDirectory = remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId);
-  const runnerState = await readRemoteRunnerState({ runner, stateDirectory, recoveryDeadline: probeDeadline });
+  const runnerState = await readRemoteRunnerState({ runner, stateDirectory, recoveryDeadline: probeDeadline, stall });
   if (input.requireIdle && (runnerState.lifecycle !== "ready" ||
       !Array.isArray(runnerState.outbox) || runnerState.outbox.length !== 0 || runnerState.pendingTerminalDelivery !== null)) {
     throw new Error("runner_state_identity_mismatch: remote_warm_session_not_idle");
@@ -14646,7 +14740,7 @@ export async function verifyRemoteRunnerReattachment(input: {
   }
   const identityPath = posix.join(stateDirectory, "runner-process.identity");
   const marker = await readRemoteRunnerRecoveryProbe({
-    runner, stage: "identity_marker", deadline: probeDeadline, readOnly: true,
+    runner, stage: "identity_marker", deadline: probeDeadline, readOnly: true, stall,
     request: {
       command: "sh",
       args: [
@@ -14674,9 +14768,10 @@ export async function verifyRemoteRunnerReattachment(input: {
   if (!processIdentity) throw new RemoteRunnerRecoveryError({ stage: "identity_marker", reason: "marker_invalid" });
   if (!processIdentity.processStartFingerprint) throw new RemoteRunnerRecoveryError({ stage: "identity_marker", reason: "fingerprint_missing" });
   const expectedStartFingerprint = processIdentity.processStartFingerprint;
-  const check = async (signal?: NodeJS.Signals, deadline = Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS) => {
+  const check = async (signal?: NodeJS.Signals, deadline = Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS,
+    verificationStall?: RemoteRunnerPluginStall) => {
     const result = await readRemoteRunnerRecoveryProbe({
-      runner, stage: "process_verification", deadline, readOnly: !signal,
+      runner, stage: "process_verification", deadline, readOnly: !signal, stall: verificationStall,
       request: {
         command: "sh",
         args: [
@@ -14701,10 +14796,18 @@ export async function verifyRemoteRunnerReattachment(input: {
     }
     return { alive, reason };
   };
-  const verified = await check(undefined, probeDeadline);
+  const verified = await check(undefined, probeDeadline, stall);
   if (!verified.alive) {
     throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: verified.reason,
-      ...(verified.reason === "process_not_running" ? describeExitedRemoteRunner(runnerState) : {}) });
+      ...(verified.reason === "process_not_running" ? {
+        ...describeExitedRemoteRunner(runnerState),
+        // Why the Runner exited, from its own durable state and sandbox-local files, so the run log names it.
+        ...describeExitedRemoteRunnerReason(runnerState, redactSensitiveText),
+        // A session Runner logs beside its state; external (Dot, Muse, grok_bot) Runners log in the shared runtime root.
+        ...await readRemoteRunnerExitEvidence(runner, [posix.join(posix.dirname(stateDirectory), "diagnostics"),
+          posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner", "diagnostics")],
+          Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY, Date.now() + 10_000)),
+      } : {}) });
   }
   // These checks authorize an attempt to reconnect, not the task itself. The
   // transport still requires authentication against the exact durable PRP key.
@@ -14716,26 +14819,52 @@ export async function verifyRemoteRunnerReattachment(input: {
   };
 }
 
+/** Best effort: a missing, slow or unreadable file leaves the recovery outcome unchanged. */
+async function readRemoteRunnerExitEvidence(runner: CommandManagedRuntimeRunner, diagnosticsDirectories: string[], deadline: number):
+  Promise<{ runnerExitEvidence?: string }> {
+  try {
+    const result = await readRemoteRunnerRecoveryProbe({
+      runner, stage: "process_verification", deadline, readOnly: true,
+      request: { command: "sh", args: ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "paperclip-runner-exit-evidence", ...diagnosticsDirectories],
+        bypassSession: true },
+    });
+    if (result.exitCode !== 0 || result.timedOut) return {};
+    const evidence = boundRemoteRunnerExitEvidence(result.stdout, redactSensitiveText);
+    return evidence ? { runnerExitEvidence: evidence } : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function verifyRemoteRunnerOrSettledExit(
-  input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number },
+  input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number;
+    claim: { exitedBeforeSessionOpen?: true } },
 ) {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
+  const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
   try {
-    return await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline });
+    return await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline, stall });
   } catch (error) {
     const diagnostic = readRemoteRunnerRecoveryError(error);
     const target = input.target;
+    const exitedBeforeSessionOpen = input.claim.exitedBeforeSessionOpen === true;
     if (input.providerAttempt > NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
-        diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true ||
+        (!exitedBeforeSessionOpen && (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
     const state = await readRemoteRunnerState({ runner: target.runner,
-      stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline });
-    if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field]) ||
-        state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
+      stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline, stall });
+    if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
+    if (exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
+      : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
   }
+}
+
+function runnerStateAllowsFreshStart(state: Record<string, unknown>): boolean {
+  return ["ready", "suspended", "connecting"].includes(String(state.lifecycle))
+    && state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null;
 }
 
 /** A crash before source bootstrap leaves a suspended Runner; a crash during
@@ -14771,6 +14900,14 @@ async function verifyStagedRemoteRunner(input: {
   const claim = { ...input.claim, runId: identity.runId };
   const verify = () => verifyRemoteRunnerReattachment({ claim, target, identity: { ...identity },
     runId: identity.runId, normalizedSessionId: identity.normalizedSessionId });
+  if (state.lifecycle !== "suspended" && input.claim.exitedBeforeSessionOpen === true && runnerStateAllowsFreshStart(state)) {
+    try { return await verify(); }
+    catch (error) {
+      const diagnostic = readRemoteRunnerRecoveryError(error);
+      if (diagnostic?.stage !== "process_verification" || diagnostic.reason !== "process_not_running") throw error;
+      return undefined;
+    }
+  }
   if (state.lifecycle !== "suspended") return verify();
   const settled = (value: Record<string, unknown>) => sameIdentity(value) && value.lifecycle === "suspended" &&
     Array.isArray(value.outbox) && value.outbox.length === 0 && value.pendingTerminalDelivery == null &&
@@ -14800,7 +14937,8 @@ async function waitForRemoteRunnerProcessIdentity(input: {
   runnerInstanceId: string;
   requireProcessStartFingerprint?: boolean;
 }): Promise<{ pid: number; startedAt: string; processStartFingerprint?: string }> {
-  const deadline = Date.now() + REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS;
+  let deadline = Date.now() + REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS;
+  const stallDeadline = Date.now() + REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS;
   while (Date.now() < deadline) {
     const result = await input.runner
       .execute({
@@ -14814,7 +14952,10 @@ async function waitForRemoteRunnerProcessIdentity(input: {
         bypassSession: true,
         timeoutMs: 2_000,
       })
-      .catch(() => null);
+      .catch((error: unknown) => {
+        if (isPluginRpcTimeout(error)) deadline = Math.max(deadline, stallDeadline);
+        return null;
+      });
     const identity =
       result && result.exitCode === 0 && !result.timedOut
         ? parseRemoteRunnerProcessIdentity(result.stdout, input)
@@ -15007,8 +15148,11 @@ export function createRemoteRunnerProcessLauncher(input: {
         timeoutMs: 20_000,
         bypassSession: true,
         onLog: input.onLog,
+      }).catch((error: unknown) => {
+        if (isPluginRpcTimeout(error)) return null;
+        throw error;
       });
-      if (launchResult.exitCode !== 0 || launchResult.timedOut) {
+      if (launchResult && (launchResult.exitCode !== 0 || launchResult.timedOut)) {
         throw new Error(
           launchResult.timedOut
             ? "runner_remote_process_launch_timed_out"
@@ -15062,27 +15206,42 @@ export function createRemoteRunnerProcessLauncher(input: {
         attributes: { identitySource: "remote_marker", detached: true },
       });
 
+      let supervisionUnknownSince: number | null = null;
       while (true) {
-        const observed = await readRemoteRunnerRecoveryProbe({
-          runner,
-          stage: "process_verification",
-          deadline: Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS,
-          readOnly: true,
-          request: {
-            command: "sh",
-            args: [
-              "-c",
-              REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
-              "paperclip-runner-monitor",
-              input.processIdentityPath,
-              identityNonce,
-              input.runnerInstanceId,
-              String(identity.pid),
-              ...(identity.processStartFingerprint ? [identity.processStartFingerprint] : []),
-            ],
-            bypassSession: true,
-          },
-        });
+        let observed: Awaited<ReturnType<typeof readRemoteRunnerRecoveryProbe>>;
+        try {
+          observed = await readRemoteRunnerRecoveryProbe({
+            runner,
+            stage: "process_verification",
+            deadline: Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS,
+            readOnly: true,
+            request: {
+              command: "sh",
+              args: [
+                "-c",
+                REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
+                "paperclip-runner-monitor",
+                input.processIdentityPath,
+                identityNonce,
+                input.runnerInstanceId,
+                String(identity.pid),
+                ...(identity.processStartFingerprint ? [identity.processStartFingerprint] : []),
+              ],
+              bypassSession: true,
+            },
+          });
+        } catch (error) {
+          supervisionUnknownSince ??= Date.now();
+          if (
+            spec.isRunnerConnected?.() !== true ||
+            Date.now() - supervisionUnknownSince >= REMOTE_RUNNER_RECONNECT_GRACE_MS
+          ) throw error;
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),
+          );
+          continue;
+        }
+        supervisionUnknownSince = null;
         if (observed.exitCode === 0 && !observed.timedOut) {
           await new Promise<void>((resolve) =>
             setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),
@@ -15102,7 +15261,7 @@ export function createRemoteRunnerProcessLauncher(input: {
             command: "sh",
             args: [
               "-c",
-              'set -eu; directory=$1; file="$directory/runnerd.stderr.log"; test -d "$directory" && test ! -L "$directory" && test -f "$file" && test ! -L "$file"; tail -c 65536 -- "$file"',
+              REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT,
               "paperclip-runner-diagnostics",
               input.diagnosticsDirectory,
             ],
@@ -15139,7 +15298,8 @@ export function createRemoteRunnerProcessLauncher(input: {
           code: null,
           signal: null,
           stdout: "",
-          stderr: diagnosticTail || stateSummary,
+          // The durable state names a graceful exit; the files name a panic or what runnerd wrote to stderr.
+          stderr: diagnosticTail ? `${stateSummary}\n${diagnosticTail}` : stateSummary,
         };
       }
     })().catch((error: unknown) => {

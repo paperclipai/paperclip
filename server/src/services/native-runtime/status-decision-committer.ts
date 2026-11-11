@@ -26,6 +26,7 @@ import { normalizePrpResultSignals, type PrpStructuredRunResult } from "../../ve
 import { readNativeMonitorDelivery, readNativePreservedMonitorWait, readNativeSupersededMonitorWait, type NativeSupersededMonitorWait, type NativeMonitorDelivery, type NativePreservedMonitorWait } from "./native-monitor-delivery.js";
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { questionsAwaitedByAgentBlock } from "../blocked-question-answer.js";
 import { isConversation } from "../agent-conversations.js";
 import { hasPendingNativeChildCompletion, type NativeChildCompletionRecipient } from "./native-child-completion-delivery.js";
 import { and, asc, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
@@ -2159,12 +2160,17 @@ export async function commitNativeStatusDecision(input: {
         })
         .where(eq(nativeRunFinalizations.runId, input.runId));
     };
+    const awaitingInteractionIds = await questionsAwaitedByAgentBlock(tx as unknown as Db, {
+      companyId: input.companyId, issueId: input.issueId, agentId: originRun?.agentId, reasonCode,
+      toStatus: input.decision.toStatus, unblockOwner: input.decision.unblockDescriptor?.owner,
+    });
     const decisionJson = {
       statusAction: input.decision.statusAction,
       toStatus: input.decision.toStatus,
       reasonCode,
       unblockDescriptor: input.decision.unblockDescriptor,
       effects: input.decision.effects,
+      ...(awaitingInteractionIds.length ? { awaitingInteractionIds } : {}),
       ...(externalChatReviewPresentation
         ? { externalChatReviewPresentation }
         : {}),
