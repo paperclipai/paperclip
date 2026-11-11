@@ -10,11 +10,20 @@ import { NATIVE_RUN_FAILED_RETRY_CAUSE } from "./status-arbiter.js";
  */
 export async function isFailedTurnContinuationRun(
   db: Pick<Db, "select">,
-  run: Pick<typeof heartbeatRuns.$inferSelect, "companyId" | "agentId" | "contextSnapshot">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "contextSnapshot" | "wakeupRequestId">,
   issueId: string,
 ): Promise<boolean> {
   const intentId = run.contextSnapshot?.nativeStatusWakeIntentId;
-  if (typeof intentId !== "string" || !/^[0-9a-f-]{36}$/i.test(intentId)) return false;
+  if (typeof intentId !== "string" || !/^[0-9a-f-]{36}$/i.test(intentId) || !run.wakeupRequestId) return false;
+  // The run's own dispatch receipt must be the one the dispatcher created for
+  // this intent, so a copied intent id on another run proves nothing.
+  const [dispatch] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, run.companyId),
+    eq(agentWakeupRequests.id, run.wakeupRequestId),
+    eq(agentWakeupRequests.runId, run.id),
+    eq(agentWakeupRequests.requestedByActorId, `native-status-wake-dispatch:${intentId}`),
+  )).limit(1);
+  if (!dispatch) return false;
   const [intent] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, run.companyId),
     eq(agentWakeupRequests.agentId, run.agentId),

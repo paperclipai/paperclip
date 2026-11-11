@@ -16,6 +16,7 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { readNativeContinuationSource } from "./native-continuation-delivery.js";
 import { NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION } from "./status-arbiter.js";
 import { heartbeatService } from "../heartbeat.js";
 import { requestTaskRetry } from "../task-retry.js";
@@ -42,10 +43,15 @@ describe("native failed-turn continuation", () => {
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  async function failTurn(issueId: string, code: FailureCode, context: Record<string, unknown> = {}) {
+  async function failTurn(issueId: string, code: FailureCode, context: Record<string, unknown> = {}, dispatchedFrom?: string) {
     const runId = randomUUID();
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId, invocationSource: "automation", triggerDetail: "system", contextSnapshot: { issueId, ...context } }).returning();
+    // A dispatched continuation carries the dispatcher's own receipt for its intent.
+    const [receipt] = dispatchedFrom ? await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_status_changed", status: "claimed", requestedByActorType: "system",
+      requestedByActorId: `native-status-wake-dispatch:${dispatchedFrom}`, payload: { issueId } }).returning() : [];
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId, responsibleUserId: "board-user", invocationSource: "automation", triggerDetail: "system", wakeupRequestId: receipt?.id ?? null, contextSnapshot: { issueId, ...context } }).returning();
+    if (receipt) await db.update(agentWakeupRequests).set({ runId }).where(eq(agentWakeupRequests.id, receipt.id));
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const native = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
@@ -110,6 +116,8 @@ describe("native failed-turn continuation", () => {
       .filter(r => r.id !== first.runId && r.contextSnapshot?.issueId === issueId);
     expect(continuation?.contextSnapshot?.nativeStatusWakeIntentId).toBe(intent.id);
     expect(["queued", "running"]).toContain(continuation.status);
+    // The continuation keeps the failed run as its conversation source.
+    expect(await readNativeContinuationSource(db, { companyId, issueId, runId: continuation.id })).toBe(first.runId);
     // The fixture cannot launch a real runner; let the dispatched run settle.
     await heartbeat.drainActiveRunExecutions();
     const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -119,10 +127,10 @@ describe("native failed-turn continuation", () => {
     // wake, and a board blocker whose Retry restarts the work.
     await db.update(issues).set({ status: "in_progress", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
     const before = (await issueWakes(issueId)).length;
-    const second = await failTurn(issueId, code, { nativeStatusWakeIntentId: intent.id });
+    const second = await failTurn(issueId, code, { nativeStatusWakeIntentId: intent.id }, intent.id);
     expect(second.decision).toMatchObject({ reasonCode: "native_run_failed_continuation_exhausted", toStatus: "blocked" });
     await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
-    expect((await issueWakes(issueId)).length).toBe(before);
+    expect((await issueWakes(issueId)).length).toBe(before + 1); // only the fixture dispatch receipt
     const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(blocked).toMatchObject({ status: "blocked", unblockDescriptor: { owner: "board", action: NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION } });
     // The visible Retry is accepted and starts a new run of the task.
@@ -136,10 +144,15 @@ describe("native failed-turn continuation", () => {
     await heartbeat.drainActiveRunExecutions();
   }, 120_000);
 
-  it("does not treat a copied wake id as a used continuation", async () => {
+  it("does not treat a copied retry intent id as a used continuation", async () => {
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Review another PR", status: "in_progress", workMode: "standard", assigneeAgentId: agentId, createdByUserId: "board-user", responsibleUserId: "board-user" });
-    const failed = await failTurn(issueId, "opencode_empty_response", { nativeStatusWakeIntentId: randomUUID() });
-    expect(failed.decision.reasonCode).toBe("run_failed_partial_evidence_preserved");
+    const first = await failTurn(issueId, "opencode_empty_response");
+    expect(first.decision.reasonCode).toBe("run_failed_partial_evidence_preserved");
+    const intent = (await issueWakes(issueId)).find(wake => wake.requestedByActorId === "native-status-committer")!;
+    // A real intent id copied into a run that the dispatcher did not start.
+    await db.update(issues).set({ status: "in_progress", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
+    const copied = await failTurn(issueId, "opencode_empty_response", { nativeStatusWakeIntentId: intent.id });
+    expect(copied.decision.reasonCode).toBe("run_failed_partial_evidence_preserved");
   }, 120_000);
 });
