@@ -1227,6 +1227,47 @@ describe("persistent agent directories", () => {
     expect(execute).toHaveBeenCalledTimes(3);
   });
 
+  it("removes a renamed remote directory left by a failed cleanup on the next retry", async () => {
+    const copy = await run();
+    const environmentId = randomUUID(), leaseId = randomUUID();
+    const remoteCwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agent-directory-leftover-")));
+    const executionRoot = path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId);
+    await fs.mkdir(executionRoot, { recursive: true });
+    await fs.writeFile(path.join(executionRoot, "finished.txt"), "old run");
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: copy.runId,
+      provider: "daytona", providerLeaseId: "original-sandbox", status: "active", metadata: { remoteCwd } });
+    await db.update(agentInstructionWorkingCopies).set({ state: "saved", processStoppedAt: new Date(), location: `remote:${environmentId}`, executionRoot,
+      receipt: { ...copy.receipt, cleanup: { leaseId, remoteCwd } } }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    let failRemoval = true;
+    const execute = vi.fn(async (input: { command: string; args: string[] }) => {
+      if (failRemoval && input.args[1]!.startsWith("rm -rf")) {
+        failRemoval = false;
+        return { exitCode: 1, stdout: "", stderr: "timed out", timedOut: true };
+      }
+      await execFile(input.command, input.args);
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    });
+    const service = agentInstructionWorkingCopyService(db, { environmentRuntime: { execute } as unknown as EnvironmentRuntimeService });
+    const leftovers = async () => (await fs.readdir(path.dirname(executionRoot))).filter(name => name.includes(".deleting-"));
+    try {
+      await service.release(companyId, copy.runId);
+      const pending = (await service.get(companyId, copy.runId))!;
+      expect(pending.receipt?.cleanupPending).toBe(true);
+      expect(pending.receipt?.cleanup).toMatchObject({ deletingSuffix: expect.stringMatching(/^\.deleting-/) });
+      expect(await leftovers()).toHaveLength(1);
+      await db.update(agentInstructionWorkingCopies).set({ nextAttemptAt: null }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      await service.recoverCaptured();
+      expect((await service.get(companyId, copy.runId))?.receipt?.cleanupPending).toBe(false);
+      expect(await leftovers()).toEqual([]);
+      await expect(fs.stat(executionRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, leaseId));
+      await db.delete(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      await fs.rm(remoteCwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a new owner's resumed files when release loses its lock during remote cleanup", async () => {
     const copy = await run();
     const environmentId = randomUUID(), leaseId = randomUUID();

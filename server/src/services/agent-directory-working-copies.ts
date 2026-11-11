@@ -151,11 +151,14 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     await assertDirectoryLockHeld();
     return patchRow(row, values, condition);
   };
-  async function fencedRemoteDelete(paths: string[], execute: (script: string) => Promise<boolean>): Promise<boolean> {
+  async function fencedRemoteDelete(row: Copy, paths: string[], execute: (script: string) => Promise<boolean>): Promise<boolean> {
     const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-    const suffix = `.deleting-${randomUUID()}`;
+    const cleanup = (row.receipt?.cleanup ?? {}) as Record<string, unknown>;
+    const recorded = typeof cleanup.deletingSuffix === "string" && /^\.deleting-[0-9a-f-]{36}$/.test(cleanup.deletingSuffix) ? cleanup.deletingSuffix : null;
+    const suffix = recorded ?? `.deleting-${randomUUID()}`;
     const quoted = paths.map(quote).join(" ");
     await assertDirectoryLockHeld();
+    if (!recorded) await patch(row, { receipt: { ...row.receipt, cleanup: { ...cleanup, deletingSuffix: suffix } } });
     if (!await execute(`for p in ${quoted}; do if [ -e "$p" ] || [ -L "$p" ]; then mv -- "$p" "$p${suffix}" || exit 1; fi; done`)) return false;
     try { await assertDirectoryLockHeld(); } catch (error) {
       await execute(`for p in ${quoted}; do if [ -e "$p${suffix}" ] && [ ! -e "$p" ]; then mv -- "$p${suffix}" "$p"; fi; done`);
@@ -659,13 +662,14 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       const expected = path.posix.join(cleanupTarget.remoteCwd, ".paperclip-runtime", "agent-files", row.agentId, typeof row.receipt?.materializationRunId === "string" ? row.receipt.materializationRunId : String(row.receipt?.directoryRunId ?? row.runId));
       if (row.executionRoot !== expected) throw new Error("Agent directory cleanup path changed");
       const paths = cleanupTarget.transport === "sandbox" ? [expected, sandboxTransferRoot(row, cleanupTarget.remoteCwd)] : [expected];
-      const removed = await fencedRemoteDelete(paths, script => runAdapterExecutionTargetShellCommand(row.runId, cleanupTarget, script,
+      const removed = await fencedRemoteDelete(row, paths, script => runAdapterExecutionTargetShellCommand(row.runId, cleanupTarget, script,
         { cwd: cleanupTarget.remoteCwd, env: {}, timeoutSec: 15 }).then(result => result.exitCode === 0 && !result.timedOut, () => false));
       cleanupPending ||= !removed;
     } else if (!destroyed && row.processStoppedAt && completed.has(row.state) && row.location !== "local") {
       // Rebind only the current host-owned lease. Never acquire a replacement.
       cleanupPending ||= !await cleanupRemoteAfterRestart(row).catch(() => false);
     }
+    row = (await get(row.companyId, row.runId)) ?? row;
     if (completed.has(row.state) && row.processStoppedAt) {
       await assertDirectoryLockHeld();
       try { await fs.rm(path.dirname(row.localRoot), { recursive: true, force: true }); }
@@ -754,7 +758,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     const remoteCwd = cleanup?.remoteCwd ?? lease.metadata?.remoteCwd;
     if (typeof remoteCwd !== "string" || row.executionRoot !== path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", row.agentId, typeof row.receipt?.materializationRunId === "string" ? row.receipt.materializationRunId : String(row.receipt?.directoryRunId ?? row.runId))) return false;
     const paths = environment.driver === "sandbox" ? [row.executionRoot, sandboxTransferRoot(row, remoteCwd)] : [row.executionRoot];
-    return fencedRemoteDelete(paths, async script => {
+    return fencedRemoteDelete(row, paths, async script => {
       const result = await environmentRuntime.execute({ environment: environment as Environment, lease: lease as EnvironmentLease, command: "sh", args: ["-c", script],
         cwd: remoteCwd, env: {}, timeoutMs: 15_000, bypassSession: true });
       return result.exitCode === 0 && !result.timedOut;
