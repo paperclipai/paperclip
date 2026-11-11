@@ -102,6 +102,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "poll-ms": { type: "string" },
       replay: { type: "string" },
       "daytona-image": { type: "string" },
+      "daytona-pack-mismatch": { type: "string" },
       "daytona-cpu": { type: "string" },
       "daytona-reuse-lease": { type: "boolean" },
       // The reusable warm Daytona fixture, or an environment that inherits the lifecycle (a user's default).
@@ -141,7 +142,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "tm1-hold-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "tm1-hold-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -156,6 +157,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--env daytona needs an immutable runner image: --daytona-image <registry/repository@sha256:…> or PAPERCLIP_E2E_DAYTONA_IMAGE");
   }
   if (env !== "daytona" && values["daytona-image"] !== undefined) throw new Error("--daytona-image applies only to --env daytona");
+  const daytonaSandboxImage = values["daytona-pack-mismatch"];
+  if (daytonaSandboxImage !== undefined) {
+    if (env !== "daytona") throw new Error("--daytona-pack-mismatch applies only to --env daytona");
+    if (!/^.+@sha256:[0-9a-f]{64}$/.test(daytonaSandboxImage)) {
+      throw new Error("--daytona-pack-mismatch needs an immutable image whose provider pack differs: <registry/repository@sha256:…>");
+    }
+    if (daytonaSandboxImage === daytonaImage) throw new Error("--daytona-pack-mismatch must name a different image than --daytona-image");
+  }
   // B5 grades bench.sh progress read from the live workspace while it runs. A
   // Daytona run's live workspace is inside the sandbox, so B5 is local-only.
   const workloadChoices = env === "daytona" ? WORKLOAD_IDS.filter(id => id !== "B5") : WORKLOAD_IDS;
@@ -194,7 +203,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     seed: integer(values.seed, "seed", now % 2_147_483_647, 0, 2_147_483_647),
     budgetCents,
     pollMs,
-    ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
+    ...(env === "daytona" ? { daytonaImage, ...(daytonaSandboxImage ? { daytonaSandboxImage } : {}), daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
       ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}),
       ...(values["daytona-warm"] ? { daytonaWarm: true } : {}), ...(values["daytona-inherit"] ? { daytonaInherit: true } : {}) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),

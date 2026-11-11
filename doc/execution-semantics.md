@@ -4909,8 +4909,12 @@ and identify `inheritedFromRunId`. The first receipt is immutable history.
 `nativeProviderPackAdmissionState` separately describes current admission proof:
 `pending`, `verified` or `unknown`, with an opaque admission epoch. The mandatory
 coordinator claim atomically sets a new pending epoch before session admission.
-Only the matching owner and epoch can publish post-attachment proof. Failed
-receipt writes leave pending evidence; changed or unsupported admission leaves
+Only the matching owner and epoch can publish post-attachment proof. A write
+that waits for its claim retries a contended write (lock timeout, deadlock or
+serialization abort) up to five times, because the runner's durable checkpoint
+writes hold the same coordinator row. Each attempt re-proves the claim, run and
+epoch in a new transaction. The run log names the database cause of a write
+that still fails. Failed receipt writes leave pending evidence; changed or unsupported admission leaves
 unknown evidence and does not prevent authorized execution. A missing legacy
 receipt remains unknown; the current release cannot supply that missing history.
 Retained recovery needs positively verified prior provenance, captured before

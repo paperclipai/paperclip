@@ -59,6 +59,11 @@ export interface WaveOptions {
   pollMs: number;
   /** `--env daytona`: the immutable runner image (registry/repository@sha256:…). */
   daytonaImage?: string;
+  /** `--daytona-pack-mismatch <image@sha256:…>`: sandboxes start from this
+   * image while the controller keeps `daytonaImage`'s runnerd and provider pack,
+   * so the sandbox's preinstalled pack does not match and every fresh sandbox
+   * takes the provider-pack upload and admission path (staging run 3f317172). */
+  daytonaSandboxImage?: string;
   /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
   daytonaCpu?: number;
   /** `--daytona-reuse-lease`: the chaos environment keeps its sandboxes between turns (a per-turn run stops and keeps its sandbox). */

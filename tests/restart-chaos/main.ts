@@ -134,6 +134,8 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
   ensureDaytonaPlugin(timeline);
+  if (plan.options.daytonaSandboxImage) timeline.add("daytona_pack_mismatch", { controllerImage: image,
+    sandboxImage: plan.options.daytonaSandboxImage, controllerProviderPackDigest: artifacts.providerPackDigest });
   timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
     taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
   return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
@@ -341,7 +343,9 @@ async function main(): Promise<number> {
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
-    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
+    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted,
+      // The controller keeps daytonaImage's runnerd and pack; a pack-mismatch wave starts sandboxes from another image.
+      daytonaImage: plan.options.daytonaSandboxImage ?? plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
       daytonaReuseLease: plan.options.daytonaReuseLease,
       daytonaWarm: plan.options.daytonaWarm, daytonaInherit: plan.options.daytonaInherit,
       adapters: [...new Set([...plan.tasks.map(task => task.adapter),

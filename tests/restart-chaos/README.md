@@ -611,6 +611,19 @@ runs once per image. A copy that fails part-way, or stalls past its 20-minute bo
 (`RESTART_CHAOS_SKOPEO_ATTEMPT_TIMEOUT_MS`), retries from an empty directory.
 Run it alone with `node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/daytona-image.ts <image>`.
 
+**Provider-pack mismatch.** Because the controller takes its pack from the
+same image the sandboxes start from, the preinstalled pack always verifies and
+the upload path (`provider_pack.select` with `stateSource: uploaded`, reason
+`cached_packs_unverified`) and its session admission never run. Staging runs
+there whenever a deploy is newer than the sandbox image. `--daytona-pack-mismatch
+<registry/repository@sha256:…>` starts every sandbox from that other image (an
+older runner image) while the controller keeps `--daytona-image`'s runnerd and
+pack. Every fresh sandbox then uploads and verifies the controller's pack, and
+the session must record its admission before artifact retention. Pass: every
+task finishes with no Retry and no run ends with
+`native_provider_artifacts_admission_unverified`. The timeline records
+`daytona_pack_mismatch`.
+
 Before starting, the harness compares the image's `io.paperclip.runner.content-id`
 label with the content ID of this checkout (`pnpm test:e2e:runner:image-id`,
 which hashes every runner input) and refuses to run on a mismatch. To get an
