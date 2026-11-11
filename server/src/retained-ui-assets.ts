@@ -19,12 +19,33 @@ async function digest(stream: Readable) {
   return hash.digest("hex");
 }
 
+// Every restart re-verifies each already-published asset by downloading it,
+// and startup awaits that. A response body cut off mid-download says nothing
+// about the bytes, so read again instead of failing the boot.
+const VERIFY_READ_ATTEMPTS = 3;
+const CUT_OFF_READ_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "ERR_STREAM_PREMATURE_CLOSE"]);
+function isCutOffRead(error: unknown): boolean {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && CUT_OFF_READ_CODES.has(code);
+}
+
 /** Public, immutable build assets only. Publishing before readiness lets an
  * older tab fetch its chunks after the last old container has disappeared.
  * Objects have no automatic expiry: retain them at least 30 days after the
  * last serving deployment, including rollback, before operator reclamation. */
 export function retainedUiAssets(provider: StorageProvider): { publish(directory: string): Promise<void>; serve: RequestHandler } {
   if (provider.id !== "s3" || !provider.putObjectConditional) throw new Error("Retained UI assets require conditional shared object storage");
+  async function publishedDigest(objectKey: string, signal: AbortSignal, putError: unknown) {
+    for (let attempt = 1; ; attempt++) {
+      const existing = await provider.getObject({ objectKey, signal }).catch(() => { throw putError; });
+      try {
+        return await digest(existing.stream);
+      } catch (error) {
+        existing.stream.destroy();
+        if (signal.aborted || attempt >= VERIFY_READ_ATTEMPTS || !isCutOffRead(error)) throw error;
+      }
+    }
+  }
   async function publish(directory: string) {
     async function visit(relativeDirectory: string) {
       for (const entry of await fs.readdir(path.join(directory, relativeDirectory), { withFileTypes: true })) {
@@ -43,8 +64,7 @@ export function retainedUiAssets(provider: StorageProvider): { publish(directory
         } catch (error) {
           // An existing key or uncertain upload may be accepted only if its
           // complete bytes match. Never overwrite a colliding build asset.
-          const existing = await provider.getObject({ objectKey, signal }).catch(() => { throw error; });
-          if (await digest(existing.stream) !== expected) throw new Error("Static build asset name collides with different published bytes");
+          if (await publishedDigest(objectKey, signal, error) !== expected) throw new Error("Static build asset name collides with different published bytes");
         } finally { body.destroy(); }
       }
     }
