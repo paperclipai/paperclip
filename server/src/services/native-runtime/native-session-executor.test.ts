@@ -435,6 +435,7 @@ import {
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
   NATIVE_PROVIDER_SESSION_CLOSED,
+  NATIVE_PROVIDER_STARTUP_REJECTED,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -14057,6 +14058,50 @@ describe("native session bounded recovery", () => {
       const other = Object.defineProperty(new Error("PRP command session.open failed"), "runnerCommandResult",
         { value: { commandType: "session.open", result: { classification: "provider_session_closed" } }, enumerable: false });
       expect(nativeSessionFailureSourceCode(other)).not.toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+    });
+  });
+
+  describe("a session.open the provider itself rejected before any provider work", () => {
+    const sessionOpenFailure = (providerFailure: Record<string, unknown>) => {
+      const commandResult = { commandId: "command_prp_00000002", commandType: "session.open", controllerSeq: 2,
+        result: { code: "command_execution_failed", message: String(providerFailure.message), providerFailure }, status: "failed" };
+      const reported = { ...commandResult, result: { code: "command_execution_failed", message: "Provider request failed" } };
+      return Object.defineProperty(new Error(`PRP command session.open failed: ${JSON.stringify(reported)}`),
+        "runnerCommandResult", { value: commandResult, enumerable: false });
+    };
+    const startupFailure = (fields: Record<string, unknown>) => ({ schema: "paperclip.provider-failure.v1", provider: "openai",
+      phase: "startup", category: "unknown", retryability: "unknown",
+      message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+      ...fields });
+
+    it("stops on the first rejection and hands the run to the board with Retry", () => {
+      const failure = sessionOpenFailure(startupFailure({}));
+      const code = nativeSessionFailureSourceCode(failure);
+      expect(code).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+      expect(disposition).toEqual({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null });
+      expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+        issueStatus: "blocked", recoveryOwner: { kind: "board" },
+      });
+      for (const category of ["authentication", "permission", "invalid_request"]) {
+        expect(nativeSessionFailureSourceCode(sessionOpenFailure(startupFailure({ category, retryability: "requires_action" }))))
+          .toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      }
+    });
+
+    it("keeps bounded same-run retries for a startup failure that can clear by itself", () => {
+      for (const fields of [
+        { category: "overloaded", retryability: "transient", httpStatus: 503 },
+        { category: "timeout", retryability: "transient", httpStatus: 504 },
+        { category: "rate_limit", httpStatus: 429 },
+        { category: "quota_exhausted", retryability: "requires_action", providerCode: "usageLimitExceeded" },
+        { category: "unknown", httpStatus: 500 },
+        { phase: "turn" },
+      ]) {
+        expect(nativeSessionFailureSourceCode(sessionOpenFailure(startupFailure(fields)))).toBe("provider_session_open_rejected");
+      }
+      expect(nativeSessionFailureSourceCode(new Error(`PRP command session.open failed: {"result":{"code":"command_execution_failed","message":"Provider request failed"},"status":"failed"}`)))
+        .toBe("provider_session_open_rejected");
     });
   });
 

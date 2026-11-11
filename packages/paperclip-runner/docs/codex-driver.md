@@ -82,6 +82,16 @@ valid, but when `PAPERCLIP_WORKSPACE_CWD` is present its canonical path must be
 equal to or below that assigned workspace so sibling and symlink escapes fail
 before provider startup.
 
+When the execution target is itself the sandbox (a remote sandbox such as
+Daytona sets `PAPERCLIP_RUNNER_EXTERNAL_SANDBOX=1`), the Runner starts every
+Codex thread and turn with the external sandbox policy, including read-only
+planning runs. Codex's own bubblewrap helper cannot set up a network namespace
+inside that container (`bwrap: loopback: Failed RTM_NEWADDR`), and Codex loads
+`AGENTS.md` through that helper, so a nested Codex sandbox fails thread
+creation. A planning run there keeps Codex's native plan collaboration mode and
+Paperclip's planning constraints instead of the read-only permission profile.
+Local runners keep the read-only profile for planning.
+
 The returned sandbox facts remain authoritative. Codex 0.132.0 may inject a
 provider-managed writable root such as `~/.codex/memories` after a first run,
 even with `features.memories=false` and an explicit Codex-home deny. That makes

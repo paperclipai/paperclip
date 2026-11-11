@@ -151,6 +151,17 @@ which proves that the sidecar and the provider are gone.
   the saved task context. An older Runner sends the same text without the class; the
   controller then keeps its bounded same-run retries, because the same text
   also covers a session that can reopen after a restart.
+- A `session.open` the provider itself rejected at startup, with a
+  `providerFailure` that waiting cannot clear, records
+  `native_provider_startup_rejected`. Such a failure has no HTTP status or
+  provider code (a local provider error, such as a configuration or sandbox
+  refusal), or the provider marks it `requires_action` for authentication,
+  permission or an invalid request. No provider work began, so the controller
+  stops same-run bootstrap retries and the board offers Retry at once with the
+  provider message. Transient, rate-limit and quota failures keep the bounded
+  same-run startup retries. A run an older release held on
+  `ambiguous_remote_recovery_evidence` after the same rejection offers Retry
+  once its saved workspace is recovered; no migration is needed.
 
 Until a proof settles it, the saved session stays `turn_starting`, so a Runner
 killed during the proof restores through the same check. The cut-off command is

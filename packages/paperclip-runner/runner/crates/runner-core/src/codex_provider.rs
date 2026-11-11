@@ -1037,6 +1037,18 @@ fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static 
     }
 }
 
+fn codex_launch_permission_profile(
+    provider: &str,
+    read_only: bool,
+    external_sandbox: bool,
+) -> &'static str {
+    if read_only && !(provider == "codex" && external_sandbox) {
+        "paperclip-runner-workspace-read-only"
+    } else {
+        codex_permission_profile(provider, external_sandbox)
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -1121,15 +1133,12 @@ impl CodexProvider {
             ));
         }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
-        let permission_profile = if config.read_only {
-            "paperclip-runner-workspace-read-only"
-        } else {
-            codex_permission_profile(
-                &config.provider,
-                config.externally_sandboxed
-                    || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
-            )
-        };
+        let permission_profile = codex_launch_permission_profile(
+            &config.provider,
+            config.read_only,
+            config.externally_sandboxed
+                || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+        );
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let common_environment_keys = [
@@ -6366,6 +6375,22 @@ done
         assert_eq!(
             codex_permission_profile("opencode", true),
             "paperclip-runner-workspace-only"
+        );
+        assert_eq!(
+            codex_launch_permission_profile("codex", true, true),
+            "paperclip-runner-external-sandbox"
+        );
+        assert_eq!(
+            codex_launch_permission_profile("codex", true, false),
+            "paperclip-runner-workspace-read-only"
+        );
+        assert_eq!(
+            codex_launch_permission_profile("codex", false, true),
+            "paperclip-runner-external-sandbox"
+        );
+        assert_eq!(
+            codex_launch_permission_profile("opencode", true, true),
+            "paperclip-runner-workspace-read-only"
         );
     }
 
