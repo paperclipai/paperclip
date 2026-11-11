@@ -1,6 +1,6 @@
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -1563,5 +1563,110 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
     expect(events.map((row) => row.entityId).sort()).toEqual([blockedIssueId, inReviewId, inProgressId, todoId].sort());
   });
+
+  it("wakes every eligible dependent beyond the first page on one blocker-scoped call", async () => {
+    const { companyId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    // The blocker-scoped paging loop pages candidates with the fixed service
+    // page size (RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500 in
+    // server/src/services/recovery/service.ts) and has no limit override, so
+    // the four-dependent case above never enters the loop and a regression
+    // stranding dependents after the first page would still pass. Seed more
+    // eligible dependents than one page holds, each with its own invokable
+    // owner agent (one owner per dependent, wakeOnDemand enabled, the same
+    // shape as the fixture agents): a shared owner would run into the
+    // per-agent concurrency/coalescing guards, turning heals into deferred
+    // or skipped wakes and breaking the count this test asserts.
+    const bulkDependentCount = 501;
+    const bulkDependents = Array.from({ length: bulkDependentCount }, (_, index) => ({
+      agentId: randomUUID(),
+      issueId: randomUUID(),
+      n: index + 1,
+    }));
+    const bulkIssueIds = bulkDependents.map((dependent) => dependent.issueId);
+    await db.insert(agents).values(bulkDependents.map((dependent) => ({
+      id: dependent.agentId,
+      companyId,
+      name: `Bulk owner ${dependent.n}`,
+      role: "engineer",
+      status: "idle",
+      adapterType: "test_adapter",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    })));
+    await db.insert(issues).values(bulkDependents.map((dependent) => ({
+      id: dependent.issueId,
+      companyId,
+      title: `Bulk dependent ${dependent.n}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: dependent.agentId,
+      issueNumber: 1000 + dependent.n,
+      identifier: `${issuePrefix}-${1000 + dependent.n}`,
+    })));
+    await db.insert(issueRelations).values(bulkDependents.map((dependent) => ({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: dependent.issueId,
+      type: "blocks" as const,
+    })));
+
+    // The fixture's own dependent is eligible too, so the candidate set is
+    // one larger than the bulk seed.
+    const eligibleIds = [blockedIssueId, ...bulkIssueIds];
+    const expectedEligible = eligibleIds.length;
+    expect(expectedEligible).toBe(bulkDependentCount + 1);
+    expect(expectedEligible).toBeGreaterThan(500);
+
+    // Replicate the service's first-page query (id-ordered, page-sized via
+    // the same 500 cap) so "beyond the first page" is measured in the order
+    // the loop pages in, rather than in test bookkeeping order.
+    const firstPageRows = await db
+      .select({ id: issues.id })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+        eq(issueRelations.issueId, blockerIssueId),
+        notInArray(issues.status, ["backlog", "done", "cancelled"]),
+        isNull(issues.conversationAgentId),
+        sql`${issues.assigneeAgentId} is not null`,
+      ))
+      .orderBy(asc(issues.id))
+      .limit(500);
+    const firstPageIds = new Set(firstPageRows.map((row) => row.id));
+    const beyondFirstPageIds = eligibleIds.filter((id) => !firstPageIds.has(id));
+    expect(firstPageRows).toHaveLength(500);
+    expect(beyondFirstPageIds).toHaveLength(expectedEligible - 500);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
+    expect(result.checked).toBe(expectedEligible);
+    expect(result.candidateLimitSkipped).toBe(0);
+    expect(result.healed).toBe(expectedEligible);
+    expect([...result.issueIds].sort()).toEqual([...eligibleIds].sort());
+    const healedIds = new Set(result.issueIds);
+    expect(beyondFirstPageIds.every((id) => healedIds.has(id))).toBe(true);
+
+    const wokenIssueIds = async () =>
+      (await db
+        .select({ payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")))
+      ).map((row) => (row.payload as { issueId?: string } | null)?.issueId)
+       .filter((value): value is string => typeof value === "string")
+       .sort();
+    expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
+
+    // A second blocker-scoped call over the same candidate set heals
+    // nothing and creates no duplicate wakes.
+    const secondResult = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
+    expect(secondResult.healed).toBe(0);
+    expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
 });
