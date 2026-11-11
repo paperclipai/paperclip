@@ -18,7 +18,7 @@ export async function startOwnedWssGateway(options) {
   server.on("upgrade", (request, socket, head) => {
     // Keep this promise in the explicit owner set; never swallow a rejected
     // authority/kernel/transport observation as an accepted upgrade.
-    let stage = "validate_request";
+    let stage = "validate_request", record, proofBytesSeen = 0;
     const work = (async () => {
       if (closing || request.method !== "GET" || request.url !== options.path || request.headers.host !== `${options.servername}:${server.address()?.port}`
           || !sameSecret(request.headers["x-owned-linux-ingress"], options.secret)) {
@@ -42,7 +42,7 @@ export async function startOwnedWssGateway(options) {
         env: { HOME: options.ownedHome, DOCKER_CONFIG: options.ownedDockerConfig, PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
         stdio: ["pipe", "pipe", "pipe"], detached: true,
       });
-      const record = { pid: child.pid ?? null, group: child.pid ?? null, joined: false, status: "pending" }; records.push(record);
+      record = { pid: child.pid ?? null, group: child.pid ?? null, joined: false, status: "pending" }; records.push(record);
       children.add(child);
       const joined = new Promise(resolve => child.once("close", (code, signal) => { record.joined = true; record.code = code; record.signal = signal; children.delete(child); resolve(); }));
       child.once("error", () => { record.status = "spawn_failed"; });
@@ -55,6 +55,7 @@ export async function startOwnedWssGateway(options) {
       stage = "read_kernel_proof";
       const proof = await new Promise((resolve, reject) => {
         const onData = bytes => {
+          proofBytesSeen += bytes.length;
           prefix = Buffer.concat([prefix, bytes]); const end = prefix.indexOf(10);
           if (end < 0 && prefix.length > 16384) { child.stdout.off("data", onData); reject(new Error("ingress_proof_overflow")); return; }
           if (end < 0) return;
@@ -88,7 +89,20 @@ export async function startOwnedWssGateway(options) {
     })();
     options.pending.add(work);
     void work.catch(primary => {
-      firstFailure ??= { stage, fixedFailure: primary instanceof Error && fixedFailures.has(primary.message) ? primary.message : "unclassified" };
+      // This exact owned child exited and joined before a proof was received.
+      // No HTTP handshake or client bytes were forwarded to the Runner.
+      // Malformed/foreign proofs, unconfirmed spawn/exit, and all later stages
+      // retain the original unknown path and the strict physical close quorum.
+      const joinedBeforeProof = primary instanceof Error && primary.message === "ingress_closed_before_proof"
+        && stage === "read_kernel_proof" && proofBytesSeen === 0 && record?.joined === true && record.status === "pending"
+        && Number.isSafeInteger(record.pid) && record.pid > 0
+        && Number.isSafeInteger(record.code) && record.signal === null;
+      if (joinedBeforeProof) {
+        record.status = "closed_before_proof";
+        if (!socket.closed) socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        return;
+      }
+      firstFailure ??= { stage, proofBytesSeen, fixedFailure: primary instanceof Error && fixedFailures.has(primary.message) ? primary.message : "unclassified" };
       unknown.push("ingress_outcome_unknown"); if (!socket.closed) socket.end(); })
       .finally(() => options.pending.delete(work));
   });
