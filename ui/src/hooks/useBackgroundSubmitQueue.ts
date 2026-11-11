@@ -75,7 +75,7 @@ export function useBackgroundSubmitQueue<T, R>(options: DurableSubmitOptions<T, 
     onRejected: (error, description, record) => {
       if (!active.current) return;
       replaceQueue(queueRef.current.map(item => item.idempotencyKey === record.idempotencyKey
-        ? { ...item, rejection: description } : item));
+        ? { ...item, payload: record.payload, rejection: description } : item));
       optionsRef.current.onRejected?.(error, description, record);
       noticedRejections.current.add(record.idempotencyKey);
       optionsRef.current.onAttention(record, description);

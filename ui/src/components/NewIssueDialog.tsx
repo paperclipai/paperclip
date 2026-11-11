@@ -62,7 +62,7 @@ const PENDING_CREATE_KEY = "paperclip:issue-draft:pending-create";
  * The create request keeps file names for reconciliation. File bytes are stored
  * separately in the account- and company-scoped browser draft.
  */
-type PendingCreate = { fingerprint: string; data: Record<string, unknown>; stagedFileNames?: string[]; draft?: IssueDraft };
+type PendingCreate = { fingerprint: string; data: Record<string, unknown>; stagedFileNames?: string[]; draft?: IssueDraft; requiresOriginalFiles?: boolean };
 
 function isPendingCreate(value: unknown): value is PendingCreate {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -71,6 +71,7 @@ function isPendingCreate(value: unknown): value is PendingCreate {
     typeof row.fingerprint === "string" &&
     !!row.data && typeof row.data === "object" && !Array.isArray(row.data) &&
     typeof (row.data as Record<string, unknown>).companyId === "string" &&
+    (row.requiresOriginalFiles === undefined || typeof row.requiresOriginalFiles === "boolean") &&
     (row.draft === undefined || (isRecord(row.draft) && typeof row.draft.title === "string" && typeof row.draft.description === "string")) &&
     (row.stagedFileNames === undefined ||
       (Array.isArray(row.stagedFileNames) && row.stagedFileNames.every((name) => typeof name === "string")))
@@ -710,7 +711,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       visibleRequestKey.current = pending.idempotencyKey;
       setRecoveredCreate(pending);
       createRequestRef.current = { fingerprint: pending.payload.fingerprint, idempotencyKey: pending.idempotencyKey, payload: pending.payload,
-        recovering: createRequestRef.current?.idempotencyKey === pending.idempotencyKey && createRequestRef.current.recovering };
+        recovering: pending.payload.requiresOriginalFiles || (createRequestRef.current?.idempotencyKey === pending.idempotencyKey && createRequestRef.current.recovering) };
       const files = stagedFilesByKey.current.get(pending.idempotencyKey);
       if (!files && pending.payload.stagedFileNames?.length) {
         void readStagedIssueFiles(stagedFilesStorageKey(pending.idempotencyKey, pending.payload.data.companyId)).then(saved => {
@@ -736,13 +737,14 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         await writeStagedIssueFiles(stagedFilesStorageKey(idempotencyKey, payload.data.companyId), stagedFiles, []).catch(() => {});
       }
       if (!stagedFiles && payload.draft && payload.stagedFileNames?.length) {
-        stagedFiles = await readStagedIssueFiles(stagedFilesStorageKey(idempotencyKey, payload.data.companyId));
+        stagedFiles = await readStagedIssueFiles(stagedFilesStorageKey(idempotencyKey, payload.data.companyId)).catch(() => []);
         if (!active.current) throw new PendingSendAccountChangedError();
         if (stagedFiles.length !== payload.stagedFileNames.length) stagedFiles = undefined;
         else stagedFilesByKey.current.set(idempotencyKey, stagedFiles);
       }
       // Never create a restored task without the files it was submitted with.
       if (!stagedFiles && payload.stagedFileNames?.length) {
+        payload.requiresOriginalFiles = true;
         throw new StagedFilesMissingError(payload.stagedFileNames);
       }
       const result = await createIssue.mutateAsync({
@@ -767,7 +769,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     },
     onAttention: restoreBackgroundCreate,
     onRejected: (error, description, pending) => {
-      if (error instanceof StagedFilesMissingError) {
+      if (error instanceof StagedFilesMissingError && !pending.payload.draft) {
         // Reattaching the same files resubmits under the original key, so a
         // create that already reached the server is replayed, not duplicated.
         createRequestRef.current = {

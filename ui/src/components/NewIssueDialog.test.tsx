@@ -2669,6 +2669,31 @@ describe("NewIssueDialog", () => {
     act(() => reloaded.root.unmount());
   });
 
+  it("keeps the newer parent context when an earlier restored task has missing files", async () => {
+    mockIssuesApi.create.mockImplementationOnce(() => new Promise(() => {}));
+    dialogState.newIssueDefaults = { description: "Original task", parentId: "old-parent", goalId: "old-goal" };
+    const first = renderDialog(container);
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["image"], "missing.png", { type: "image/png" })] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledOnce());
+    const originalKey = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    storedFiles.clear();
+    dialogState.newIssueDefaults = { description: "Newer task", parentId: "new-parent", goalId: "new-goal" };
+    const reloaded = renderDialog(container);
+    await waitForAssertion(() => expect(container.textContent).toContain("missing.png"));
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Newer task");
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({ description: "Newer task", parentId: "new-parent", goalId: "new-goal" });
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).not.toBe(originalKey);
+    act(() => reloaded.root.unmount());
+  });
+
   it("accepts a task before account lookup and binds its queued files to the resolved account", async () => {
     let finishSession!: (value: unknown) => void;
     mockAuthApi.getSession.mockImplementationOnce(() => new Promise(resolve => { finishSession = resolve; }));
