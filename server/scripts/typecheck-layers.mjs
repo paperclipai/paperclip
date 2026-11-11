@@ -288,7 +288,12 @@ export function typecheckLayers({
     const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${layer.name}.json`);
     const { status, signal } = run(["-p", config], { cwd: serverRoot });
     // A killed process leaves no declarations, so later layers would only add noise.
-    if (signal) return status || 1;
+    if (signal) {
+      console.error(
+        `typecheck:layers: ${layer.name}: compiler terminated by ${signal} (tsc -p ${config}, cwd: ${serverRoot})`,
+      );
+      return status || 1;
+    }
     // Later layers still run after type errors. Each file is checked in one
     // layer, so this reports everything a single tsc run would.
     if (status !== 0) exitCode = status;

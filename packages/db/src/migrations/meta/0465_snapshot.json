@@ -1,5 +1,5 @@
 {
-  "id": "d3ba3987-30eb-46d4-821c-d5dbbf4c4b5e",
+  "id": "38dbf2b9-da26-4c3a-b813-f37d0c19cba2",
   "prevId": "e2a678da-05cc-4316-a40e-d85a69be01e3",
   "version": "7",
   "dialect": "postgresql",
@@ -6233,7 +6233,7 @@
           "name": "issuer",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "account_id": {
           "name": "account_id",
@@ -6309,11 +6309,11 @@
         }
       },
       "indexes": {
-        "account_issuer_account_id_uq": {
-          "name": "account_issuer_account_id_uq",
+        "account_provider_account_id_uq": {
+          "name": "account_provider_account_id_uq",
           "columns": [
             {
-              "expression": "issuer",
+              "expression": "provider_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -65163,12 +65163,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",
