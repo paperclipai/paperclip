@@ -83,22 +83,29 @@ describe("a held task with a pending decision after its remote runner was lost",
   const deferredWaits = async (companyId: string) => (await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"))))
     .map(wake => (wake.payload?.executionWait as { reason?: string } | undefined)?.reason);
+  type Decision = typeof issueThreadInteractions.$inferSelect;
+  const resolve = (decision: Decision, resolvedBy: string) => db.update(issueThreadInteractions).set({ status: "answered",
+    resolvedByUserId: resolvedBy, resolvedAt: new Date(), result: { version: 1, answers: [{ questionId: "q1", optionIds: ["a"] }] } as never })
+    .where(eq(issueThreadInteractions.id, decision.id));
+  const deliverAnswer = (f: Awaited<ReturnType<typeof lostRunnerWithPendingDecision>>, decision: Decision, userId: string) =>
+    f.service.wakeup(f.agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, interactionId: decision.id, interactionKind: decision.kind,
+        interactionStatus: "answered", sourceCommentId: null, sourceRunId: decision.sourceRunId, mutation: "interaction" },
+      idempotencyKey: `interaction:${decision.id}:answered`,
+      requestedByActorType: "user", requestedByActorId: userId,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, interactionId: decision.id,
+        interactionKind: decision.kind, interactionStatus: "answered", sourceCommentId: null,
+        sourceRunId: decision.sourceRunId, wakeReason: "issue_commented", source: "issue.interaction.resolve" },
+    });
   // The same wake the interaction route queues for `wake_assignee`.
   const answer = async (f: Awaited<ReturnType<typeof lostRunnerWithPendingDecision>>, userId: string, resolvedBy = userId) => {
-    await db.update(issueThreadInteractions).set({ status: "answered", resolvedByUserId: resolvedBy, resolvedAt: new Date(),
-      result: { version: 1, answers: [{ questionId: "q1", optionIds: ["a"] }] } as never })
-      .where(eq(issueThreadInteractions.id, f.decision.id));
-    await f.service.wakeup(f.agentId, {
-      source: "automation", triggerDetail: "system", reason: "issue_commented",
-      payload: { issueId: f.issueId, interactionId: f.decision.id, interactionKind: f.decision.kind,
-        interactionStatus: "answered", sourceCommentId: null, sourceRunId: f.decision.sourceRunId, mutation: "interaction" },
-      idempotencyKey: `interaction:${f.decision.id}:answered`,
-      requestedByActorType: "user", requestedByActorId: userId,
-      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, interactionId: f.decision.id,
-        interactionKind: f.decision.kind, interactionStatus: "answered", sourceCommentId: null,
-        sourceRunId: f.decision.sourceRunId, wakeReason: "issue_commented", source: "issue.interaction.resolve" },
-    });
+    await resolve(f.decision, resolvedBy);
+    await deliverAnswer(f, f.decision, userId);
   };
+  const dispatchContinuation = (f: Awaited<ReturnType<typeof lostRunnerWithPendingDecision>>, successor: typeof heartbeatRuns.$inferSelect) =>
+    buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
+      runId: successor.id, context: successor.contextSnapshot ?? {}, summary: null, exposeLowTrustRaw: false });
 
   it.each(Object.keys(shapes) as Array<keyof typeof shapes>)("%s: Retry starts exactly one run after the sandbox work is saved", async shape => {
     const f = await lostRunnerWithPendingDecision(shape);
@@ -133,10 +140,57 @@ describe("a held task with a pending decision after its remote runner was lost",
       eq(activityLog.action, "issue.execution_recovery_settled"), eq(activityLog.actorId, "local-board")))).toHaveLength(1);
     // Dispatch rebuilds the continuation under the successor's identity and
     // rechecks the user authorization; the agent then receives the answer.
-    const envelope = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
-      runId: successor.id, context: successor.contextSnapshot ?? {}, summary: null, exposeLowTrustRaw: false });
+    const envelope = await dispatchContinuation(f, successor);
     expect(envelope).toMatchObject({ trigger: { interactionId: f.decision.id }, interruptedRunId: f.runId });
     expect(envelope.interactionOutcomes).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.decision.id })]));
+  }, 60_000);
+
+  // Ponytail on #20872: two answers in quick succession. The first is
+  // admitted; the second coalesces into its still-queued successor and
+  // replaces the trigger. Dispatch must still accept the first answer's
+  // authorization, and the agent receives both answers.
+  it("dispatches the first answer's successor after a second answer coalesces into it", async () => {
+    const f = await lostRunnerWithPendingDecision("parkedQuestion");
+    const [second] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "ask_user_questions", status: "pending", continuationPolicy: "wake_assignee", sourceRunId: f.runId,
+      createdByAgentId: f.agentId, title: "Which audit level?", payload: f.decision.payload }).returning();
+    await resolve(f.decision, "local-board");
+    await resolve(second, "local-board");
+    await deliverAnswer(f, f.decision, "local-board");
+    await deliverAnswer(f, second, "local-board");
+    const successors = await queuedSuccessors(f.companyId);
+    expect(successors).toHaveLength(1);
+    // Today the second answer waits behind the queued successor's task
+    // execution instead of merging into it.
+    const [secondWake] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      eq(agentWakeupRequests.idempotencyKey, `interaction:${second.id}:answered`)));
+    expect(secondWake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    // Dispatch also holds if a merge replaced the trigger: the durable
+    // authorization names the first answer and this successor.
+    for (const context of [successors[0].contextSnapshot ?? {},
+      { ...successors[0].contextSnapshot, interactionId: second.id, interactionStatus: "answered" }]) {
+      const envelope = await dispatchContinuation(f, { ...successors[0], contextSnapshot: context });
+      expect(envelope.interactionOutcomes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: f.decision.id }), expect.objectContaining({ id: second.id })]));
+    }
+  }, 60_000);
+
+  // Ponytail on #20872: Retry passes only a plain question or connection
+  // request. Decisions with approval semantics keep holding it.
+  it.each([
+    ["a plan review", "request_confirmation", { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", revisionId: randomUUID() } }],
+    ["a governed tool action", "request_confirmation", { version: 1, prompt: "Run it?", toolAction: { tool: "deploy" } }],
+    ["a secret proposal", "request_confirmation", { version: 1, prompt: "Store it?", secretProposal: { name: "TOKEN" } }],
+    ["a connection authorization", "connection_intent", { version: 1, serviceName: "Sentry", connectionAuthorization: { scope: "read" } }],
+  ])("keeps Retry on hold while %s is pending", async (_label, kind, payload) => {
+    const f = await lostRunnerWithPendingDecision("parkedQuestion");
+    await db.update(issueThreadInteractions).set({ kind, payload: payload as never })
+      .where(eq(issueThreadInteractions.id, f.decision.id));
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
+    expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+      .toEqual({ successors: 0, deferred: ["decision_pending"] });
   }, 60_000);
 
   it("keeps the hold when the wake's user did not give the answer", async () => {

@@ -498,18 +498,22 @@ export async function buildExecutionContinuation(input: {
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
-          : value.interactionId
+          : value.interactionId && value.queuedCommentInterruptId
           ? interactions.some(interaction => interaction.id === value.interactionId && interaction.id === triggerInteraction?.id &&
               ["accepted", "answered", "rejected"].includes(interaction.status) &&
-              (value.queuedCommentInterruptId
-                ? interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId && queue.runId === value.runId &&
-                  object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
-                  queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status)
-                // A person's own answer to the held task's pending decision:
-                // bound to that person, this successor and the answered status.
-                : interaction.resolvedByUserId === value.actorId && !interaction.resolvedByAgentId &&
-                  string(input.context.interactionStatus) === interaction.status &&
-                  priorRuns.some(run => run.id === value.runId)))
+              interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId && queue.runId === value.runId &&
+                object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
+                queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status))
+          : value.interactionId
+          // A person's own answer to the held task's pending decision. The
+          // durable authorization names that interaction and this successor.
+          // A later answer that coalesced into the queued successor replaces
+          // the trigger, so the admitted interaction is checked directly; the
+          // later answer still reaches the agent as an interaction outcome.
+          ? (!input.runId || value.runId === input.runId) && priorRuns.some(run => run.id === value.runId) &&
+            interactions.some(interaction => interaction.id === value.interactionId &&
+              ["accepted", "answered", "rejected"].includes(interaction.status) &&
+              interaction.resolvedByUserId === value.actorId && !interaction.resolvedByAgentId)
           : rows.some(comment => comment.id === value.commentId &&
               comment.authorType === "user" &&
               (!("commentUpdatedAt" in value || "commentBodyHash" in value || value.automaticRetry) || (

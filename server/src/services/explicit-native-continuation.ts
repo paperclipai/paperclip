@@ -312,19 +312,24 @@ export async function admitExplicitNativeContinuation(input: {
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
+  // A person's Retry is itself the decision to continue past an open question
+  // or connection request: it stays on the task for the new run to see and its
+  // answer still wakes the agent. Anything with approval semantics (governed
+  // tool actions, secret proposals, connection authorizations, plan reviews and
+  // other confirmations) keeps holding every continuation, Retry included.
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
     eq(issueThreadInteractions.status, "pending"),
     activeIssueInteractionCondition({ responsibleUserId: actorId }),
+    taskRetry ? sql`not (${issueThreadInteractions.kind} in ('ask_user_questions', 'connection_intent')
+      and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])
+      and coalesce(${issueThreadInteractions.payload} #>> '{target,type}', '') <> 'issue_document')` : undefined,
   )).limit(1);
   const [pendingApproval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
     eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, companyId),
   )).where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.issueId, issueId),
     inArray(approvals.status, ["pending", "revision_requested"]))).limit(1);
-  // A person's Retry is itself the decision to continue: an open question stays
-  // on the task for the new run to see and its answer still wakes the agent.
-  // Approvals keep gating every continuation.
-  if ((pendingInteraction && !taskRetry) || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
+  if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
   if (!sourceChecks.length) return null;
 
   const sources: Run[] = [];
