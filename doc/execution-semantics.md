@@ -3832,10 +3832,10 @@ visited: the due re-arms and fallbacks of older exhausted holds included.
 Discovery is instance-wide and draws from separate lanes, each paged by its own
 cursor: unfinished saves, exhausted holds whose re-arm or fallback is due, and
 this pass. Each lane with work takes one free slot before any lane takes a
-second, and the due lane and the pass alternate when unfinished work is
-present. A save that another server owns, or hundreds of holds whose saved
-input waits, therefore cannot starve a due hold: it is reached within a few
-runs of the worker. The due lane wraps at its tail, so a hold that becomes due
+second, and the lane that goes first rotates on each run. A save that another
+server owns, a long local export, or hundreds of holds whose saved input waits
+therefore cannot starve a due hold: it is reached within a few runs of the
+worker. The due lane wraps at its tail, so a hold that becomes due
 by time alone (a lease expiry or a re-arm backoff) is reached even after the
 pass completed with no committed change. Lane positions are kept in memory; a
 restart starts each lane from its first candidate, with no migration.

@@ -654,9 +654,9 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
  * The worker's lane positions, kept in memory: a restart starts every lane
  * from its first candidate, so no persisted state or migration is involved.
  * `cursor`, `complete` and `restart` belong to the obligation pass; `dueCursor`
- * to the due lane; `duePreferred` alternates the second slot between them.
+ * to the due lane; `firstLane` names the lane that has priority in the next run.
  */
-export type PassiveSweep = { cursor?: string; complete?: boolean; restart?: boolean; dueCursor?: string; duePreferred?: boolean };
+export type PassiveSweep = { cursor?: string; complete?: boolean; restart?: boolean; dueCursor?: string; firstLane?: number };
 
 type CandidateRow = Awaited<ReturnType<typeof retainedWorkspaceCandidates>>[number];
 type CandidateLane = { rows: CandidateRow[]; index: number; advance: (actionId: string) => void };
@@ -667,9 +667,10 @@ type CandidateLane = { rows: CandidateRow[]; index: number; advance: (actionId: 
  * Candidates come from lanes, each an ordered page that a cursor advances:
  * unfinished saves; for the worker, exhausted holds whose re-arm or fallback
  * is due; and the obligation pass (cleanup, interrupted preparation, saved
- * input that waits, and the same due holds). Each lane with
- * work takes one free slot before any lane takes a second, so no kind of load
- * (a save another server owns, hundreds of waiting holds) starves another. */
+ * input that waits, and the same due holds). Each lane with work takes one
+ * free slot before any lane takes a second, and the worker rotates which lane
+ * goes first, so no kind of load (a save another server owns, a long local
+ * export, hundreds of waiting holds) starves another. */
 export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRuntimeService,
   onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, obligationsOnly = false,
   onFinished?: (continueSweep: boolean) => void, passiveSweep?: PassiveSweep) {
@@ -701,8 +702,13 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
     if (!dueRows.length && passiveSweep.dueCursor)
       dueRows = await retainedWorkspaceCandidates(db, undefined, false, true, inFlightRunIds, true);
     const due: CandidateLane = { rows: dueRows, index: 0, advance: id => { passiveSweep.dueCursor = id; } };
-    lanes.push(...(passiveSweep.duePreferred === false ? [sweep, due] : [due, sweep]));
-    passiveSweep.duePreferred = passiveSweep.duePreferred === false;
+    lanes.push(due, sweep);
+    // Priority rotates across all three lanes, so each lane is first in one
+    // run of three. With one free slot (a long local export holds the other),
+    // a save that keeps finding its run's lock busy cannot take it every run.
+    const first = (passiveSweep.firstLane ?? 0) % lanes.length;
+    lanes.push(...lanes.splice(0, first));
+    passiveSweep.firstLane = (first + 1) % lanes.length;
   } else lanes.push(sweep);
   const work: Promise<void>[] = [];
   // Several actions of one run (an export hold and a later no-replay hold)

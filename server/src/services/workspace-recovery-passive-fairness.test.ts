@@ -118,6 +118,37 @@ describe("the workspace recovery worker reaches every due hold whatever its othe
     }
   }, 90_000);
 
+  it("re-arms the holds with one free slot while a long local job holds the other and a busy save stays unfinished", async () => {
+    // A local job holds one of the two slots for the whole test.
+    const long = await waitingSettledHold(randomUUID(), "resolved");
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const onRecovered = async (source: { id: string }) => { if (source.id === long.runId) await held; };
+    const sweep: PassiveSweep = {};
+    const first = reconcileRetainedWorkspaces(db, long.environmentRuntime, onRecovered, true, undefined, sweep);
+    const holding = await first ?? [];
+    expect(holding).toHaveLength(1);
+
+    const busy = await seed("native", true);
+    await adoptSystemRecovery(db, busy);
+    const owner = createDb(connectionString);
+    await owner.execute(sql`select pg_advisory_lock(hashtextextended(${nativeWorkspaceFinalizationLockKey(busy.companyId, busy.runId)}, 0))`);
+    const capture = await capturePolicyHold(randomUUID());
+    const stop = await stopProofHold(randomUUID());
+    try {
+      // One free slot per run: each lane has priority in one run of three.
+      for (let pass = 0; pass < 6; pass += 1)
+        await Promise.all(await reconcileRetainedWorkspaces(db, stop.environmentRuntime, onRecovered, true, undefined, sweep) ?? []);
+      expect(await rearmed(capture.actionId)).toBe(true);
+      expect(await rearmed(stop.actionId)).toBe(true);
+      expect(readSystemRecovery((await action(busy.actionId)).evidence)?.state).toBe("scheduled");
+    } finally {
+      release();
+      await Promise.all(holding);
+      await owner.$client.end();
+    }
+  }, 90_000);
+
   it("reaches due holds within two runs however many settled holds with waiting input sort before them", async () => {
     for (let index = 1; index <= 10; index += 1)
       await waitingSettledHold(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, index % 3 ? "resolved" : "active");
