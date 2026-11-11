@@ -1870,7 +1870,7 @@ export function createHeartbeatRunState(db: Db) {
         return {
           ...rest,
           // Saved runs from earlier releases may promise a storage retry no wait owns.
-          error: presentStorageFailureMessage(rest) ?? null,
+          ...("error" in rest ? { error: presentStorageFailureMessage(rest) ?? null } : {}),
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
