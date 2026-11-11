@@ -63,7 +63,9 @@ function packedMigrations(dbBytes) {
   if (!journal) throw new Error("Migrator package has no migration journal.");
   const entries = JSON.parse(journal.toString("utf8")).entries;
   if (!Array.isArray(entries) || entries.length === 0) throw new Error("Migrator package has an empty migration journal.");
-  return [...entries].sort((left, right) => left.idx - right.idx).map(({ idx, tag }) => {
+  // The migrator's apply order: journal idx, then file name. The shipped
+  // journal repeats an idx, so idx alone does not identify a migration.
+  return [...entries].sort((left, right) => left.idx - right.idx || (String(left.tag) < String(right.tag) ? -1 : 1)).map(({ idx, tag }) => {
     const sql = files.get(`${migrationsPrefix}${tag}.sql`);
     if (!sql) throw new Error(`Migrator package is missing migration ${tag}.`);
     // The same digest the migrator records in the database's migration history.
@@ -98,7 +100,9 @@ function assertMigrationCompatibility(value) {
   if (value?.version !== 1 || !Array.isArray(value.migrations) || value.migrations.length === 0) fail();
   const text = (candidate) => typeof candidate === "string" && candidate.length > 0 && candidate.length <= 2000;
   value.migrations.forEach((migration, position) => {
-    if (!Number.isSafeInteger(migration?.idx) || migration.idx < 0 || (position > 0 && migration.idx <= value.migrations[position - 1].idx) ||
+    const previous = value.migrations[position - 1];
+    if (!Number.isSafeInteger(migration?.idx) || migration.idx < 0 ||
+        (previous && (migration.idx < previous.idx || (migration.idx === previous.idx && !(migration.tag > previous.tag)))) ||
         typeof migration.tag !== "string" || !/^\d{4}_[A-Za-z0-9_]+$/.test(migration.tag) ||
         typeof migration.sqlSha256 !== "string" || !/^[0-9a-f]{64}$/.test(migration.sqlSha256) ||
         !compatibilityValues.includes(migration.compatibility) || !compatibilityValues.includes(migration.classified) ||

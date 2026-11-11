@@ -102,7 +102,8 @@ test("migration compatibility is optional for earlier manifests and fails closed
     (c) => { c.migrations[0].compatibility = "safe"; },
     (c) => { c.migrations[0].classified = undefined; },
     (c) => { c.migrations[0].sqlSha256 = "abc"; },
-    (c) => { c.migrations[1].idx = 0; },
+    (c) => { c.migrations[2].idx = 0; },
+    (c) => { c.migrations[1].tag = c.migrations[0].tag; c.migrations[1].idx = 0; },
     (c) => { c.migrations[0].override = true; },
     (c) => { c.migrations[2].overrideJustification = ""; },
     (c) => { c.migrations[2].compatibility = "unknown"; },
@@ -125,6 +126,9 @@ test("migration compatibility is optional for earlier manifests and fails closed
   writeFileSync(path.join(dir, "manifest.json"), JSON.stringify(earlier));
   assert.throws(() => validateBundle(dir, sha), /does not match the packed migrations/);
   assert.throws(() => migrationCompatibility(dbArchive({}), classify), /empty migration journal/);
+  // The shipped journal repeats idx 178; order then follows the file name, as in the migrator.
+  const repeated = structuredClone(manifest); repeated.migrationCompatibility.migrations[1].idx = 0;
+  assert.doesNotThrow(() => assertManifest(repeated, sha));
 });
 
 test("source identity, content hashes, size, and origin fail closed", async (t) => {

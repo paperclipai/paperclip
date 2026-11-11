@@ -25,7 +25,10 @@ function journalFiles(): string[] {
   const journal = JSON.parse(readFileSync(path.join(migrationsDir, "meta", "_journal.json"), "utf8")) as {
     entries: { idx: number; tag: string }[];
   };
-  return [...journal.entries].sort((left, right) => left.idx - right.idx).map((entry) => `${entry.tag}.sql`);
+  // Apply order: journal idx, then file name (the journal repeats an idx).
+  return [...journal.entries]
+    .sort((left, right) => left.idx - right.idx || left.tag.localeCompare(right.tag))
+    .map((entry) => `${entry.tag}.sql`);
 }
 
 function read(file: string): MigrationCompatInput {
