@@ -81,9 +81,10 @@ it("binds only the requested website-delivery document written by the consuming 
 // Retained runner-opencode attempt (gha-43077703607): the CEO relayed the direction as its own comment on Morgan's task.
 // It queues beside the person's message and reaches Morgan through normal admission; it is not the person's to steer.
 it("accepts a same-turn steer when the chat lead's own relay stays queued for one normal continuation", () => {
-  const o = valid(); Object.assign(o.state, { leadRelayCount: 1 });
+  const o = valid(); Object.assign(o.state, { leadRelayCount: 1, ordinaryConsumerCount: 1 });
   o.state.queueAfterAction.entries = [{ comment: { id: "relay", body: "Use a blue palette.", authorAgentId: "ceo" } } as never]; o.runs.push({ id: "relay-consumer", status: "succeeded" });
   expect(gradeActiveSteering(o).passed).toBe(true);
+  o.state.ordinaryConsumerCount = 0; expect(gradeActiveSteering(o).passed).toBe(false);
 });
 it("rejects a same-turn steer that left the person's message queued", () => {
   const o = valid(); o.state.queueAfterAction.entries = [{ comment: { id: "blue", body: "Switch to a blue design while you are working.", authorAgentId: null } } as never];

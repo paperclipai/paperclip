@@ -45,7 +45,7 @@ export function gradeActiveSteering(value: unknown) {
   "Only the person's own action can steer the message; the agent's attempt is refused.");
   const retained = after?.entries.some(row => row.comment.id === s.targetId && row.comment.body === direction) === true;
   c.add("delivery-distinct-from-queue-with-no-loss", s.steerObservedBranch === branch && (accepted
-    ? s.acknowledgedSameRun === true && after?.entries.every(row => row.comment.authorAgentId === o.leadId) === true && s.steerAuditBound === true && s.idempotentRetryStatus === 200 && s.ordinaryConsumerCount === 0
+    ? s.acknowledgedSameRun === true && after?.entries.every(row => row.comment.authorAgentId === o.leadId) === true && s.steerAuditBound === true && s.idempotentRetryStatus === 200 && s.ordinaryConsumerCount === (Number(s.leadRelayCount) ? 1 : 0)
     : branch === "unsupported-queued-normal-continuation"
       ? s.steerStatus === 409 && s.steerFailureCode === "steering_unsupported" && s.steeredActivityCount === 0 && retained && s.unsupportedStateRetained === true
         && s.ordinaryConsumerCount === 1 && s.continuationInputBound === true
@@ -144,7 +144,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
       : `The human brief is ready. ${build} Then finish this current turn normally. Keep human requirements queued by Paperclip intact for normal delivery; when one arrives, apply it to website.html, register the updated file, update the delivery document, and complete the task. Do not create tasks or publish externally.`, "utf8");
     const finished = await pollUntil({ label: "Actual selected steering or preserved normal continuation produces its website", deadlineAt: Date.now() + 240_000,
       load: async () => ({ runs: await ctx.allRuns(), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), task: await ctx.input.api.get<Entity>(`/api/issues/${task.id}`) }),
-      accept: v => v.task.status === "done" && v.queue.entries.length === 0 && v.runs.length === (state.steerStatus === 200 ? 2 : 3) && v.runs.every(row => row.status === "succeeded"),
+      accept: v => v.task.status === "done" && v.queue.entries.length === 0 && v.runs.length === (state.steerStatus === 200 && !Number(state.leadRelayCount) ? 2 : 3) && v.runs.every(row => row.status === "succeeded"),
       reject: v => v.runs.length > 3 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Steered work failed or admitted an undeclared execution" : undefined });
     const successors = finished.runs.filter(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId);
     state.ordinaryConsumerCount = successors.length; state.outputRunId = state.steerStatus === 200 ? state.workerRunId : successors[0]?.id;
