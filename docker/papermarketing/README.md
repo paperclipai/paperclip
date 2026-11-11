@@ -54,8 +54,10 @@ execução. Criar projetos e tarefas não exige CMS ou plataforma de publicaçã
 O volume `database` guarda o PostgreSQL. O volume `application` guarda arquivos,
 instruções, configurações e material de autenticação gerenciado pelo upstream.
 Preservar ambos e `.env`; um dump do banco sozinho não é um backup completo.
-As migrações existentes são aplicadas no início. Este primeiro incremento não
-adiciona tabelas: o perfil de marketing usa metadados validados do agente.
+As migrações são aplicadas no início. O perfil de marketing usa metadados
+validados do agente; a integração visual adiciona a tabela
+`company_user_ui_layouts` na migração 0467 para os layouts de cada usuário e
+workspace. Preservar o banco também preserva as notas e os widgets salvos.
 
 Antes de atualizar, pausar o aplicativo e produzir um conjunto consistente.
 Exemplo para shell Linux, a partir de `docker/papermarketing`:
