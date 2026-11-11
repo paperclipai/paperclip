@@ -7,7 +7,10 @@ import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarn
   nativeProviderArtifacts, nativeProviderArtifactReferences, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
+import { createS3StorageProvider } from "../../storage/s3-provider.js";
 import { createStorageService } from "../../storage/service.js";
 import { nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup,
   verifyDurableNativeHarnessBackup, deleteRetiredNativeHarnessBackup } from "./native-harness-backup-storage.js";
@@ -92,6 +95,65 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     for (const run of runs) await settle({ ...fixtures[0], runId: run.id, issueId: run.issueId! }, new Date());
     return fixtures.sort((a, b) => a.scopeDigest.localeCompare(b.scopeDigest));
   }
+  // Staging: two OpenCode per-turn runs had an accepted result, but object
+  // storage answered the backup upload with one 503 SlowDown ("Please reduce
+  // your request rate."). The upload was a single stream PUT that nothing
+  // retried, so the only provider-session backup was lost when the sandbox was
+  // released, and the follow-up could not resume.
+  it.each(["Codex backup", "OpenCode backup with provider artifacts"])("backs off and publishes when object storage throttles each %s upload once", async label => {
+    const f = label.startsWith("OpenCode") ? await artifactFixture() : await fixture();
+    const objects = new Map<string, Buffer>(), throttled = new Set<string>(); let puts = 0;
+    const server = createServer((request, response) => {
+      const key = new URL(request.url!, "http://localhost").pathname;
+      const chunks: Buffer[] = [];
+      request.on("data", chunk => chunks.push(chunk));
+      request.on("end", () => {
+        if (request.method === "PUT") {
+          puts++;
+          if (!throttled.has(key)) {
+            throttled.add(key);
+            response.writeHead(503, { "Content-Type": "application/xml" }).end(
+              "<Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message><RequestId>throttled</RequestId></Error>");
+            return;
+          }
+          objects.set(key, Buffer.concat(chunks));
+          response.writeHead(200, { ETag: `"${createHash("md5").update(objects.get(key)!).digest("hex")}"` }).end();
+        } else if (request.method === "GET" || request.method === "HEAD") {
+          const body = objects.get(key);
+          if (!body) { response.writeHead(404, { "Content-Type": "application/xml" }).end("<Error><Code>NoSuchKey</Code></Error>"); return; }
+          response.writeHead(200, { "Content-Length": body.length, ETag: `"${createHash("md5").update(body).digest("hex")}"`,
+            "Content-Type": "application/octet-stream" }).end(request.method === "GET" ? body : undefined);
+        } else if (request.method === "DELETE") {
+          objects.delete(key); response.writeHead(204).end();
+        } else response.writeHead(500).end();
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    vi.stubEnv("AWS_ACCESS_KEY_ID", "fixture"); vi.stubEnv("AWS_SECRET_ACCESS_KEY", "fixture");
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const storage = createStorageService(createS3StorageProvider({ bucket: "bucket", region: "us-east-1", forcePathStyle: true,
+      endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }));
+    try {
+      await persistNativeHarnessBackup({ ...f, storage });
+      // Every object was refused once and then stored: the harness archive, and
+      // for OpenCode the provider artifact bundle too.
+      expect(throttled.size).toBe(label.startsWith("OpenCode") ? 2 : 1);
+      expect(puts).toBe(2 * throttled.size);
+      expect(objects.size).toBe(throttled.size);
+      const [current] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+        eq(nativeHarnessBackups.status, "current")));
+      expect(current).toBeDefined();
+      const replacement = join(environment.current.runtimeRoot, randomUUID(), "restored-throttled"); ownedHomes.push(replacement);
+      expect(await restoreDurableNativeHarnessBackup({ ...f, storage, backupRoot: replacement })).toBe(true);
+      const providerDirectory = label.startsWith("OpenCode") ? "opencode" : "codex";
+      expect(JSON.parse(await readFile(join(replacement, "current", providerDirectory, "sessions", "history.json"), "utf8"))).toEqual(f.identity);
+    } finally {
+      random.mockRestore(); warn.mockRestore();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
   it("overlaps verified offline backups within a four-transfer bound and restores their bytes", async () => {
     const fixtures = await offlineFixtures(6), f = fixtures[0], gate = deferred();
     const put = f.storage.putFile.bind(f.storage); let active = 0, peak = 0, entered = 0;
