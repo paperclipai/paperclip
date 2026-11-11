@@ -8426,6 +8426,7 @@ export function nativeSessionFailureDisposition(
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
 ) {
   const permanentFailure =
+    sourceFailureCode === "runner_task_admission_rejected" ||
     sourceFailureCode === "runner_ingress_access_rejected" ||
     sourceFailureCode === "native_provider_runtime_missing" ||
     sourceFailureCode === "native_provider_model_rejected" ||
@@ -8543,6 +8544,7 @@ export function nativeSessionFailureSourceCode(
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ
   | "provider_session_open_rejected"
   | "provider_session_open_timeout"
+  | "runner_task_admission_rejected"
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
   | "local_runtime_api_listener_unavailable"
@@ -8583,6 +8585,9 @@ export function nativeSessionFailureSourceCode(
   }
   if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
+  if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
+    return "runner_task_admission_rejected";
+  }
   if (/classification=runtime_package_missing\)/.test(message))
     return "native_provider_runtime_missing";
   if (/native_provider_model_rejected/i.test(message))
@@ -8678,6 +8683,9 @@ export function nativeSessionFailureSourceCode(
 
 const NATIVE_PROVIDER_SIDE_EFFECT_PENDING_ACTION =
   "The saved provider session has an unfinished provider turn, or a tool call whose result never reached the runner, so Paperclip did not replace the session or retry it. Reconcile the action: check whether it ran and record the outcome. The task then continues in a fresh provider session in the same workspace. The saved session and workspace are unchanged.";
+
+const RUNNER_TASK_ADMISSION_REJECTED_ACTION =
+  "The execution provider refused to start this task. Review the admission reason before retrying. Automatic retries are stopped.";
 
 const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
   "The current runner cannot restore this task's saved provider session, so retrying this run cannot succeed. Retry the task to continue in a fresh provider session with the same workspace. The earlier provider conversation is not carried over.";
@@ -12425,6 +12433,8 @@ async function executePaperclipNativeSessionAttempt(
                   ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
                     ? "Provider files could not be verified after two read attempts. Inspect the retained workspace and command transport before retrying the original run."
+                  : sourceFailureCode === "runner_task_admission_rejected"
+                    ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
                   : sourceFailureCode === "runner_ingress_access_rejected"
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
                   : sourceFailureCode === "native_provider_terminal_failed"
@@ -12694,6 +12704,8 @@ async function executePaperclipNativeSessionAttempt(
               ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? nativeCleanupRefusalAction(completedTurnCleanup)
+              : sourceFailureCode === "runner_task_admission_rejected"
+                ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
               : sourceFailureCode === "runner_ingress_access_rejected"
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === "native_provider_terminal_failed"

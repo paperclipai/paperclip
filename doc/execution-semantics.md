@@ -235,6 +235,15 @@ Workspace readiness accepts a completed operation enclosed by a successful
 finalize from the same company, workspace, issue, and run. A nested snapshot
 that finishes before that finalize finishes does not leave a permanent wait.
 Unfinished operations and work after the finalize still require a later save.
+Saved-work recovery ("Recover saved files") ends with its own successful
+finalize for the recovered run. That finalize settles the task's finished
+workspace operations from the same run that started before it, including on a
+workspace that a legacy done child shares with its parent. So the dependents
+of a recovered done child stop waiting, and a saved Retry starts on the next
+dependency pass. Recovery finalizes already saved by earlier releases count,
+with no migration. The recovery finalize never counts as a workspace-wide
+save: another task that started work on a shared workspace while the recovery
+waited for sandbox teardown still waits for its own save.
 
 Daytona file export can preserve an already captured workspace archive when the
 guarded download copy runs out of sandbox capacity. It removes partial copies,
@@ -3000,6 +3009,17 @@ replacement behavior. When a replacement does archive remote continuity state
 and the remote move fails, the local state is not moved, and the run error keeps
 the bounded, redacted exit status and output of that move.
 
+A Runner that keeps no control-plane state for the saved session (none is live
+and no archived authority epoch matches it) reports a typed refusal. This
+happens when a follow-up run starts in a new sandbox and the previous run's
+harness backup was not saved. Resuming again reads the same empty state. When the
+saved session has no turn or runtime request in flight, the driver classifies
+the refusal as `provider_state_incompatible`. The checkpoint's recovery policy
+then decides: a replacement session when the policy allows it, otherwise the run
+ends with `native_provider_state_incompatible`, and Retry or the next message
+continues in a fresh provider session in the same workspace. A session with
+work in flight keeps the unclassified behavior.
+
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. A resume after a graceful shutdown drain suspended the run for reattachment does not consume an attempt, because the run did not cause that restart. A crash restart (no drain record) consumes an attempt only when the attempt it interrupted spent provider work without progress. This is one rule over recorded outcomes, not over intents. The attempt counts as started only when the provider accepted a turn: a `turn.accepted` event or the provider's own `turn.started`. A startup still marked `beforeSpawn`, a runner that spawned but was never admitted, and a `turn.start` the provider did not accept are not charged. Progress means that an accepted turn then completed work: a tool execution or a completed item other than a usage report. An accepted turn with only usage, a failure, or no events is charged, so a resume that fails each time still uses up the budget. The first restart judges the original execution. Each later restart claim records the run's event-log position, and the next claim judges only the attempt recorded after it; a normal retry in between starts a new attempt (at its `native.process_start_requested`), so earlier work does not count for it. A reattachment adopts a provider that already started, so for it only progress counts. A resume that launches a new runner and that the controller died before starting used no provider work, so the next claim replaces it and the attempt ends at the attempt that resume was to run as. Uncharged restarts stop after 12 controller generations, so a crash loop that never starts the provider, or that makes progress and then crashes the controller each time, is still bounded. Legacy runs follow the same rule: a preparation interrupted before provider work started (`providerWorkStarted: false`) is retried in its own `interrupted_preparation` lane, which never spends the failure retry budget and is bounded at 12 retries. This holds for a hard kill as well as a graceful drain: once the killed controller's recorded process is proven gone, restart recovery fails the run as `process_lost` with the bootstrap certificate and schedules it in that lane. A run saved by an older release without a controller process stamp cannot be proven and stays in the charged lane. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
 A due failed remote retry can retain its provider PID after heartbeat completion
@@ -4637,7 +4657,16 @@ recovery then reclaims the retained sandbox's inactive provider cache and saves 
 files again with no provider turn. The export Retry stays available. A read-only
 fallback that only lost its connection (a closed transport, a provider 5xx or rate
 limit, or a sandbox state change) reports its own cause instead, and finalization
-keeps its bounded retry for it.
+keeps its bounded retry for it. When saved-work recovery's own save still finds the
+disk full after a confirmed reclaim, or with nothing to reclaim, the recovery
+generation ends at once as
+`export_interrupted` with cause `sandbox_disk_full` (retry class
+`user_action_required`) and goes to the board. It is not retried on the automatic
+schedule, and it never falls back to the last save, so the run's unsaved files stay
+in the retained sandbox and the workspace keeps its previous saved version. The
+board's Retry saves again; once the save succeeds, the accepted Retry starts one run.
+A reclaim whose outcome is unknown keeps the scheduled retry, because its journal
+resumes on the next attempt and can still free space.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in

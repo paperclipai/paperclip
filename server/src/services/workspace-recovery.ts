@@ -44,6 +44,8 @@ import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-s
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 const sandboxDiskFull = /No space left on device|Disk quota exceeded/i;
+export const SANDBOX_DISK_FULL_RECOVERY_CAUSE = { label: "sandbox_disk_full", code: "ENOSPC", status: null } as const;
+const isSandboxDiskFullSave = (error: unknown) => error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL;
 type Source = { companyId: string; issueId: string; runId: string; actionId: string };
 
 type StopEvidenceSource = Omit<Source, "actionId"> & { actionId?: string };
@@ -258,6 +260,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,attemptId}' = ${reserved.attemptId}`));
     };
     let observing = Promise.resolve();
+    let cacheReclaimUnconfirmed = false;
     const observer = setInterval(() => { observing = observing.then(observeActive).catch(() => undefined); }, 15_000);
     try {
       await observeActive();
@@ -368,13 +371,18 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             let saved: Awaited<ReturnType<typeof save>>;
             try { saved = await save(); }
             catch (error) {
-              if (!(error instanceof Error) || error.message !== REMOTE_WORKSPACE_SANDBOX_DISK_FULL) throw error;
+              if (!isSandboxDiskFullSave(error)) throw error;
               let reclaimed = false;
               try {
-                reclaimed = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
+                const reclaim = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
                   issueId: input.issueId, runId: input.runId, workspaceId: workspace.id, target,
                   assertOwned: ownership.assertHeld });
-              } catch { logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed"); }
+                reclaimed = reclaim.changed;
+                cacheReclaimUnconfirmed = !reclaim.confirmed;
+              } catch {
+                cacheReclaimUnconfirmed = true;
+                logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed");
+              }
               if (!reclaimed) throw error;
               await ownership.assertHeld();
               saved = await save();
@@ -471,7 +479,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         return;
       }
       const classification = classifyNativeWorkspaceFailure(error);
+      const diskFull = !(error instanceof SystemRecoveryFailure) && !cacheReclaimUnconfirmed && isSandboxDiskFullSave(error);
       const failure = error instanceof SystemRecoveryFailure ? error
+        : diskFull ? new SystemRecoveryFailure("export_interrupted", "user_action_required")
         : classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
           ? new SystemRecoveryFailure("snapshot_verification_failed", "service_required")
         : classification.code === "workspace_sync_out_unsafe_archive"
@@ -485,7 +495,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       // A classified failure already names its subsystem.
       const generic = !(error instanceof SystemRecoveryFailure) && failure.retryClass === "retry_transient"
         && (failure.code === "provider_unavailable" || failure.code === "export_interrupted");
-      const cause = generic ? sandboxProviderFailureLabel(error) : undefined;
+      const cause = diskFull ? { ...SANDBOX_DISK_FULL_RECOVERY_CAUSE } : generic ? sandboxProviderFailureLabel(error) : undefined;
       const failed = failSystemRecovery(current!, failure, {
         ...(typeof retryAfterAt === "number" && Number.isFinite(retryAfterAt) ? { retryAfterAt } : {}),
         ...(cause ? { cause } : {}),

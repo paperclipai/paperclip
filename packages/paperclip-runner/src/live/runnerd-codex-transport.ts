@@ -70,7 +70,7 @@ import type {
   HarnessRuntimeRequestResolution,
   PersistedHarnessProviderIdentity,
 } from "../contracts/harness-driver.js";
-import { NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
+import { NativeRunnerResumeStateUnavailableError, NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
   inspectStagedRunAttachment,
@@ -6498,7 +6498,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let rotationSource: Record<string, unknown> | null = null;
     if (controlPlaneState === null) {
       if (!supportsColdRotation) {
-        throw new Error("PRP provider resume state is unavailable");
+        throw new NativeRunnerResumeStateUnavailableError();
       }
       // An interrupted rotation leaves only its archive marker.
       rotationSource = committedRotationSource ?? latestArchivedControlPlaneState(
@@ -6506,7 +6506,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         desiredIdentity,
       );
       if (!rotationSource) {
-        throw new Error("PRP provider resume state is unavailable");
+        throw new NativeRunnerResumeStateUnavailableError();
       }
     } else if (!exactAuthority && warmRecovery === null) {
       if (!supportsColdRotation) {
@@ -6540,7 +6540,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     // A missing control plane either rotated from its archive above or threw.
     if (controlPlaneState === null) {
-      throw new Error("PRP provider resume state is unavailable");
+      throw new NativeRunnerResumeStateUnavailableError();
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
