@@ -4545,7 +4545,12 @@ That transfer can stream without another sandbox archive. Provider exclusions ca
 also omit a nested entry with the same name; credentials remain excluded. Other
 copy failures and timeouts still fail. Workspace capture itself still needs free
 sandbox space. Its failed save operation names `remote_workspace_sandbox_disk_full`
-when that capacity is exhausted, without changing retry or ownership rules.
+when that capacity is exhausted, without changing ownership rules. Finalization
+does not retry that copy-back: nothing frees the sandbox between its attempts.
+The first full-disk failure ends finalization as
+`native_workspace_sync_out_retry_exhausted` and keeps the accepted result. Saved-work
+recovery then reclaims the retained sandbox's inactive provider cache and saves the
+files again with no provider turn. The export Retry stays available.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in

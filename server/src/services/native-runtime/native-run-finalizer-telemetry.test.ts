@@ -902,6 +902,48 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.error).toMatch(/recovery action/);
   });
 
+  it("hands a full sandbox disk to saved-work recovery on the first copy-back failure", async () => {
+    // PAP-4253: three copy-back attempts each hit the same full disk (about 15
+    // minutes apiece across deploys). Nothing frees the sandbox between them;
+    // saved-work recovery reclaims the inactive provider cache, then saves.
+    const fixture = await seedNativeRun();
+    await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "failed" } })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    const failure = await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+      projectRunStatus: true, failureScope: "workspace",
+      failureCause: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+    });
+    expect(failure).toMatchObject({ phase: "terminal_failure", failureCode: "native_workspace_sync_out_retry_exhausted",
+      nextAttemptAt: null });
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.failureDetail).toMatchObject({ recoveryOwner: { kind: "board" }, workspaceFinalizeAttempt: 1,
+      failureCause: expect.stringMatching(/^remote_workspace_sandbox_disk_full/) });
+    const run = await readRunError(fixture.runId);
+    expect(run).toMatchObject({ status: "failed", errorCode: "native_workspace_sync_out_retry_exhausted" });
+    expect(run?.error).toMatch(/sandbox disk is full/);
+    expect(run?.error).not.toMatch(/after 3 attempts/);
+    // The agent's result stays saved for the export recovery; no provider turn is requested.
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId)))
+      .toEqual([expect.objectContaining({ status: "active", ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted" })]);
+  });
+
+  it("keeps other copy-back failures on their bounded retry", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    const failure = await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+      projectRunStatus: true, failureScope: "workspace",
+      failureCause: "remote_workspace_capture_failed: stage=archive code=ECONNRESET",
+    });
+    expect(failure).toMatchObject({ phase: "retryable_failure", failureCode: "native_workspace_sync_out_failed" });
+  });
+
   it("does not attach a finalization error to a provider-succeeded run when provider retries are exhausted", async () => {
     const fixture = await seedNativeRun();
     await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "succeeded", finalizationFailureCount: 2 } })

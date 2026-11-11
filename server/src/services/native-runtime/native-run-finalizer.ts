@@ -309,6 +309,11 @@ export function readWorkspaceFailureCause(value: unknown): string | null {
 
 function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined,
   failureCause?: string | null) {
+  if (failureCode === "native_workspace_sync_out_retry_exhausted" && isSandboxStorageExhausted(failureCause)) {
+    return "Saving the workspace stopped because the sandbox disk is full. The agent's result is kept, and Paperclip "
+      + "saves the files again from the retained sandbox without repeating the agent's work; follow the run's recovery "
+      + `action if that cannot free enough space. Last cause: ${failureCause}`;
+  }
   if (failureCode === "native_workspace_sync_out_retry_exhausted") {
     // This code also covers local-directory and plugin workspaces, so the
     // message stays general and defers to the recovery action's next step.
@@ -324,6 +329,17 @@ function terminalFinalizationFailureMessage(failureCode: string, failureScope: "
   return failureScope === "workspace"
     ? `Native workspace finalization failed (${failureCode}).`
     : `Native run finalization failed (${failureCode}).`;
+}
+
+const REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE = "remote_workspace_sandbox_disk_full";
+/**
+ * A full sandbox disk stops every copy-back the same way: the archive is built
+ * in that sandbox, and nothing frees space between finalizer attempts. It is
+ * recognised on the first failure and handed to saved-work recovery, which can
+ * reclaim the retained sandbox's inactive provider cache before saving again.
+ */
+function isSandboxStorageExhausted(failureCause: string | null | undefined) {
+  return typeof failureCause === "string" && failureCause.startsWith(`${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}:`);
 }
 
 const NATIVE_FINALIZATION_RETRY_LIMIT = 3;
@@ -476,6 +492,7 @@ async function recordRetryableFailure(input: {
       : readFinalizationFailureCount(input.run.resultJson) + 1;
     const budgetExhausted =
       input.permanent === true ||
+      (input.failureScope === "workspace" && isSandboxStorageExhausted(failureCause)) ||
       (workspaceFinalizeAttempt !== null
         ? workspaceFinalizeAttempt >= 3
         : finalizationFailureCount! >= NATIVE_FINALIZATION_RETRY_LIMIT);
