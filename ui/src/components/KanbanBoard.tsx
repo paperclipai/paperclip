@@ -152,6 +152,8 @@ interface Agent {
 
 interface KanbanBoardProps {
   issues: Issue[];
+  columnCounts?: Partial<Record<IssueDisplayStatus, number>>;
+  cappedStatuses?: readonly IssueDisplayStatus[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   compactCards?: boolean;
@@ -168,6 +170,8 @@ interface KanbanBoardProps {
 function KanbanColumn({
   status,
   issues,
+  totalCount,
+  capped = false,
   agents,
   liveIssueIds,
   subtreeLiveCounts,
@@ -179,6 +183,8 @@ function KanbanColumn({
 }: {
   status: IssueDisplayStatus;
   issues: Issue[];
+  totalCount?: number;
+  capped?: boolean;
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   subtreeLiveCounts?: ReadonlyMap<string, number>;
@@ -190,6 +196,7 @@ function KanbanColumn({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status, disabled: status === "monitoring" });
 
+  const count = totalCount === undefined ? `${issues.length}${capped ? "+" : ""}` : Math.max(totalCount, issues.length);
   const isEmpty = issues.length === 0;
   const visibleIssues = collapsed ? [] : issues.slice(0, visibleCount);
   const hiddenCount = Math.max(issues.length - visibleIssues.length, 0);
@@ -205,14 +212,14 @@ function KanbanColumn({
           tone.rail,
           isOver && tone.railOver,
         )}
-        title={`${statusLabel(status)}: ${issues.length}`}
+        title={`${statusLabel(status)}: ${count}`}
       >
         <StatusIcon status={status} />
         <span className={cn("mt-2 [writing-mode:vertical-rl] rotate-180 text-(length:--text-nano) font-semibold uppercase tracking-wide", tone.header)}>
           {statusLabel(status)}
         </span>
         <Badge variant="ghost" className={cn("mt-auto bg-background px-1.5 text-(length:--text-nano) tabular-nums", tone.header)}>
-          {issues.length}
+          {count}
         </Badge>
       </div>
     );
@@ -226,7 +233,7 @@ function KanbanColumn({
           {statusLabel(status)}
         </span>
         <span className={cn("ml-auto text-xs tabular-nums", tone.count)}>
-          {issues.length}
+          {count}
         </span>
       </div>
       <div
@@ -264,7 +271,7 @@ function KanbanColumn({
         ) : null}
         {issues.length > 0 && (hiddenCount > 0 || issues.length >= visibleCount) ? (
           <p className="px-1 pt-1 text-(length:--text-micro) text-muted-foreground">
-            Showing {visibleIssues.length} of {issues.length}
+            Showing {visibleIssues.length} of {count}
           </p>
         ) : null}
       </div>
@@ -391,6 +398,8 @@ function KanbanCard({
 
 export function KanbanBoard({
   issues,
+  columnCounts,
+  cappedStatuses = [],
   agents,
   liveIssueIds,
   compactCards = false,
@@ -467,6 +476,8 @@ export function KanbanBoard({
     <KanbanColumn
       key={status}
       status={status}
+      totalCount={columnCounts?.[status]}
+      capped={cappedStatuses.includes(status)}
       issues={columnIssues[status] ?? []}
       agents={agents}
       liveIssueIds={liveIssueIds}
