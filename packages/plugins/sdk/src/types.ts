@@ -13,6 +13,7 @@ import type {
   PaperclipPluginManifestV1,
   PluginStateScopeKind,
   PluginEventType,
+  PluginEntityQuery,
   PluginToolDeclaration,
   PluginLauncherDeclaration,
   Company,
@@ -64,6 +65,7 @@ import type { PluginPerformActionContext } from "./protocol.js";
 
 export type {
   PaperclipPluginManifestV1,
+  PluginEntityQuery,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
@@ -342,24 +344,6 @@ export interface PluginEntityRecord {
   createdAt: string;
   /** ISO 8601 last-updated timestamp. */
   updatedAt: string;
-}
-
-/**
- * Query parameters for `ctx.entities.list()`.
- */
-export interface PluginEntityQuery {
-  /** Filter by entity type. */
-  entityType?: string;
-  /** Filter by scope kind. */
-  scopeKind?: PluginStateScopeKind;
-  /** Filter by scope ID. */
-  scopeId?: string;
-  /** Filter by external ID. */
-  externalId?: string;
-  /** Maximum number of results to return. */
-  limit?: number;
-  /** Number of results to skip (for pagination). */
-  offset?: number;
 }
 
 // ---------------------------------------------------------------------------

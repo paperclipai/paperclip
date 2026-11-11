@@ -26,6 +26,7 @@ import type {
   PluginLauncherRenderContextSnapshot,
   PluginLauncherRenderEnvironment,
   PluginStateScopeKind,
+  PluginEntityQuery,
   Company,
   Project,
   Issue,
@@ -1744,14 +1745,7 @@ export interface WorkerToHostMethods {
     },
   ];
   "entities.list": [
-    params: {
-      entityType?: string;
-      scopeKind?: PluginStateScopeKind;
-      scopeId?: string;
-      externalId?: string;
-      limit?: number;
-      offset?: number;
-    },
+    params: PluginEntityQuery,
     result: Array<{
       id: string;
       entityType: string;
