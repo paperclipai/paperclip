@@ -20,6 +20,8 @@ import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js"
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 
+const retryWakeReasons = new Set(["task_retry", "retry_failed_run"]);
+
 const savedRecordOperations = new Set([
   "PUT /api/issues/{id}/documents/{key}",
   "POST /api/issues/{id}/comments",
@@ -534,6 +536,12 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
+  const triggerReason = string(input.context.wakeReason) ?? "task_execution";
+  const sourceContext = object(sourceRun?.context);
+  const retriedCandidate = retryWakeReasons.has(triggerReason) && sourceRun
+    ? string(object(object(sourceContext.executionContinuation).trigger).retriedReason) ?? string(sourceContext.wakeReason)
+    : null;
+  const retriedReason = retriedCandidate && !retryWakeReasons.has(retriedCandidate) ? retriedCandidate : null;
   return {
     ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
@@ -547,9 +555,10 @@ export async function buildExecutionContinuation(input: {
     companyId,
     issueId,
     trigger: {
-      reason: string(input.context.wakeReason) ?? "task_execution",
+      reason: triggerReason,
       interactionId: triggerInteraction?.id ?? null,
       sourceRunId,
+      ...(retriedReason ? { retriedReason } : {}),
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
