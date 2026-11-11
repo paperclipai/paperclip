@@ -818,7 +818,7 @@ export class TaskObserver {
     if (this.journey) return this.journey.awaitingBoard();
     if (this.plan.workload === "G1") return Boolean(governance?.approvalSeenAt) && !governance?.decision;
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
-    if (this.plan.workload === "Q1") return awaitingQuestionAnswer(this.record);
+    if (this.plan.workload === "Q1" || this.plan.workload === "Q4") return awaitingQuestionAnswer(this.record);
     return false;
   }
 
@@ -853,10 +853,11 @@ export class TaskObserver {
     if (!sample.reachable || !this.record.issueId) return;
     if (this.plan.workload === "G1") await this.approvalStep(sample, now);
     if (this.plan.workload === "H1") await this.budgetStep(sample, now);
-    if (this.plan.workload === "Q1") {
+    if (this.plan.workload === "Q1" || this.plan.workload === "Q4") {
       await questionStep({ api: this.api, issueId: this.record.issueId, nonce: this.plan.nonce, record: this.record, sample, now,
         // An `answered` fault waits for the answer, so the board may answer before it fires.
-        boardMayAct: this.boardMayAct(sample, "answered"), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
+        boardMayAct: this.boardMayAct(sample, "answered"), sequence: this.plan.workload === "Q4",
+        note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
     }
   }
 
@@ -1035,7 +1036,7 @@ export class TaskObserver {
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
-      ...(this.plan.workload === "Q1" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
+      ...(this.plan.workload === "Q1" || this.plan.workload === "Q4" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
     };
   }

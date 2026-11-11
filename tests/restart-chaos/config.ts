@@ -184,8 +184,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const options: WaveOptions = {
     env,
     adapters,
-    // The governance scenarios (G1, H1), the journeys (Q1–Q3) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1"
+    // The governance scenarios (G1, H1), the journeys (Q1–Q4) and the contention run (L1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4"
       && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault)),
@@ -246,6 +246,11 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // Each K1 kills the whole control plane: a second task in flight would lose its held message to the
     // first task's restart and miss its own, so a restart wave runs one task at a time.
     if (options.providerFaultRestart && options.concurrency !== 1) throw new Error("--provider-fault-restart restarts the whole control plane per task; run it with --concurrency 1");
+    // The board holds its answers until the planned restart fires, but Q4's fault lands only after the
+    // first answer: the restart would wait for an answer that waits for the restart.
+    if ((options.providerFaultRestart || options.providerFaultRestartKinds?.length) && options.workloads.includes("Q4")) {
+      throw new Error("--provider-fault-restart does not cover Q4: its fault needs the first answer, which the board holds until the restart; run Q4 without it");
+    }
   } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
     || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");

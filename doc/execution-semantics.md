@@ -4621,6 +4621,10 @@ If shutdown cannot be proven, the run retains its checkpoint and the named
 `native_governed_wait_settlement_pending` condition. The existing bounded
 same-run recovery schedule owns further settlement; it grants no replacement
 or tool replay. The task explains that work is saved and shutdown is pending.
+The active recovery action that schedules this same run's resume is the
+authority for that resume, not a hold against it: the dispatch gate of the
+resumed run (including a resolved-interaction continuation) skips only that
+action and keeps every other reconciliation hold on the task.
 Exhausted or gated recovery holds continuation and names the shutdown problem.
 Actual provider failures and integrity failures retain their existing meaning.
 Accounting keeps its separate receipt and reconciliation requirements.

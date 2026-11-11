@@ -728,9 +728,9 @@ Codex app-server is late, missing or repeated. `--faults` takes them next to res
 
 `--provider-fault-message terminal` (default) picks the turn's end after an interruption, which a
 governed wait (a saved question or approval) or a board Stop sends. `interrupt_ack` picks the
-acknowledgement of that interruption. Each rule applies once per task, to the first matching message.
-Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
-workloads that interrupt a turn (Q1, S1). G1 does not: its agent asks for approval through `call_api`
+acknowledgement of that interruption. Each rule applies once per task, to the first matching message
+(Q4: the second). Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
+workloads that interrupt a turn (Q1, Q4, S1). G1 does not: its agent asks for approval through `call_api`
 and ends its own turn, so no rule ever applied there (waves w-20261110T050407-s206, w-20261110T063253-s208,
 w-20261110T085554-s211) and the board waited for a restart that never came. A PV1 task passes `provider_fault_applied` only when the
 held message was released; a provider that exited first turned the delay into a drop.
@@ -831,6 +831,25 @@ question must settle on its own first. The oracle checks these points:
 - the brief carries the answer.
 
 Q1 is not a default workload.
+
+**Q4** is Q1 twice in a row. The first answer wakes a resolved-interaction continuation run, and
+that run saves the second question. A provider fault on a Q4 task takes the task's second matching
+message (`occurrence` 2 in the rule): the interruption terminal of the second governed wait is late
+(PV1) or lost (PV2). The wait must still settle without a failed or cancelled run. On a local Codex
+runner the cancelled turn still settles inside the 30 s bound (waves w-20261111T151810-s111 and
+w-20261111T152016-s111), so this cell does not by itself reach `native_governed_wait_settlement_pending`;
+the run-dispatch adapter test covers that state's same-run resume. Staging run e892cf75 (2026-11-11) instead ended `cancelled` with
+`execution_reconciliation_required`: the dispatch gate of the continuation treated the run's own
+scheduled resume as a reconciliation hold, and the task stayed blocked with no Retry.
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q4 --faults PV2 --concurrency 1 --tasks 1 --seed 111
+```
+
+The Q4 oracle checks that two questions were asked and both were answered, that both asking runs
+ended `succeeded`, that no run of the task failed or was cancelled, and that the brief carries both
+answers. Q4 is not a default workload.
 
 ## Database contention (L1, `--db-pressure`)
 

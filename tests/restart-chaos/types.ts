@@ -32,7 +32,7 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskF
  * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
  * T1: a 100-second shell tool in the agent's workspace, so a fault lands while the remote Runner runs a tool (staging class R).
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "F1", "T1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -325,7 +325,7 @@ export interface OracleArtifacts {
   approvals?: Array<{ id: string; status: string; title: string | null }>;
   /** G1 and H1: the board's actions and what the observer saw around them. */
   governance?: GovernanceRecord;
-  /** Q1: the saved question and the task's runs. */
+  /** Q1, Q4: the saved questions and the task's runs. */
   question?: QuestionArtifacts;
   /** PV1–PV3: the shim's log lines for this task. */
   providerFaultEvents?: ProviderFaultEvent[];
@@ -417,7 +417,7 @@ export interface TaskRecord {
   governance?: GovernanceRecord;
   /** K14 waves: the build serving when the task launched. */
   serverBuildAtLaunch?: "upgrade_from" | "current";
-  /** Q1: the saved question and the board's answer. */
+  /** Q1, Q4: the saved questions and the board's answers. */
   question?: QuestionRecord;
   /** Q2, Q3: the board's journey actions (journey-driver.ts). */
   journey?: import("./journeys.js").JourneyRecord;
