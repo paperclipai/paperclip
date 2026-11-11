@@ -9295,10 +9295,10 @@ export function issueRoutes(
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
-    if (attention !== "blocked") {
+    if (attention !== undefined && attention !== "blocked") {
       res
         .status(400)
-        .json({ error: "issues/count currently requires attention=blocked" });
+        .json({ error: "attention must be blocked when provided" });
       return;
     }
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
@@ -9314,6 +9314,33 @@ export function issueRoutes(
       return;
     }
 
+    const includeAgentCreatedTasks = parseOptionalBooleanQuery(req.query.includeAgentCreatedTasks);
+    const includeParticipatedTasks = parseOptionalBooleanQuery(req.query.includeParticipatedTasks);
+    if (includeAgentCreatedTasks === null || includeParticipatedTasks === null) {
+      res.status(400).json({ error: "creation visibility flags must be true or false when provided" });
+      return;
+    }
+    if (includeParticipatedTasks && (req.actor.type !== "board" || !req.actor.userId)) {
+      res.status(403).json({ error: "includeParticipatedTasks requires board authentication" });
+      return;
+    }
+
+    const userFilters: Record<string, string | undefined> = {};
+    for (const name of ["assigneeUserId", "touchedByUserId", "inboxArchivedByUserId", "unreadForUserId"] as const) {
+      const raw = req.query[name] as string | undefined;
+      const value = raw === "me" && req.actor.type === "board" ? req.actor.userId : raw;
+      if (raw === "me" && (!value || req.actor.type !== "board")) {
+        res.status(403).json({ error: `${name}=me requires board authentication` });
+        return;
+      }
+      userFilters[name] = value;
+    }
+    const updatedSince = req.query.updatedSince as string | undefined;
+    if (updatedSince !== undefined && !Number.isFinite(new Date(updatedSince).getTime())) {
+      res.status(400).json({ error: "updatedSince must be a valid ISO 8601 timestamp when provided" });
+      return;
+    }
+
     const countUuidQuery = parseIssueListUuidQueryParams(req.query);
     if (!countUuidQuery.ok) {
       res.status(422).json({ error: countUuidQuery.error });
@@ -9321,14 +9348,20 @@ export function issueRoutes(
     }
     const countUuidFilters = countUuidQuery.values;
 
-    const blockedCountFilters = {
+    const countFilters = {
       readCondition: await issueReadSqlCondition(db, req.actor),
-      attention: "blocked",
+      attention: attention as "blocked" | undefined,
+      includeAgentCreatedTasks,
+      creationVisibilityUserId: includeParticipatedTasks === true && req.actor.type === "board" ? req.actor.userId : undefined,
       status: req.query.status as string | string[] | undefined,
       displayStatus: req.query.displayStatus as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: countUuidFilters.participantAgentId,
-      assigneeUserId: req.query.assigneeUserId as string | undefined,
+      assigneeUserId: userFilters.assigneeUserId,
+      touchedByUserId: userFilters.touchedByUserId,
+      inboxArchivedByUserId: userFilters.inboxArchivedByUserId,
+      unreadForUserId: userFilters.unreadForUserId,
+      updatedSince,
       projectId: countUuidFilters.projectId,
       workspaceId: countUuidFilters.workspaceId,
       executionWorkspaceId: countUuidFilters.executionWorkspaceId,
@@ -9371,7 +9404,7 @@ export function issueRoutes(
       }
       if (trustResolution?.kind === "low_trust_review") {
         const count = await svc.count(companyId, {
-          ...blockedCountFilters,
+          ...countFilters,
           lowTrustBoundary: trustResolution.boundary,
         });
         res.json({ count });
@@ -9382,7 +9415,7 @@ export function issueRoutes(
       let visibleCount = 0;
       while (true) {
         const rows = await svc.list(companyId, {
-          ...blockedCountFilters,
+          ...countFilters,
           limit: ISSUE_LIST_MAX_LIMIT,
           offset,
         });
@@ -9394,7 +9427,7 @@ export function issueRoutes(
       return;
     }
 
-    const count = await svc.count(companyId, blockedCountFilters);
+    const count = await svc.count(companyId, countFilters);
     res.json({ count });
   });
 

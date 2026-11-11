@@ -6959,6 +6959,181 @@ async function lockIssueForCommentMutation(tx: DbTransaction, commentId: string)
   return Boolean(issue);
 }
 
+/** List and count share one condition builder so board totals match the list. */
+async function prepareIssueListQuery(db: Db, companyId: string, filters?: IssueFilters) {
+  const conditions = [
+    eq(issues.companyId, companyId),
+    visibleIssueCondition(),
+  ];
+  // Empty id sets match nothing: inArray renders `false` for [].
+  if (filters?.issueIds) conditions.push(inArray(issues.id, filters.issueIds));
+  if (filters?.parentIds) conditions.push(inArray(issues.parentId, filters.parentIds));
+  if (!filters?.q?.trim() && !filters?.issueIds) {
+    conditions.push(isNull(issues.conversationAgentId));
+    if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
+      conditions.push(nonIdleSlackIssueCondition());
+    }
+  }
+  if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
+  if (filters?.readCondition) conditions.push(filters.readCondition);
+  const creationCondition = creationVisibilityCondition(companyId, filters);
+  if (creationCondition) conditions.push(creationCondition);
+  const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
+    filters?.assigneeAgentId,
+  );
+  assertValidAssigneeAgentFilter(assigneeAgentFilter);
+  const limit =
+    typeof filters?.limit === "number" && Number.isFinite(filters.limit)
+      ? Math.max(1, Math.floor(filters.limit))
+      : undefined;
+  const offset =
+    typeof filters?.offset === "number" && Number.isFinite(filters.offset)
+      ? Math.max(0, Math.floor(filters.offset))
+      : 0;
+  const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
+  const inboxArchivedByUserId =
+    filters?.inboxArchivedByUserId?.trim() || undefined;
+  const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
+  const contextUserId =
+    unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+  const includeBlockedBy = filters?.includeBlockedBy === true;
+  const includeBlockedInboxAttention =
+    filters?.includeBlockedInboxAttention === true;
+  const includeLiveDescendantSummary =
+    filters?.includeLiveDescendantSummary === true;
+  const rawSearch = filters?.q?.trim() ?? "";
+  const hasSearch = rawSearch.length > 0;
+  const taskSearch = parseTaskSearch(rawSearch);
+  // Rank page ids from the user's participation set, then load full rows
+  // only for that page (see IssueFilters.touchedCandidates).
+  const participationCandidates = filters?.touchedCandidates === "participation"
+    && touchedByUserId !== undefined && !hasSearch && !filters?.oneChildPerParent;
+  if (filters?.createdFromIssueId) {
+    conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
+  }
+  if (filters?.descendantOf) {
+    conditions.push(sql<boolean>`
+      ${issues.id} IN (
+        WITH RECURSIVE descendants(id) AS (
+          SELECT ${issues.id}
+          FROM ${issues}
+          WHERE ${issues.companyId} = ${companyId}
+            AND ${issues.parentId} = ${filters.descendantOf}
+          UNION
+          SELECT ${issues.id}
+          FROM ${issues}
+          JOIN descendants ON ${issues.parentId} = descendants.id
+          WHERE ${issues.companyId} = ${companyId}
+        )
+        SELECT id FROM descendants
+      )
+    `);
+  }
+  const lowTrustCondition = lowTrustBoundaryIssueCondition(
+    companyId,
+    filters?.lowTrustBoundary,
+  );
+  if (lowTrustCondition) conditions.push(lowTrustCondition);
+  const displayStatuses = parseStatusFilter(filters?.displayStatus);
+  if (displayStatuses.length) conditions.push(inArray(issueDisplayStatusSql(), displayStatuses));
+  const statuses = parseStatusFilter(filters?.status);
+  if (statuses.length === 1) {
+    conditions.push(eq(issues.status, statuses[0]));
+  } else if (statuses.length > 1) {
+    conditions.push(inArray(issues.status, statuses));
+  }
+  if (assigneeAgentFilter === null) {
+    conditions.push(isNull(issues.assigneeAgentId));
+  } else if (assigneeAgentFilter) {
+    conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
+  }
+  if (filters?.participantAgentId) {
+    conditions.push(
+      participatedByAgentCondition(companyId, filters.participantAgentId),
+    );
+  }
+  if (filters?.assigneeUserId) {
+    conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+  }
+  if (touchedByUserId) {
+    conditions.push(participationCandidates
+      ? sql<boolean>`${issues.id} IN (SELECT "mine_participants"."id" FROM ${mineParticipationIssueIds(db, companyId, touchedByUserId)})`
+      : touchedByUserCondition(companyId, touchedByUserId));
+  }
+  if (inboxArchivedByUserId) {
+    conditions.push(
+      inboxVisibleForUserCondition(companyId, inboxArchivedByUserId),
+    );
+  }
+  if (unreadForUserId) {
+    conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+  }
+  if (filters?.projectId)
+    conditions.push(eq(issues.projectId, filters.projectId));
+  if (filters?.workspaceId) {
+    conditions.push(
+      or(
+        eq(issues.executionWorkspaceId, filters.workspaceId),
+        eq(issues.projectWorkspaceId, filters.workspaceId),
+      )!,
+    );
+  }
+  if (filters?.executionWorkspaceId) {
+    conditions.push(
+      eq(issues.executionWorkspaceId, filters.executionWorkspaceId),
+    );
+  }
+  if (filters?.parentId)
+    conditions.push(eq(issues.parentId, filters.parentId));
+  if (filters?.originKind)
+    conditions.push(eq(issues.originKind, filters.originKind));
+  if (filters?.originKindPrefix)
+    conditions.push(
+      like(issues.originKind, `${filters.originKindPrefix}%`),
+    );
+  if (filters?.originId)
+    conditions.push(eq(issues.originId, filters.originId));
+  if (filters?.hasPlanDocument !== undefined) {
+    conditions.push(
+      hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
+    );
+  }
+  if (!shouldIncludePluginOperationIssues(filters)) {
+    conditions.push(nonPluginOperationIssueCondition());
+  }
+  if (filters?.labelId) {
+    const labeledIssueIds = await db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .where(
+        and(
+          eq(issueLabels.companyId, companyId),
+          eq(issueLabels.labelId, filters.labelId),
+        ),
+      );
+    conditions.push(
+      inArray(
+        issues.id,
+        labeledIssueIds.map((row) => row.issueId),
+      ),
+    );
+  }
+  if (filters?.updatedSince) {
+    const since = new Date(filters.updatedSince);
+    if (Number.isFinite(since.getTime())) {
+      conditions.push(gt(issues.updatedAt, since));
+    }
+  }
+  if (
+    filters?.excludeRoutineExecutions &&
+    !filters?.originKind &&
+    !filters?.originId
+  ) {
+    conditions.push(ne(issues.originKind, "routine_execution"));
+  }
+  return { conditions, limit, offset, contextUserId, includeBlockedBy, includeBlockedInboxAttention, includeLiveDescendantSummary, hasSearch, taskSearch, participationCandidates };
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -8377,182 +8552,7 @@ export function issueService(db: Db) {
         });
       }
 
-      const conditions = [
-        eq(issues.companyId, companyId),
-        visibleIssueCondition(),
-      ];
-      if (filters?.issueIds) {
-        if (filters.issueIds.length === 0) return [];
-        conditions.push(inArray(issues.id, filters.issueIds));
-      }
-      if (filters?.parentIds) {
-        if (filters.parentIds.length === 0) return [];
-        conditions.push(inArray(issues.parentId, filters.parentIds));
-      }
-      if (!filters?.q?.trim() && !filters?.issueIds) {
-        conditions.push(isNull(issues.conversationAgentId));
-        if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
-          conditions.push(nonIdleSlackIssueCondition());
-        }
-      }
-      if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
-      if (filters?.readCondition) conditions.push(filters.readCondition);
-      const creationCondition = creationVisibilityCondition(companyId, filters);
-      if (creationCondition) conditions.push(creationCondition);
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
-        filters?.assigneeAgentId,
-      );
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
-      const limit =
-        typeof filters?.limit === "number" && Number.isFinite(filters.limit)
-          ? Math.max(1, Math.floor(filters.limit))
-          : undefined;
-      const offset =
-        typeof filters?.offset === "number" && Number.isFinite(filters.offset)
-          ? Math.max(0, Math.floor(filters.offset))
-          : 0;
-      const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
-      const inboxArchivedByUserId =
-        filters?.inboxArchivedByUserId?.trim() || undefined;
-      const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
-      const contextUserId =
-        unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
-      const includeBlockedBy = filters?.includeBlockedBy === true;
-      const includeBlockedInboxAttention =
-        filters?.includeBlockedInboxAttention === true;
-      const includeLiveDescendantSummary =
-        filters?.includeLiveDescendantSummary === true;
-      const rawSearch = filters?.q?.trim() ?? "";
-      const hasSearch = rawSearch.length > 0;
-      const taskSearch = parseTaskSearch(rawSearch);
-      // Rank page ids from the user's participation set, then load full rows
-      // only for that page (see IssueFilters.touchedCandidates).
-      const participationCandidates = filters?.touchedCandidates === "participation"
-        && touchedByUserId !== undefined && !hasSearch && !filters?.oneChildPerParent;
-      if (filters?.createdFromIssueId) {
-        conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
-      }
-      if (filters?.descendantOf) {
-        conditions.push(sql<boolean>`
-          ${issues.id} IN (
-            WITH RECURSIVE descendants(id) AS (
-              SELECT ${issues.id}
-              FROM ${issues}
-              WHERE ${issues.companyId} = ${companyId}
-                AND ${issues.parentId} = ${filters.descendantOf}
-              UNION
-              SELECT ${issues.id}
-              FROM ${issues}
-              JOIN descendants ON ${issues.parentId} = descendants.id
-              WHERE ${issues.companyId} = ${companyId}
-            )
-            SELECT id FROM descendants
-          )
-        `);
-      }
-      const lowTrustCondition = lowTrustBoundaryIssueCondition(
-        companyId,
-        filters?.lowTrustBoundary,
-      );
-      if (lowTrustCondition) conditions.push(lowTrustCondition);
-      const displayStatuses = parseStatusFilter(filters?.displayStatus);
-      if (displayStatuses.length) conditions.push(inArray(issueDisplayStatusSql(), displayStatuses));
-      const statuses = parseStatusFilter(filters?.status);
-      if (statuses.length === 1) {
-        conditions.push(eq(issues.status, statuses[0]));
-      } else if (statuses.length > 1) {
-        conditions.push(inArray(issues.status, statuses));
-      }
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-      }
-      if (filters?.participantAgentId) {
-        conditions.push(
-          participatedByAgentCondition(companyId, filters.participantAgentId),
-        );
-      }
-      if (filters?.assigneeUserId) {
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      }
-      if (touchedByUserId) {
-        conditions.push(participationCandidates
-          ? sql<boolean>`${issues.id} IN (SELECT "mine_participants"."id" FROM ${mineParticipationIssueIds(db, companyId, touchedByUserId)})`
-          : touchedByUserCondition(companyId, touchedByUserId));
-      }
-      if (inboxArchivedByUserId) {
-        conditions.push(
-          inboxVisibleForUserCondition(companyId, inboxArchivedByUserId),
-        );
-      }
-      if (unreadForUserId) {
-        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
-      }
-      if (filters?.projectId)
-        conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.workspaceId) {
-        conditions.push(
-          or(
-            eq(issues.executionWorkspaceId, filters.workspaceId),
-            eq(issues.projectWorkspaceId, filters.workspaceId),
-          )!,
-        );
-      }
-      if (filters?.executionWorkspaceId) {
-        conditions.push(
-          eq(issues.executionWorkspaceId, filters.executionWorkspaceId),
-        );
-      }
-      if (filters?.parentId)
-        conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind)
-        conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
-      if (filters?.originId)
-        conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.hasPlanDocument !== undefined) {
-        conditions.push(
-          hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
-        );
-      }
-      if (!shouldIncludePluginOperationIssues(filters)) {
-        conditions.push(nonPluginOperationIssueCondition());
-      }
-      if (filters?.labelId) {
-        const labeledIssueIds = await db
-          .select({ issueId: issueLabels.issueId })
-          .from(issueLabels)
-          .where(
-            and(
-              eq(issueLabels.companyId, companyId),
-              eq(issueLabels.labelId, filters.labelId),
-            ),
-          );
-        if (labeledIssueIds.length === 0) return [];
-        conditions.push(
-          inArray(
-            issues.id,
-            labeledIssueIds.map((row) => row.issueId),
-          ),
-        );
-      }
-      if (filters?.updatedSince) {
-        const since = new Date(filters.updatedSince);
-        if (Number.isFinite(since.getTime())) {
-          conditions.push(gt(issues.updatedAt, since));
-        }
-      }
-      if (
-        filters?.excludeRoutineExecutions &&
-        !filters?.originKind &&
-        !filters?.originId
-      ) {
-        conditions.push(ne(issues.originKind, "routine_execution"));
-      }
+      const { conditions, limit, offset, contextUserId, includeBlockedBy, includeBlockedInboxAttention, includeLiveDescendantSummary, hasSearch, taskSearch, participationCandidates } = await prepareIssueListQuery(db, companyId, filters);
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`-task_search.score`;
       const selectedFields = filters?.listProjection ? {
@@ -8763,69 +8763,15 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
-      if (filters?.readCondition) conditions.push(filters.readCondition);
-      const creationCondition = creationVisibilityCondition(companyId, filters);
-      if (creationCondition) conditions.push(creationCondition);
-      if (!filters?.q?.trim()) {
-        conditions.push(isNull(issues.conversationAgentId));
-        if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
-          conditions.push(nonIdleSlackIssueCondition());
-        }
-      }
-      const displayStatuses = parseStatusFilter(filters?.displayStatus);
-      if (displayStatuses.length) conditions.push(inArray(issueDisplayStatusSql(), displayStatuses));
-      const statuses = parseStatusFilter(filters?.status);
-      if (statuses.length === 1)
-        conditions.push(eq(issues.status, statuses[0]!));
-      else if (statuses.length > 1)
-        conditions.push(inArray(issues.status, statuses));
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
-        filters?.assigneeAgentId,
-      );
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-      }
-      if (filters?.assigneeUserId)
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      if (filters?.projectId)
-        conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.workspaceId) {
-        conditions.push(
-          or(
-            eq(issues.executionWorkspaceId, filters.workspaceId),
-            eq(issues.projectWorkspaceId, filters.workspaceId),
-          )!,
-        );
-      }
-      if (filters?.executionWorkspaceId)
-        conditions.push(
-          eq(issues.executionWorkspaceId, filters.executionWorkspaceId),
-        );
-      if (filters?.parentId)
-        conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind)
-        conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
-      if (filters?.originId)
-        conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.hasPlanDocument !== undefined) {
-        conditions.push(
-          hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
-        );
-      }
-      if (!shouldIncludePluginOperationIssues(filters))
-        conditions.push(nonPluginOperationIssueCondition());
-      const [row] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(issues)
-        .where(and(...conditions));
+      const { conditions, hasSearch, taskSearch } = await prepareIssueListQuery(db, companyId, filters);
+      const source = db.select({ count: sql<number>`count(*)` }).from(issues);
+      const query = hasSearch
+        ? source.innerJoin(sql`(
+            ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), filters?.readCondition)}
+            SELECT id FROM matched
+          ) task_search`, sql`task_search.id = ${issues.id}`)
+        : source;
+      const [row] = await query.where(and(...conditions));
       return Number(row?.count ?? 0);
     },
 
