@@ -1,5 +1,5 @@
 import { Router, type RequestHandler } from "express";
-import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import { getStartupRecoveryState, startupPreservationBlocked } from "../startup-recovery-state.js";
 
 /** Deployment admission, distinct from process liveness and diagnostic health.
  * Bootstrap has already verified its dependencies before publishing ready. This
@@ -7,7 +7,8 @@ import { getStartupRecoveryState } from "../startup-recovery-state.js";
 export function readinessRoutes() {
   const router = Router();
   const reply: RequestHandler = (_req, res) => {
-    const { phase } = getStartupRecoveryState();
+    const recovery = getStartupRecoveryState();
+    const phase = recovery.phase === "ready" && startupPreservationBlocked() ? "recovering" : recovery.phase;
     res.set("Cache-Control", "no-store");
     if (phase !== "ready") res.set("Retry-After", "1");
     res.status(phase === "ready" ? 200 : 503).json({ status: phase });

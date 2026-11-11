@@ -5,6 +5,9 @@ import type { Db } from "@paperclipai/db";
 import { agentFileRoots, agentInstructionWorkingCopies, agents, companies, companySkills, companySkillVersions, environments, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { assertEphemeralServerData, readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerEphemeralPreservationReadiness } from "../services/ephemeral-preservation-readiness.js";
+import { resetStartupRecoveryStateForTests } from "../startup-recovery-state.js";
 import { initializeDurableAgentFiles } from "../services/agent-file-durability.js";
 vi.mock("../storage/index.js", () => ({ getStorageService: () => ({ provider: "s3" }) }));
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -19,6 +22,9 @@ it("refuses volume-dependent rows before readiness and accepts their durable rep
   await db.insert(companies).values({ id: companyId, name: "Deployment gate", issuePrefix: "GATE" });
   await db.insert(agents).values({ id: agentId, companyId, name: "Legacy files" });
   await expect(assertEphemeralServerData(db)).rejects.toThrow("agent_files_require_migration");
+  const delivery = createDeliveryWorkCoordinator({ owner: db, canRun: () => false, onError: () => undefined });
+  try { await expect(registerEphemeralPreservationReadiness(db, delivery)).rejects.toThrow("agent_files_require_migration"); }
+  finally { await delivery.stop(); resetStartupRecoveryStateForTests(); }
   await db.transaction(tx => initializeDurableAgentFiles(tx as unknown as Db, { id: agentId, companyId }));
   await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
   await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "external", instructionsRootPath: "/lost-disk" } }).where(eq(agents.id, agentId));

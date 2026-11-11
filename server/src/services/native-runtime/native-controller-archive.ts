@@ -1,3 +1,5 @@
+import { enableDatabaseWorkNotifications, publishDatabaseWorkHint } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -154,7 +156,13 @@ async function persistLegacyControllerEvidence(db: Db, input: Source & {
     || input.onlineOwner.supervisorDigest !== (input.supervisor === undefined ? null : sha256(input.supervisor)) : !input.writersStopped) {
     throw new Error("native_controller_archive_authority_invalid");
   }
-  if (await hasArchivedLegacyNativeController(db, input)) return;
+  if (await hasArchivedLegacyNativeController(db, input)) {
+    if (input.onlineOwner) {
+      enableDatabaseWorkNotifications(db);
+      await publishDatabaseWorkHint(db, DELIVERY_QUEUES.nativePreservation);
+    }
+    return;
+  }
   const descriptor = legacyNativeControllerArchive(input);
   const root = await mkdtemp(join(tmpdir(), "pc-legacy-controller-archive-"));
   try {

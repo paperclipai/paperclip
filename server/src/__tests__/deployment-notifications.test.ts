@@ -7,6 +7,7 @@ import { enableDatabaseWorkNotifications, publishDatabaseWorkHint, signalDatabas
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { deploymentNotifications } from "../services/deployment-notifications.js";
+import { setStartupPreservationBlocked } from "../startup-recovery-state.js";
 import { setNativeExecutionActive } from "../services/native-runtime/native-active-runs.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -99,4 +100,23 @@ it("disconnects at the handoff deadline, reopens for active execution and become
     await eventually(async () => await listenerCount() === 0);
     expect(fixture.errors).toEqual([]);
   } finally { setNativeExecutionActive(runId, false); stopCompany(); await fixture.stop(); }
+});
+
+
+it("keeps the existing notification channel only while native preservation remains blocked", async () => {
+  setStartupPreservationBlocked(true);
+  const fixture = await open(10);
+  const topic = `preservation-${randomUUID()}`;
+  let received = false;
+  const unsubscribe = subscribeDatabaseWork(a, topic, () => { received = true; });
+  try {
+    fixture.bridge.markReady();
+    await delay(50);
+    expect(await listenerCount()).toBe(1);
+    await b.transaction(tx => signalDatabaseWork(tx, topic));
+    await eventually(async () => received);
+    setStartupPreservationBlocked(false);
+    await eventually(async () => await listenerCount() === 0);
+    expect(fixture.errors).toEqual([]);
+  } finally { setStartupPreservationBlocked(false); unsubscribe(); await fixture.stop(); }
 });

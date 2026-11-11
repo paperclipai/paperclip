@@ -5,7 +5,7 @@ import { isValidLocalEncryptedMasterKey } from "../secrets/local-encrypted-provi
 import { agentInstructionsBundleMode } from "./agent-instructions.js";
 import { skillInstallationMaintenance } from "./skill-installation-maintenance.js";
 import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
-import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
+import { readLocalNativeControllerObligation, type NativeControllerPreservationObligation } from "./native-runtime/native-controller-migration.js";
 import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
 import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
@@ -71,7 +71,8 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
   )).limit(1);
   if (localTrace) blockers.push("provider_traces_require_migration");
   if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
-  if (await hasLocalNativeControllerObligations(db)) blockers.push("native_controllers_require_migration");
+  const nativeController = await readLocalNativeControllerObligation(db);
+  if (nativeController) blockers.push(nativeController.code);
   if (await hasLocalRuntimeSkillObligations(db)) blockers.push("runtime_skill_assets_require_migration");
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
@@ -81,5 +82,6 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
     if (page.inspected < 50 || !page.after) break;
     after = page.after;
   }
-  return { eligible: blockers.length === 0, blockers };
+  const runObligations: NativeControllerPreservationObligation[] = nativeController ? [nativeController] : [];
+  return { eligible: blockers.length === 0, blockers, runObligations };
 }

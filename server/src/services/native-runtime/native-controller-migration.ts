@@ -1,3 +1,4 @@
+import { isStorageUnavailableError } from "../../storage/storage-unavailable.js";
 import { constants } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -295,11 +296,21 @@ async function preservedActiveCheckpoint(db: Db, selected: Selected,
     && bytes === await readPrivateSource(paths.controlFile, 4096);
 }
 
+export type NativeControllerPreservationObligation = {
+  companyId: string; issueId: string; runId: string;
+  code: "native_controllers_require_migration";
+  reason: "local_controller" | "durable_checkpoint" | "archive_unavailable";
+};
+
 export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
+  return await readLocalNativeControllerObligation(db, storage) !== null;
+}
+
+export async function readLocalNativeControllerObligation(db: Db, storage?: StorageService | null): Promise<NativeControllerPreservationObligation | null> {
   const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
-  if (!roots.length) return false;
+  if (!roots.length) return null;
   for await (const { selected, source, databaseRecoveryPreserved } of retainedSources(db, undefined, 8, true)) {
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
     if (databaseRecoveryPreserved) continue;
@@ -319,11 +330,19 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
       const controller = await readPrivateSource(paths.controlFile, 256 * 1024 * 1024);
       const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
         ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
-      if (controller !== undefined && archiveStorage && await hasArchivedLegacyNativeController(db, { ...binding, storage: archiveStorage, controller, supervisor })) continue;
+      if (controller !== undefined && archiveStorage) {
+        try {
+          if (await hasArchivedLegacyNativeController(db, { ...binding, storage: archiveStorage, controller, supervisor })) continue;
+        } catch (error) {
+          if (!isStorageUnavailableError(error)) throw error;
+          return { ...binding, code: "native_controllers_require_migration", reason: "archive_unavailable" };
+        }
+      }
     }
-    if (present || await hasNativeRunnerCheckpoint(db, binding)) return true;
+    if (present || await hasNativeRunnerCheckpoint(db, binding)) return { ...binding, code: "native_controllers_require_migration",
+      reason: present ? "local_controller" : "durable_checkpoint" };
   }
-  return false;
+  return null;
 }
 
 async function preservedPreparationCheckpoint(db: Db, selected: Selected,

@@ -1,3 +1,4 @@
+import { startupPreservationBlocked, subscribeStartupPreservationChanges } from "../startup-recovery-state.js";
 import { createDb, type Db } from "@paperclipai/db";
 import { DATABASE_WORK_CHANNEL, enableDatabaseWorkNotifications, publishDatabaseWorkHint,
   receiveDatabaseWorkNotification, reconcileDatabaseWorkNotifications, subscribeDatabaseWork } from "@paperclipai/db/work-signals";
@@ -18,7 +19,7 @@ export function deploymentNotifications(db: Db, coordinator: ReturnType<typeof c
   let stopped = false, handoffEndsAt: number | null = null;
   let client: ReturnType<typeof createDb>["$client"] | null = null;
   const wanted = () => !stopped && !isIdleTaskDrainActive()
-    && (handoffEndsAt === null || handoffEndsAt > Date.now() || activeNativeExecutionRunIds.size > 0);
+    && (handoffEndsAt === null || handoffEndsAt > Date.now() || activeNativeExecutionRunIds.size > 0 || startupPreservationBlocked());
   async function close() {
     const previous = client; client = null;
     await previous?.end({ timeout: 1 });
@@ -43,6 +44,7 @@ export function deploymentNotifications(db: Db, coordinator: ReturnType<typeof c
     hasPending: async () => false,
     nextRunAt: () => handoffEndsAt !== null && handoffEndsAt > Date.now() ? handoffEndsAt : null,
   });
+  const stopPreservation = subscribeStartupPreservationChanges(listener.wake);
   const stopActive = subscribeActiveNativeExecutions(listener.wake);
   const stopDrain = subscribeTaskDrainChanges(listener.wake);
 
@@ -92,7 +94,7 @@ export function deploymentNotifications(db: Db, coordinator: ReturnType<typeof c
     },
     async stop() {
       stopped = true;
-      stopActive(); stopDrain(); stopEvents();
+      stopPreservation(); stopActive(); stopDrain(); stopEvents();
       await close();
       await Promise.all([listener.stop(), publisher.stop()]);
     },

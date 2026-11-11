@@ -1,3 +1,5 @@
+import { enableDatabaseWorkNotifications } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -200,6 +202,7 @@ export async function persistNativeHarnessBackup(input: {
   providerArtifacts?: NativeProviderArtifactSource;
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
+  if ("kind" in input.owner && input.owner.kind === "settled_controller_archive") enableDatabaseWorkNotifications(input.db);
   if ("kind" in input.owner && input.owner.kind === "settled_native_harness_backup"
     && (input.scopeDigest !== input.owner.scopeDigest || input.root !== input.owner.root)) fail("preservation_source_changed");
   if (input.providerArtifacts) {
@@ -267,6 +270,9 @@ export async function persistNativeHarnessBackup(input: {
             .where(and(eq(nativeHarnessBackups.id, ref.id), eq(nativeHarnessBackups.status, "pending")));
           return;
         }
+      }
+      if ("kind" in input.owner && input.owner.kind === "settled_controller_archive") {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.nativePreservation, input.owner.runId);
       }
       await tx.update(nativeHarnessBackups).set({ status: "superseded", updatedAt: new Date() })
         .where(and(scope(ref), eq(nativeHarnessBackups.status, "current")));

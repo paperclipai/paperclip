@@ -89,6 +89,14 @@ try {
         if (message.command === "resume") stopTaskDrain();
         if (fakeClock) mock.timers.tick(0);
         process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), incomingHttp: incomingHttp?.snapshot(), now: Date.now(), announcement: announcement?.snapshot(), managed: managedObservation?.(), workCapture: workCapture?.snapshot() });
+      } else if (message.command === "nativeControllerIdentity") {
+        const { currentNativeControllerIdentity } = await import("../../../services/native-runtime/native-restart-recovery.js");
+        process.send?.({ id: message.id, identity: await currentNativeControllerIdentity() });
+      } else if (message.command === "idleLocalWork") {
+        const { readIdleLocalWork } = await import("../../../services/idle-local-work.js");
+        const observations: Array<{ label: string; state: string }> = [];
+        const state = await readIdleLocalWork({ diagnostic: (label, state) => observations.push({ label, state }) });
+        process.send?.({ id: message.id, state, observations });
       } else if (message.command === "prepareGitHub" || message.command === "settleGitHub") {
         const { prepareGitHubConfiguration, settleGitHubConfiguration } = await import("./github-configuration-producer.js");
         const input = message.github;

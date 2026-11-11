@@ -70,6 +70,8 @@ export interface MaintenanceRuntimeSecrets {
   PAPERCLIP_SECRETS_MASTER_KEY: string;
 }
 export interface MaintenanceServerOptions {
+  homeDirectory?: string;
+  ephemeral?: boolean;
   runtimeSecrets?: Readonly<MaintenanceRuntimeSecrets>;
   childEntry?: URL;
   childPreload?: URL;
@@ -120,6 +122,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
   if (configuration && options.clock) throw new Error("Configured acceptance requires the real clock");
   const artifacts = await createMaintenanceArtifacts(options.artifactRoot);
   const { directory, retainedDirectory } = artifacts;
+  const home = options.homeDirectory ?? directory;
   const reservation = createServer();
   let stopProxy = async () => {};
   let stopChild = async () => {};
@@ -171,8 +174,8 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
           PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_ORIGINS: JSON.stringify([options.githubOrigin, options.cloud?.s3Origin].filter(Boolean)),
         } : {}),
         PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
-        PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
-        PAPERCLIP_RUNNER_STATE_DIR: path.join(directory, "durable-sessions"),
+        PAPERCLIP_HOME: home, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
+        PAPERCLIP_RUNNER_STATE_DIR: path.join(home, "durable-sessions"),
         DATABASE_URL: proxy.url, DATABASE_POOL_MAX: options.databasePoolMax === undefined ? (configuration ? "4" : "6") : String(options.databasePoolMax), DATABASE_APPLICATION_NAME: "maintenance-integration-test",
         PAPERCLIP_AGENT_JWT_SECRET: runtimeSecrets?.PAPERCLIP_AGENT_JWT_SECRET ?? randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: runtimeSecrets?.PAPERCLIP_DECISION_SIGNING_SECRET ?? randomUUID(),
         PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: runtimeSecrets?.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET ?? randomUUID(), BETTER_AUTH_SECRET: runtimeSecrets?.BETTER_AUTH_SECRET ?? randomUUID(),
@@ -202,6 +205,9 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
           ...(options.tenantActor ? { PAPERCLIP_MAINTENANCE_MANAGED_TENANT: "1" } : {}),
           AWS_ACCESS_KEY_ID: "maintenance-fixture", AWS_SECRET_ACCESS_KEY: "maintenance-fixture", AWS_EC2_METADATA_DISABLED: "true",
         } : {}),
+        ...(options.ephemeral ? { PAPERCLIP_EPHEMERAL_SERVER: "true", PAPERCLIP_DURABLE_AGENT_FILES: "true",
+          PAPERCLIP_SHARED_UI_ASSETS: "true", PAPERCLIP_DATABASE_LISTEN_URL: proxy.url,
+          PAPERCLIP_BUILD_COMMIT: "a".repeat(40), RAILWAY_DEPLOYMENT_ID: "00000000-0000-4000-8000-000000000001" } : {}),
         PAPERCLIP_MIGRATION_PROMPT: "never", PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_MANAGED_RUNTIME_HTTPS: "off",
       },
       stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -259,6 +265,13 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     const port = await withDeadline(ready, 90_000, () => `Maintenance boot timed out: ${output.slice(-12_000)}`);
     return {
       proxy, directory, retainedDirectory, port, stop, pid: child.pid, get childGuard() { return childGuard; },
+      async crash() {
+        if (child.exitCode !== null || child.signalCode !== null) throw new Error("Maintenance child already exited");
+        child.kill("SIGKILL");
+        await withDeadline(exited, 5_000, () => "Owned maintenance child did not exit after crash");
+        await stop();
+      },
+      nativeControllerIdentity: () => request<{ identity: { bootId: string; pid: number; processStartedAt: string; hostHash: string } }>("nativeControllerIdentity"),
       async api<T>(method: string, route: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
         if (options.clock) await request("realtime");
         try {
@@ -291,6 +304,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       produceChatHistory: () => request("produceChatHistory"),
       trace: () => request("trace"),
       snapshot: () => request<Snapshot>("snapshot"),
+      idleLocalWork: () => request<{ state: string; observations: Array<{ label: string; state: string }> }>("idleLocalWork"),
       drain: () => request<Snapshot>("drain"), resume: () => request<Snapshot>("resume"),
       realtime: () => request<Snapshot>("realtime"),
       async advance(ms: number) {

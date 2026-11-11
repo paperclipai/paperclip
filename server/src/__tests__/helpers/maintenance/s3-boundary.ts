@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 
 /** Adapted from the real-SDK loopback fixture in managed-cloud-prerequisites.test.ts.
  * Small owned objects only; no provider credentials/IAM/durability qualification. */
-export function createMaintenanceS3Boundary() {
+export function createMaintenanceS3Boundary(options: { reject?: (method: string, path: string) => boolean } = {}) {
   const objects = new Map<string, { bytes: Buffer; etag: string; contentType: string }>();
   const requests: Array<{ method: string; path: string; status: number }> = [];
   const errors: string[] = [];
@@ -14,6 +14,9 @@ export function createMaintenanceS3Boundary() {
     const reply = (status: number, body?: string | Buffer) => { operation.status = status; res.statusCode = status; res.end(body); };
     try {
       if (!url.pathname.startsWith('/maintenance-test/') && url.pathname !== '/maintenance-test') throw new Error('Unknown S3 fixture bucket');
+      if (options.reject?.(req.method!, url.pathname)) {
+        res.setHeader('content-type', 'application/xml'); reply(503, '<Error><Code>ServiceUnavailable</Code></Error>'); return;
+      }
       const key = decodeURIComponent(url.pathname.slice('/maintenance-test/'.length));
       if (req.method === 'GET' && ['/maintenance-test', '/maintenance-test/'].includes(url.pathname) && url.searchParams.get('list-type') === '2'
         && [...url.searchParams.keys()].every(key => ['list-type', 'prefix', 'max-keys', 'x-id'].includes(key))) {

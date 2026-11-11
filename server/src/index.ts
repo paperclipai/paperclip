@@ -63,10 +63,11 @@ import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./ser
 import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js";
 import { registerScheduledWork } from "./services/scheduled-work.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
-import { assertEphemeralServerConfig, assertEphemeralServerData } from "./services/ephemeral-server-contract.js";
+import { assertEphemeralServerConfig } from "./services/ephemeral-server-contract.js";
 import { deploymentNotifications } from "./services/deployment-notifications.js";
 import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
 import { isIdleTaskDrainActive, readTaskDrain, beginIdleTrackedWork, trackIdleWork, registerTaskDrainExpiryWork } from "./services/task-admission.js";
+import { registerEphemeralPreservationReadiness } from "./services/ephemeral-preservation-readiness.js";
 import { markIdleStartupComplete, registerIdleLocalWorkProbe } from "./services/idle-local-work.js";
 import { idleBackupWakeMarker } from "./services/idle-database-backup.js";
 import { createDatabaseBackupOwner } from "./services/database-backup-owner.js";
@@ -2000,7 +2001,7 @@ async function startServerWithDatabaseTeardown(
   }
 
   if (deploymentListenUrl !== null) {
-    await assertEphemeralServerData(db as any);
+    await registerEphemeralPreservationReadiness(db as any, deliveryWork);
     const qualification = await qualifyCloudConfigurationForCurrentImage(db as any);
     if (qualification && !qualification.configurationPackagesEligible) {
       throw new Error(`Volume-free server packages are not eligible: ${qualification.blockers.map(blocker => blocker.code).join(", ")}`);
