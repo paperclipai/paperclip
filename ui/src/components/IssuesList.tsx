@@ -12,6 +12,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCal
 import type { ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
+import { useTx, useUiLanguage } from "@/i18n/tx";
 import { accessApi } from "../api/access";
 import { describeError } from "../api/errors";
 import { useDialogActions } from "../context/DialogContext";
@@ -597,6 +598,8 @@ function SubIssueProgressSummaryStrip({
   issueLinkState?: unknown;
   parentIssueIdForCostSummary?: string;
 }) {
+  const tx = useTx();
+  const language = useUiLanguage();
   const target = summary.target;
   const targetIssue = target?.issue ?? null;
   const targetPathId = targetIssue?.identifier ?? targetIssue?.id ?? "";
@@ -627,13 +630,19 @@ function SubIssueProgressSummaryStrip({
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="font-medium text-foreground">
-              {summary.doneCount}/{summary.totalCount} done
+              {language === "ru"
+                ? `${summary.doneCount}/${summary.totalCount} готово`
+                : `${summary.doneCount}/${summary.totalCount} done`}
             </span>
             <span className="text-muted-foreground">
-              {summary.inProgressCount} in progress
+              {language === "ru"
+                ? `${summary.inProgressCount} в работе`
+                : `${summary.inProgressCount} in progress`}
             </span>
             <span className="text-muted-foreground">
-              {summary.blockedCount} blocked
+              {language === "ru"
+                ? `${summary.blockedCount} заблокировано`
+                : `${summary.blockedCount} blocked`}
             </span>
             {showCostSummary && (
               <>
@@ -655,7 +664,7 @@ function SubIssueProgressSummaryStrip({
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-tasks completion progress"
+            aria-label={tx("Sub-tasks completion progress")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -666,7 +675,7 @@ function SubIssueProgressSummaryStrip({
                 key={status}
                 className={cn("h-full", progressSegmentClasses[status])}
                 style={{ width: `${(count / summary.totalCount) * 100}%` }}
-                title={`${issueStatusLabels[status]}: ${count}`}
+                title={`${tx(issueStatusLabels[status])}: ${count}`}
                 aria-hidden="true"
               />
             ))}
@@ -677,7 +686,7 @@ function SubIssueProgressSummaryStrip({
           {target && targetIssue ? (
             <>
               <div className="text-xs font-medium text-muted-foreground">
-                {target.kind === "next" ? "Next up" : "Waiting on blockers"}
+                {target.kind === "next" ? tx("Next up") : tx("Waiting on blockers")}
               </div>
               <Link
                 to={createIssueDetailPath(targetPathId)}

@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { translateTextNode, useTx, withTranslatedTextProps } from "@/i18n/tx"
 
 const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
@@ -50,8 +51,10 @@ const Button = React.forwardRef<
   variant = "default",
   size = "default",
   asChild = false,
+  children,
   ...props
 }, ref) {
+  const tx = useTx()
   const Comp = asChild ? Slot.Root : "button"
 
   return (
@@ -61,8 +64,10 @@ const Button = React.forwardRef<
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
-      {...props}
-    />
+      {...withTranslatedTextProps(tx, props)}
+    >
+      {asChild ? children : translateTextNode(tx, children)}
+    </Comp>
   )
 })
 

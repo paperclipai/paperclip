@@ -11,6 +11,7 @@ import {
   taskStatusVarDefault,
 } from "../lib/status-colors";
 import { StatusGlyph } from "./StatusGlyph";
+import { useTx } from "@/i18n/tx";
 
 /** Inline `--sc` local var pointing a status helper at a base-hue CSS var. */
 function scStyle(cssVar: string): CSSProperties {
@@ -29,6 +30,7 @@ function sentenceCaseStatus(status: string): string {
 // design-allow(pill-pattern): DECISION-SHEET.md C8 - status badges keep the bespoke WCAG-tuned
 // .status-chip color-mix mechanic and do not wrap the Badge primitive.
 export function StatusBadge({ status, label, className }: { status: string; label?: string; className?: string }) {
+  const tx = useTx();
   return (
     <span
       className={cn(
@@ -37,7 +39,7 @@ export function StatusBadge({ status, label, className }: { status: string; labe
         className
       )}
     >
-      {label ?? status.replace(/[_-]/g, " ")}
+      {tx(label ?? status.replace(/[_-]/g, " "))}
     </span>
   );
 }
@@ -48,6 +50,7 @@ export function StatusBadge({ status, label, className }: { status: string; labe
  * renders as "idle" (alias for dead code).
  */
 export function AgentStatusBadge({ status }: { status: string }) {
+  const tx = useTx();
   const cssVar = agentStatusVar[status] ?? agentStatusVarDefault;
   const label = status === "active" ? "idle" : status;
   return (
@@ -55,7 +58,7 @@ export function AgentStatusBadge({ status }: { status: string }) {
       className="status-chip inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0"
       style={scStyle(cssVar)}
     >
-      {label.replace(/_/g, " ")}
+      {tx(label.replace(/_/g, " "))}
     </span>
   );
 }
@@ -86,6 +89,7 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * unaffected.
  */
 export function IssueStatusBadge(props: TaskStatusPresentationInput) {
+  const tx = useTx();
   const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(props);
   const cssVar = taskStatusVar[glyphStatus] ?? taskStatusVarDefault;
   return (
@@ -95,10 +99,10 @@ export function IssueStatusBadge(props: TaskStatusPresentationInput) {
         glyphStatus === "cancelled" && "line-through"
       )}
       style={scStyle(cssVar)}
-      title={ariaLabel === label ? undefined : ariaLabel}
+      title={ariaLabel === label ? undefined : tx(ariaLabel)}
     >
       <StatusGlyph status={glyphStatus} size="sm" />
-      {sentenceCaseStatus(label.toLowerCase())}
+      {tx(sentenceCaseStatus(label.toLowerCase()))}
     </span>
   );
 }

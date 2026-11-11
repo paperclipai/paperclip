@@ -11,6 +11,7 @@ import {
   type ToastTone,
 } from "../context/ToastContext";
 import { cn } from "../lib/utils";
+import { useTx } from "@/i18n/tx";
 
 const toneClasses: Record<ToastTone, string> = {
   info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/25 dark:bg-sky-950/60 dark:text-sky-100",
@@ -33,6 +34,7 @@ function AnimatedToast({
   toast: ToastItem;
   onDismiss: (id: string) => void;
 }) {
+  const tx = useTx();
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -62,10 +64,10 @@ function AnimatedToast({
           <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", toneDotClasses[toast.tone])} />
         )}
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold leading-5">{toast.title}</p>
+          <p className="text-sm font-semibold leading-5">{tx(toast.title)}</p>
           {toast.body && (
             <p className="mt-1 text-xs leading-4 opacity-70">
-              {toast.body}
+              {tx(toast.body)}
             </p>
           )}
           {toast.action &&

@@ -19,6 +19,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { useTx } from "@/i18n/tx";
 import { createPortal } from "react-dom";
 import {
   CodeMirrorEditor,
@@ -772,6 +773,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
+  const tx = useTx();
+  // The ghost text is the same string the empty-editor check compares against.
+  const visiblePlaceholder = placeholder ? tx(placeholder) : placeholder;
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   function isSubmitShortcut(event: KeyboardEvent<HTMLElement>): boolean {
     return !readOnly
@@ -939,7 +943,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const activeElement = document.activeElement;
       // A focused editor is the user's, not ours to second-guess.
       if (activeElement === editable || editable.contains(activeElement)) return false;
-      return isRichEditorDomEmpty(editable, editorValue, placeholder);
+      return isRichEditorDomEmpty(editable, editorValue, visiblePlaceholder);
     };
 
     // Two phases. Mounting (and especially remounting after "Retry rich
@@ -980,7 +984,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       window.clearTimeout(confirmTimeoutId);
       observer.disconnect();
     };
-  }, [editorValue, placeholder, richEditorError]);
+  }, [editorValue, visiblePlaceholder, richEditorError]);
 
   const hasImageUpload = Boolean(imageUploadHandler);
 
@@ -1398,7 +1402,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           ref={fallbackTextareaRef}
           aria-label={ariaLabel}
           value={value}
-          placeholder={placeholder}
+          placeholder={visiblePlaceholder}
           readOnly={readOnly}
           onChange={(event) => {
             if (readOnly) return;
@@ -1579,7 +1583,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           markdown={editorValue}
           iconComponentFor={editorIconFor}
           suppressHtmlProcessing
-          placeholder={placeholder}
+          placeholder={visiblePlaceholder}
           readOnly={readOnly}
           onChange={(rawNext, initialMarkdownNormalize) => {
             if (readOnly) return;

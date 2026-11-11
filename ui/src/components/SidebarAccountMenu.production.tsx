@@ -23,8 +23,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { LanguageSwitcher } from "./LanguageSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+import { useTx } from "@/i18n/tx";
 
 const INVITES_PATH = "/company/settings/members?tab=invites";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -69,6 +71,7 @@ function MenuAction({
   external = false,
   topLevel = false,
 }: MenuActionProps) {
+  const tx = useTx();
   const className =
     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60";
 
@@ -78,8 +81,8 @@ function MenuAction({
         <Icon className="size-4" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium text-foreground">{label}</span>
-        <span className="block text-xs text-muted-foreground">{description}</span>
+        <span className="block text-sm font-medium text-foreground">{tx(label)}</span>
+        <span className="block text-xs text-muted-foreground">{tx(description)}</span>
       </span>
     </>
   );
@@ -120,6 +123,7 @@ export function SidebarAccountMenu({
   open: controlledOpen,
   onOpenChange,
 }: SidebarAccountMenuProps) {
+  const tx = useTx();
   const cloud = useCloudInstance();
   const isCloud = Boolean(cloud);
   // Invites live on the Members page (or in Cloud's People settings). Hide the
@@ -247,6 +251,7 @@ export function SidebarAccountMenu({
                 external
                 onClick={() => setOpen(false)}
               />
+              <LanguageSwitcher variant="menu-action" onAfterChange={() => setOpen(false)} />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
@@ -263,10 +268,10 @@ export function SidebarAccountMenu({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-foreground">
-                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                      {signOutMutation.isPending ? tx("Signing out...") : tx("Sign out")}
                     </span>
                     <span className="block text-xs text-muted-foreground">
-                      End this browser session.
+                      {tx("End this browser session.")}
                     </span>
                   </span>
                 </button>

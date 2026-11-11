@@ -26,6 +26,7 @@ import {
   Users,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { useTx } from "@/i18n/tx";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -59,6 +60,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
 }
 
 function ClassicSidebar({ children }: { children?: ReactNode }) {
+  const tx = useTx();
   const { openNewIssue } = useDialogActions();
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
   const chatNavigation = useAgentChatNavigation();
@@ -155,19 +157,19 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               <button
                 onClick={() => openNewIssue()}
                 data-slot="icon-button"
-                aria-label={rail ? "New Task" : undefined}
+                aria-label={rail ? tx("New Task") : undefined}
                 className={cn(
                   "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                 )}
               >
                 <SquarePen className="h-4 w-4 shrink-0" />
-                <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New Task</span>
+                <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>{tx("New Task")}</span>
               </button>
             );
             return rail ? (
               <Tooltip>
                 <TooltipTrigger asChild>{newTaskButton}</TooltipTrigger>
-                <TooltipContent side="right">New Task</TooltipContent>
+                <TooltipContent side="right">{tx("New Task")}</TooltipContent>
               </Tooltip>
             ) : (
               newTaskButton

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Copy, Check, Loader2 } from "lucide-react";
 
 import { Button } from "./ui/button";
+import { useTx, useUiLanguage } from "@/i18n/tx";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   CARD_REVEAL_FIELD,
@@ -90,12 +91,13 @@ export function OnboardingLoginCard({
   loading?: boolean;
   children: ReactNode;
 }) {
+  const tx = useTx();
   if (loading) {
     return (
       <div
         className="flex min-h-(--sz-108px) items-center justify-center rounded-xl bg-muted/40"
         role="status"
-        aria-label="Preparing the sign-in"
+        aria-label={tx("Preparing the sign-in")}
       >
         <Loader2 className="size-4 animate-spin text-muted-foreground" />
       </div>
@@ -122,7 +124,7 @@ export function OnboardingLoginCard({
         initial={{ opacity: 0, y: CARD_REVEAL_TRAVEL }}
         animate={{ opacity: 1, y: 0, transition: CARD_REVEAL_INSTRUCTION }}
       >
-        <span className="text-xs text-muted-foreground">{instruction}</span>
+        <span className="text-xs text-muted-foreground">{typeof instruction === "string" ? tx(instruction) : instruction}</span>
       </motion.div>
       {/* A beat behind the sentence above it, so the card reads as one thing
           unfolding and the instruction has been read by the time the field is
@@ -390,15 +392,16 @@ export function OnboardingCardField({
    */
   autoFocus?: boolean;
 }) {
+  const tx = useTx();
   return (
     <input
       // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
       autoFocus={autoFocus}
-      aria-label={label}
+      aria-label={label ? tx(label) : undefined}
       type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
-      placeholder={placeholder}
+      placeholder={placeholder ? tx(placeholder) : undefined}
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
@@ -434,6 +437,7 @@ export function ProviderSubscriptionCard({
   loading?: boolean;
   children: ReactNode;
 }) {
+  const tx = useTx();
   return (
     <OnboardingLoginCard
       loading={loading}
@@ -450,12 +454,12 @@ export function ProviderSubscriptionCard({
             rel="noreferrer noopener"
             className="underline underline-offset-2 hover:text-foreground"
           >
-            Sign in to {providerName}
+            {tx(`Sign in to ${providerName}`)}
           </a>
-          {mode === "browser_redirect" ? " then return here"
+          {mode === "browser_redirect" ? tx(" then return here")
             : mode === "submitted_code"
-            ? " then come back and enter authorization code"
-            : " by providing the authorization code below"}
+            ? tx(" then come back and enter authorization code")
+            : tx(" by providing the authorization code below")}
         </>
       )}
     >
@@ -476,9 +480,12 @@ export function ProviderApiKeyCard({
 }: Omit<Parameters<typeof OnboardingCardField>[0], "masked" | "label"> & {
   providerName: string;
 }) {
+  const language = useUiLanguage();
   return (
     <OnboardingLoginCard
-      instruction={`Provide your ${providerName} API key to connect`}
+      instruction={language === "ru"
+        ? `Укажите ключ API ${providerName}, чтобы подключить`
+        : `Provide your ${providerName} API key to connect`}
     >
       <OnboardingCardField {...field} label="API key" masked />
     </OnboardingLoginCard>
@@ -490,6 +497,8 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
   login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
+  const tx = useTx();
+  const language = useUiLanguage();
   const [showCommand, setShowCommand] = useState(false);
   const [browserCode, setBrowserCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -509,14 +518,21 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
       setSubmitting(false);
     }
   }
-  if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Preparing sign-in…</p>;
+  if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{tx("Preparing sign-in…")}</p>;
   const ready = login?.status === "ready";
+  const signedInName = login?.accountLabel ?? provider;
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
     {ready ? <>
-      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{login?.accountLabel ?? provider} is signed in. Click Connect to use this account.</p>
-      {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => browserLogin ? login?.retry() : setShowCommand(true)}>Use a different account</button>}
-    </> : !browserLogin && <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
-    {browserLogin && !ready && !login?.authorizationUrl && !login?.error && <p role="status">Preparing browser sign-in…</p>}
+      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{language === "ru" ? `${signedInName} вошёл. Нажмите «Подключить», чтобы использовать эту учётную запись.` : `${signedInName} is signed in. Click Connect to use this account.`}</p>
+      {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => browserLogin ? login?.retry() : setShowCommand(true)}>{tx("Use a different account")}</button>}
+    </> : !browserLogin && <p>{isolated
+      ? (language === "ru"
+        ? `Войдите в ${provider} для этого подключения на машине, где запущен Paperclip. Вход в вашем терминале останется отдельным.`
+        : `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.`)
+      : (language === "ru"
+        ? `Подключение использует локальную учётную запись ${provider} на машине, где запущен Paperclip.`
+        : `Connect uses your local ${provider} account on the machine running Paperclip.`)}</p>}
+    {browserLogin && !ready && !login?.authorizationUrl && !login?.error && <p role="status">{tx("Preparing browser sign-in…")}</p>}
     {browserLogin && !ready && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
       providerName={connectSourceName(adapterType)}
       authorizationUrl={login.authorizationUrl}
@@ -540,6 +556,6 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
       </div>}
     </>}
     {login?.error && <p role="alert">{login.error}</p>}
-    {login && !login.preparing && !ready && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
+    {login && !login.preparing && !ready && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? tx("Start sign-in again") : tx("Check again")}</button>}
   </div>;
 }

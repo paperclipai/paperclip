@@ -3,6 +3,7 @@ import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { translateTextNode, useTx, withTranslatedTextProps } from "@/i18n/tx"
 import { Popover, PopoverContent, PopoverTrigger } from "./popover"
 
 export const nativeSelectClassName = "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -200,14 +201,18 @@ function SelectContent({
 
 function SelectLabel({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Label>) {
+  const tx = useTx()
   return (
     <SelectPrimitive.Label
       data-slot="select-label"
       className={cn("text-muted-foreground px-2 py-1.5 text-xs", className)}
-      {...props}
-    />
+      {...withTranslatedTextProps(tx, props)}
+    >
+      {translateTextNode(tx, children)}
+    </SelectPrimitive.Label>
   )
 }
 
@@ -216,6 +221,7 @@ function SelectItem({
   children,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Item>) {
+  const tx = useTx()
   return (
     <SelectPrimitive.Item
       data-slot="select-item"
@@ -223,7 +229,7 @@ function SelectItem({
         "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
         className
       )}
-      {...props}
+      {...withTranslatedTextProps(tx, props)}
     >
       <span
         data-slot="select-item-indicator"
@@ -233,7 +239,7 @@ function SelectItem({
           <CheckIcon className="size-4" />
         </SelectPrimitive.ItemIndicator>
       </span>
-      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      <SelectPrimitive.ItemText>{translateTextNode(tx, children)}</SelectPrimitive.ItemText>
     </SelectPrimitive.Item>
   )
 }

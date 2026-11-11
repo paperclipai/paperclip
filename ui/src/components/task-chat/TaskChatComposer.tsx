@@ -1,3 +1,5 @@
+import { composerPlaceholder } from "@/i18n/task-chat-copy";
+import { useUiLanguage } from "@/i18n/tx";
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
 import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
@@ -316,23 +318,6 @@ function AssigneeIdentityAvatar({
   return null;
 }
 
-/** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
-function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
-  if (mobile) {
-    if (mode === "planning") return `Plan with ${agentName}…`;
-    if (mode === "ask") return `Ask ${agentName}…`;
-    return `Message ${agentName}…`;
-  }
-  switch (mode) {
-    case "planning":
-      return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
-    case "ask":
-      return `Ask ${agentName} a question — read-only, nothing runs…`;
-    default:
-      return `Message ${agentName} — describe what you want done…`;
-  }
-}
-
 type ComposerAttachment = {
   id: string;
   attachmentId?: string;
@@ -426,6 +411,7 @@ export function TaskChatComposer({
   onRunnerGoalCommand,
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
+  const language = useUiLanguage();
   const streamlined = useStreamlinedTaskChatPresentation();
   const submitKey = useComposerSubmitKey();
   const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
@@ -679,7 +665,7 @@ export function TaskChatComposer({
     assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
   const effectivePlaceholder = queuedEdit
     ? "Edit queued message…"
-    : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
+    : (placeholder ?? composerPlaceholder(language, pendingMode, assigneeName, mobile));
   const goalUnavailable = runnerGoalCapability?.availability !== "available";
   const goalCommandOption: ActionCommandOption = {
     id: "action:goal",

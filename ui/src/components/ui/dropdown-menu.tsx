@@ -5,6 +5,7 @@ import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { translateTextNode, useTx, withTranslatedTextProps } from "@/i18n/tx"
 import { useFlyoutAppearance } from "./flyout-appearance"
 
 function DropdownMenu({
@@ -66,11 +67,14 @@ function DropdownMenuItem({
   className,
   inset,
   variant = "default",
+  asChild = false,
+  children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & {
   inset?: boolean
   variant?: "default" | "destructive"
 }) {
+  const tx = useTx()
   return (
     <DropdownMenuPrimitive.Item
       data-slot="dropdown-menu-item"
@@ -80,8 +84,11 @@ function DropdownMenuItem({
         "focus:bg-accent focus:text-accent-foreground data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 dark:data-[variant=destructive]:focus:bg-destructive/20 data-[variant=destructive]:focus:text-destructive data-[variant=destructive]:*:[svg]:!text-destructive [&_svg:not([class*='text-'])]:text-muted-foreground relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
-      {...props}
-    />
+      asChild={asChild}
+      {...withTranslatedTextProps(tx, props)}
+    >
+      {asChild ? children : translateTextNode(tx, children)}
+    </DropdownMenuPrimitive.Item>
   )
 }
 
@@ -91,6 +98,7 @@ function DropdownMenuCheckboxItem({
   checked,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
+  const tx = useTx()
   return (
     <DropdownMenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
@@ -99,14 +107,14 @@ function DropdownMenuCheckboxItem({
         className
       )}
       checked={checked}
-      {...props}
+      {...withTranslatedTextProps(tx, props)}
     >
       <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
         <DropdownMenuPrimitive.ItemIndicator>
           <CheckIcon className="size-4" />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
-      {children}
+      {translateTextNode(tx, children)}
     </DropdownMenuPrimitive.CheckboxItem>
   )
 }
@@ -128,6 +136,7 @@ function DropdownMenuRadioItem({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
   const appearance = useFlyoutAppearance()
+  const tx = useTx()
   return (
     <DropdownMenuPrimitive.RadioItem
       data-slot="dropdown-menu-radio-item"
@@ -135,14 +144,14 @@ function DropdownMenuRadioItem({
         "focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
-      {...props}
+      {...withTranslatedTextProps(tx, props)}
     >
       <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
         <DropdownMenuPrimitive.ItemIndicator>
           {appearance === "refreshed" ? <CheckIcon className="size-4" /> : <CircleIcon className="size-2 fill-current" />}
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
-      {children}
+      {translateTextNode(tx, children)}
     </DropdownMenuPrimitive.RadioItem>
   )
 }
@@ -150,10 +159,12 @@ function DropdownMenuRadioItem({
 function DropdownMenuLabel({
   className,
   inset,
+  children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Label> & {
   inset?: boolean
 }) {
+  const tx = useTx()
   return (
     <DropdownMenuPrimitive.Label
       data-slot="dropdown-menu-label"
@@ -162,8 +173,10 @@ function DropdownMenuLabel({
         "px-2 py-1.5 text-sm font-medium data-[inset]:pl-8",
         className
       )}
-      {...props}
-    />
+      {...withTranslatedTextProps(tx, props)}
+    >
+      {translateTextNode(tx, children)}
+    </DropdownMenuPrimitive.Label>
   )
 }
 

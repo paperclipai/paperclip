@@ -1,5 +1,6 @@
 import { describeError } from "../api/errors";
 import type { IssueRelationIssueSummary, TaskInterruptionPresentation } from "@paperclipai/shared";
+import { useTx } from "@/i18n/tx";
 import { AlertCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
@@ -20,10 +21,10 @@ const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recover
 
 /** A budget hard stop holds saved work. Only a task that already ran has an
  * attempt to report; a task refused before its first run just waits. */
-function budgetWaitText(presentation: TaskInterruptionPresentation) {
+function budgetWaitText(presentation: TaskInterruptionPresentation, savedAttempt: string) {
   const wait = "It is waiting for the budget to allow new work. Raise the budget in Costs.";
   return presentation.observedRunId || presentation.sourceRunIds.length
-    ? `Couldn’t finish this attempt. Your message is saved. ${wait}`
+    ? `${savedAttempt} ${wait}`
     : `This task has not started. ${wait}`;
 }
 const isBudgetWait = (presentation: TaskInterruptionPresentation | null | undefined) =>
@@ -50,6 +51,8 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   agentName?: string;
   projectName?: string;
 }) {
+  const tx = useTx();
+  const savedAttempt = tx("Couldn’t finish this attempt. Your message is saved.");
   useSecondTick(presentation?.state === "retry_scheduled");
   if (presentation?.projectAccess && !optimistic && !takingLonger) return <TaskProjectAccessNotice
     access={presentation.projectAccess} issueId={issueId} agentName={agentName} projectName={projectName}
@@ -109,7 +112,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
       <div role="status" aria-label="Task status" data-testid="task-execution-waiting"
         className="flex items-center gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
         <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
-        <span className="min-w-0 flex-1">{budgetWaitText(presentation)}</span>
+        <span className="min-w-0 flex-1">{budgetWaitText(presentation, savedAttempt)}</span>
       </div>
     </div>
   );
@@ -130,7 +133,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
             ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>
           : presentation.setupFailure
             ? <>Couldn’t set up the task workspace. {presentation.setupFailure.message}. Fix the command in the project’s workspace settings, then retry.</>
-            : "Couldn’t finish this attempt. Your message is saved."}</span>
+            : savedAttempt}</span>
         {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
       </div>
     </div>

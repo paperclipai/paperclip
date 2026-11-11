@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { TruncatedText } from "./TruncatedText";
+import { useTx, useUiLanguage } from "@/i18n/tx";
 
 /**
  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
@@ -100,6 +101,13 @@ export function SidebarNavItem({
   // peeking; a peek/expanded panel — or a contextual takeover — restores
   // the full label + badge.
   const rail = collapsed && !peeking && !forceExpanded;
+  const tx = useTx();
+  const language = useUiLanguage();
+  const shownLabel = tx(label);
+  const shownBadgeLabel = badgeLabel ? tx(badgeLabel) : undefined;
+  const shownTrailingLabel = trailingLabel ? tx(trailingLabel) : undefined;
+  const shownTextBadge = textBadge ? tx(textBadge) : undefined;
+  const liveText = language === "ru" ? `${liveCount} сейчас` : `${liveCount} live`;
 
   const hasBadge = badge != null && badge > 0;
   const hasLive = liveCount != null && liveCount > 0;
@@ -108,15 +116,15 @@ export function SidebarNavItem({
   // Accessible text equivalent for the collapsed dot indicator. The visible
   // label is `sr-only` in the rail, so the count must be surfaced here.
   const railStatusText = hasLive
-    ? `${liveCount} live`
+    ? liveText
     : hasBadge
-      ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
+      ? `${badge}${shownBadgeLabel ? ` ${shownBadgeLabel}` : ""}`
       : alert
-        ? "attention needed"
+        ? (language === "ru" ? "нужно внимание" : "attention needed")
         : undefined;
-  const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
+  const railAriaLabel = !rail || (!railStatusText && !shownTrailingLabel)
     ? undefined
-    : `${label}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
+    : `${shownLabel}${railStatusText ? `, ${railStatusText}` : ""}${shownTrailingLabel ? `, ${shownTrailingLabel}` : ""}`;
 
   const link = (
     <NavLink
@@ -173,7 +181,7 @@ export function SidebarNavItem({
           )}
         </span>
       ) : null}
-      <TruncatedText className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</TruncatedText>
+      <TruncatedText className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{shownLabel}</TruncatedText>
       {!rail && trailing}
       {!rail && textBadge && (
         <Badge variant="ghost"
@@ -184,7 +192,7 @@ export function SidebarNavItem({
               : "bg-muted text-muted-foreground",
           )}
         >
-          {textBadge}
+          {shownTextBadge}
         </Badge>
       )}
       {!rail && (hasLive || liveAccessory) && (
@@ -196,7 +204,7 @@ export function SidebarNavItem({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600 dark:bg-blue-400" />
               </span>
-              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveText}</span>
             </>
           )}
         </span>
@@ -232,7 +240,7 @@ export function SidebarNavItem({
       <TooltipTrigger asChild>
         <div>{link}</div>
       </TooltipTrigger>
-      <TooltipContent side="right">{label}</TooltipContent>
+      <TooltipContent side="right">{shownLabel}</TooltipContent>
     </Tooltip>
   );
 }
