@@ -178,6 +178,14 @@ describe("durable sandbox creation through the runtime entry point", () => {
     expect(await db.select().from(environmentLeases)).toHaveLength(1);
     expect(await nextEnvironmentCleanupAt(db)).toBeNull();
   });
+  it("creates a new sandbox when the same run acquires again after its lease ended", async () => {
+    const first = await acquire();
+    await environmentService(db).releaseLease(first.lease.id, "failed");
+    const second = await acquire();
+    expect(second.lease.id).not.toBe(first.lease.id);
+    expect(creates).toBe(2);
+    expect(await db.select().from(sandboxCreationOperations)).toHaveLength(2);
+  });
   it("recovers a failed lease write with a fresh receiver and empty web disk", async () => {
     await rejectWrites("environment_leases", "reject_fixture_lease");
     await expect(acquire()).rejects.toThrow();
