@@ -358,7 +358,10 @@ runner diagnostic. Its evidence includes runner suspension, provider drain,
 final provider state, pending call/operation/source-event IDs and input digests,
 and incomplete result-delivery command IDs and statuses. If execution and
 cleanup both fail, execution retains its original error identity and cleanup is
-attached as `cleanupError`.
+attached as `cleanupError`. `runnerRetained: true` means a remote Runner that
+could not prove its suspension was left running for the same-run
+reattachment instead of being force-stopped; the diagnostic
+`remote runner left alive unsettled for same-run reattachment` records it.
 
 Semantic settlement also includes up to 20 content-free failure records, with
 the call ID, operation ID, stage (`dispatch` or `persist_result`), and cause.
