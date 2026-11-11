@@ -30,18 +30,34 @@ function adoptionAuthority(row: Copy) {
 }
 
 export class AgentDirectoryReuseInvalidatedError extends Error {}
-export const agentDirectoryOperationLockTiming = { waitMs: 300_000, ownerSilenceMs: 60_000, retryMinMs: 250, retryMaxMs: 5_000, maxConcurrentAttempts: 4 };
-const lockAttemptQueue: Array<() => void> = [];
-let lockAttemptsInFlight = 0;
-async function takeLockAttemptSlot(): Promise<() => void> {
-  if (lockAttemptsInFlight >= agentDirectoryOperationLockTiming.maxConcurrentAttempts) await new Promise<void>(resolve => lockAttemptQueue.push(resolve));
-  lockAttemptsInFlight++;
+export const agentDirectoryOperationLockTiming = { waitMs: 300_000, ownerSilenceMs: 60_000, retryMinMs: 250, retryMaxMs: 5_000, attemptTimeoutMs: 5_000, maxConcurrentAttempts: 4 };
+const agentDirectoryBusy = () => conflict("Agent directory operation is already active");
+const lockAttemptSlots = new Map<string, { inFlight: number; queue: Array<() => void> }>();
+async function takeLockAttemptSlot(key: string, deadline: number): Promise<() => void> {
+  let slots = lockAttemptSlots.get(key);
+  if (!slots) lockAttemptSlots.set(key, slots = { inFlight: 0, queue: [] });
+  const current = slots;
+  if (current.inFlight < agentDirectoryOperationLockTiming.maxConcurrentAttempts) current.inFlight++;
+  else {
+    const granted = await new Promise<boolean>(resolve => {
+      const wake = () => { clearTimeout(timer); resolve(true); };
+      const timer = globalThis.setTimeout(() => {
+        const index = current.queue.indexOf(wake);
+        if (index >= 0) current.queue.splice(index, 1);
+        resolve(false);
+      }, Math.max(0, deadline - Date.now()));
+      current.queue.push(wake);
+    });
+    if (!granted) throw agentDirectoryBusy();
+  }
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    lockAttemptsInFlight--;
-    lockAttemptQueue.shift()?.();
+    const next = current.queue.shift();
+    if (next) return next();
+    current.inFlight--;
+    if (current.inFlight === 0 && lockAttemptSlots.get(key) === current) lockAttemptSlots.delete(key);
   };
 }
 export async function tryAcquireAgentDirectoryOperationLock(tx: Pick<Db, "execute">, companyId: string, agentId: string): Promise<number | null> {
@@ -54,23 +70,45 @@ export async function tryAcquireAgentDirectoryOperationLock(tx: Pick<Db, "execut
   return lock?.acquired === true ? Number(lock.idle_timeout_ms ?? ownerSilenceMs) : null;
 }
 export async function withAgentDirectoryOperationLock<T>(db: Db, companyId: string, agentId: string, work: (tx: Db, idleTimeoutMs: number) => Promise<T>): Promise<T> {
-  const { waitMs, retryMinMs, retryMaxMs } = agentDirectoryOperationLockTiming;
+  const { waitMs, retryMinMs, retryMaxMs, attemptTimeoutMs } = agentDirectoryOperationLockTiming;
   const deadline = Date.now() + waitMs;
   let delay = retryMinMs;
   for (;;) {
-    const releaseSlot = await takeLockAttemptSlot();
-    let attempt: { value: T } | null;
+    if (Date.now() >= deadline) throw agentDirectoryBusy();
+    const releaseSlot = await takeLockAttemptSlot(`${companyId}:${agentId}`, deadline);
+    const stopTimer = new AbortController();
+    let abandoned = false;
+    let decided!: (outcome: "acquired" | "busy") => void;
+    const decision = new Promise<"acquired" | "busy">(resolve => { decided = resolve; });
     try {
-      attempt = await withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
+      const attempt = withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
         const idleTimeoutMs = await tryAcquireAgentDirectoryOperationLock(tx, companyId, agentId);
-        releaseSlot();
-        if (idleTimeoutMs === null) return null;
+        if (abandoned || idleTimeoutMs === null) {
+          decided("busy");
+          return null;
+        }
+        decided("acquired");
         return { value: await work(tx as unknown as Db, idleTimeoutMs) };
       }));
-    } finally { releaseSlot(); }
-    if (attempt) return attempt.value;
+      const outcome = await Promise.race([
+        decision,
+        attempt.then(() => "busy" as const),
+        setTimeout(Math.max(1, Math.min(attemptTimeoutMs, deadline - Date.now())), "stalled" as const, { signal: stopTimer.signal, ref: false }),
+      ]);
+      if (outcome === "acquired") {
+        releaseSlot();
+        const result = await attempt;
+        if (result) return result.value;
+      } else {
+        abandoned = true;
+        attempt.catch(() => undefined);
+      }
+    } finally {
+      stopTimer.abort();
+      releaseSlot();
+    }
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw conflict("Agent directory operation is already active");
+    if (remaining <= 0) throw agentDirectoryBusy();
     await setTimeout(Math.min(remaining, delay / 2 + Math.random() * delay / 2), undefined, { ref: false });
     delay = Math.min(retryMaxMs, delay * 2);
   }

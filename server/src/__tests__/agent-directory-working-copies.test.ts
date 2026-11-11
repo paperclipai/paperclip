@@ -11,6 +11,7 @@ import * as executionTargetTools from "@paperclipai/adapter-utils/execution-targ
 import * as ssh from "@paperclipai/adapter-utils/ssh";
 const execFile = promisify(execFileCallback);
 import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1114,6 +1115,35 @@ describe("persistent agent directories", () => {
       await held.catch(() => undefined);
       Object.assign(agentDirectoryOperationLockTiming, timing);
       await Promise.all([holder.$client.end({ timeout: 1 }), waiters.$client.end({ timeout: 1 })]);
+    }
+  });
+
+  it("gives up stalled lock attempts within their bound without blocking another agent", async () => {
+    const timing = { ...agentDirectoryOperationLockTiming };
+    Object.assign(agentDirectoryOperationLockTiming, { waitMs: 1_500, attemptTimeoutMs: 200, retryMinMs: 20, retryMaxMs: 40, maxConcurrentAttempts: 4 });
+    const sockets = new Set<import("node:net").Socket>();
+    const silent = net.createServer(socket => { sockets.add(socket); socket.on("error", () => undefined); });
+    await new Promise<void>(resolve => silent.listen(0, "127.0.0.1", () => resolve()));
+    const port = (silent.address() as import("node:net").AddressInfo).port;
+    const stalled = createDb(`postgres://stalled:stalled@127.0.0.1:${port}/stalled`);
+    try {
+      const work = vi.fn(async () => "done");
+      const started = Date.now();
+      const hung = Array.from({ length: 5 }, () => withAgentDirectoryOperationLock(stalled, companyId, agentId, work)
+        .then(() => "acquired", (error: Error) => error.message));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const otherAgentStarted = Date.now();
+      expect(await withAgentDirectoryOperationLock(db, companyId, randomUUID(), async () => "other agent")).toBe("other agent");
+      expect(Date.now() - otherAgentStarted).toBeLessThan(1_000);
+      const results = await Promise.all(hung);
+      expect(results).toEqual(Array(5).fill("Agent directory operation is already active"));
+      expect(Date.now() - started).toBeLessThan(2_500);
+      expect(work).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(agentDirectoryOperationLockTiming, timing);
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => silent.close(resolve));
+      await stalled.$client.end({ timeout: 0 }).catch(() => undefined);
     }
   });
 
