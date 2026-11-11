@@ -40,10 +40,15 @@ export function caseFactsRoles(o: Pick<FactsObservation, "runs" | "workComments"
  * mobile Safari is free-form text that a person reads in the saved case and the reply. */
 export const SETUP_BROWSER = "Safari; affected device not yet confirmed";
 const STALE = "not yet confirmed";
+/** Facts the correction must leave unchanged; they cannot stand in for the saved replacement fact. */
+const UNRELATED = new Set(["customer", "severity", "expected", "supportEscalation"]);
 export function corrected(fields: unknown, setupBrowser: unknown = SETUP_BROWSER) {
   const record = fields && typeof fields === "object" && !Array.isArray(fields) ? fields as Record<string, unknown> : {};
-  const values = Object.values(record).flatMap(value => Array.isArray(value) ? value : [value]).filter((value): value is string => typeof value === "string");
-  return values.some(value => value.trim().length > 0) && record.browser !== setupBrowser && !values.some(value => value.toLowerCase().includes(STALE));
+  const strings = (entries: unknown[]) => entries.flatMap(value => Array.isArray(value) ? value : [value]).filter((value): value is string => typeof value === "string");
+  const values = strings(Object.values(record));
+  const replacement = strings(Object.entries(record).filter(([key]) => !UNRELATED.has(key)).map(([, value]) => value)).filter(value => value.trim().length > 0);
+  return replacement.length > 0 && (record.browser === undefined || strings([record.browser]).some(value => value.trim().length > 0))
+    && record.browser !== setupBrowser && !values.some(value => value.toLowerCase().includes(STALE));
 }
 /** The follow-up reply is the text added after the first checkpoint. It must name the case (its identifier or its
  * primary task) and the setup-chosen support escalation literal. Whether its wording is right is free-form text that a

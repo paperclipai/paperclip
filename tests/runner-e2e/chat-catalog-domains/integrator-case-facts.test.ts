@@ -54,7 +54,8 @@ describe("current case facts and real subsequent context", () => {
       expect(corrected({ browser }), browser).toBe(true);
     expect(corrected({ browser: "Safari", platform: "mobile only" })).toBe(true);
     // Broken saves fail: the unchanged setup value, the stale setup literal kept in any field, or the facts removed.
-    for (const fields of [{ browser: SETUP_BROWSER }, { browser: "Mobile Safari; affected device not yet confirmed" }, { browser: "Mobile Safari", note: "device not yet confirmed" }, { browser: "" }, {}])
+    for (const fields of [{ browser: SETUP_BROWSER }, { browser: "Mobile Safari; affected device not yet confirmed" }, { browser: "Mobile Safari", note: "device not yet confirmed" }, { browser: "" }, {},
+      { browser: "", customer: "Acorn", severity: "normal", expected: "one order" }, { customer: "Acorn", severity: "normal", expected: "one order", supportEscalation: "support-1" }, { browser: "  ", platform: "mobile" }])
       expect(corrected(fields), JSON.stringify(fields)).toBe(false);
   });
 });
