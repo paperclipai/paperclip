@@ -113,4 +113,51 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
       await runtime.close?.({ handle: undefined as never, reason: "fixture done" }).catch(() => undefined);
     }
   }, 30_000);
+
+  // A dispatch that cannot be journaled must never reach the provider, or a
+  // lone `received` record would later prove a falsehood and duplicate it.
+  it("keeps the prompt from a real ACPX provider when its dispatch record cannot be written", async () => {
+    const dir = await directory();
+    const seen = join(dir, "prompt-seen");
+    const peer = String.raw`
+const fs = require('node:fs');
+const send = x => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...x }) + '\n');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true }, authMethods: [] } });
+  else if (m.method === 'session/new') send({ id: m.id, result: { sessionId: 'journal-session' } });
+  else if (m.method === 'session/prompt') { fs.appendFileSync(process.env.SEEN, 'prompt\n'); send({ id: m.id, result: { stopReason: 'end_turn' } }); }
+});`;
+    const children: ChildProcess[] = [];
+    let armed = false;
+    const runtime = createAcpRuntime({
+      cwd: dir,
+      agentRegistry: createAgentRegistry({ overrides: { claude: "fixture" } }),
+      sessionStore: createRuntimeStore({ stateDir: join(dir, "state") }),
+      permissionMode: "deny-all",
+      onAcpMessage: (direction, value) => {
+        if (armed && direction === "outbound" && isAcpPromptRequest(value)) throw new Error("ENOSPC: dispatch record not written");
+      },
+      spawnAgent: () => {
+        const child = spawn(process.execPath, ["-e", peer], { cwd: dir, env: { ...process.env, SEEN: seen }, stdio: ["pipe", "pipe", "pipe"] });
+        children.push(child);
+        return child;
+      },
+    });
+    try {
+      const handle = await runtime.ensureSession({ sessionKey: "journal-refused", agent: "claude", mode: "persistent", cwd: dir });
+      armed = true;
+      const turn = runtime.startTurn({ handle, text: "fixture", mode: "prompt", requestId: "turn-refused", timeoutMs: 5_000 });
+      const drain = (async () => { for await (const _event of turn.events) { /* drain */ } })().catch(() => undefined);
+      const result = await turn.result.catch((error: unknown) => ({ status: "rejected", error }));
+      await drain;
+      expect(result.status).not.toBe("completed");
+      // Give a stray write time to arrive before asserting it never did.
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await expect(readFile(seen, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      for (const child of children) if (child.exitCode === null) child.kill("SIGKILL");
+      await runtime.close?.({ handle: undefined as never, reason: "fixture done" }).catch(() => undefined);
+    }
+  }, 30_000);
 });
