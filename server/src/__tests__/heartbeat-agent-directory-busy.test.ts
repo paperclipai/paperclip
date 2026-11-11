@@ -19,6 +19,7 @@ import { registerServerAdapter, unregisterServerAdapter } from "../adapters/inde
 import { heartbeatService } from "../services/heartbeat.ts";
 import { AgentDirectoryOperationBusyError } from "../services/agent-directory-working-copies.js";
 import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../services/heartbeat/agent-directory-busy.js";
+import { undeliveredLegacyUserCommentIds } from "../services/explicit-native-continuation.js";
 
 const busyPrepares = vi.hoisted(() => ({ remaining: 0, calls: 0 }));
 vi.mock("../services/agent-instruction-working-copies.js", async importOriginal => {
@@ -134,6 +135,26 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     expect((await heartbeat.getRun(retry!.id))?.status).toBe("succeeded");
     expect(executedContexts.get(retry!.id)).toMatchObject({ wakeCommentId: commentId,
       explicitUserContinuation: { previousRunId: runId, commentId } });
+  });
+
+  it("keeps a user comment undelivered when the run that carried it only waited for agent files", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID(), runId = randomUUID(), commentId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Message during a wait", status: "in_progress", priority: "medium",
+      responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, issueNumber: 3 });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user",
+      authorUserId: "busy-directory-user", body: "Please also check the logs." });
+    const now = new Date();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "cancelled", runtimeMode: "legacy",
+      startedAt: now, finishedAt: now, errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE,
+      contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentId: commentId },
+      resultJson: { executionRecovery: { kind: "agent_directory_wait", providerWorkStarted: false },
+        cancellation: { source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Waiting for another run of this agent to finish with its files", recordedAt: now.toISOString() } } });
+    expect(await undeliveredLegacyUserCommentIds(db, companyId, issueId, agentId, [commentId])).toEqual([commentId]);
+    await db.update(heartbeatRuns).set({ errorCode: "operator_cancelled",
+      resultJson: { cancellation: { source: "operator", expected: true } } }).where(eq(heartbeatRuns.id, runId));
+    expect(await undeliveredLegacyUserCommentIds(db, companyId, issueId, agentId, [commentId])).toEqual([]);
   });
 
   it("defers the first run of a task instead of failing it, then runs it", async () => {

@@ -3,6 +3,7 @@ import { notifyDeferredExecutionWork } from "../../../services/deferred-executio
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
+import { isAgentDirectoryPreparationWait } from "../../../services/pre-dispatch-execution-evidence.js";
 import { isUserCommentContinuationReason } from "../../../services/explicit-native-continuation.js";
 import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
@@ -1028,7 +1029,8 @@ export function createPostgresRunDispatchAdapter(
       const recovery = parseObject(parent.resultJson?.executionRecovery);
       const unstarted = parent.errorCode === WORKSPACE_BUSY_RETRY_REASON
         ? recovery.kind === "workspace_wait" && recovery.providerWorkStarted === false
-        : parent.errorCode === "execution_reconciliation_required" && await isPreDispatchExecutionWaitVerified(tx, parent);
+        : isAgentDirectoryPreparationWait(parent)
+        || (parent.errorCode === "execution_reconciliation_required" && await isPreDispatchExecutionWaitVerified(tx, parent));
       if (!unstarted) return null;
       const [wake] = await tx.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),

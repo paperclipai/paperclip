@@ -22,6 +22,15 @@ export function isAgentDirectoryPreparationWait(run: Pick<typeof heartbeatRuns.$
     && cancellation?.source === "control_plane" && cancellation.expected === true;
 }
 
+export function agentDirectoryPreparationWaitPredicate() {
+  return sql`(${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.status} = 'cancelled'
+    and ${heartbeatRuns.errorCode} = 'agent_directory_busy'
+    and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'agent_directory_wait'
+    and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb
+    and ${heartbeatRuns.resultJson}#>>'{cancellation,source}' = 'control_plane'
+    and ${heartbeatRuns.resultJson}#>'{cancellation,expected}' = 'true'::jsonb)`;
+}
+
 export function executionStartedEventPredicate() {
   return or(isNotNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType,
     ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "harness.ready", "session.started",

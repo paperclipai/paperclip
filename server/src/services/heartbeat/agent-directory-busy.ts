@@ -1,8 +1,9 @@
 import type { Db } from "@paperclipai/db";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { deferNativeRunForBusyAgentDirectory } from "../native-runtime/native-controller-recovery.js";
+import { AGENT_DIRECTORY_WAIT_RETRY_REASON } from "../execution-recovery-attempt.js";
 
-export const AGENT_DIRECTORY_BUSY_RETRY_REASON = "agent_directory_busy";
+export const AGENT_DIRECTORY_BUSY_RETRY_REASON = AGENT_DIRECTORY_WAIT_RETRY_REASON;
 export const AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON = "agent_directory_busy_retry";
 export const AGENT_DIRECTORY_BUSY_ERROR_CODE = "agent_directory_busy";
 export const AGENT_DIRECTORY_BUSY_MAX_DEFERRALS = 30;
