@@ -1722,8 +1722,8 @@ answer still wakes the agent. Only a plain question (`ask_user_questions`) or
 connection request (`connection_intent`) is released this way. A pending approval
 and any decision with approval semantics (a plan review, a governed tool action,
 a secret proposal, a connection authorization, or another confirmation) still
-hold every continuation, Retry included. A new message still waits for the
-decision. The person's own answer to the
+hold every continuation, Retry included. A new message supersedes a plain
+question, as before, but waits for a decision with approval semantics. The person's own answer to the
 decision is that explicit input: it continues the task through the hold in a
 fresh session, like a new message, and never replays the failed run. An answer
 that a different user resolved does not continue the task.

@@ -4,7 +4,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { activityLog, agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
 import { requestInterruptedNativeTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
@@ -23,23 +23,12 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
     (input.leaseId ? targets.get(input.leaseId) : undefined) ?? actual.resolveEnvironmentExecutionTarget(input) };
 });
 
-// Staging classes D′ and T (aeaa64a7, 3c4af814, a7a2f8dc, c14bab19): a remote
-// native run's same-run retry found its Runner process gone (`process_not_running`,
-// lifecycle `ready`) and ended with `runner_remote_process_identity_unavailable`.
-// Saved-work recovery copied the sandbox files back and the task offered Retry.
-// Each task also had a pending decision: D′ the question its own turn parked on,
-// T and the Sentry tasks an older connection request. Retry then waited for the
-// decision ("decision_pending") and the decision's answer waited for execution
-// recovery ("execution_recovery"), so neither control could continue the task.
 describe("a held task with a pending decision after its remote runner was lost", () => {
   useWorkspaceRecoveryFixture(targets);
 
   const shapes = {
-    // D′: the turn was accepted, then parked on its own question; no provider terminal.
     parkedQuestion: { wakeReason: "issue_assigned", turnEvents: ["turn.started", "turn.accepted"],
       kind: "ask_user_questions", fromFailedRun: true },
-    // T: a monitor wake whose session snapshot timed out before any turn; an
-    // older run's connection request is still pending on the task.
     olderConnectionRequest: { wakeReason: "issue_monitor_due", turnEvents: [],
       kind: "connection_intent", fromFailedRun: false },
   } as const;
@@ -67,9 +56,7 @@ describe("a held task with a pending decision after its remote runner was lost",
       payload: { version: 1, questions: [{ id: "q1", prompt: "Which default?", selectionMode: "single",
         options: [{ id: "a", label: "Read only" }, { id: "b", label: "Full" }] }] } as never }).returning();
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
-    // Keep the agent's only slot busy so a successor stays observable as queued.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: original.agentId, status: "running" });
-    // A system wake gets no automatic Retry; the person's controls must work.
     expect(await requestInterruptedNativeTurnRetry(db, f.runId)).toMatchObject({ requested: false });
     await vi.waitFor(async () => {
       await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, current => service.resumeRemoteStopComments(current)) ?? []);
@@ -98,7 +85,6 @@ describe("a held task with a pending decision after its remote runner was lost",
         interactionKind: decision.kind, interactionStatus: "answered", sourceCommentId: null,
         sourceRunId: decision.sourceRunId, wakeReason: "issue_commented", source: "issue.interaction.resolve" },
     });
-  // The same wake the interaction route queues for `wake_assignee`.
   const answer = async (f: Awaited<ReturnType<typeof lostRunnerWithPendingDecision>>, userId: string, resolvedBy = userId) => {
     await resolve(f.decision, resolvedBy);
     await deliverAnswer(f, f.decision, userId);
@@ -121,7 +107,6 @@ describe("a held task with a pending decision after its remote runner was lost",
       .toEqual({ successors: 1, deferred: [] });
     const [successor] = await queuedSuccessors(f.companyId);
     expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId, forceFreshSession: true });
-    // The open decision stays on the task for the new run; Retry did not answer it.
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.decision.id)))[0].status).toBe("pending");
   }, 60_000);
 
@@ -133,22 +118,15 @@ describe("a held task with a pending decision after its remote runner was lost",
     const [successor] = await queuedSuccessors(f.companyId);
     expect(successor.contextSnapshot).toMatchObject({ interactionId: f.decision.id, previousRunId: f.runId, forceFreshSession: true,
       explicitUserContinuation: { previousRunId: f.runId, commentId: null } });
-    // The hold is settled as an explicit user continuation, never a replay.
     expect(await action(f.actionId)).toMatchObject({ status: "resolved",
       evidence: { explicitUserContinuation: { actorId: "local-board", interactionId: f.decision.id, previousRunId: f.runId } } });
     expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
       eq(activityLog.action, "issue.execution_recovery_settled"), eq(activityLog.actorId, "local-board")))).toHaveLength(1);
-    // Dispatch rebuilds the continuation under the successor's identity and
-    // rechecks the user authorization; the agent then receives the answer.
     const envelope = await dispatchContinuation(f, successor);
     expect(envelope).toMatchObject({ trigger: { interactionId: f.decision.id }, interruptedRunId: f.runId });
     expect(envelope.interactionOutcomes).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.decision.id })]));
   }, 60_000);
 
-  // Ponytail on #20872: two answers in quick succession. The first is
-  // admitted; the second coalesces into its still-queued successor and
-  // replaces the trigger. Dispatch must still accept the first answer's
-  // authorization, and the agent receives both answers.
   it("dispatches the first answer's successor after a second answer coalesces into it", async () => {
     const f = await lostRunnerWithPendingDecision("parkedQuestion");
     const [second] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
@@ -160,13 +138,9 @@ describe("a held task with a pending decision after its remote runner was lost",
     await deliverAnswer(f, second, "local-board");
     const successors = await queuedSuccessors(f.companyId);
     expect(successors).toHaveLength(1);
-    // Today the second answer waits behind the queued successor's task
-    // execution instead of merging into it.
     const [secondWake] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
       eq(agentWakeupRequests.idempotencyKey, `interaction:${second.id}:answered`)));
     expect(secondWake).toMatchObject({ status: "deferred_issue_execution", runId: null });
-    // Dispatch also holds if a merge replaced the trigger: the durable
-    // authorization names the first answer and this successor.
     for (const context of [successors[0].contextSnapshot ?? {},
       { ...successors[0].contextSnapshot, interactionId: second.id, interactionStatus: "answered" }]) {
       const envelope = await dispatchContinuation(f, { ...successors[0], contextSnapshot: context });
@@ -175,8 +149,6 @@ describe("a held task with a pending decision after its remote runner was lost",
     }
   }, 60_000);
 
-  // Ponytail on #20872: Retry passes only a plain question or connection
-  // request. Decisions with approval semantics keep holding it.
   it.each([
     ["a plan review", "request_confirmation", { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", revisionId: randomUUID() } }],
     ["a governed tool action", "request_confirmation", { version: 1, prompt: "Run it?", toolAction: { tool: "deploy" } }],
@@ -189,6 +161,37 @@ describe("a held task with a pending decision after its remote runner was lost",
     const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
     await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
+    expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+      .toEqual({ successors: 0, deferred: ["decision_pending"] });
+  }, 60_000);
+
+  it("lets a new message supersede a plain question and continue the task", async () => {
+    const f = await lostRunnerWithPendingDecision("parkedQuestion");
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "local-board", body: "Please continue." }).returning();
+    await f.service.wakeup(f.agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      requestedByActorType: "user", requestedByActorId: "local-board",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeReason: "issue_commented", wakeCommentId: comment.id },
+    });
+    expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+      .toEqual({ successors: 1, deferred: [] });
+  }, 60_000);
+
+  it("keeps a new message waiting while a plan review is pending", async () => {
+    const f = await lostRunnerWithPendingDecision("parkedQuestion");
+    await db.update(issueThreadInteractions).set({ kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", revisionId: randomUUID() } } as never })
+      .where(eq(issueThreadInteractions.id, f.decision.id));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "local-board", body: "Please continue." }).returning();
+    await f.service.wakeup(f.agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      requestedByActorType: "user", requestedByActorId: "local-board",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeReason: "issue_commented", wakeCommentId: comment.id },
+    });
     expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
       .toEqual({ successors: 0, deferred: ["decision_pending"] });
   }, 60_000);

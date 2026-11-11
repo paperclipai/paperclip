@@ -141,7 +141,6 @@ export async function admitExplicitNativeContinuation(input: {
   /** Internal delivery of an unconsumed, user-authored saved queue entry. */
   queuedCommentRequestId?: string;
   durableChatRequest?: DurableChatWakeupRequest;
-  /** The wake payload; a user's resolution of a pending decision carries its interaction here. */
   interactionPayload?: unknown;
   dryRun?: boolean;
   onBlocked?: (reason: string, message: string) => void;
@@ -151,9 +150,6 @@ export async function admitExplicitNativeContinuation(input: {
   if (input.actorType !== "user" || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
-  // A held task with a pending decision waits for that decision ("decision_pending"
-  // below). The person's own answer to it is therefore the explicit user input
-  // that continues the task, like a new message; it never replays the failed run.
   const decisionResponse = !retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId &&
     !input.queuedCommentRequestId && !commentId && input.reason === "issue_commented" && input.interactionPayload
     ? await readQueuedInteractionResponse(db, companyId, issueId, input.interactionPayload) : null;
@@ -312,11 +308,6 @@ export async function admitExplicitNativeContinuation(input: {
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
-  // A person's Retry is itself the decision to continue past an open question
-  // or connection request: it stays on the task for the new run to see and its
-  // answer still wakes the agent. Anything with approval semantics (governed
-  // tool actions, secret proposals, connection authorizations, plan reviews and
-  // other confirmations) keeps holding every continuation, Retry included.
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
     eq(issueThreadInteractions.status, "pending"),

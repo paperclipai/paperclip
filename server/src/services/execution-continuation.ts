@@ -505,11 +505,6 @@ export async function buildExecutionContinuation(input: {
                 object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
                 queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status))
           : value.interactionId
-          // A person's own answer to the held task's pending decision. The
-          // durable authorization names that interaction and this successor.
-          // A later answer that coalesced into the queued successor replaces
-          // the trigger, so the admitted interaction is checked directly; the
-          // later answer still reaches the agent as an interaction outcome.
           ? (!input.runId || value.runId === input.runId) && priorRuns.some(run => run.id === value.runId) &&
             interactions.some(interaction => interaction.id === value.interactionId &&
               ["accepted", "answered", "rejected"].includes(interaction.status) &&
