@@ -83,21 +83,26 @@ equal to or below that assigned workspace so sibling and symlink escapes fail
 before provider startup.
 
 When the execution target is itself the sandbox (a remote sandbox such as
-Daytona sets `PAPERCLIP_RUNNER_EXTERNAL_SANDBOX=1`), planning runs still use
+Daytona sets `PAPERCLIP_RUNNER_EXTERNAL_SANDBOX=1`), standard and ask runs use
+the default execution mode. The Runner starts their Codex threads and turns
+with the external sandbox policy and sends no collaboration mode. Ask mode
+restricts Paperclip mutation tools, not the Codex sandbox. Planning runs keep
 the `paperclip-runner-workspace-read-only` profile on `thread/start` and
-`turn/start`, because Codex's plan collaboration mode is a prompt and does not
-block writes or commands. Inside that sandbox the profile reads the whole
-filesystem (`":root"="read"`), writes nowhere except a brokered GitHub CLI
-config directory, and enables network. Codex then reports a `readOnly` sandbox
-with network access, so it loads `AGENTS.md` and other files directly instead
-of through its filesystem helper, and runs commands under bubblewrap without
-`--unshare-net`. The helper always isolates the network, and an unprivileged
-container without `CAP_NET_ADMIN` cannot bring up loopback in a new network
-namespace (`bwrap: loopback: Failed RTM_NEWADDR`), which made thread creation
-fail. Writes from commands and patches are still refused. The broader read
-access matches what default-mode turns already have in the same sandbox, where
-Codex runs with the external sandbox policy. Local and SSH planning keep the
-narrower profile that denies host `HOME` and `CODEX_HOME`.
+`turn/start` everywhere, because Codex's plan collaboration mode is a prompt
+and does not block writes or commands. Inside an external sandbox that profile
+reads the whole filesystem (`":root"="read"`), writes nowhere except a
+brokered GitHub CLI config directory, and enables network. Codex then reports
+a `readOnly` sandbox with network access, so it loads `AGENTS.md` and other
+files directly instead of through its filesystem helper, and runs commands
+under bubblewrap without `--unshare-net`. The helper always isolates the
+network, and a container without `CAP_NET_ADMIN` cannot bring up loopback in a
+new network namespace (`bwrap: loopback: Failed RTM_NEWADDR`), which made
+thread creation fail. Writes from commands and patches are still refused. The
+broader read access matches what default-mode turns already have in the same
+sandbox. Local and SSH planning keep the narrower profile that denies host
+`HOME` and `CODEX_HOME`. If a remote target still refuses provider startup,
+the run ends as a provider startup failure with Retry (see
+`durable-recovery.md`).
 
 The returned sandbox facts remain authoritative. Codex 0.132.0 may inject a
 provider-managed writable root such as `~/.codex/memories` after a first run,
