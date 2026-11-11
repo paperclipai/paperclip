@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNull, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   heartbeatRunEvents,
@@ -16,6 +16,9 @@ import { isProvenTurnSettlement, TURN_SETTLED_EVENTS, TURN_STARTED_EVENTS } from
 import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { requestTaskRetry } from "../task-retry.js";
+
+/** The chat service's Retry callback, which a connected conversation's Retry needs. */
+export type PrepareChatRetry = NonNullable<Parameters<typeof requestTaskRetry>[0]["prepareChatRetry"]>;
 
 /**
  * A native run whose provider ended its turn because the account's usage limit
@@ -118,22 +121,28 @@ async function settle(db: Db, actionId: string, state: Record<string, unknown>, 
   }).where(and(eq(issueRecoveryActions.id, actionId), sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`));
 }
 
-/** Why Paperclip did not retry after a reset it announced; the Retry stays. */
-const NOT_RETRIED: Record<string, string> = {
+/** Why Paperclip did not retry after a reset it announced; the Retry stays.
+ * Every give-up reason is listed, so no give-up leaves the promise standing. */
+const NOT_RETRIED = {
+  source_run_mismatch: "the failed run no longer matches this hold",
+  reset_unknown: "the provider's reset could no longer be read",
   task_changed: "the task changed",
   no_accountable_user: "no user is accountable for the run",
   automatic_retry_budget_used: "three automatic Retries in a row did not restore usage",
   retry_stale: "a newer run exists",
   retry_refused: "Retry was not allowed for the accountable user",
   reset_stale: "the reset passed more than a day ago",
-};
+} as const;
+type NotRetriedReason = keyof typeof NOT_RETRIED;
 
 /**
  * Requests the task's Retry for one usage-limit hold once its reset has
  * passed. Idempotent per run: the Retry key and the recorded outcome both
  * prevent a second request.
  */
-export async function requestProviderLimitResumeRetry(db: Db, input: { companyId: string; actionId: string }, now = new Date()): Promise<Outcome> {
+export async function requestProviderLimitResumeRetry(db: Db, input: {
+  companyId: string; actionId: string; prepareChatRetry?: PrepareChatRetry;
+}, now = new Date()): Promise<Outcome> {
   const [action] = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));
   if (!action || action.status !== "active" || action.kind !== "active_run_watchdog" || action.cause !== NATIVE_PROVIDER_USAGE_LIMIT
@@ -141,9 +150,9 @@ export async function requestProviderLimitResumeRetry(db: Db, input: { companyId
   const runId = typeof action.evidence?.runId === "string" ? action.evidence.runId : null;
   const [run] = runId ? await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text = ${runId}`)) : [];
-  const done = async (reason: string, extra: Record<string, unknown> = {}) => {
+  const done = async (reason: NotRetriedReason, extra: Record<string, unknown> = {}) => {
     // Replace a promise to retry with what the user can do now.
-    const nextAction = NOT_RETRIED[reason] && action.evidence?.providerLimitResetAt
+    const nextAction = action.evidence?.providerLimitResetAt
       ? `Paperclip did not retry this task after the provider usage limit reset because ${NOT_RETRIED[reason]}. Retry the task when usage capacity is available.`
       : undefined;
     await settle(db, action.id, { state: "not_requested", reason, decidedAt: now.toISOString(), ...extra }, nextAction);
@@ -191,7 +200,7 @@ export async function requestProviderLimitResumeRetry(db: Db, input: { companyId
     const receipt = await requestTaskRetry({ db, companyId: run.companyId, issueId, actorId,
       actorSource: actorId === "local-board" ? "local_implicit" : "session",
       idempotencyKey: `${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${run.id}`, observedRunId: run.id,
-      initiatedBy: "provider_limit_reset" });
+      initiatedBy: "provider_limit_reset", prepareChatRetry: input.prepareChatRetry });
     if (!receipt.accepted || !receipt.requestId) return done("retry_stale");
     await settle(db, action.id, { state: "requested", requestId: receipt.requestId, resetAt: reset.resetAt.toISOString(),
       requestedAt: now.toISOString() });
@@ -205,6 +214,7 @@ export async function requestProviderLimitResumeRetry(db: Db, input: { companyId
 }
 
 type Scope = { companyId: string };
+const LOAD_PAGE_SIZE = 500;
 type Entry = { id: string; companyId: string; dueAt: number };
 
 /**
@@ -215,7 +225,9 @@ type Entry = { id: string; companyId: string; dueAt: number };
 export function registerProviderLimitResumeWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
-  owner: { resume(companyId: string, requestId: string): Promise<unknown>; schedulingSuppressed(): Promise<boolean> },
+  owner: { resume(companyId: string, requestId: string): Promise<unknown>; schedulingSuppressed(): Promise<boolean>;
+    /** Read when a Retry is requested: the chat service registers it after startup. */
+    prepareChatRetry?: () => PrepareChatRetry | undefined },
   canRun: () => boolean,
 ) {
   return registerScopedDeadlineWork<Entry, Scope>(coordinator, {
@@ -223,20 +235,28 @@ export function registerProviderLimitResumeWork(
     decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as Scope,
     matches: (entry, scope) => !scope || entry.companyId === scope.companyId,
     load: async scope => {
-      const rows = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId })
-        .from(issueRecoveryActions).where(and(
-          scope ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
-          eq(issueRecoveryActions.status, "active"), eq(issueRecoveryActions.kind, "active_run_watchdog"),
-          eq(issueRecoveryActions.cause, NATIVE_PROVIDER_USAGE_LIMIT),
-          sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`,
-          isNull(issueRecoveryActions.resolvedAt),
-        )).limit(500);
-      // check() reads each hold's reset and returns its real deadline.
-      return rows.map(row => ({ ...row, dueAt: 0 }));
+      // Every waiting hold, a page at a time: a hold left out would never retry.
+      const entries: Entry[] = [];
+      for (let after: string | null = null; ;) {
+        const rows: Array<{ id: string; companyId: string }> = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId })
+          .from(issueRecoveryActions).where(and(
+            scope ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
+            eq(issueRecoveryActions.status, "active"), eq(issueRecoveryActions.kind, "active_run_watchdog"),
+            eq(issueRecoveryActions.cause, NATIVE_PROVIDER_USAGE_LIMIT),
+            sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`,
+            isNull(issueRecoveryActions.resolvedAt),
+            after ? gt(issueRecoveryActions.id, after) : undefined,
+          )).orderBy(asc(issueRecoveryActions.id)).limit(LOAD_PAGE_SIZE);
+        // check() reads each hold's reset and returns its real deadline.
+        entries.push(...rows.map(row => ({ ...row, dueAt: 0 })));
+        if (rows.length < LOAD_PAGE_SIZE) return entries;
+        after = rows.at(-1)!.id;
+      }
     },
     check: async entry => {
       if (await owner.schedulingSuppressed()) return { ...entry, dueAt: Date.now() + 5 * 60_000 };
-      const outcome = await requestProviderLimitResumeRetry(db, { companyId: entry.companyId, actionId: entry.id });
+      const outcome = await requestProviderLimitResumeRetry(db, { companyId: entry.companyId, actionId: entry.id,
+        prepareChatRetry: owner.prepareChatRetry?.() });
       if ("waitUntil" in outcome) return { ...entry, dueAt: outcome.waitUntil.getTime() };
       if (outcome.requested) await owner.resume(entry.companyId, outcome.requestId).catch((error: unknown) =>
         logger.warn({ err: error, actionId: entry.id }, "provider limit Retry remains queued"));

@@ -10,9 +10,9 @@ const RESET_PATTERN = new RegExp(
 /**
  * Reads a provider's "try again at 4:30 PM (America/Chicago)", "resets 2am
  * (UTC)" or "resets Nov 12, 6pm (UTC)" wording. A clock alone is the next
- * matching wall-clock instant after `now`; a calendar date is that day (this
- * year, or next year once the date has passed). A clock without a time zone is
- * read as UTC.
+ * matching wall-clock instant after `now`; a calendar date is its occurrence
+ * nearest `now`, which is in the past when the reset already passed. A clock
+ * without a time zone is read as UTC.
  */
 export function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(RESET_PATTERN);
@@ -75,13 +75,16 @@ export function parseProviderQuotaClockReset(error: string, now: Date) {
     };
     const year = Number(nowParts.year);
     if (monthIndex !== null && dayOfMonth !== null) {
-      const thisYear = instant(year, monthIndex, dayOfMonth);
-      if (!thisYear) return null;
-      // A reset reported for a date already past by more than a day rolls into
-      // next year ("resets Jan 2" read on Dec 30).
-      return thisYear.getTime() >= now.getTime() - 24 * 60 * 60_000
-        ? thisYear
-        : instant(year + 1, monthIndex, dayOfMonth);
+      // The occurrence of that date nearest `now`: "resets Jan 2" read on
+      // Dec 30 is next year's. A date read after it passed stays in the past,
+      // so a caller reading an old message sees an expired reset rather than
+      // one a year away.
+      const candidates = [year - 1, year, year + 1]
+        .map((candidateYear) => instant(candidateYear, monthIndex, dayOfMonth))
+        .filter((candidate): candidate is Date => candidate !== null);
+      if (!candidates.length) return null;
+      return candidates.reduce((nearest, candidate) =>
+        Math.abs(candidate.getTime() - now.getTime()) < Math.abs(nearest.getTime() - now.getTime()) ? candidate : nearest);
     }
     const month = Number(nowParts.month) - 1;
     const day = Number(nowParts.day);

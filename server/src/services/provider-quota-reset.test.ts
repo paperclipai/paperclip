@@ -23,6 +23,14 @@ describe("parseProviderQuotaClockReset", () => {
     expect(parseProviderQuotaClockReset("resets Nov 31, 6pm (UTC)", new Date("2026-11-10T10:00:00.000Z"))).toBeNull();
   });
 
+  it("reads a calendar reset that already passed as expired, never as a year away", () => {
+    // Recovery rereads an unchanged failure days after its reset.
+    expect(parseProviderQuotaClockReset("resets Nov 12, 6pm (UTC)", new Date("2026-11-14T10:00:00.000Z")))
+      .toEqual(new Date("2026-11-12T18:00:00.000Z"));
+    expect(parseProviderQuotaClockReset("resets Dec 30, 6pm (UTC)", new Date("2027-01-03T10:00:00.000Z")))
+      .toEqual(new Date("2026-12-30T18:00:00.000Z"));
+  });
+
   it("keeps reading a clock-only reset as the next matching time", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     expect(parseProviderQuotaClockReset("You've hit your session limit · resets 2am (UTC)", now))

@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
+  chatConversations,
+  chatEndpoints,
   companies,
   completionContracts,
   createDb,
@@ -12,6 +14,8 @@ import {
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
+  toolApplications,
+  toolConnections,
 } from "@paperclipai/db";
 import type {
   ControlPlanePort,
@@ -32,7 +36,7 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { registerProviderLimitResumeWork, requestProviderLimitResumeRetry } from "./provider-limit-resume.js";
+import { PROVIDER_LIMIT_RESUME_KEY_PREFIX, registerProviderLimitResumeWork, requestProviderLimitResumeRetry } from "./provider-limit-resume.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 
 describe("native provider capacity failure persistence", () => {
@@ -438,4 +442,126 @@ describe("native provider capacity failure persistence", () => {
     expect((await holdFor(issueId)).nextAction).toBe("Paperclip did not retry this task after the provider usage limit "
       + "reset because no user is accountable for the run. Retry the task when usage capacity is available.");
   });
+
+  it("prepares a connected chat conversation's Retry through the chat service", async () => {
+    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
+    resetAt.setUTCMinutes(0, 0, 0);
+    const userId = `user-${randomUUID()}`;
+    const { runId, issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: userId });
+    // The task belongs to a restricted external chat conversation.
+    const [application] = await db.insert(toolApplications).values({ companyId, name: "Slack", type: "chat" }).returning();
+    const connectionId = randomUUID();
+    await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId: application!.id, uid: connectionId,
+      name: "Slack", transport: "chat_sdk", connectionPurpose: "channel" });
+    const endpointId = randomUUID();
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId,
+      assignedAgentId: agentId, status: "active", externalExecutionPolicy: "restricted" });
+    await db.insert(chatConversations).values({ companyId, endpointId, issueId, externalConversationId: "channel",
+      externalThreadId: issueId, externalLabel: "#limits", state: "waiting" });
+    const hold = await holdFor(issueId);
+    const chatActionId = randomUUID();
+    const prepareChatRetry = vi.fn(async () => ({ actionId: chatActionId }));
+    const outcome = await requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id, prepareChatRetry },
+      new Date(resetAt.getTime() + 1000));
+    expect(outcome).toMatchObject({ requested: true });
+    expect(prepareChatRetry).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId, issueId, agentId, failedRunId: runId, initiatedByUserId: userId }));
+    const [receipt] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.idempotencyKey, `task-retry:${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${runId}`)));
+    expect(receipt.payload).toMatchObject({ taskRetry: expect.objectContaining({ chatActionId }) });
+  });
+
+  it("replaces the retry promise on every give-up path", async () => {
+    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
+    resetAt.setUTCMinutes(0, 0, 0);
+    const afterReset = new Date(resetAt.getTime() + 1000);
+    // The failed run's terminal can no longer be read as a provider-observed reset.
+    const unreadable = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: `user-${randomUUID()}` });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, unreadable.runId));
+    const unreadableHold = await holdFor(unreadable.issueId);
+    expect(unreadableHold.nextAction).toContain("Paperclip will retry this task then");
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: unreadableHold.id }, afterReset))
+      .resolves.toEqual({ requested: false, reason: "reset_unknown" });
+    expect((await holdFor(unreadable.issueId)).nextAction).toBe("Paperclip did not retry this task after the provider "
+      + "usage limit reset because the provider's reset could no longer be read. Retry the task when usage capacity is available.");
+    // The hold's run no longer failed for the usage limit.
+    const changed = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: `user-${randomUUID()}` });
+    await db.update(heartbeatRuns).set({ errorCode: "adapter_failed" }).where(eq(heartbeatRuns.id, changed.runId));
+    const changedHold = await holdFor(changed.issueId);
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: changedHold.id }, afterReset))
+      .resolves.toEqual({ requested: false, reason: "source_run_mismatch" });
+    expect((await holdFor(changed.issueId)).nextAction).toBe("Paperclip did not retry this task after the provider "
+      + "usage limit reset because the failed run no longer matches this hold. Retry the task when usage capacity is available.");
+  });
+
+  it("stops after three automatic Retries in a row and counts again after a successful run", async () => {
+    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
+    resetAt.setUTCMinutes(0, 0, 0);
+    const afterReset = new Date(resetAt.getTime() + 1000);
+    const userId = `user-${randomUUID()}`;
+    const { issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: userId });
+    const hold = await holdFor(issueId);
+    // Earlier usage-limit Retries on this task, none followed by a success.
+    const earlierRetry = (task: string) => ({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "completed", idempotencyKey: `task-retry:${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${randomUUID()}`,
+      requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: task },
+      requestedAt: new Date(Date.now() - 60_000) });
+    // Two in a row still leave this one.
+    await db.insert(agentWakeupRequests).values([earlierRetry(issueId), earlierRetry(issueId)]);
+    const [third] = await db.insert(agentWakeupRequests).values(earlierRetry(issueId)).returning();
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, afterReset))
+      .resolves.toEqual({ requested: false, reason: "automatic_retry_budget_used" });
+    expect((await holdFor(issueId)).nextAction).toBe("Paperclip did not retry this task after the provider usage limit "
+      + "reset because three automatic Retries in a row did not restore usage. Retry the task when usage capacity is available.");
+    expect(third.id).toBeTruthy();
+
+    // A successful run on the task after earlier Retries restores the budget.
+    const second = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: userId });
+    await db.insert(agentWakeupRequests).values([earlierRetry(second.issueId), earlierRetry(second.issueId),
+      earlierRetry(second.issueId)]);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", runtimeMode: "native",
+      nativeIssueId: second.issueId, invocationSource: "assignment", triggerDetail: "system",
+      contextSnapshot: { issueId: second.issueId }, finishedAt: new Date(Date.now() - 1000),
+      createdAt: new Date(Date.now() - 10 * 60_000) });
+    const secondHold = await holdFor(second.issueId);
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: secondHold.id }, afterReset))
+      .resolves.toMatchObject({ requested: true });
+  });
+
+  it("rebuilds every waiting hold after a restart, past one page", async () => {
+    const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
+    resetAt.setUTCMinutes(0, 0, 0);
+    const { issueId } = await failTurn({ payload: weeklyLimit(resetAt), responsibleUserId: `user-${randomUUID()}` });
+    const hold = await holdFor(issueId);
+    // A hold saved before holds named their reset; it sorts after 600 others.
+    const { providerLimitResetAt: _reset, ...oldEvidence } = hold.evidence;
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id));
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other holds", issuePrefix: "OTH" });
+    const otherIssues = Array.from({ length: 600 }, () => randomUUID());
+    await db.insert(issues).values(otherIssues.map(id => ({ id, companyId: otherCompanyId, title: "Other", status: "in_progress" })));
+    const { id: _id, companyId: _company, sourceIssueId: _issue, createdAt: _c, updatedAt: _u, ...template } = hold;
+    for (let page = 0; page < 6; page++) {
+      await db.insert(issueRecoveryActions).values(Array.from({ length: 100 }, (_, index) => ({ ...template,
+        companyId: otherCompanyId, sourceIssueId: otherIssues[page * 100 + index]!,
+        id: `00000000-0000-4000-8000-${String(page * 100 + index).padStart(12, "0")}`,
+        evidence: { ...oldEvidence, runId: randomUUID() } })));
+    }
+    await db.insert(issueRecoveryActions).values({ ...hold, id: `ffffffff-ffff-4fff-bfff-${randomUUID().slice(-12)}`,
+      evidence: oldEvidence });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => { errors.push(error); } });
+    try {
+      const worker = registerProviderLimitResumeWork(db, coordinator,
+        { resume: vi.fn(async () => undefined), schedulingSuppressed: async () => false }, () => true);
+      await worker.ready;
+      // The hold past the first page reads its reset and records it.
+      await vi.waitFor(async () => expect((await holdFor(issueId)).evidence.providerLimitResetAt).toBe(resetAt.toISOString()),
+        { timeout: 25_000, interval: 250 });
+    } finally {
+      await coordinator.stop();
+    }
+    expect(errors).toEqual([]);
+  }, 40_000);
 });
