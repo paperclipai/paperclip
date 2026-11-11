@@ -937,6 +937,25 @@ applies unchanged (`no_failed_attempt` and `issue_done` cover the follow-up), pl
 session would not exercise the retirement). Because tasks share their adapter's agent, `--tasks 2 --concurrency 2`
 is the two-concurrent-runs variant. SR1 does not combine with K* or PV* faults.
 
+### SR1U: the retained owner cannot be retired
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-warm \
+  --daytona-image <image@sha256:…> --adapters codex --workloads Q1 --faults SR1U --concurrency 1 --tasks 1 --seed 311
+```
+
+SR1U is SR1 where the parked owner's stop stays unconfirmed even when forced. The harness boots the
+server with `PAPERCLIP_TEST_WARM_RETIREMENT_FAULT=unconfirmed` (test instrumentation, armed only when
+`NODE_ENV=test`, as in the harness server), so every retirement of a warm sandbox owner fails. This is the staging shape
+where a follow-up failed with `Controller journal drain timed out` or `runner did not durably suspend
+before checkpoint` before any provider work and nothing ever restarted the task. The follow-up must
+fail once with `failureCause: native_predecessor_retirement_unproven`, re-queue itself in the
+uncharged `interrupted_preparation` lane, and finish on a fresh sandbox restored from the saved
+workspace. The Q1 oracle applies, except that this one pre-provider failure is not a failed attempt,
+plus `predecessor_unretirable_fell_back` and `follow_up_fresh_sandbox` (the succeeding follow-up ran
+on a different sandbox than the asking run). SR1U needs `--env daytona --daytona-warm`, and it arms
+its fault for the whole server, so it does not share a wave with SR1.
+
 ## Database contention (L1, `--db-pressure`)
 
 ```sh

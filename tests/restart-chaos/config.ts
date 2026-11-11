@@ -282,6 +282,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (other.length) throw new Error(`Session faults (SR*) need ${SESSION_FAULT_WORKLOADS.join(", ")}; remove ${other.join(", ")} from --workloads`);
     // Only a retained warm owner can be superseded; a per-turn Runner exits after each turn.
     if (options.lifecycle !== "warm" && !options.daytonaWarm) throw new Error("Session faults (SR*) need a retained owner: add --lifecycle warm (or --daytona-warm)");
+    // SR1U arms its fault for the whole server and needs a reused sandbox to drop.
+    if (sessionFaults.includes("SR1U") && (env !== "daytona" || !options.daytonaWarm)) throw new Error("SR1U needs a reused sandbox: run it with --env daytona --daytona-warm");
+    if (sessionFaults.includes("SR1U") && sessionFaults.includes("SR1")) throw new Error("SR1U arms its fault for every task; run SR1 in a separate wave");
   }
   validateMultiServerOptions(options);
   // K15 emulates one deploy identity per generation; a second server beside it would run in the real host's process space.

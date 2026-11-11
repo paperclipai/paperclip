@@ -50,6 +50,7 @@ import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
+import { sessionFaultServerEnvironment } from "./session-faults.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -354,6 +355,7 @@ async function main(): Promise<number> {
     }
     if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
     if (plan.options.rrStopOn) supervisor.rrStopOn = plan.options.rrStopOn;
+    Object.assign(serverEnvironment, sessionFaultServerEnvironment(plan.options.sessionFaults));
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
