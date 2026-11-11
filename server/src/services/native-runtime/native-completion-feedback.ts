@@ -45,7 +45,7 @@ const paperclipServiceRechecked = new Set<string>();
 function isPaperclipServiceOutageBlocker(result: PrpStructuredRunResult) {
   const blocker = result.blocker;
   return result.reportedWorkDisposition === "blocked" && blocker?.owner.kind === "system"
-    && blocker.reasonCode === "external_service_unavailable" && /\bpaperclip\b/i.test(blocker.owner.name ?? "");
+    && blocker.reasonCode === "external_service_unavailable" && (blocker.owner.name ?? "").toLowerCase().includes("paperclip");
 }
 
 /** Once per run (per server process), so a real persistent failure still rests blocked. */

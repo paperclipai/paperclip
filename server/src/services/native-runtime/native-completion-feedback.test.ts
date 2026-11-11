@@ -422,6 +422,13 @@ describe("native final-response feedback", () => {
     await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow(/Paperclip answered this report[\s\S]*same idempotencyKey/);
     // Once per run: a Paperclip failure that persists after the re-check rests blocked.
     await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
+    // Concatenated names such as "PaperclipAI document service" also name a Paperclip service.
+    const concatenated = await fixture();
+    await expect(nativeCompletionFeedback(db, concatenated.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "PaperclipAI document service" } } }))
+      .rejects.toThrow("Paperclip answered this report");
+    const runnerNamed = await fixture();
+    await expect(nativeCompletionFeedback(db, runnerNamed.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "paperclip_runner" } } }))
+      .rejects.toThrow("Paperclip answered this report");
     // A genuinely external service, a non-system owner, or a finished run is not re-checked.
     const other = await fixture();
     await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "GitHub API" } } }))
