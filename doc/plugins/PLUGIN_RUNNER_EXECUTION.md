@@ -175,6 +175,8 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
 Before creating a fresh workspace for an admitted Retry, Core may send the
 original task-owned workspace's `prepare` request with `verifyExisting: true`.
+Core sends verification through `workspaceOperation` with a 10-second
+deadline and a 12-second RPC timeout.
 The provider must verify a completed checkout without creating or fetching
 one and return `prepared` with `created: false`. Core checks prior writer
 settlement and continues normal preparation on the retained workspace after
@@ -261,6 +263,32 @@ Provider upgrades, activation, company re-enablement, and finalization settlemen
 wake cleanup transactionally. No table, independent timer, or background scan of
 all remote PR refs is required.
 
+### Asynchronous workspace preparation
+
+A provider can implement `onWorkspacePrepare` alongside `onWorkspaceOperation`.
+Core calls the optional method with `phase: "submit"` and a short submission
+deadline. A provider that cannot prepare asynchronously returns
+`{ kind: "unsupported" }` before starting work, so Core can use the original
+operation. Otherwise the provider returns the completed result or a
+`{ kind: "pending", deadline }` receipt. The provider sets and enforces that
+operation deadline. Core holds the workspace lifecycle lock during preparation
+and rejects offers beyond the previous synchronous RPC budget before polling.
+It honors accepted deadlines as supplied. Replayed submission must not duplicate
+an active prepare.
+
+Core sends `phase: "poll"` with the same operation identity and the deadline
+from the receipt. The provider returns the same receipt while work is pending
+and the usual scoped `prepared` result after success. Core rejects late results
+and stops polling when the deadline expires. Each submission and poll has a
+short transport bound independent of the operation deadline. A provider can
+keep reporting pending while it restores recovery snapshots, under the same
+deadline.
+
+Each invocation has its own scoped host access. Complete scoped host calls
+inside the submit or poll that owns them. Detached work can use a remote
+operation already authorized by that invocation. It cannot reuse the
+invocation to call host services after the reply.
+
 ### Workspace operation failures
 
 Core separates a failed `workspaceOperation` call by what it knows about the
@@ -274,7 +302,7 @@ outcome:
 | The provider threw any other error | `Workspace storage provider reported a failure; retry the same workspace` | Unchanged setup failure. |
 
 To report a reason, throw `PluginWorkspaceOperationError` from
-`onWorkspaceOperation`, or any error with an own `workspaceFailureReason`
+`onWorkspaceOperation` or `onWorkspacePrepare`, or any error with an own `workspaceFailureReason`
 property. The reason must come from `WORKSPACE_OPERATION_FAILURE_REASONS`:
 
 | Reason | Retrying the same workspace can help |
