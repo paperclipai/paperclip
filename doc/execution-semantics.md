@@ -2138,6 +2138,13 @@ the exact launch intent before submission. A successor reconciles that intent
 and adopts the same Runner; a missing launch acknowledgement does not permit a
 second process. Uncertain launch evidence remains held.
 
+The accepted launch helper runs detached on the remote machine, independently
+of the web controller. Web-controller loss does not terminate that helper. If
+the remote helper itself fails before publishing a receipt, recovery retains
+the named pending hold: a missing receipt and a dead helper do not prove its
+child never started. This independent remote failure requires launch or machine
+recovery; it does not authorize another process on uncertain evidence.
+
 Upgrade readiness version 2 distinguishes committed admissions from admissions
 that still depend on a local promise. Only committed admissions with durable
 recovery proof may remain pending during replacement. Preparing and launching

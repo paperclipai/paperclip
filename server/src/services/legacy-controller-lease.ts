@@ -159,7 +159,6 @@ export async function readLegacyPreparationHandoffReadiness(
     .leftJoin(issues, and(eq(issues.id, heartbeatRuns.issueId), eq(issues.companyId, heartbeatRuns.companyId),
       eq(issues.assigneeAgentId, heartbeatRuns.agentId), eq(issues.executionRunId, heartbeatRuns.id)))
     .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-      eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
       gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`)));
   return Boolean(row && legacyControllerOwnerStamp(row.run)
     && isRequeueablePreparation(row.run, row.adapterType) && ["queued", "claimed"].includes(row.wake.status)

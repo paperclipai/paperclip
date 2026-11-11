@@ -13,7 +13,7 @@ import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_
   LEGACY_CONTROLLER_RENEWAL_RETRY_DELAY_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
   legacyControllerOwnerStamp, readLegacyPreparationHandoffReadiness, requeueRevokedLegacyPreparation, renewLegacyControllerLease, revokeExpiredLegacyController,
   revokeExpiredLegacyControllerWithState, watchLegacyControllerLease } from "./legacy-controller-lease.js";
-import { currentProcessSpaceHash, currentProcessStartedAtMs } from "./controller-process-identity.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash, currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { proveOwnerGone } from "./owner-proof.js";
 import * as legacyControllerLease from "./legacy-controller-lease.js";
 
@@ -125,6 +125,26 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await queue.claimQueuedRun(saved)).toMatchObject({ id: run.id, responsibleUserId: userId, contextSnapshot: context, runnerProfileJson: profile });
     expect(await queue.claimQueuedRun(saved)).toBeNull();
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({ status: "claimed", runId: run.id });
+  });
+  it("recognizes another controller's durably bound preparation without claiming its lease", async () => {
+    const { run } = await acceptedPreparation();
+    const controllerProcess = { ...currentControllerProcessStamp(), bootId: randomUUID() };
+    expect(controllerProcess.bootId).not.toBe(legacyControllerBootId);
+    await db.update(heartbeatRuns).set({ controllerBootId: controllerProcess.bootId, controllerProcess })
+      .where(eq(heartbeatRuns.id, run.id));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(await readLegacyPreparationHandoffReadiness(db, { companyId: run.companyId, runId: run.id })).toBe(true);
+    expect(await readUpgradeReadiness(db, { activeRunIds: new Set(), counters: () => ({
+      activeRuns: 0, pendingWakes: 0, recoverablePendingWakes: 0, blockingPendingWakes: 0, draining: false,
+    }) })).toMatchObject({ ready: true, version: 2, activeRuns: 1, recoverableRuns: 1, blockingRuns: 0 });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(before);
+    for (const invalidStamp of [null, { ...controllerProcess, bootId: randomUUID() }]) {
+      await db.update(heartbeatRuns).set({ controllerProcess: invalidStamp }).where(eq(heartbeatRuns.id, run.id));
+      expect(await readLegacyPreparationHandoffReadiness(db, { companyId: run.companyId, runId: run.id })).toBe(false);
+    }
+    await db.update(heartbeatRuns).set({ controllerProcess }).where(eq(heartbeatRuns.id, run.id));
+    await expire(run.id);
+    expect(await readLegacyPreparationHandoffReadiness(db, { companyId: run.companyId, runId: run.id })).toBe(false);
   });
   it.each(["stop", "dispatch", "child", "new-owner", "native-promotion", "wake-binding", "issue-claim"] as const)(
     "refuses preparation handoff and requeue after %s wins", async change => {
