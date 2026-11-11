@@ -469,6 +469,9 @@ import {
   stageRemoteRunnerFile,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
+  isTransientRemoteCheckpointReadFailure,
+  remoteProviderStateUnreadable,
+  retryTransientRemoteCheckpointRead,
   verifyNativeHarnessBackup,
   shouldRestoreNativeHarnessBackupIntoSandbox,
 } from "./native-session-executor.js";
@@ -2312,8 +2315,14 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-new-durable", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
-    const firstDurable = provider === "opencode-new-durable";
+  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+    const firstDurable = provider.startsWith("opencode-new-durable");
+    // A sandbox connection drops once while the settled state is read out.
+    let checkpointReadResets = provider === "opencode-new-durable-reset" ? 1 : 0;
+    // Or while the checkpoint inspects the runner state, or reads the provider state, before any copy starts.
+    let inspectionResets = 0;
+    const inspectionReset = provider === "opencode-new-durable-inspect-reset" ? "runner-state.json"
+      : provider === "opencode-new-durable-provider-reset" ? "codex-provider-state.json" : null;
     const architecture = provider === "claude-arm64" ? "arm64" : "x64";
     const claude = provider.startsWith("claude-");
     const opencode = provider.startsWith("opencode");
@@ -2372,6 +2381,10 @@ describe("remote provider pack manifest", () => {
     const suspendedState = durableRunnerState({ runId: remoteExecution.binding.runId, runnerInstanceId: "bundled-image-runner",
       environmentLeaseId: "lease", normalizedSessionId: remoteExecution.session.normalizedSessionId }, "suspended");
     const syncOut = vi.fn(async (operations: Array<{ files: Array<{ kind: string; targetPath: string }> }>) => {
+      if (checkpointReadResets > 0 && operations.some(operation => operation.files.some(file => file.targetPath.includes("/.pending-")))) {
+        checkpointReadResets--;
+        throw Object.assign(new Error("write ECONNRESET"), { code: "ECONNRESET" });
+      }
       for (const operation of operations) for (const file of operation.files) {
         if (file.kind === "directory") {
           await mkdir(file.targetPath, { recursive: true });
@@ -2402,7 +2415,14 @@ describe("remote provider pack manifest", () => {
       });
       onTestFinished(() => { storage.mockRestore(); owner.mockRestore(); validate.mockRestore(); retain.mockRestore(); capture.mockRestore(); backup.mockRestore(); });
     }
-    const execute = vi.fn(async (command: { command: string; args?: string[] }) => ({
+    const execute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      const script = command.args?.[1] ?? "";
+      if (inspectionResets > 0 && inspectionReset && script.includes("base64 <") && script.includes(inspectionReset)
+        && (inspectionReset === "runner-state.json" || !script.includes("runner-state.json"))) {
+        inspectionResets--;
+        throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+      }
+      return {
       exitCode: 0, signal: null, timedOut: false, stderr: "",
       stdout: command.args?.[0] === "--build-metadata" ? JSON.stringify({
         schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
@@ -2412,7 +2432,8 @@ describe("remote provider pack manifest", () => {
       }) : firstDurable && command.args?.[1]?.startsWith("const os=require") ? JSON.stringify({ home: "/home/runtime-account", uid: 1000 })
         : firstDurable && command.args?.[1]?.includes("base64 <") ? Buffer.from(JSON.stringify(command.args[1].includes("codex-provider-state.json")
           && !command.args[1].includes("runner-state.json") ? providerState : suspendedState)).toString("base64") : "",
-    }));
+      };
+    });
     try {
       let coldAdmission: ReturnType<typeof admittedNativeProviderPack> = null;
       const prepare = createRunnerdBackend({ db: preparedDb, execution: remoteExecution,
@@ -2492,8 +2513,11 @@ describe("remote provider pack manifest", () => {
         expect(exportSources.every(source => source.startsWith("/workspace/"))).toBe(true);
         expect(providerArtifactStorage.retainNativeProviderArtifacts).toHaveBeenCalledWith(expect.objectContaining({
           owner: expect.objectContaining({ runId: remoteExecution.binding.runId }), source: expect.objectContaining({ manifest: installed, launchRoot, accountUid: 1000 }) }));
+        if (inspectionReset) inspectionResets = 1;
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");
         expect(harnessStorage.persistNativeHarnessBackup).toHaveBeenCalledTimes(1);
+        expect(checkpointReadResets).toBe(0);
+        expect(inspectionResets).toBe(0);
         return;
       }
       expect(execute.mock.calls.some(([call]) => call.args?.[0] === "-e" || call.args?.[0] === "--version")).toBe(false);
@@ -21222,4 +21246,33 @@ describe("HTTP Stop during remote runner staging", () => {
       expect(dispatches).toBe(0);
     } finally { release(); await outcome; await stopping; await bundle.transport.detachControllerForRestart?.().catch(() => {}); await temporary.cleanup(); await rm(root, { recursive: true, force: true }); }
   }, 120000);
+});
+
+describe("isTransientRemoteCheckpointReadFailure", () => {
+  it("repeats only a dropped sandbox connection, never a state or safety refusal", () => {
+    expect(isTransientRemoteCheckpointReadFailure(Object.assign(new Error("write ECONNRESET"), { code: "ECONNRESET" }))).toBe(true);
+    expect(isTransientRemoteCheckpointReadFailure(new Error("Daytona syncOut directory download failed: socket hang up"))).toBe(true);
+    expect(isTransientRemoteCheckpointReadFailure(new Error("runner_harness_state_mismatch: checkpoint_identity_incomplete"))).toBe(false);
+    expect(isTransientRemoteCheckpointReadFailure(new Error("Daytona syncOut refusing tarball member that escapes the extraction dir: ../x"))).toBe(false);
+    expect(isTransientRemoteCheckpointReadFailure(Object.assign(new Error("certificate expired"), { code: "CERT_HAS_EXPIRED" }))).toBe(false);
+    // A provider-state refusal is transient only when the read behind it dropped.
+    expect(isTransientRemoteCheckpointReadFailure(remoteProviderStateUnreadable(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })))).toBe(true);
+    expect(isTransientRemoteCheckpointReadFailure(remoteProviderStateUnreadable(new Error("runner_remote_provider_state_unavailable")))).toBe(false);
+    expect(isTransientRemoteCheckpointReadFailure(remoteProviderStateUnreadable(new SyntaxError("Unexpected token")))).toBe(false);
+    expect(remoteProviderStateUnreadable(new Error("read ECONNRESET")).message).toBe("runner_harness_state_mismatch: provider_state_unreadable");
+  });
+
+  it("stops after three reads, and never repeats a refusal", async () => {
+    const reset = () => Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    const onRetry = vi.fn();
+    const dropping = vi.fn(async () => { throw reset(); });
+    await expect(retryTransientRemoteCheckpointRead(dropping, onRetry, 0)).rejects.toThrow("read ECONNRESET");
+    expect(dropping).toHaveBeenCalledTimes(3);
+    expect(onRetry.mock.calls).toEqual([[1, 3], [2, 3]]);
+    const refusing = vi.fn(async () => { throw new Error("runner_harness_state_mismatch: runner_identity"); });
+    await expect(retryTransientRemoteCheckpointRead(refusing, vi.fn(), 0)).rejects.toThrow("runner_identity");
+    expect(refusing).toHaveBeenCalledTimes(1);
+    let drops = 2;
+    await expect(retryTransientRemoteCheckpointRead(async () => { if (drops-- > 0) throw reset(); return "settled"; }, vi.fn(), 0)).resolves.toBe("settled");
+  });
 });
