@@ -20,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -400,9 +400,11 @@ export class CodexAppServerDriver implements HarnessDriver {
     // in the newly assigned root. When it holds no in-flight turn or runtime
     // request (a follow-up's inherited checkpoint, for example), decline
     // before any Runner or provider process starts, so the runtime's recovery
-    // policy decides: a replacement in the assigned workspace, or a named
-    // refusal. In-flight provider work keeps the stricter admission refusal,
-    // because nothing here can prove its side effects settled.
+    // policy decides: a replacement in the assigned workspace, or the
+    // permanent named refusal when the checkpoint requires the same session.
+    // Retrying cannot move the saved session, so this is incompatible state,
+    // not a transient failure. In-flight provider work keeps the stricter
+    // admission refusal, because nothing here can prove its side effects settled.
     if (
       snapshot.workingDirectory &&
       !snapshot.activeTurnId &&
@@ -413,6 +415,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       return {
         recovered: false,
         reason: "persisted session working directory is not the assigned remote workspace",
+        failureClass: PROVIDER_STATE_INCOMPATIBLE,
       };
     }
     const transport = this.#transport({
