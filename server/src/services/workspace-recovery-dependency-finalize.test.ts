@@ -2,12 +2,21 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { issueRelations, issues, workspaceOperations } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { issueService } from "./issues.js";
 import { recoverRetainedWorkspace } from "./workspace-recovery.js";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, db } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
+const deliveryNotices = vi.hoisted(() => [] as Array<{ queue: string; hint: string | undefined }>);
+vi.mock("./delivery-work-notifications.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./delivery-work-notifications.js")>();
+  return { ...actual, notifyDeliveryWork: async (...args: Parameters<typeof actual.notifyDeliveryWork>) => {
+    deliveryNotices.push({ queue: args[1], hint: args[2] });
+    return actual.notifyDeliveryWork(...args);
+  } };
+});
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
   return { ...actual, resolveEnvironmentExecutionTarget: async (input: Parameters<typeof actual.resolveEnvironmentExecutionTarget>[0]) =>
@@ -43,6 +52,13 @@ describe("dependency readiness after a done child's work is recovered", () => {
     const listed = (await issueService(db).list(f.companyId, { status: "blocked" }) as Array<{ id: string;
       blockerAttention?: { pendingFinalizeBlockerIssueIds?: string[] } | null }>).find(issue => issue.id === f.parentId);
     expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual([]);
+  }, 30_000);
+
+  it("asks the dependency sweep to wake the recovered child's dependents", async () => {
+    deliveryNotices.length = 0;
+    const f = await recoveredDoneChildWithParent();
+    expect(deliveryNotices).toContainEqual({ queue: DELIVERY_QUEUES.resolvedDependencies,
+      hint: JSON.stringify({ companyId: f.companyId }) });
   }, 30_000);
 
   it("releases the parent when the recovery saved through a snapshot without a workspace", async () => {

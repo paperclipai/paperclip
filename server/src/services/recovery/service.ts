@@ -1189,7 +1189,8 @@ export function recoveryService(
     const selfBlocked = row?.actorType === "agent" && row.agentId === agentId && details.status === "blocked";
     const nativeSelfBlocked = row?.actorType === "system" &&
       row.actorId === "native-status-committer" && row.runAgentId === agentId &&
-      details.source === "native_status_decision" && details.toStatus === "blocked";
+      details.source === "native_status_decision" && details.toStatus === "blocked" &&
+      details.reasonCode !== "durable_dependency_blocker_bound";
     if (!selfBlocked && !nativeSelfBlocked) return false;
     const newlyCompletedBlocker = await db.select({ id: issues.id }).from(issues).where(and(
       eq(issues.companyId, companyId),
@@ -1199,8 +1200,10 @@ export function recoveryService(
     if (newlyCompletedBlocker.length > 0) return false;
     const newlyFinalizedBlocker = await db.select({ id: workspaceOperations.id }).from(workspaceOperations)
       .innerJoin(issues, and(eq(issues.companyId, companyId), inArray(issues.id, blockerIssueIds),
-        eq(issues.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
-        eq(workspaceOperations.issueId, issues.id)))
+        eq(workspaceOperations.issueId, issues.id),
+        or(eq(issues.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
+          and(isNull(workspaceOperations.executionWorkspaceId),
+            sql`${workspaceOperations.metadata}->>'owningService' = 'workspace_recovery'`))))
       .where(and(eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.phase, "workspace_finalize"),
         eq(workspaceOperations.status, "succeeded"), gt(workspaceOperations.finishedAt, blockedTransitionAt)))
       .limit(1);
