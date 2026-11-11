@@ -13,6 +13,7 @@ import { taskInterruptionPresentation } from "./task-interruption-presentation.j
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { reconcileRetainedWorkspaces } from "./workspace-recovery.js";
 import { requestTaskRetry } from "./task-retry.js";
+import { buildExecutionContinuation } from "./execution-continuation.js";
 import { useWorkspaceRecoveryFixture, action, db, run, seed } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
@@ -130,6 +131,12 @@ describe("a held task with a pending decision after its remote runner was lost",
       evidence: { explicitUserContinuation: { actorId: "local-board", interactionId: f.decision.id, previousRunId: f.runId } } });
     expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
       eq(activityLog.action, "issue.execution_recovery_settled"), eq(activityLog.actorId, "local-board")))).toHaveLength(1);
+    // Dispatch rebuilds the continuation under the successor's identity and
+    // rechecks the user authorization; the agent then receives the answer.
+    const envelope = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
+      runId: successor.id, context: successor.contextSnapshot ?? {}, summary: null, exposeLowTrustRaw: false });
+    expect(envelope).toMatchObject({ trigger: { interactionId: f.decision.id }, interruptedRunId: f.runId });
+    expect(envelope.interactionOutcomes).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.decision.id })]));
   }, 60_000);
 
   it("keeps the hold when the wake's user did not give the answer", async () => {

@@ -501,9 +501,15 @@ export async function buildExecutionContinuation(input: {
           : value.interactionId
           ? interactions.some(interaction => interaction.id === value.interactionId && interaction.id === triggerInteraction?.id &&
               ["accepted", "answered", "rejected"].includes(interaction.status) &&
-              interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId && queue.runId === value.runId &&
-                object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
-                queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status))
+              (value.queuedCommentInterruptId
+                ? interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId && queue.runId === value.runId &&
+                  object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
+                  queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status)
+                // A person's own answer to the held task's pending decision:
+                // bound to that person, this successor and the answered status.
+                : interaction.resolvedByUserId === value.actorId && !interaction.resolvedByAgentId &&
+                  string(input.context.interactionStatus) === interaction.status &&
+                  priorRuns.some(run => run.id === value.runId)))
           : rows.some(comment => comment.id === value.commentId &&
               comment.authorType === "user" &&
               (!("commentUpdatedAt" in value || "commentBodyHash" in value || value.automaticRetry) || (
