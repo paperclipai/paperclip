@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { link, lstat, mkdir, open, readdir, rm, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
@@ -44,11 +44,15 @@ export async function claimVolumeFreeControllerState(volumeFree: boolean, base =
     if (await regularOwnerFile(join(base, ownerFile))) await rm(join(base, ownerFile), { force: true });
     return owned ? "released" : "absent";
   }
-  if (await volumeFreeControllerStateOwned(base)) return "owned";
-  const entries = await readdir(base).catch((error: NodeJS.ErrnoException) => {
+  const listed = await readdir(base).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[];
     throw error;
   });
+  for (const name of listed.filter(name => name.startsWith(`${ownerFile}.`))) {
+    if (await regularOwnerFile(join(base, name))) await rm(join(base, name), { force: true });
+  }
+  if (await volumeFreeControllerStateOwned(base)) return "owned";
+  const entries = listed.filter(name => !name.startsWith(`${ownerFile}.`));
   if (entries.some(name => !isVolumeFreeControllerStateOwnerEntry(name))) return "unclaimed";
   if (entries.includes(ownerFile) && !await regularOwnerFile(join(base, ownerFile))) return "unclaimed";
   await mkdir(base, { recursive: true, mode: 0o700 });
@@ -61,11 +65,11 @@ export async function claimVolumeFreeControllerState(volumeFree: boolean, base =
   try {
     await link(temporary, join(base, ownerFile));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!["EEXIST", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    await rm(temporary, { force: true });
     return await volumeFreeControllerStateOwned(base) ? "owned" : "unclaimed";
-  } finally {
-    await unlink(temporary);
   }
+  await rm(temporary, { force: true });
   const directory = await open(base, constants.O_RDONLY);
   try { await directory.sync(); } finally { await directory.close(); }
   return "claimed";

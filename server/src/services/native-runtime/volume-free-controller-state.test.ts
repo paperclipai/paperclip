@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -33,6 +33,19 @@ it("lets only one of several concurrent starts claim the directory", async () =>
   expect(results.every(result => ["claimed", "owned", "unclaimed"].includes(result))).toBe(true);
   expect(await volumeFreeControllerStateOwned(dir)).toBe(true);
   expect((await readdir(dir)).filter(name => name !== ".volume-free-owner.json")).toEqual([]);
+});
+
+it("recovers a claim interrupted between publishing the marker and removing its temporary name", async () => {
+  const dir = await base();
+  expect(await claimVolumeFreeControllerState(true, dir)).toBe("claimed");
+  await link(join(dir, ".volume-free-owner.json"), join(dir, ".volume-free-owner.json.interrupted"));
+  expect(await volumeFreeControllerStateOwned(dir)).toBe(false);
+  expect(await claimVolumeFreeControllerState(true, dir)).toBe("owned");
+  expect(await readdir(dir)).toEqual([".volume-free-owner.json"]);
+  await rm(join(dir, ".volume-free-owner.json"));
+  await writeFile(join(dir, ".volume-free-owner.json.stale"), "partial");
+  expect(await claimVolumeFreeControllerState(true, dir)).toBe("claimed");
+  expect(await readdir(dir)).toEqual([".volume-free-owner.json"]);
 });
 
 it("ignores a marker with the wrong schema", async () => {
