@@ -24,7 +24,11 @@ export async function startOwnedWssGateway(options) {
       const current = await options.readCurrentLease();
       if (current.status !== "active" || current.generation !== options.generation
           || current.providerLeaseId !== options.resource.id || current.companyId !== options.resource.companyId
-          || current.runId !== options.resource.runId || current.containerId !== options.resource.containerId || current.environmentId !== options.resource.environmentId) throw new Error("current_ingress_lease_denied");
+          || current.runId !== options.resource.runId || current.containerId !== options.resource.containerId || current.environmentId !== options.resource.environmentId) {
+        // A current-lease refusal happens before any relay or forwarded bytes.
+        // It is a known denial, including a reconnect while the lease retires.
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return;
+      }
       await options.verifyOwnedContainer(); // exact ID + image + labels, no reuse
       const child = spawn(options.docker, ["--host", options.endpoint, "exec", "-i", options.resource.containerId,
         "/usr/bin/node", options.relayPath, options.descriptorPath], {
