@@ -372,7 +372,7 @@ on that sandbox launches over it. The heartbeat then:
   the run rests with Retry;
 - re-queues the run in the uncharged `interrupted_preparation` lane instead of
   a native reconciliation hold. A run that answered a task interaction keeps
-  that answer through its own continuation retry.
+  its own wake in that lane, so the retry still carries the answer.
 
 A run on a different sandbox forgets the unretired owner instead of replaying
 its rejected close. A previous run parked on a durable governed interaction

@@ -1226,10 +1226,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       logger.warn({ err: error, runId: run.id }, "could not close the native coordinator of a run that did no provider work");
       return null;
     }
-    const retry = isResolvedInteractionContinuationWakeContext(run.contextSnapshot)
-      ? scheduleInteractionContinuationInfrastructureRetryIfEligible(run, agent)
-      : scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON });
-    return retry.catch((retryError) => {
+    // An answered interaction keeps its own wake, so the retry still carries
+    // the answer as a resolved-interaction continuation, in the uncharged lane.
+    const wakeReason = isResolvedInteractionContinuationWakeContext(run.contextSnapshot)
+      ? readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) : null;
+    return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON,
+      ...(wakeReason ? { wakeReason } : {}) }).catch((retryError) => {
       logger.warn({ err: retryError, runId: run.id }, "failed to re-queue a run whose predecessor could not be retired");
       return null;
     });

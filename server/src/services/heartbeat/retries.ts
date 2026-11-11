@@ -85,7 +85,6 @@ import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
-import { readPredecessorRetirementFallback } from "../native-runtime/predecessor-retirement.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -380,9 +379,6 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     return false;
 
   const resultJson = parseObject(run.resultJson);
-  // The run could not retire its predecessor and did no provider work; its
-  // next attempt starts on a fresh sandbox.
-  if (readPredecessorRetirementFallback(resultJson)) return true;
   // A refused exact resume names its interrupted attempt in `error`; the
   // retry decision follows the current refusal only.
   const error = currentRunFailureText(run);
