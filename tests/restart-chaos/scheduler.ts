@@ -96,7 +96,7 @@ function pinnedFireAfterMs(faultAfterMs: number | undefined, drawn: number): num
   return faultAfterMs ?? drawn;
 }
 
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "faultAfterMs" | "providerFaults" | "rrGapMs">): TaskPlan[] {
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "rrGapMs">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
@@ -127,7 +127,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
       fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
-      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int)
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
         : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
         : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
       // Drawn only for RR tasks, so the plans of existing seeds do not change.

@@ -71,6 +71,8 @@ export interface WaveOptions {
   k4HoldMaxMs?: number;
   /** `--k15-hold-seconds`: the seeded K15 outage range (redeploy.ts); absent restarts at once. */
   k15HoldMs?: [number, number];
+  /** `--tm1-hold-seconds`: the seeded TM1 stall range (time-faults-config.ts); absent uses 95–150 s. */
+  tm1HoldMs?: [number, number];
   faultAfterMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the

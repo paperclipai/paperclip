@@ -881,7 +881,25 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
 # The aged wait: an approval left pending for a day across a restart.
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
   --adapters codex --workloads G1 --faults TM3 --triggers approval --concurrency 2 --tasks 2 --seed 302
+# Staging's 100 s event-loop stall: TM1 on Daytona, stalled during workspace preparation or mid-tool.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters codex,claude,opencode --workloads A1,T1 --faults TM1 --tm1-hold-seconds 70-120 --storage s3 \
+  --concurrency 3 --tasks 6 --seed 303
 ```
+
+TM1 also runs on `--env daytona`. It stalls only the control plane, with no
+restart and no new deployment identity. The remote Runner keeps working while
+every controller lease of the stalled process lapses. This is staging's class L:
+a server stall of about 100 s at 08:19Z on Nov 10.
+
+`--tm1-hold-seconds <n>` or `<min>-<max>` (10–600 s) replaces TM1's default
+95–150 s range. It uses the same single draw, so seeds keep their cells.
+
+To stall a run while it is still `preparing`, use `--fault-after-seconds`, as in
+`--fault-after-seconds 10 --storage s3`. A stall while preparing needs a
+preparation that outlasts the fault time, such as a remote workspace restore.
+
+TM2 and TM3 age the wave database and freeze local runners, so they stay local.
 
 The fourth fault family. Every other wave is minutes long on a fresh instance, so nothing time-bound
 expires. A time fault makes deadlines lapse during a run or across a restart. No product code changes.
