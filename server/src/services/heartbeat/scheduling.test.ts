@@ -570,9 +570,6 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     async function quiet() {
 
       await advance(31_000);
-      // A pass that finishes during advance() opens its 30 s coalescing window
-      // late, and vi.waitFor only moves fake time 50 ms per check. Keep fake
-      // time moving until the coalesced follow-up releases its idle hold.
       if (!draining) await vi.waitFor(async () => {
         await advance(1000);
         expect(idleWorkSnapshot().active).toBe(0);
