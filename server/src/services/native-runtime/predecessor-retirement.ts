@@ -38,6 +38,24 @@ export function findNativePredecessorRetirementUnproven(error: unknown): NativeP
   return null;
 }
 
+/** Durable record on a failed run whose next attempt drops its reused sandbox. */
+export const PREDECESSOR_RETIREMENT_FALLBACK_KEY = "predecessorRetirementFallback";
+
+export type PredecessorRetirementFallback = {
+  version: 1;
+  providerWorkStarted: false;
+  predecessorRunId: string | null;
+  replacedProviderLeaseIds: string[];
+};
+
+export function readPredecessorRetirementFallback(resultJson: unknown): PredecessorRetirementFallback | null {
+  if (typeof resultJson !== "object" || resultJson === null) return null;
+  const value = (resultJson as Record<string, unknown>)[PREDECESSOR_RETIREMENT_FALLBACK_KEY];
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  return record.version === 1 && record.providerWorkStarted === false ? record as PredecessorRetirementFallback : null;
+}
+
 export type ReplaceBeforeReuseMarker = {
   schema: typeof REPLACE_BEFORE_REUSE_SCHEMA;
   runId: string;

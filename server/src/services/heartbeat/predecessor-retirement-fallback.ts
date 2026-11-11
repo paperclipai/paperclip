@@ -5,37 +5,23 @@ import { persistActivity } from "../activity-log.js";
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import {
   findNativePredecessorRetirementUnproven, REPLACE_BEFORE_REUSE_KEY, REPLACE_BEFORE_REUSE_SCHEMA,
-  type ReplaceBeforeReuseMarker,
+  type PredecessorRetirementFallback, type ReplaceBeforeReuseMarker,
 } from "../native-runtime/predecessor-retirement.js";
-import { abandonUnverifiedRemoteWorkspaceEpoch } from "../remote-workspace-epoch-abandonment.js";
-
-/** Durable record on a run whose next attempt drops its reused sandbox. */
-export const PREDECESSOR_RETIREMENT_FALLBACK_KEY = "predecessorRetirementFallback";
-
-export type PredecessorRetirementFallback = {
-  version: 1;
-  providerWorkStarted: false;
-  predecessorRunId: string | null;
-  replacedProviderLeaseIds: string[];
-};
+import { releaseUnchangedRemoteWorkspaceWriter } from "../remote-workspaces.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">;
 
 /**
  * A run failed before provider work because the previous run's warm owner on
- * its reused sandbox could not be retired. Prepare the next attempt to start on
- * a fresh sandbox instead of failing the task:
- *
- * - each reusable lease this run holds on that sandbox is marked, so the next
- *   acquisition takes the existing replacement path (it still requires a clean,
- *   committed workspace save and a verified harness backup, and otherwise
- *   resumes as before);
- * - this run's prepared workspace epoch is ended without applying it. The run
- *   did no provider work, so the last committed save is its content.
+ * its reused sandbox could not be retired. Mark each reusable lease this run
+ * holds on that sandbox, so the next acquisition takes the existing
+ * replacement path instead of resuming it. That path still requires a clean,
+ * committed workspace save and a verified harness backup; otherwise the next
+ * acquisition resumes the sandbox as before. Nothing here touches the
+ * workspace: `releaseUnchangedFallbackWorkspace` settles it once the run ended.
  *
  * Returns null, changing nothing, when this run may have started provider
- * work, holds no reusable lease on that sandbox, or holds a workspace writer
- * this run cannot prove it never wrote. The run then keeps today's
+ * work or holds no reusable lease on that sandbox. The run then keeps today's
  * preservation and its Retry.
  */
 export async function preparePredecessorRetirementFallback(db: Db, run: Run, error: unknown)
@@ -56,22 +42,6 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
       eq(environmentLeases.leasePolicy, "reuse_by_environment"), isNotNull(environmentLeases.providerLeaseId),
     )).for("update")).filter(lease => !failure.providerLeaseId || lease.providerLeaseId === failure.providerLeaseId);
     if (leases.length === 0) return null;
-
-    const reference = remoteWorkspaceRunReferenceSchema.safeParse(current.runnerProfileJson?.remoteWorkspace);
-    if (reference.success && reference.data.state === "prepared") {
-      const [workspace] = await tx.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
-        eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, reference.data.workspaceId)));
-      let authority: ReturnType<typeof readRemoteWorkspaceAuthority>;
-      try { authority = readRemoteWorkspaceAuthority(workspace?.metadata); } catch { return null; }
-      if (authority?.writerRunId === run.id) {
-        if (!authority.location || authority.epoch !== reference.data.epoch) return null;
-        await abandonUnverifiedRemoteWorkspaceEpoch(tx, { companyId: run.companyId, workspaceId: reference.data.workspaceId,
-          runId: run.id, epoch: authority.epoch, snapshotId: authority.snapshotId, location: authority.location });
-      } else if (authority?.dirty) {
-        return null;
-      }
-    }
-
     const marker: ReplaceBeforeReuseMarker = { schema: REPLACE_BEFORE_REUSE_SCHEMA, runId: run.id,
       predecessorRunId: failure.predecessorRunId, recordedAt: new Date().toISOString() };
     for (const lease of leases) {
@@ -89,10 +59,31 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
   });
 }
 
-export function readPredecessorRetirementFallback(resultJson: unknown): PredecessorRetirementFallback | null {
-  if (typeof resultJson !== "object" || resultJson === null) return null;
-  const value = (resultJson as Record<string, unknown>)[PREDECESSOR_RETIREMENT_FALLBACK_KEY];
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  return record.version === 1 && record.providerWorkStarted === false ? record as PredecessorRetirementFallback : null;
+/**
+ * After the failed run ended: hand its prepared remote workspace on at the
+ * saved version, but only through the shared unchanged-files proof (no runner
+ * command, workspace operation such as a provisioning command, execution event
+ * or result recorded). True when nothing of this run's is left to save. False
+ * keeps the workspace dirty, so the caller preserves it as today and the
+ * marked sandbox is never replaced.
+ */
+export async function releaseUnchangedFallbackWorkspace(db: Db, run: Run): Promise<boolean> {
+  const [current] = await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
+  if (!current || current.profile?.nativeWorkspaceSync != null) return false;
+  if (current.profile?.remoteWorkspace == null) return true;
+  const reference = remoteWorkspaceRunReferenceSchema.safeParse(current.profile.remoteWorkspace);
+  if (!reference.success) return false;
+  if (reference.data.state !== "prepared") return true;
+  return db.transaction(async tx => {
+    const [workspace] = await tx.select().from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, reference.data.workspaceId))).for("update");
+    let authority: ReturnType<typeof readRemoteWorkspaceAuthority>;
+    try { authority = readRemoteWorkspaceAuthority(workspace?.metadata); } catch { return false; }
+    if (!workspace || !authority) return false;
+    // Another writer took the workspace on: nothing of this run's remains in it.
+    if (authority.writerRunId !== run.id) return authority.epoch > reference.data.epoch;
+    // The heartbeat that owns this writer is the caller, and it started no runner.
+    return Boolean(await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority, callerOwnsWriter: true }));
+  });
 }

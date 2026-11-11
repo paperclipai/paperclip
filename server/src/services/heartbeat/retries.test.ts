@@ -239,6 +239,15 @@ describe("heartbeat retry module callbacks", () => {
       .scheduleInteractionContinuationInfrastructureRetryIfEligible(spawnFailure, { adapterType: "codex_local" } as Agent);
     expect(spawnDeps.appendRunEvent).toHaveBeenCalledWith(spawnFailure, exhaustion);
     expect(database.access).not.toHaveBeenCalled();
+
+    // An answer whose run could not retire its predecessor keeps its own continuation retry.
+    const unretired = { ...failed, error: "The previous run's session on this sandbox could not be retired",
+      resultJson: { failureCause: "native_predecessor_retirement_unproven", predecessorRetirementFallback: { version: 1,
+        providerWorkStarted: false, predecessorRunId: "previous", replacedProviderLeaseIds: ["sandbox-a"] } } } as Run;
+    const unretiredDeps = callbacks();
+    await extracted.createHeartbeatRetries(database.db, unretiredDeps)
+      .scheduleInteractionContinuationInfrastructureRetryIfEligible(unretired, { adapterType: "codex_local" } as Agent);
+    expect(unretiredDeps.appendRunEvent).toHaveBeenCalledWith(unretired, exhaustion);
   });
 });
 

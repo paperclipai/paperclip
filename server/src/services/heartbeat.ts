@@ -3865,7 +3865,7 @@ export function heartbeatService(
               : "native run failure left to the workspace owner that holds the run");
           return;
         }
-        await runCompletion.failRun({
+        const failed = await runCompletion.failRun({
           run, agent, issueId, issueRef, signal: executionControl.controller.signal,
           output: runOutput,
           session: { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata },
@@ -3874,6 +3874,8 @@ export function heartbeatService(
           nativeDispatchMayHaveStarted: nativeDispatchMayHaveStarted(),
           goalCheckpointSession, previousSessionDisplayId, taskSession, predecessorRetirementFallback,
         });
+        // The failed run's workspace could not be proven unchanged: keep it as today.
+        if (failed?.preserveFailedWorkspace) await preserveNativeWorkspaceOnFailure();
       }
     } catch (outerErr) {
       if (nativeStartupCleanupScheduled || nativeStartupCleanupError || outerErr instanceof NativeStartupCleanupPendingError) {

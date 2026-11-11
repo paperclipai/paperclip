@@ -365,10 +365,14 @@ on that sandbox launches over it. The heartbeat then:
   cleanup sweep. That replacement uses the same rule as a failed resume: a
   clean, committed workspace save and a verified harness backup. Without them
   the next acquisition resumes the sandbox as before;
-- ends this run's prepared workspace epoch without applying it, since the run
-  wrote nothing;
+- after the run ends, hands its prepared workspace on at the saved version
+  only through the shared unchanged-files proof (no runner command, workspace
+  operation such as a provisioning command, execution event or result).
+  Without that proof the workspace stays dirty and is preserved as today, and
+  the run rests with Retry;
 - re-queues the run in the uncharged `interrupted_preparation` lane instead of
-  a native reconciliation hold.
+  a native reconciliation hold. A run that answered a task interaction keeps
+  that answer through its own continuation retry.
 
 A run on a different sandbox forgets the unretired owner instead of replaying
 its rejected close. A previous run parked on a durable governed interaction
