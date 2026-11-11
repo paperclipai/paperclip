@@ -229,11 +229,11 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
   }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v3", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
-    let state: NativeAccountingState;
-    try { state = await nativeUnresolvedContext(ctx, true); }
-    catch (error) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); throw error; }
-    await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The completed native run requiring saved-cost recovery is ${state.originalRunId}, on task ${state.preflightTask.identifier}. Its public accounting quality record is actually retryable and retains saved usage. Only the person may use cost-recording retry; do not start or rerun the task.` });
-    return { ...state };
+    try {
+      const state = await nativeUnresolvedContext(ctx, true);
+      await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The completed native run requiring saved-cost recovery is ${state.originalRunId}, on task ${state.preflightTask.identifier}. Its public accounting quality record is actually retryable and retains saved usage. Only the person may use cost-recording retry; do not start or rerun the task.` });
+      return { ...state };
+    } catch (error) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); throw error; }
   }, gradeAccounting, {
     authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v3", sourceFiles: repairSources,
     async cleanup(ctx) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); }, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
