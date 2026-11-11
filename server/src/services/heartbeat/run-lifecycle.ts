@@ -265,6 +265,7 @@ const LIVENESS_BOOKKEEPING_EVENT_TYPES = [
 ];
 
 export const NON_RETRYABLE_PREFLIGHT_FAILURE_CODES = new Set<string>([
+  "native_session_continuity_unverified",
   "project_access_denied",
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",

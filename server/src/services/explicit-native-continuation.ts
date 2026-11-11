@@ -342,6 +342,14 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
+    let continuityStopped = false;
+    if (run.errorCode === "native_session_continuity_unverified" || action.evidence.nativeContinuityRefusal === true) {
+      const { verifyUnstartedAttachmentForContinuation } = await import("./native-runtime/native-session-executor.js");
+      const proof = await verifyUnstartedAttachmentForContinuation(db, run);
+      if (!proof) return blocked("local_cleanup", "The saved session still needs verification. Your message is saved.");
+      stoppedSessions.push({ evidence: { ...proof.evidence, runId: run.id }, retire: proof.retire });
+      continuityStopped = true;
+    }
     // A user's message written after their Stop request is new direction even
     // when the stopped native run settled later.
     const stoppedAt = userStopBoundaryAt(run)!;
@@ -528,9 +536,9 @@ export async function admitExplicitNativeContinuation(input: {
     // and its release wakes deferred execution; the held input then starts.
     const retainedCleanup = !remote && run.runtimeMode === "native"
       ? nativeSessionCleanupBlock({ companyId, issueId }) : null;
-    if (retainedCleanup === "pending" && run.errorCode !== "native_session_cleanup_quarantined")
+    if (!continuityStopped && retainedCleanup === "pending" && run.errorCode !== "native_session_cleanup_quarantined")
       return blocked("local_cleanup", "Waiting for the previous provider session to finish cleanup. Your message will start automatically.");
-    if (!remote && run.runtimeMode === "native" &&
+    if (!continuityStopped && !remote && run.runtimeMode === "native" &&
         (run.errorCode === "native_session_cleanup_quarantined" || retainedCleanup === "operator_required")) {
       // Never permission to resume the interrupted turn: new input and a
       // native Retry both start a fresh provider conversation, and only after

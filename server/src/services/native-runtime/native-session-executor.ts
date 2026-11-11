@@ -6283,7 +6283,28 @@ async function migrateRunnerdStateRootForExecution(input: {
 // A terminal warm run can lose its controller before session.suspend. Older
 // controllers quarantined even fully settled state in that case. Recover the
 // exact provider thread, never bootstrap a replacement from an ambiguous root.
-async function recoverQuiescentRunnerdState(input: {
+export async function verifyUnstartedAttachmentForContinuation(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId" | "runnerProfileJson">) {
+  try {
+    const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+    if (execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
+      execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
+      execution.session.normalizedSessionId !== run.nativeSessionId || !run.runnerInstanceId) return null;
+    const scoped = scopedRunnerdStateRoot(execution), quarantine = resolve(runnerdStateBase(), "quarantine");
+    if (existsSync(scoped) && (!isSafeNativeStateDirectory(scoped) || readdirSync(scoped).length > 0) || !isSafeNativeStateDirectory(quarantine)) return null;
+    const candidates = readdirSync(quarantine).filter(name => name.startsWith(`${basename(scoped)}.identity_indeterminate.`));
+    if (candidates.length !== 1) return null;
+    const { proveUnstartedAttachmentQuarantine } = await import("./native-unstarted-attachment.js");
+    const proof = await proveUnstartedAttachmentQuarantine({ db, execution, root: resolve(quarantine, candidates[0]!),
+      sameScope: source => nativeSessionScopeKey(source) === nativeSessionScopeKey(execution) });
+    if (!proof || activeNativeSessions.has(String(proof.evidence.ownerRunId))) return null;
+    return { evidence: proof.evidence, retire: () => proof.unchanged() &&
+      completeTerminatedLocalNativeSessionCleanup({ companyId: run.companyId, runId: String(proof.evidence.ownerRunId), runnerInstanceId: String(proof.evidence.runnerInstanceId) }) &&
+      completeTerminatedLocalNativeSessionCleanup({ companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId! }) };
+  } catch { return null; }
+}
+
+export async function recoverQuiescentRunnerdState(input: {
   db: Db;
   execution: NativeExecutionInput;
   scoped: string;
@@ -6309,14 +6330,12 @@ async function recoverQuiescentRunnerdState(input: {
     : [input.scoped];
   if (
     currentEmpty &&
-    candidates.filter(
-      (root) =>
-        isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
-    ).length > 1
+    candidates.length > 1
   ) {
     // Do not roll back to an older valid checkpoint when a newer quarantined
     // root contains unconfirmed work, even if the newer root is unreadable.
-    throw new Error("runner_state_identity_mismatch: quarantine_candidates_ambiguous");
+    const { refuseUnverifiedNativeContinuity } = await import("./native-unstarted-attachment.js");
+    return refuseUnverifiedNativeContinuity({ ...input, reason: "quarantine_candidates_ambiguous" });
   }
   const verified: Array<{
     root: string;
@@ -6499,16 +6518,29 @@ async function recoverQuiescentRunnerdState(input: {
     }
   }
   if (verified.length !== 1) {
+    if (currentEmpty && candidates.length === 1) {
+      const { proveUnstartedAttachmentQuarantine } = await import("./native-unstarted-attachment.js");
+      const proof = await proveUnstartedAttachmentQuarantine({ db: input.db, execution: input.execution, root: candidates[0]!,
+        sameScope: source => nativeSessionScopeKey(source) === nativeSessionScopeKey(input.execution) });
+      if (proof) {
+        await appendHeartbeatRunEvent(input.db, { ...input.execution.binding,
+          eventType: "native.unstarted_attachment_verified", stream: "system", level: "info",
+          message: "The prior attachment stopped before receiving a turn. Preserved its state and admitted a new provider startup.", payload: proof.evidence });
+        if (!proof.unchanged() || existsSync(input.scoped) && readdirSync(input.scoped).length !== 0) {
+          const { refuseUnverifiedNativeContinuity } = await import("./native-unstarted-attachment.js");
+          return refuseUnverifiedNativeContinuity({ ...input, reason: "recovery_evidence_changed" });
+        }
+        return;
+      }
+    }
     if (
       currentEmpty &&
-      candidates.some(
-        (root) =>
-          isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
-      )
+      candidates.length > 0
     ) {
       // Known provider history is not permission to start a replacement when
       // recovery cannot prove a unique, settled owner.
-      throw new Error("runner_state_identity_mismatch: quarantine_owner_unverified");
+      const { refuseUnverifiedNativeContinuity } = await import("./native-unstarted-attachment.js");
+      return refuseUnverifiedNativeContinuity({ ...input, reason: "quarantine_owner_unverified" });
     }
     return;
   }

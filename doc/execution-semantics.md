@@ -5682,3 +5682,21 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+### An interrupted local provider attachment before any turn
+
+A local per-turn Codex attachment can stop while `run.attach` is pending, before
+any turn was issued or provider event reached the runner. Its saved state can
+be direct quarantine state or an archived continuity break. A unique such source
+can permit normal provider startup after its controller, runner, startup, run
+and released environment records agree and every recorded process is absent.
+No provider turn, tool invocation, result, active goal or authenticated startup
+may exist. The prior task history, workspace and saved source remain intact.
+The normal provider resume-or-replace policy still decides how to open the
+conversation; this proof never resumes an interrupted turn.
+
+If these facts cannot be established, recovery preserves the source and creates
+one execution reconciliation hold. The run reports the permanent code
+`native_session_continuity_unverified`. Dependency wakes cannot keep starting
+new attempts with the same unverified state. Explicit recovery must reconcile
+the retained work; a generic Retry does not certify an unknown action outcome.
