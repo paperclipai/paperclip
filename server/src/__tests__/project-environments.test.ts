@@ -110,6 +110,7 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     const core = await svc.create(f.companyId, { name: "Core project" }, { environmentId: f.ssh.id, expectedStorageProviderPluginId: null });
     const managed = await svc.create(f.companyId, { name: "Managed project" }, { environmentId: f.computer.id });
     expect(core).not.toHaveProperty("environmentId");
+    expect(core).not.toHaveProperty("legacyEnvironmentId");
     expect(core.workspaceProvider?.pluginId).toBeNull();
     expect(managed.workspaceProvider?.pluginId).toBe(f.pluginId);
     await expect(svc.update(core.id, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId: f.pluginId } }))
