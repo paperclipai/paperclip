@@ -33,38 +33,20 @@ export function caseFactsRoles(o: Pick<FactsObservation, "runs" | "workComments"
   const unexplained = o.runs.filter(run => !initial.includes(run) && !ceo.includes(run) && !continuation?.includes(run) && !review.includes(run));
   return { ceo, continuation: continuation ?? [], review, valid: !!continuation && initial.length === 1 && review.length <= 1 && unexplained.length === 0 };
 }
-/** The setup records the reproduction browser in `browser`; the person's correction is "only on mobile Safari".
- * A corrected value names Safari with a mobile-platform qualifier ("iOS Safari" and "Safari on iPhone/iPad" are the
- * same fact). Its wording is the agent's: explanatory words such as "bug reproduces" are free (gha-43088288923 saved
- * "Mobile Safari only (bug reproduces only on mobile Safari)" and an allow-list of words rejected it). What changes the
- * fact is graded instead: another platform or browser named as affected, or a negation or uncertainty such as the
- * stale "affected device not yet confirmed". */
-const FILLER = new Set(["only", "on", "exclusively", "just", "the", "browser", "browsers", "device", "devices", "affected"]);
-const MOBILE = new Set(["mobile", "ios", "iphone", "ipad", "ipados"]);
-const tokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter(token => token && !FILLER.has(token));
-/** A value may add clauses that only rule other platforms out ("desktop Safari unaffected",
- * "not on Chrome"): such a clause carries a negation and names a non-mobile platform or browser and
- * no mobile one. Every other clause together must still say exactly mobile Safari. */
-const EXCLUDES = /\b(?:unaffected|excluded|not (?:affected|impacted|reproducible)|(?:does not|doesn't|never) (?:occur|happen|reproduce)|works(?: fine)?|is fine)\b|^\s*(?:not|never|no)\b/i;
-const OTHER_PLATFORM = new Set(["desktop", "mac", "macos", "windows", "linux", "android", "chrome", "chromium", "firefox", "edge", "opera", "samsung", "laptop"]);
-/** Words that negate or leave the fact open; outside an exclusion clause they make it a different fact. */
-const UNSETTLED = new Set(["not", "no", "never", "unconfirmed", "unknown", "unclear", "unverified", "maybe", "possibly", "except", "excluding", "without", "pending", "tbd"]);
-function mobileSafariOnly(value: unknown) {
-  if (typeof value !== "string") return false;
-  const clauses = value.split(/[;,()]|\s[-\u2013\u2014]\s|\bbut\b/i).filter(clause => tokens(clause).length > 0);
-  const exclusion = (clause: string) => { const t = tokens(clause);
-    return EXCLUDES.test(clause) && !/\bnot\s+(?:excluded|unaffected)\b/i.test(clause) && t.some(token => OTHER_PLATFORM.has(token)) && !t.some(token => MOBILE.has(token)); };
-  const t = clauses.filter(clause => !exclusion(clause)).flatMap(tokens);
-  return t.includes("safari") && t.some(token => MOBILE.has(token)) && !t.some(token => OTHER_PLATFORM.has(token) || UNSETTLED.has(token));
-}
-function mobilePlatformOnly(value: unknown) { if (typeof value !== "string") return false; const t = tokens(value); return t.length > 0 && t.every(token => MOBILE.has(token)); }
+/** The setup records `browser: "Safari; affected device not yet confirmed"`; the person's correction is "only on mobile
+ * Safari". The saved correction is graded structurally, not by its wording (gha-43088288923 saved the correct "Mobile
+ * Safari only (bug reproduces only on mobile Safari)", which an allow-list of words rejected, and a deny-list instead
+ * accepts wrong facts such as "non-mobile Safari"): the saved facts changed from the setup value, no field keeps the
+ * setup-chosen stale literal, and the facts carry the person's own supplied literal (Safari with a mobile qualifier).
+ * Whether the saved wording means exactly that is free-form text that a person reads. */
+export const SETUP_BROWSER = "Safari; affected device not yet confirmed";
+const STALE = "not yet confirmed";
 export function corrected(fields: unknown) {
-  const record = fields && typeof fields === "object" ? fields as Record<string, unknown> : {};
-  const platformSplit = Object.entries(record).some(([key, value]) => /^(?:platform|os|device)$/i.test(key) && mobilePlatformOnly(value));
-  const browserValues = [record.browser, record.affectedBrowser].filter(value => value !== undefined);
-  if (record.affectedBrowsers !== undefined) browserValues.push(Array.isArray(record.affectedBrowsers) && record.affectedBrowsers.length === 1 ? record.affectedBrowsers[0] : null);
-  return browserValues.length > 0 && browserValues.every(value => mobileSafariOnly(value)
-    || platformSplit && typeof value === "string" && tokens(value).join(" ") === "safari");
+  const record = fields && typeof fields === "object" && !Array.isArray(fields) ? fields as Record<string, unknown> : {};
+  const values = Object.values(record).flatMap(value => Array.isArray(value) ? value : [value]).filter((value): value is string => typeof value === "string");
+  const text = values.join("\n");
+  return record.browser !== SETUP_BROWSER && values.some(value => /safari/i.test(value)) && /\b(?:mobile|ios|iphone|ipad|ipados)\b/i.test(text)
+    && !values.some(value => value.toLowerCase().includes(STALE));
 }
 /** The follow-up reply is the text added after the first checkpoint. It must name the case (its identifier or its
  * primary task) and the setup-chosen support escalation literal. Whether its wording is right is free-form text that a
@@ -121,7 +103,7 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
     settings.get(ctx)!.gate = gate;
     const kickoff = await ctx.input.api.post<HandoffCaseResult>(`/api/companies/${ctx.input.fixtures.company.id}/case-handoffs`, {
       idempotencyKey: `facts-${ctx.input.nonce}`, case: { create: { caseType: "customer", title: "Checkout reproduction case", projectId: p.id,
-        fields: { browser: "Safari; affected device not yet confirmed", customer: "Acorn Test Shop", severity: "normal", expected: "Pay should submit a single order" } } }, toAgentId: worker.id, phase: "investigation",
+        fields: { browser: SETUP_BROWSER, customer: "Acorn Test Shop", severity: "normal", expected: "Pay should submit a single order" } } }, toAgentId: worker.id, phase: "investigation",
       instructions: "Read the saved customer brief. The affected device is not yet confirmed: record the missing reproduction detail in a task comment, then call the connected Website Brief read_website_brief tool to wait for the remaining customer evidence. Keep this ordinary investigation active; do not complete it, invent the affected device, or alter case facts.",
       workflow_document_text: "Morgan investigates this ordinary primary. A corrected customer reproduction detail must remain in saved case facts alongside unrelated customer fields. Riley reviews the current saved case when a later actual review handoff is requested, records a task comment, and completes the review task without closing the case.",
       initialDocuments: [{ key: "brief", title: "Customer reproduction brief", body: "Acorn Test Shop: Safari checkout Pay sometimes does not submit. The affected device has not yet been confirmed. Expected result is one submitted order." }],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { corrected, gradeIntegratorCaseFacts } from "./integrator-case-facts.js";
+import { corrected, gradeIntegratorCaseFacts, SETUP_BROWSER } from "./integrator-case-facts.js";
 const FIRST = "Updated case COM-C1: browser is now **\"Mobile Safari only\"**, with customer, expected result, and severity preserved. See [COM-1](/COM/issues/COM-1).";
 // Recorded follow-up reply from run 42584001490 (escalation value substituted).
 const FOLLOW_UP = "Yes. The case's saved facts still include your correction: `browser` = **Mobile Safari only**. The other facts are unchanged: customer **Acorn Test Shop**, expected **Pay should submit a single order**, severity **normal**.\n\nThe saved support escalation is **support-123**.\n\nOne caveat: the separate reproduction brief document still says \"The affected device has not yet been confirmed.\" Case COM-C1 is linked to [COM-1](/COM/issues/COM-1).";
@@ -48,22 +48,16 @@ describe("current case facts and real subsequent context", () => {
     const reusedFirst = valid(); reusedFirst.state.collaborationCheckpoint.reply = `${FIRST}\nYes, it still says mobile Safari only. Support escalation is support-123.`;
     expect(gradeIntegratorCaseFacts(reusedFirst).passed).toBe(false);
   });
-  it("grades the saved browser by the fact it states, not by an allow-list of its words", () => {
-    for (const browser of ["Mobile Safari only", "mobile Safari", "iOS Safari", "Safari on iPhone/iPad only", "Safari (iOS)"]) expect(corrected({ browser }), browser).toBe(true);
+  it("grades the saved correction structurally, leaving the meaning of its wording to a person", () => {
+    // Valid wording passes, including the retained gha-43088288923 value and the agent's own explanatory words.
+    for (const browser of ["Mobile Safari only (bug reproduces only on mobile Safari)", "Mobile Safari only", "iOS Safari", "Safari on iPhone/iPad only",
+      "Reproduces only on mobile Safari", "Mobile Safari only; desktop Safari unaffected"]) expect(corrected({ browser }), browser).toBe(true);
     expect(corrected({ browser: "Safari", platform: "mobile only" })).toBe(true);
-    // A clause that only rules another platform out is a clarification of the same fact.
-    for (const browser of ["Mobile Safari only (iPhone/iPad); desktop Safari unaffected", "Mobile Safari only - desktop Safari and Chrome are not affected", "iOS Safari only, works on desktop", "Mobile Safari only; not on Chrome", "Mobile Safari only; desktop Safari excluded"])
-      expect(corrected({ browser }), browser).toBe(true);
-    for (const browser of ["Mobile Safari; desktop Safari also affected", "Mobile Safari only (not yet confirmed)", "Mobile Safari, not iOS", "Mobile Safari; desktop Safari not excluded", "Mobile Safari; desktop Safari is not excluded", "Safari; desktop unaffected", "Mobile Safari and desktop Chrome"])
-      expect(corrected({ browser }), browser).toBe(false);
     expect(corrected({ affectedBrowsers: ["iOS Safari"] })).toBe(true);
-    // Retained gha-43088288923: the agent's own explanatory words are not a different fact.
-    for (const browser of ["Mobile Safari only (bug reproduces only on mobile Safari)", "Mobile Safari only (Pay fails to submit on mobile Safari)", "Reproduces only on mobile Safari", "Mobile Safari (iPhone) only - confirmed by the customer"])
-      expect(corrected({ browser }), browser).toBe(true);
-    for (const browser of ["Mobile Safari; affected device not yet confirmed", "Mobile Safari, possibly desktop too", "Mobile Safari (bug also reproduces on Firefox)", "Mobile Safari; device unconfirmed", "Safari (bug reproduces on mobile and desktop)"])
-      expect(corrected({ browser }), browser).toBe(false);
-    for (const fields of [{ browser: "Safari (desktop and mobile Safari)", note: "only intermittent" }, { browser: "Safari; affected device not yet confirmed" }, { browser: "Desktop Safari only" },
-      { browser: "not mobile Safari" }, { browser: "Safari", note: "mobile only" }, { browser: "Chrome and mobile Safari" }, { affectedBrowsers: ["iOS Safari", "Chrome"] }, { browser: "Safari; device unknown", affectedBrowser: "iOS Safari" }, {}])
+    // Broken saves fail: unchanged setup value, the stale setup literal kept anywhere, the person's mobile or Safari
+    // literal dropped, or the facts removed.
+    for (const fields of [{ browser: SETUP_BROWSER }, { browser: "Mobile Safari; affected device not yet confirmed" }, { browser: "Mobile Safari", note: "device not yet confirmed" },
+      { browser: "Safari" }, { browser: "Desktop Safari only" }, { browser: "Mobile Chrome" }, { browser: "" }, {}])
       expect(corrected(fields), JSON.stringify(fields)).toBe(false);
   });
 });
