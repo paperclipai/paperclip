@@ -152,6 +152,14 @@ Do not retry by creating another publication or changing its key. Explicit retri
 reuse the original key and payload. Similar text is not evidence of delivery. An
 ambiguous upload without a recorded receipt also needs operator review.
 
+On a managed instance whose Cloud supports the encrypted Photon receiver,
+normal channel configuration can hand intake to Cloud while keeping the channel
+enabled. The handoff retains the exact company, endpoint, credential generation,
+intake cutoff, and checkpoint. Cloud stores encrypted deliveries and wakes the
+App; the App still checks the current sender, destination, task, and permissions
+before importing work. It acknowledges only the durably accepted ordered prefix.
+An instance without that capability retains its normal local receiver.
+
 One elected receiver holds the endpoint lease. Live streams notify a serial
 catch-up reader. The reader advances its checkpoint only after preceding events
 are durably admitted or classified, including irrelevant events. It deduplicates
@@ -177,7 +185,14 @@ suppressed during pause do not become work. Outage recovery catches up eligible
 missed messages. Disconnect archives the endpoint, stops streams, invalidates
 interaction authority, and removes owned secret bindings. It does not delete the
 Photon project, number, subscription, or Messages history. Hiding experimental
-UI alone does not disconnect existing channels.
+UI alone does not disconnect existing channels. A Cloud handoff or retirement
+cannot report completion from an expired lease or a missing local runtime alone:
+it retains unconfirmed resource-close, delivery, and acknowledgement work.
+Shutdown joins the same owned receiver and adapter resources; a failed close
+remains retryable on that owner. Normal authorized Retry preserves the original
+handoff and publication identities rather than replacing uncertain work with a
+new send. An unknown retirement keeps its credential-cleanup responsibility
+until normal acceptance and resource closure are confirmed.
 
 ## Troubleshooting
 
