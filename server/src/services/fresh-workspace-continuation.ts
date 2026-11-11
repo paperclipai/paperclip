@@ -480,7 +480,7 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
   return readiness;
 }
 
-/** A committed fresh fallback can still retain a provider worktree once the running retry can verify it. */
+/** A running retry can retain its previous checkout after verifying a committed fresh fallback. */
 export async function verifyRetryWorkspace(
   db: Db,
   workers: WorkspaceWorkers | undefined,
@@ -489,7 +489,7 @@ export async function verifyRetryWorkspace(
   responsibleUserId: string | null,
   readiness: ContinuationReadiness,
 ): Promise<ContinuationReadiness> {
-  if (!workers || readiness.mode !== "fresh_isolated_workspace" ||
+  if (readiness.mode !== "fresh_isolated_workspace" ||
       run.contextSnapshot?.taskRetryRequestId !== readiness.retryIntentId) return readiness;
   const [source] = await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
@@ -507,7 +507,7 @@ export async function verifyRetryWorkspace(
     companyId: run.companyId, issueId, agentId: run.agentId, successorRunId: run.id,
     source, cause: null, evidence: null,
     sourceRetryIntentId: source.contextSnapshot?.taskRetryRequestId,
-    verifyProviderWorkspace: async workspace => {
+    verifyProviderWorkspace: workers ? async workspace => {
       try {
         return Boolean(await preparePluginWorkspace(db, workers, {
           companyId: run.companyId, issueId, agentId: run.agentId, runId: run.id, responsibleUserId,
@@ -518,7 +518,7 @@ export async function verifyRetryWorkspace(
       } catch {
         return false;
       }
-    },
+    } : undefined,
   });
   if (!retained) return readiness;
   const reuse: ContinuationReadiness = { mode: "reuse_issue_workspace", retryIntentId: readiness.retryIntentId,

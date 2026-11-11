@@ -1,5 +1,5 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
-import { assertProjectStorageEnvironment, effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
+import { assertProjectStorageEnvironment, effectiveProjectWorkspacePolicy, requireWorkspaceProviderWorker, type WorkspaceWorkers } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { retireAbandonedPluginWorkspaceReservation } from "./plugin-workspace-reservations.js";
 import { randomUUID, createHash } from "node:crypto";
@@ -8,8 +8,6 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issues,
-  pluginCompanySettings,
-  plugins,
   projects,
   projectWorkspaces,
   type Db,
@@ -26,61 +24,22 @@ import {
   type PluginWorkspaceParams,
   type PluginFreshWorkspace,
 } from "@paperclipai/plugin-sdk";
-import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
-import { workspaceProviderCallFailure, workspaceWorkerRefusal } from "./workspace-provider-failure.js";
+import { workspaceProviderCallFailure } from "./workspace-provider-failure.js";
 import {
   assertTaskWorkspaceExecutionAccess,
   assertTaskWorkspaceSourceProjectAccess,
 } from "./task-workspace-access.js";
 import { forbidden, conflict } from "../errors.js";
 
-export type WorkspaceWorkers = Pick<PluginWorkerManager, "call" | "getWorker">;
+export type { WorkspaceWorkers } from "./project-workspace-provider.js";
 type Workspace = typeof executionWorkspaces.$inferSelect;
-
-async function provider(
-  db: Db,
-  workers: WorkspaceWorkers | undefined,
-  companyId: string,
-  pluginId: string,
-  /** Before a call, a ready provider whose worker is not running is a retryable refusal: no request is sent. */
-  beforeCall = false,
-) {
-  const [plugin] = await db
-    .select()
-    .from(plugins)
-    .where(eq(plugins.id, pluginId));
-  const [settings] = await db
-    .select()
-    .from(pluginCompanySettings)
-    .where(
-      and(
-        eq(pluginCompanySettings.pluginId, pluginId),
-        eq(pluginCompanySettings.companyId, companyId),
-      ),
-    );
-  const worker = workers?.getWorker(pluginId);
-  const refusal = beforeCall && workers && plugin?.status === "ready" && settings?.enabled !== false &&
-    isWorkspaceProvider(plugin.manifestJson) ? workspaceWorkerRefusal(pluginId, worker) : null;
-  if (refusal) throw refusal;
-  if (
-    !workers ||
-    !plugin ||
-    plugin.status !== "ready" ||
-    settings?.enabled === false ||
-    !isWorkspaceProvider(plugin.manifestJson) ||
-    !worker?.supportedMethods?.includes("workspaceOperation")
-  ) {
-    throw conflict("The workspace storage plugin is unavailable");
-  }
-  return plugin;
-}
 
 export async function pluginWorkspaceSupportsMergeAncestry(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
   const pluginId = readWorkspaceProviderBinding(workspace.metadata)?.pluginId;
   if (!pluginId) return true;
-  const selected = await provider(db, workers, workspace.companyId, pluginId);
+  const selected = await requireWorkspaceProviderWorker(db, workers, workspace.companyId, pluginId);
   return selected.manifestJson.workspaceProvider?.supportsMergeAncestry !== false;
 }
 
@@ -103,7 +62,7 @@ export async function callWorkspaceProvider(
   const pluginId = binding?.pluginId ?? input.pluginId;
   if (!pluginId || !workspace.projectId)
     throw conflict("Workspace storage ownership is missing");
-  const selectedProvider = await provider(db, workers, workspace.companyId, pluginId, true);
+  const selectedProvider = await requireWorkspaceProviderWorker(db, workers, workspace.companyId, pluginId, true);
   const verifyExisting = input.operation.kind === "prepare" && input.operation.verifyExisting === true;
   if (verifyExisting && selectedProvider.manifestJson.workspaceProvider?.workspaceVerificationVersion !== 1)
     throw conflict("Workspace verification is unavailable");
@@ -162,7 +121,7 @@ export async function callWorkspaceProvider(
     throw workspaceProviderCallFailure(error);
   }
   // Recheck enablement and ownership after an external effect, including an ambiguous retry.
-  await provider(db, workers, workspace.companyId, pluginId);
+  await requireWorkspaceProviderWorker(db, workers, workspace.companyId, pluginId);
   const [fresh] = await db
     .select()
     .from(executionWorkspaces)
@@ -282,7 +241,7 @@ export async function preparePluginWorkspace(
     throw conflict(
       "An existing local workspace cannot change storage providers",
     );
-  const selectedProvider = await provider(db, workers, input.companyId, pluginId, true);
+  const selectedProvider = await requireWorkspaceProviderWorker(db, workers, input.companyId, pluginId, true);
   if (input.environment) assertProjectStorageEnvironment(selectedProvider, input.environment);
   const declaration = selectedProvider.manifestJson.workspaceProvider!;
   if (input.fresh && declaration.freshWorkspaceVersion !== 1)
@@ -675,7 +634,7 @@ export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers 
       throw conflict("Workspace was removed before finalization");
     const binding = readWorkspaceProviderBinding(current.metadata);
     if (!binding) throw conflict("Workspace storage ownership is missing");
-    const selected = await provider(db, workers, current.companyId, binding.pluginId);
+    const selected = await requireWorkspaceProviderWorker(db, workers, current.companyId, binding.pluginId);
     // Existing providers continue to use their established inspection contract.
     if (selected.manifestJson.workspaceProvider?.finalizationVersion !== 1)
       return inspectBinding(db, workers, current);
@@ -863,7 +822,7 @@ export async function removePluginWorkspace(
   }
   await beforeRemove?.();
   const generation = workspace.metadata?.lifecycleGeneration ?? 0;
-  const selectedProvider = await provider(db, workers, workspace.companyId, binding.pluginId);
+  const selectedProvider = await requireWorkspaceProviderWorker(db, workers, workspace.companyId, binding.pluginId);
   const operation = workspaceProviderOperationSchema.parse({ kind: "remove", binding, expectedHeadSha,
     ...(recoveryPullRequest && selectedProvider.manifestJson.workspaceProvider?.recoveryPullRequestVersion === 1 ? { recoveryPullRequest } : {}) });
   const operationId = createHash("sha256").update(JSON.stringify([workspace.id, generation, operation])).digest("hex");

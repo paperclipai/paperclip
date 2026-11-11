@@ -13,7 +13,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
-import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { readFreshWorkspaceReadiness, verifyRetryWorkspace } from "./fresh-workspace-continuation.js";
 import { describeRetainedPriorWorkspace, parsePorcelainZ } from "./fresh-workspace-seed.js";
 import { recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
@@ -148,6 +148,15 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
       expect((wake.payload?.taskRetry as Record<string, unknown>).strategy).toBe("continue");
       expect(await readFreshWorkspaceReadiness(db, { ...successor, id: randomUUID() })).toBeNull();
     }, 30_000);
+
+  it("verifies a local checkout after fresh fallback without a plugin worker", async () => {
+    const f = await seed("blocked_without_generation");
+    const { successor, requestId } = await retry(f);
+    expect(await verifyRetryWorkspace(db, undefined, successor, f.issueId, "board", {
+      mode: "fresh_isolated_workspace", retryIntentId: requestId, sourceRunId: f.source.id, retainedSourceIds: [],
+    })).toEqual({ mode: "reuse_issue_workspace", retryIntentId: requestId,
+      sourceRunId: f.source.id, workspaceId: f.workspace.id, cwd: f.worktree });
+  }, 30_000);
 
   it("lists renamed paths from either porcelain status column once", () => {
     expect(parsePorcelainZ("R  new.md\0old.md\0 R moved.md\0before.md\0?? NOTES.md\0 M README.md\0")).toEqual([
