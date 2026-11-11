@@ -4550,7 +4550,10 @@ does not retry that copy-back: nothing frees the sandbox between its attempts.
 The first full-disk failure ends finalization as
 `native_workspace_sync_out_retry_exhausted` and keeps the accepted result. Saved-work
 recovery then reclaims the retained sandbox's inactive provider cache and saves the
-files again with no provider turn. The export Retry stays available.
+files again with no provider turn. The export Retry stays available. A read-only
+fallback that only lost its connection (a closed transport, a provider 5xx or rate
+limit, or a sandbox state change) reports its own cause instead, and finalization
+keeps its bounded retry for it.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in

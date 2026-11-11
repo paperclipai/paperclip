@@ -1,5 +1,6 @@
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { isContextCompactionRun } from "../context-compaction.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE } from "../remote-workspace-transport.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
@@ -331,7 +332,6 @@ function terminalFinalizationFailureMessage(failureCode: string, failureScope: "
     : `Native run finalization failed (${failureCode}).`;
 }
 
-const REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE = "remote_workspace_sandbox_disk_full";
 /**
  * A full sandbox disk stops every copy-back the same way: the archive is built
  * in that sandbox, and nothing frees space between finalizer attempts. It is

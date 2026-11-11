@@ -66,6 +66,7 @@ import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort
 import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "../remote-workspace-transport.js";
 import { waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { deliverExecutionStatuses } from "../execution-status-delivery.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
@@ -907,28 +908,32 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     // minutes apiece across deploys). Nothing frees the sandbox between them;
     // saved-work recovery reclaims the inactive provider cache, then saves.
     const fixture = await seedNativeRun();
-    await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "failed" } })
-      .where(eq(heartbeatRuns.id, fixture.runId));
-    await db.insert(nativeRunFinalizations).values({
-      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
-    });
+    await driveToCompleteResult(fixture);
+    const [accepted] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+    expect(accepted).toBeDefined();
+    const wakeupsBefore = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
     const failure = await recordNativeFinalizationFailure({
       db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
-      projectRunStatus: true, failureScope: "workspace",
-      failureCause: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace",
+      projectRunStatus: true, failureScope: "workspace", failureCause: REMOTE_WORKSPACE_SANDBOX_DISK_FULL,
     });
     expect(failure).toMatchObject({ phase: "terminal_failure", failureCode: "native_workspace_sync_out_retry_exhausted",
       nextAttemptAt: null });
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
     expect(coordinator.failureDetail).toMatchObject({ recoveryOwner: { kind: "board" }, workspaceFinalizeAttempt: 1,
-      failureCause: expect.stringMatching(/^remote_workspace_sandbox_disk_full/) });
+      failureCause: REMOTE_WORKSPACE_SANDBOX_DISK_FULL });
+    // The accepted result stays linked for the export recovery.
+    expect(coordinator.resultId).toBe(accepted.id);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId))).toEqual([accepted]);
     const run = await readRunError(fixture.runId);
     expect(run).toMatchObject({ status: "failed", errorCode: "native_workspace_sync_out_retry_exhausted" });
     expect(run?.error).toMatch(/sandbox disk is full/);
     expect(run?.error).not.toMatch(/after 3 attempts/);
-    // The agent's result stays saved for the export recovery; no provider turn is requested.
+    // The export hold owns the next step; no provider turn is requested.
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId)))
       .toEqual([expect.objectContaining({ status: "active", ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted" })]);
+    expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))).toEqual(wakeupsBefore);
   });
 
   it("keeps other copy-back failures on their bounded retry", async () => {

@@ -37,8 +37,9 @@ export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | nu
 }
 
 /** The workspace archive is built inside the sandbox, so a full sandbox disk stops the save. */
+export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE = "remote_workspace_sandbox_disk_full";
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL =
-  "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
+  `${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}: the sandbox disk is full; free space in the sandbox before saving the workspace`;
 // Node reports ENOSPC or EDQUOT. Git and tar child processes report the text.
 const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded/i.test(String(e?.stderr??'')+String(e?.message??''));`;
 const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFailureMessage.toString()};const failureDetail=${remoteWorkspaceFailureDetail.toString()};`;
@@ -487,8 +488,21 @@ export async function captureRemoteWorkspaceArchive(input: {
     // it, then normalize and seal it on the controller. Failed verification
     // retains the original disk-full failure and never permits source cleanup.
     try { return await captureReadOnlyWorkspaceArchive(input); }
-    catch (cause) { throw new Error(error.message, { cause }); }
+    catch (cause) {
+      // The read-only copy writes nothing to the sandbox. When only its
+      // connection dropped, a later copy-back can succeed, so finalization
+      // keeps its bounded retry. Any other fallback failure keeps the
+      // disk-full code, which finalization does not retry.
+      if (isTransientReadOnlyCaptureFailure(cause)) throw cause;
+      throw new Error(error.message, { cause });
+    }
   }
+}
+
+const TRANSIENT_READONLY_CAPTURE_FAILURE =
+  /^remote_workspace_readonly_capture_failed: stage=[a-z]+ reason=operation_failed transport=(?:transport_closed|provider_unavailable|provider_rate_limited|sandbox_state_transition)(?: |$)/;
+function isTransientReadOnlyCaptureFailure(error: unknown) {
+  return error instanceof Error && TRANSIENT_READONLY_CAPTURE_FAILURE.test(error.message);
 }
 
 /** Captures a sandbox directory without writing to the sandbox. The copy is
