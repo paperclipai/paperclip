@@ -23,7 +23,6 @@ import { prepareStdioMcpBindings } from "../stdio-mcp.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
 
 import type {
-  AcpElicitationHandler,
   AcpRuntimeOptions,
   AcpRuntimeEvent,
   AcpRuntimeTurnResult,
@@ -50,6 +49,7 @@ import {
   type VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
+import type { AcpxHostElicitationHandler, AcpxHostExtensionRequestHandler, AcpxHostPermissionHandler } from "./interaction-delivery.js";
 import {
   requireVerifiedAcpxModel,
   type AcpxModelStatus,
@@ -136,9 +136,9 @@ export interface AcpxRuntimeTurnInput {
   text: string;
   requestId: string;
   signal?: AbortSignal;
-  onElicitation?: AcpElicitationHandler;
-  onPermissionRequest?: AcpRuntimeOptions["onPermissionRequest"];
-  onExtensionRequest?: AcpRuntimeOptions["onExtensionRequest"];
+  onElicitation?: AcpxHostElicitationHandler;
+  onPermissionRequest?: AcpxHostPermissionHandler;
+  onExtensionRequest?: AcpxHostExtensionRequestHandler;
   onExtensionNotification?: AcpRuntimeOptions["onExtensionNotification"];
   /** Receives a harness-native proposed plan that Paperclip, not the harness, approves. */
   onPlanProposal?: (proposal: AcpxPlanProposal) => void;
