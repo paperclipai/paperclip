@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, RUNNER_POLL_STALL_THRESHOLD_MS, stallTolerantDeadline, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, RUNNER_STALL_THRESHOLD_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -6707,84 +6707,98 @@ it("shares Pi's absolute cold deadline across recovery barriers and rejects a la
 // a host sleep) 1 s into the resume barrier, together with the Runner it waits on.
 // On thaw, the wall clock had passed the 30 s deadline before either process could
 // act, so recovery reported "runner.drain timed out" and spent a recovery attempt.
-it("does not spend a command wait's budget while this process is stopped", async () => {
-  vi.useFakeTimers();
-  try {
-    let status = "pending";
-    const drain = waitForRunnerCommand({
-      type: "runner.drain", deadline: Date.now() + 30_000, abortOnClose: true, isClosed: () => false,
-      throwIfFailed: () => undefined, command: () => ({ status }),
+describe("admission waits do not count time this process was stopped", () => {
+  const pending = (clock: RunnerStallLedger | undefined, deadline: number, status: () => string, type = "runner.drain") =>
+    waitForRunnerCommand({
+      type, deadline, clock, abortOnClose: true, isClosed: () => false,
+      throwIfFailed: () => undefined, command: () => ({ status: status() }),
       runnerHasExited: async () => false, failureCode: () => "runner_local_connect_failed",
     });
-    await vi.advanceTimersByTimeAsync(1_000);
-    // Stopped for 44 s: the wall clock moves, but no timer of this process runs.
-    vi.setSystemTime(Date.now() + 44_000);
-    await vi.advanceTimersByTimeAsync(2_000);
-    status = "completed";
-    await vi.advanceTimersByTimeAsync(10);
-    await expect(drain).resolves.toBeUndefined();
-  } finally { vi.useRealTimers(); }
-});
 
-it("still times out a command wait that the Runner never answers after a stall", async () => {
-  vi.useFakeTimers();
-  try {
-    const drain = waitForRunnerCommand({
-      type: "runner.drain", deadline: Date.now() + 30_000, abortOnClose: true, isClosed: () => false,
-      throwIfFailed: () => undefined, command: () => ({ status: "pending" }),
-      runnerHasExited: async () => false, failureCode: () => "runner_local_connect_failed",
-    });
-    const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
-    await vi.advanceTimersByTimeAsync(1_000);
-    vi.setSystemTime(Date.now() + 44_000);
-    // Running time, not wall time, reaches the deadline: 1 s before, the stall's
-    // uncredited allowance, then the rest of the 30 s budget.
-    await vi.advanceTimersByTimeAsync(30_000);
-    await rejection;
-  } finally { vi.useRealTimers(); }
-});
+  it("completes a resume barrier that the Runner answers after a 44 s freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Stopped for 44 s: the wall clock moves, but no timer of this process runs.
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
 
-it("credits only stalls, so a slow but running poll loop still reaches its deadline", () => {
-  let now = 0;
-  const remaining = stallTolerantDeadline(30_000, { ms: 0 }, () => now);
-  // Every iteration takes 4.9 s on a loaded host: that is running time, not a stall.
-  while (remaining()) now += 4_900;
-  expect(now).toBeGreaterThanOrEqual(30_000);
-  expect(now).toBeLessThan(35_000);
-  // A 6 s iteration is credited only beyond the stall threshold.
-  now = 0;
-  const credit = { ms: 0 };
-  const tolerant = stallTolerantDeadline(30_000, credit, () => now);
-  now = 6_000;
-  expect(tolerant()).toBe(true);
-  expect(credit.ms).toBe(6_000 - RUNNER_POLL_STALL_THRESHOLD_MS);
-});
+  it("keeps the wall-clock timeout for a wait outside an admission", async () => {
+    vi.useFakeTimers();
+    try {
+      const drain = pending(undefined, Date.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+    } finally { vi.useRealTimers(); }
+  });
 
-it("carries a stall credited in one recovery barrier to the next barrier on the same deadline", async () => {
-  vi.useFakeTimers();
-  try {
-    const deadline = Date.now() + coldAdmissionTimeoutMs("acpx", "pi", true);
-    const stallCredit = { ms: 0 };
-    let status = "pending";
-    const wait = (type: string) => waitForRunnerCommand({
-      type, deadline, stallCredit, abortOnClose: true, isClosed: () => false,
-      throwIfFailed: () => undefined, command: () => ({ status }),
-      runnerHasExited: async () => false, failureCode: () => "startup_failed",
-    });
-    const attached = wait("run.attach");
-    await vi.advanceTimersByTimeAsync(10_000);
-    vi.setSystemTime(Date.now() + 120_000);
-    await vi.advanceTimersByTimeAsync(10);
-    status = "completed";
-    await vi.advanceTimersByTimeAsync(10);
-    await attached;
-    status = "pending";
-    const drain = wait("runner.drain");
-    await vi.advanceTimersByTimeAsync(20_000);
-    status = "completed";
-    await vi.advanceTimersByTimeAsync(10);
-    await expect(drain).resolves.toBeUndefined();
-  } finally { vi.useRealTimers(); }
+  it("still times out a barrier that the Runner never answers after a freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const drain = pending(clock, clock.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      // Running time reaches the deadline: 1 s before, the uncredited 5 s of the
+      // gap, then the rest of the 30 s budget.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejection;
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits a freeze outside any poll loop to the next barrier on the same deadline", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const deadline = clock.now() + coldAdmissionTimeoutMs("acpx", "pi", true);
+      let status = "pending";
+      const prepared = pending(clock, clock.now() + 30_000, () => status, "run.prepare");
+      await vi.advanceTimersByTimeAsync(5_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await prepared;
+      // Stopped for 70 s between barriers (a checkpoint flush, a spawn): only the ticker observes it.
+      vi.setSystemTime(Date.now() + 70_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      status = "pending";
+      const opened = pending(clock, deadline, () => status, "session.open");
+      await vi.advanceTimersByTimeAsync(20_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(opened).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits only stalls, so a slow but running process still reaches its deadline", () => {
+    let wall = 0;
+    const clock = new RunnerStallLedger(() => wall);
+    const deadline = clock.now() + 30_000;
+    // Every observation is 4.9 s apart on a loaded host: that is running time.
+    while (clock.now() < deadline) wall += 4_900;
+    expect(wall).toBeGreaterThanOrEqual(30_000);
+    expect(wall).toBeLessThan(35_000);
+    expect(clock.creditedMs).toBe(0);
+    // A 6 s gap is credited only beyond the stall threshold, and only once.
+    wall += 6_000;
+    clock.now();
+    clock.now();
+    expect(clock.creditedMs).toBe(6_000 - RUNNER_STALL_THRESHOLD_MS);
+  });
 });
 
 it("aborts startup promptly on close while allowing the owned cleanup command to drain", async () => {
