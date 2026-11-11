@@ -1,6 +1,6 @@
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
@@ -76,11 +76,19 @@ const support = await getEmbeddedPostgresTestSupport();
           issueId: f.issueId, status: "running", contextSnapshot: { taskRetryRequestId: retryIntentId },
         }).returning();
         const fresh = { mode: "fresh_isolated_workspace", retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] } as const;
-        const workers: WorkspaceWorkers = { ...f.workers, call: async (...args) => {
+        const call = vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
           const result = await f.workers.call(...args) as { kind: string };
           if (state === "unconfirmed") throw new Error("checkout incomplete");
           return { ...result, created: false };
-        } };
+        });
+        const workers: WorkspaceWorkers = {
+          getWorker: (pluginId) => {
+            const worker = f.workers.getWorker(pluginId);
+            return worker && { ...worker, supportedMethods: ["workspaceOperation", "workspacePrepare"] };
+          },
+          call,
+        };
+        const verificationStarted = Date.now();
         const result = await verifyRetryWorkspace(db, workers, retry, f.issueId, null,
           { ...fresh, retainedSourceIds: [] });
         const verified = state === "ready" || state === "lost_reply";
@@ -88,8 +96,14 @@ const support = await getEmbeddedPostgresTestSupport();
           ? { mode: "reuse_issue_workspace", retryIntentId, sourceRunId: f.runId, workspaceId, cwd: null }
           : fresh);
         expect(f.calls.slice(1)).toHaveLength(state === "live_writer" || state === "unsupported" ? 0 : 1);
-        if (f.calls.length > 1) expect(f.calls[1]).toMatchObject({ executionWorkspaceId: workspaceId,
-          runId: retry.id, operation: { kind: "prepare", verifyExisting: true } });
+        if (f.calls.length > 1) {
+          expect(call).toHaveBeenCalledExactlyOnceWith(f.pluginId, "workspaceOperation", expect.objectContaining({
+            executionWorkspaceId: workspaceId, runId: retry.id, operation: expect.objectContaining({ verifyExisting: true }),
+          }), 12_000);
+          const deadline = Date.parse(f.calls[1].deadline);
+          expect(deadline).toBeGreaterThanOrEqual(verificationStarted + 10_000);
+          expect(deadline).toBeLessThanOrEqual(Date.now() + 10_000);
+        }
         const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
         expect(retained.providerRef).toBe(`checkout:${workspaceId}`);
       });

@@ -175,6 +175,8 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
 Before creating a fresh workspace for an admitted Retry, Core may send the
 original task-owned workspace's `prepare` request with `verifyExisting: true`.
+Core sends verification through `workspaceOperation` with a 10-second
+deadline and a 12-second RPC timeout.
 The provider must verify a completed checkout without creating or fetching
 one and return `prepared` with `created: false`. Core checks prior writer
 settlement and continues normal preparation on the retained workspace after
