@@ -4460,13 +4460,25 @@ export async function ensurePaperclipSkillSymlink(
     .stat(resolvedLinkedPath)
     .then(() => true)
     .catch(() => false);
-  if (linkedPathExists) {
+  if (linkedPathExists && !isOlderVersionOfSameSkill(resolvedLinkedPath, path.resolve(source))) {
     return "skipped";
   }
 
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+/**
+ * Company skills are stored as `.../__versions__/<skillId>/<versionId>`. After a
+ * skill edit, an existing link can still point to an older version folder that
+ * still exists. That link belongs to the same skill, so it is safe to re-point.
+ * A link to anything else (another skill, a foreign folder) is left alone.
+ */
+function isOlderVersionOfSameSkill(linkedPath: string, source: string): boolean {
+  if (linkedPath === source) return false;
+  const skillDir = path.dirname(source);
+  return path.basename(path.dirname(skillDir)) === "__versions__" && path.dirname(linkedPath) === skillDir;
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {
