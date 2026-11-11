@@ -1,3 +1,4 @@
+import { createUuid } from "@/lib/uuid";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
@@ -5182,7 +5183,8 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      attemptId = crypto.randomUUID();
+      // crypto.randomUUID throws on plain HTTP. This catch then puts the text back and shows no error.
+      attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // The exact request is stored before it is sent, so a lost response or
       // an outage can resend it with the same ID instead of losing it.
@@ -6229,7 +6231,8 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      clientRequestId ??= crypto.randomUUID();
+      // The composer normally supplies this id. The fallback must still work on plain HTTP.
+      clientRequestId ??= createUuid();
       const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
         await (runSettings

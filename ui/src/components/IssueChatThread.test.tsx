@@ -2984,7 +2984,8 @@ describe("IssueChatThread", () => {
     } finally { act(() => root.unmount()); client.clear(); }
   });
 
-  it("resends an unconfirmed comment with the same request ID and keeps the next draft", async () => {
+  it.each(["secure context", "plain HTTP"])("resends an unconfirmed comment with the same request ID and keeps the next draft on %s", async (context) => {
+    if (context === "plain HTTP") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const key = "resend-unconfirmed-comment";
     let rejectSend!: (error: Error) => void;
     const onAdd = vi.fn()
@@ -3007,6 +3008,7 @@ describe("IssueChatThread", () => {
       type("Typed during the outage");
       await act(async () => button("Send").click());
       type("Next thought");
+      expect(onAdd).toHaveBeenCalledOnce();
       await act(async () => rejectSend(new CommentSubmissionUnknownError()));
       expect(container.textContent).toContain("Sending when reconnected…");
       expect(JSON.parse(localStorage.getItem(`${key}:submission:v1`)!).request.body).toBe("Typed during the outage");
@@ -3019,6 +3021,7 @@ describe("IssueChatThread", () => {
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
     } finally {
       await act(async () => root.unmount());
+      vi.unstubAllGlobals();
     }
   });
 
