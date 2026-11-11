@@ -242,6 +242,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
 
     const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
 
+    expect(root?.blockerAttention?.state).toBe("needs_attention");
     expect(root?.blockerAttention?.terminalBlockerIssueId).not.toBe(rootId);
     expect(root?.blockerAttention?.terminalBlocker?.id).not.toBe(rootId);
   });
