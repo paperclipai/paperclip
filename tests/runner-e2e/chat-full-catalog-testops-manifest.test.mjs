@@ -422,6 +422,19 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "tasks.share-private-task",
     "originalQuery"
+  ],
+  // Retargeted removed-feature case: Agent Chat is always on (#19360), so the instance experiment is Cases.
+  [
+    "instance-operations.instance-settings",
+    "originalQuery"
+  ],
+  [
+    "instance-operations.instance-settings",
+    "originalContext"
+  ],
+  [
+    "instance-operations.instance-settings",
+    "expectedOutcome"
   ]
 ]);
   for (const change of repair.changedFields) {

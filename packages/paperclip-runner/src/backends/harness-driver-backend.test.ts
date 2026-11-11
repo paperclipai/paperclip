@@ -124,6 +124,22 @@ describe("HarnessDriverBackend", () => {
     expect(startTurn).toHaveBeenCalledExactlyOnceWith({ message });
   });
 
+  it.each([
+    { cancelled: false, retainUnsettledRemoteRunner: true },
+    { cancelled: true, retainUnsettledRemoteRunner: false },
+  ])("asks to retain an unsettled remote Runner on close only when the run was not cancelled (cancelled=$cancelled)",
+    async ({ cancelled, retainUnsettledRemoteRunner }) => {
+      const close = vi.fn(async () => {});
+      const session = Object.assign(new FakeHarnessSession(), { close });
+      const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+      const opened = await backend.openSession({ identity: {
+        runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+      } });
+      if (cancelled) await cancelSession(opened, { reason: "Stop requested", signal: new AbortController().signal }).cleanup;
+      await opened.close({ reason: "native session execution complete" });
+      expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "native session execution complete", retainUnsettledRemoteRunner });
+    });
+
   it("forwards reasoning when the provider explicitly supports it", async () => {
     const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
     const session = Object.assign(new FakeHarnessSession(), { startTurn, supportsTurnReasoning: () => true });

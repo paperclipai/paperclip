@@ -498,12 +498,17 @@ export async function buildExecutionContinuation(input: {
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
-          : value.interactionId
+          : value.interactionId && value.queuedCommentInterruptId
           ? interactions.some(interaction => interaction.id === value.interactionId && interaction.id === triggerInteraction?.id &&
               ["accepted", "answered", "rejected"].includes(interaction.status) &&
               interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId && queue.runId === value.runId &&
                 object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
                 queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status))
+          : value.interactionId
+          ? (!input.runId || value.runId === input.runId) && priorRuns.some(run => run.id === value.runId) &&
+            interactions.some(interaction => interaction.id === value.interactionId &&
+              ["accepted", "answered", "rejected"].includes(interaction.status) &&
+              interaction.resolvedByUserId === value.actorId && !interaction.resolvedByAgentId)
           : rows.some(comment => comment.id === value.commentId &&
               comment.authorType === "user" &&
               (!("commentUpdatedAt" in value || "commentBodyHash" in value || value.automaticRetry) || (

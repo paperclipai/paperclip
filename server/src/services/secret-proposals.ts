@@ -667,6 +667,12 @@ export function createSecretProposalsService(db: Db) {
     return updated;
   }
 
+  function isBlankConfigValue(value: unknown) {
+    if (value === undefined || value === "") return true;
+    const record = asRecord(value);
+    return record.type === "plain" && record.value === "";
+  }
+
   async function applyBindingApproval(
     txDb: Db,
     proposal: Proposal,
@@ -701,13 +707,13 @@ export function createSecretProposalsService(db: Db) {
     if (namespace === "env") {
       const env = { ...asRecord(adapterConfig.env) };
       const existing = env[key];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
+      if (!isBlankConfigValue(existing) && JSON.stringify(existing) !== JSON.stringify(binding)) {
         throw conflict(`Agent config path already exists: ${proposal.configPath}`);
       }
       adapterConfig.env = { ...env, [key]: binding };
     } else {
       const existing = adapterConfig[proposal.configPath];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
+      if (!isBlankConfigValue(existing) && JSON.stringify(existing) !== JSON.stringify(binding)) {
         throw conflict(`Agent config path already exists: ${proposal.configPath}`);
       }
       adapterConfig[proposal.configPath] = binding;

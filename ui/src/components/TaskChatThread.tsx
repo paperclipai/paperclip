@@ -1689,7 +1689,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const historical = statusRelevance.isHistoricalRun(source.id);
       // A workspace admission attempt never started provider work. Its live
       // successor owns the waiting indicator; retain this attempt in the run log.
-      if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
+      if (source.status === "cancelled" && (meta?.errorCode === "workspace_busy" || meta?.errorCode === "agent_directory_busy")) {
         settledRunIds.add(source.id);
         continue;
       }

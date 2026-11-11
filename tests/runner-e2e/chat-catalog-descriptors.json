@@ -3506,10 +3506,12 @@
       "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-configuration.ts",
       "chat-scenarios/instance-operations.yaml",
+      "chat-catalog-domains/internal-comment-reference.ts",
       "../../ui/src/pages/InstanceExperimentalSettings.tsx",
-      "../../ui/src/pages/AgentChat.tsx"
+      "../../ui/src/components/CasesExperimentalGate.tsx",
+      "../../ui/src/pages/Cases.tsx"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.privileged.instance-settings.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

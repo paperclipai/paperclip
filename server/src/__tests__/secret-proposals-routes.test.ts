@@ -817,6 +817,35 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(history.filter(row => row.action === "secret.proposal.approved")).toHaveLength(2);
   });
 
+  it.each([
+    ["an empty string", ""],
+    ["an empty plain value", { type: "plain", value: "" }],
+  ])("fills a target key left as %s instead of refusing the approved binding", async (_label, blank) => {
+    const fixture = await seedRun();
+    const agentApp = createAgentApp(fixture);
+    const boardApp = createBoardApp(fixture);
+    const secret = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "secret", name: "dev/blank/token", value: "blank-fixture", justification: "Needed by task",
+    });
+    const binding = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "binding", secretProposalId: secret.body.id, configPath: "env.BLANK_TOKEN", justification: "Use saved secret",
+    });
+    await db.update(agents).set({ adapterConfig: { env: { BLANK_TOKEN: blank, KEEP: "kept" } } })
+      .where(eq(agents.id, fixture.agentId));
+
+    const approved = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${binding.body.id}/approve`).send({ cascade: true });
+
+    expect(approved.status).toBe(200);
+    const [saved] = await db.select().from(companySecrets);
+    const env = ((await db.select().from(agents))[0].adapterConfig as { env: Record<string, unknown> }).env;
+    expect(env.BLANK_TOKEN).toMatchObject({ type: "secret_ref", secretId: saved.id, version: "latest" });
+    expect(JSON.stringify(env.KEEP)).toContain("kept");
+    expect(await db.select().from(companySecretBindings)).toEqual([
+      expect.objectContaining({ secretId: saved.id, targetId: fixture.agentId, configPath: "env.BLANK_TOKEN" }),
+    ]);
+  });
+
   it("approves a binding without cascade after its secret proposal was approved separately", async () => {
     const fixture = await seedRun();
     const agentApp = createAgentApp(fixture);

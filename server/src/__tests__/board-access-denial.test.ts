@@ -35,6 +35,7 @@ describe("board-only denial", () => {
     ["post", `/api/companies/${COMPANY_ID}/secrets`, "[Open company secrets](/<prefix>/company/settings/secrets)"],
     ["post", `/api/secrets/${AGENT_ID}/rotate`, "[Open company secrets](/<prefix>/company/settings/secrets)"],
     ["post", `/api/companies/${COMPANY_ID}/budget-incidents/i-1/resolve?x=1`, "[Open budgets](/<prefix>/activity/budgets)"],
+    ["post", `/api/companies/${COMPANY_ID}/costs/retry-accounting`, "[Open costs](/<prefix>/activity/costs)"],
     ["put", `/api/companies/${COMPANY_ID}/prompt-injection-prevention`, "[Open connection settings](/<prefix>/company/settings/connections)"],
     ["patch", `/api/agents/${AGENT_ID}/permissions`, `[Open the agent's permissions](/<prefix>/agents/${AGENT_ID}/permissions)`],
     ["post", `/api/agents/${AGENT_ID}/keys`, `[Open the agent's API keys](/<prefix>/agents/${AGENT_ID}/api-keys)`],

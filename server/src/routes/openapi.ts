@@ -4281,6 +4281,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
   tags: ["adapters"],
   summary: "Start a company-scoped adapter device login",
+  description: "For a managed AI Connection, omit agentId to select an eligible computer in the sign-in environment.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     body: jsonBody(startAdapterLoginSessionSchema),
@@ -6099,12 +6100,17 @@ const costSummaryPaths = [
   "data-quality",
 ] as const;
 
+/** Reports whose rows count usage that has no known price. */
+const UNPRICED_COUNT_COST_REPORTS = new Set<string>(["summary", "by-agent", "by-user", "by-agent-model", "by-provider", "by-biller", "by-project"]);
+export const UNPRICED_COST_REPORT_DESCRIPTION = "costCents counts priced usage only. A row whose unpricedEventCount is above 0 includes usage with no known price, so its real cost is unknown, not zero: report that usage as unpriced and its total as incomplete, never as $0.00. To find that usage, list the agent's runs with GET /api/companies/{companyId}/heartbeat-runs?agentId=<agentId>: a run whose usageJson.costStatus is \"unpriced\" is one, and its usageJson.ledgerScope.issueId names its task. Link each run you cite at /<prefix>/agents/<agentId>/runs/<runId>, or its task.";
+
 for (const segment of costSummaryPaths) {
   registry.registerPath({
     method: "get",
     path: `/api/companies/{companyId}/costs/${segment}`,
     tags: ["costs"],
     summary: `Cost report: ${segment}`,
+    ...(UNPRICED_COUNT_COST_REPORTS.has(segment) ? { description: UNPRICED_COST_REPORT_DESCRIPTION } : {}),
     request: {
       params: z.object({ companyId: z.string() }),
       ...(!["window-spend", "quota-windows"].includes(segment) ? {
@@ -6117,7 +6123,7 @@ for (const segment of costSummaryPaths) {
 
 registry.registerPath({ method: "post", path: "/api/companies/{companyId}/costs/retry-accounting", tags: ["costs"],
   summary: "Retry recording a run's saved cost data",
-  description: "Requires company cost-read and board write access. Viewers and agents cannot retry. Replays accounting evidence only; never starts provider work or invents missing usage.",
+  description: "Requires company cost-read and board write access. Viewers and agents cannot retry. Replays accounting evidence only; never starts provider work or invents missing usage. A board user retries with Retry cost recording on the run's row on the [Costs page](/<prefix>/activity/costs).",
   request: { params: z.object({ companyId: z.string() }), body: jsonBody(retryAccountingSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -7339,7 +7345,7 @@ registry.registerPath({
   summary:
     "Get process task-drain status, with optional bounded upgrade-readiness or idle-safety reports for instance operators",
   description: "With idleSleepSafety=1, the exact current idle owner can retire idle native sessions before a fresh safety inspection. Busy or failed retirement prevents sleep. Native retirement is skipped for diagnostic inspection. scheduledWake=domain-deadlines-v1 requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a mandatory deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate the report before stopping the instance.",
-  request: { query: z.object({ upgradeReadiness: z.literal("1").optional().describe("Instance operators can request a bounded aggregate report of current remote-runner recovery eligibility. This read does not hold admission or detach runners."), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional().describe("Cloud control callers may request routine deadlines (1), routines and issue monitors (2), or the domain deadline catalog (domain-deadlines-v1). The domain catalog requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate this report before stopping the instance.") }) },
+  request: { query: z.object({ upgradeReadiness: z.literal("1").optional().describe("Instance operators can request a bounded aggregate report of current remote-runner recovery eligibility. This read does not hold admission or detach runners. The version 1 report also carries an additive handoff object (version, ready, recoverableRuns, restartableRuns, blockingRuns, pendingWakes, unsavedWakes) for a graceful server replacement: restartable runs have launched no agent work and are started again by restart recovery, and unsavedWakes counts wake admissions that have not committed their queued run. Only handoff.blockingRuns, handoff.unsavedWakes, draining or an incomplete census make handoff.ready false. The top-level version 1 fields keep their meaning."), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional().describe("Cloud control callers may request routine deadlines (1), routines and issue monitors (2), or the domain deadline catalog (domain-deadlines-v1). The domain catalog requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate this report before stopping the instance.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
@@ -8345,6 +8351,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/setup-token-login-sessions",
   tags: ["companies"],
   summary: "Start a company-and-environment Claude setup-token login session",
+  description: "For a managed AI Connection, omit agentId to select an eligible computer in the sign-in environment.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(startClaudeSetupTokenSessionRequestSchema),

@@ -334,6 +334,18 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("tells agents that unpriced usage in cost reports is unknown cost, not zero", () => {
+    const paths = buildOpenApiSpec().paths;
+    for (const segment of ["summary", "by-agent", "by-agent-model", "by-project"]) {
+      const description = paths[`/api/companies/{companyId}/costs/${segment}`].get.description as string;
+      expect(description).toContain("unpricedEventCount is above 0");
+      expect(description).toContain("never as $0.00");
+      expect(description).toContain("GET /api/companies/{companyId}/heartbeat-runs?agentId=<agentId>");
+      expect(description).not.toContain("costs/data-quality");
+    }
+    expect(paths["/api/companies/{companyId}/costs/window-spend"].get.description).toBeUndefined();
+  });
+
   it("tells agents managed-agent profiles are created with the CLI, not a web page", () => {
     const route = buildOpenApiSpec().paths["/api/companies/{companyId}/managed-agent-profiles"];
     for (const operation of [route.get, route.post]) {

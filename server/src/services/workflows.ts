@@ -3,14 +3,15 @@ import { createHash } from "node:crypto";
 import { workflows, type Db } from "@paperclipai/db";
 import type { z } from "zod";
 import type { createWorkflowSchema, updateWorkflowSchema } from "@paperclipai/shared";
-import { conflict, forbidden, notFound } from "../errors.js";
+import { conflict, notFound } from "../errors.js";
+import { casesDisabledError } from "./cases-disabled.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { authorizeCaseCreation } from "./case-mutation-authorization.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 
 export async function requireCasesEnabled(db: Db) {
-  if (!(await instanceSettingsService(db).getExperimental()).enableCases) throw forbidden("Cases are disabled");
+  if (!(await instanceSettingsService(db).getExperimental()).enableCases) throw casesDisabledError();
 }
 
 export async function getWorkflow(db: Db, companyId: string, id: string) {

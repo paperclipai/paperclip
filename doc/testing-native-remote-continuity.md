@@ -173,6 +173,41 @@ inspection retains its SQL statement timeout. Header reads are capped at 256 KiB
 oversized, malformed, legacy-format or local evidence falls back to the ordinary drain.
 This bounded header probe does not validate every journal record or prove a live sandbox. This is an observation; the existing shutdown and
 startup owners still perform the actual handoff and enforce Stop and fencing.
+
+The report also carries an additive `handoff` object, which a deployer can adopt
+in place of the top-level `ready`. The top-level version 1 fields keep their
+meaning: `blockingRuns` counts every execution without adoption evidence, and
+`ready` is false while any exists or an admission is in flight. `handoff`
+(its own `version: 1`) separates work a graceful server replacement would lose
+from work that is only in flight:
+
+| Field | Meaning |
+| --- | --- |
+| `recoverableRuns` | Same count as the top level: a successor adopts these running executions. |
+| `restartableRuns` | Runs marked `running` that have launched no agent work. Restart recovery starts the same work again without a Retry. |
+| `blockingRuns` | Executions that are neither. A swap would interrupt started agent work that no successor can adopt. |
+| `pendingWakes` | Same count as the top level, reported for information. It does not affect `handoff.ready`. |
+| `unsavedWakes` | The pending wakes that have not committed their wake request and queued run. They exist only in this process, so a swap can lose them. |
+| `ready` | `true` when the instance is not draining, the census is complete, and `handoff.blockingRuns` and `handoff.unsavedWakes` are 0. |
+
+A run is restartable only when all of this holds: the agent uses the
+`paperclip_runner` adapter; the run has no process identity, no provider session
+before or after, no checkpoint header and no dispatched runner task; no
+execution-start event exists (`native.process_start_requested`,
+`native.process_identity_recorded`, `adapter.invoke`, `tool.execution.started` or
+any runner-sourced event); and it is either a native run in the `observed` phase
+with preparation fencing and an unsettled finalization record, or a legacy run
+still in the `preparing` stage under a recorded controller. Follow-up runs that
+carry a previous provider session, local adapters and legacy runs with a child
+process stay blocking. An execution the census could not observe also blocks.
+
+`pendingWakes` counts wake admissions in flight inside this process, not queue
+rows. An admission commits its wake request and its queued run in one
+transaction; after that it only dispatches saved rows, and the next server
+dispatches queued runs at startup. Before that commit, for example while it
+waits on the agent row lock, nothing is saved. Shutdown waits at most 30 seconds
+for in-flight admissions and then exits, so an unsaved admission can be lost.
+`handoff.unsavedWakes` counts those and keeps `handoff.ready` false.
 A positive report alone does not prove hosted upgrade continuity.
 
 Retain Postgres and the instance secret encryption key across deployments. The
