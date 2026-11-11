@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { heartbeatRuns, issueThreadInteractions, issues, statusDecisions, type Db } from "@paperclipai/db";
 import { ordinaryQuestionCondition } from "../issue-question-context.js";
+import { enqueueWake } from "./status-decision-committer.js";
 
 const PROVIDER_MESSAGE_REF = /^provider:[a-z0-9_-]+:agent-message$/i;
 
@@ -67,4 +68,18 @@ export async function ownQuestionWaitReleasedByDismissal(db: Pick<Db, "select">,
   if (!row?.agentId) return null;
   if (await pendingOwnQuestionId(db, { companyId: input.companyId, issueId: input.issueId, agentId: row.agentId })) return null;
   return { agentId: row.agentId };
+}
+
+export async function enqueueOwnQuestionDismissalWake(tx: Db, input: {
+  companyId: string; issueId: string; interactionId: string;
+}): Promise<string | null> {
+  const released = await ownQuestionWaitReleasedByDismissal(tx, input);
+  if (!released) return null;
+  return enqueueWake({
+    tx, companyId: input.companyId, issueId: input.issueId, agentId: released.agentId,
+    reason: "issue_question_dismissed",
+    idempotencyKey: `issue_question_dismissed:${input.interactionId}`,
+    payload: { dismissedInteractionId: input.interactionId },
+    contextSnapshot: { dismissedInteractionId: input.interactionId },
+  });
 }

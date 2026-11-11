@@ -46,7 +46,7 @@ import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
-import { ownQuestionWaitReleasedByDismissal } from "../services/native-runtime/own-question-wait.js";
+import { enqueueOwnQuestionDismissalWake } from "../services/native-runtime/own-question-wait.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
@@ -19094,12 +19094,11 @@ export function issueRoutes(
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
-      let released: { agentId: string } | null = null;
       const interaction = await issueThreadInteractionService(db).dismissInteraction(
         issue, req.params.interactionId as string,
         { userId: actor.actorType === "user" ? actor.actorId : null },
         async (tx) => {
-          released = await ownQuestionWaitReleasedByDismissal(tx, {
+          await enqueueOwnQuestionDismissalWake(tx, {
             companyId: issue.companyId, issueId: issue.id, interactionId: req.params.interactionId as string,
           });
         },
@@ -19109,20 +19108,6 @@ export function issueRoutes(
         action: "issue.thread_interaction_dismissed", entityType: "issue", entityId: issue.id,
         details: { interactionId: interaction.id, interactionKind: interaction.kind },
       });
-      const releasedWait = released as { agentId: string } | null;
-      if (releasedWait) {
-        await heartbeat.wakeup(releasedWait.agentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_question_dismissed",
-          payload: { issueId: issue.id, interactionId: interaction.id },
-          idempotencyKey: `issue_question_dismissed:${interaction.id}`,
-          requestedByActorType: actor.actorType === "user" ? "user" : "system",
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_question_dismissed",
-            source: "issue.interaction.dismiss", dismissedInteractionId: interaction.id },
-        });
-      }
       res.json(interaction);
     },
   );

@@ -458,7 +458,7 @@ function failAt(
     throw new Error(`native_status_failpoint:${actual}`);
 }
 
-async function enqueueWake(input: {
+export async function enqueueWake(input: {
   tx: Db;
   companyId: string;
   issueId: string;

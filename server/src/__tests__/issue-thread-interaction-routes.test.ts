@@ -58,9 +58,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async (_agentId: string, _options: { payload?: unknown; contextSnapshot?: unknown }) => undefined),
   cancelRun: vi.fn(async () => null),
 }));
-const mockOwnQuestionWaitReleasedByDismissal = vi.hoisted(() => vi.fn(async (): Promise<{ agentId: string } | null> => null));
+const mockEnqueueOwnQuestionDismissalWake = vi.hoisted(() => vi.fn(async (): Promise<string | null> => null));
 vi.mock("../services/native-runtime/own-question-wait.js", () => ({
-  ownQuestionWaitReleasedByDismissal: mockOwnQuestionWaitReleasedByDismissal,
+  enqueueOwnQuestionDismissalWake: mockEnqueueOwnQuestionDismissalWake,
 }));
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
   vi.fn(async () => null as string | null)
@@ -809,26 +809,22 @@ describe("issue thread interaction routes", () => {
     expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
   });
 
-  it("wakes the assignee when the dismissed question was the only thing its task waited on", async () => {
+  it("saves the dismissal wake intent in the dismissal transaction only when the card is dismissed", async () => {
     const dismissed = { id: "request-1", kind: "ask_user_questions", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" };
     mockInteractionService.dismissInteraction.mockResolvedValue(dismissed);
     const path = "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss";
     expect((await request(await createApp()).post(path).send({})).status).toBe(200);
-    expect(mockOwnQuestionWaitReleasedByDismissal).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-    mockOwnQuestionWaitReleasedByDismissal.mockResolvedValueOnce({ agentId: CREATED_AGENT_ID });
+    expect(mockEnqueueOwnQuestionDismissalWake).not.toHaveBeenCalled();
+    const tx = { transaction: "dismissal" };
     mockInteractionService.dismissInteraction.mockImplementationOnce(
       async (_issue: unknown, _id: string, _actor: unknown, afterDismissed?: (tx: unknown) => Promise<void>) => {
-        await afterDismissed?.({});
+        await afterDismissed?.(tx);
         return dismissed;
       });
     expect((await request(await createApp()).post(path).send({})).status).toBe(200);
-    expect(mockOwnQuestionWaitReleasedByDismissal).toHaveBeenCalledWith(expect.anything(),
+    expect(mockEnqueueOwnQuestionDismissalWake).toHaveBeenCalledWith(tx,
       { companyId: "company-1", issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", interactionId: "request-1" });
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(CREATED_AGENT_ID, expect.objectContaining({
-      reason: "issue_question_dismissed", idempotencyKey: "issue_question_dismissed:request-1",
-      contextSnapshot: expect.objectContaining({ issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", wakeReason: "issue_question_dismissed" }),
-    }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("hides private task requests from same-company members without task access before dismissal", async () => {

@@ -10,7 +10,7 @@ import { readTaskQuestionContext } from "../issue-question-context.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { finalizeNativeRun, pendingNativeGovernance } from "./native-run-finalizer.js";
-import { ownQuestionWaitReleasedByDismissal } from "./own-question-wait.js";
+import { enqueueOwnQuestionDismissalWake, ownQuestionWaitReleasedByDismissal } from "./own-question-wait.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -268,8 +268,18 @@ describe("historical task questions", () => {
         title: "Second question", payload: f.question.payload }).returning();
       await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
       expect(await ownQuestionWaitReleasedByDismissal(db, scope)).toBeNull();
-      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, second!.id, { userId: "board-user" });
+      const wakeIds: Array<string | null> = [];
+      const dismissSecond = () => issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId },
+        second!.id, { userId: "board-user" }, async tx => {
+          wakeIds.push(await enqueueOwnQuestionDismissalWake(tx, { ...scope, interactionId: second!.id }));
+        });
+      await dismissSecond();
+      await dismissSecond();
       expect(await ownQuestionWaitReleasedByDismissal(db, { ...scope, interactionId: second!.id })).toEqual({ agentId: f.agentId });
+      expect(wakeIds).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+        .toEqual([expect.objectContaining({ id: wakeIds[0], agentId: f.agentId, status: "queued", reason: "issue_question_dismissed",
+          requestedByActorId: "native-status-committer", idempotencyKey: `issue_question_dismissed:${second!.id}` })]);
     }
   });
 

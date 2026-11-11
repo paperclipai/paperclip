@@ -207,8 +207,9 @@ close the task. The decision is `in_review` with reason
 `own_question_unanswered`, the checkout is released, and the question stays
 pending. The person's answer continues the task as usual. If the person dismisses
 the question instead, and no other pending, undismissed question of that agent
-remains, the dismiss route wakes the assignee (`issue_question_dismissed`) so it
-continues without the answer. A completion report with its own evidence, a
+remains, the dismissal transaction saves a durable wake intent for the assignee
+(`issue_question_dismissed`, one idempotency key per question) in the native status
+wake outbox, so it continues without the answer and a failed delivery is retried. A completion report with its own evidence, a
 dismissed question, and an answered question keep the historical-question rule
 above.
 
