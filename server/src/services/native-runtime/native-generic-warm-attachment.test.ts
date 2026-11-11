@@ -30,8 +30,8 @@ async function within<T>(phase: string, promise: Promise<T>): Promise<T> {
 describeEmbeddedPostgres("generic warm attachment handoff", () => {
   const environment = nativeRestartFixture();
 
-  it("recovers a new ACPX turn from committed preparation with the same remote Runner and no second launch", async () => {
-    const f = await environment.seedRun("GENERIC-WARM"), shared = environment.current;
+  it.each(["preparing", "transition"] as const)("recovers a new ACPX turn from committed %s with the same remote Runner and no second launch", async (boundary) => {
+    const f = await environment.seedRun(`GENERIC-WARM-${boundary}`), shared = environment.current;
     const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
     const root = join(shared.runtimeRoot, "generic"), remote = join(root, "remote"), oldRoot = join(root, "old"), newRoot = join(root, "new");
     await mkdir(remote, { recursive: true });
@@ -66,6 +66,8 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       binding: { companyId: shared.companyId, issueId: f.issueId, runId: sourceId }, authorityRunId: () => authorityRunId });
     let entered!: () => void, release!: () => void;
     const preparing = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    let intercepted: DurablePrpControlPlane | null = null, serializedTransitionProven = false;
+    const checkpointHooks = new WeakSet<DurablePrpControlPlane>();
     const server = createServer();
     server.on("upgrade", (request, socket, head) => authority ? authority.handleUpgrade(request, socket, "/runner", head) : socket.destroy());
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -76,13 +78,41 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       get authorityRunId() { return authorityRunId; },
       runnerStateDirectory: join(remote, "runner"),
       readRunnerState: async () => JSON.parse(await readFile(join(remote, "runner", "runner-state.json"), "utf8")),
-      controlPlaneCheckpointRegistration: register,
+      controlPlaneCheckpointRegistration: async (core, identity) => {
+        if (boundary === "transition" && !checkpointHooks.has(core)) {
+          checkpointHooks.add(core);
+          const setPersistence = core.setCheckpointPersistence.bind(core);
+          vi.spyOn(core, "setCheckpointPersistence").mockImplementation(persist => setPersistence(async checkpoint => {
+            if (JSON.parse(checkpoint.records.get("header")!).state.warmTransition?.phase === "prepared") {
+              if (intercepted === null) { intercepted = core; entered(); await gate; }
+              if (intercepted === core) throw new Error("fixture controller lost before durable transition result");
+            }
+            await persist(checkpoint);
+          }));
+        }
+        await register(core, identity);
+      },
       controlPlaneRegistration: async (core: DurablePrpControlPlane, identity?: DurableRecoveryIdentity) => {
         await register(core, identity);
+        if (boundary === "transition" && core.store.state.warmTransition && !serializedTransitionProven) {
+          expect(core.store.state.stagedRunAttachment).toBeUndefined();
+          const saved = await loadNativeRunnerCheckpoint(f.db, { companyId: shared.companyId, issueId: f.issueId, runId: targetId });
+          expect(saved).not.toBeNull();
+          const roundTripRoot = join(root, "round-trip");
+          saved!.restoreSessionDirectory(roundTripRoot);
+          const restored = new DurablePrpControlPlane({ stateDirectory: join(roundTripRoot, "control-plane"),
+            identity: core.store.state.identity, expectedRunnerVersion: artifact.version, expectedRunnerDigest: artifact.digest });
+          expect(restored.store.state.warmTransition).toEqual(core.store.state.warmTransition);
+          expect(restored.store.state.stagedRunAttachment).toBeUndefined();
+          await restored.stop();
+          serializedTransitionProven = true;
+        }
         authority = core;
-        return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: () => { if (authority === core) authority = null; } }; },
+        return { connectUrl: `ws://127.0.0.1:${address.port}/runner`,
+          ...(boundary === "transition" && identity?.runId === targetId ? { connection: { mode: "external" as const } } : {}),
+          release: () => { if (authority === core) authority = null; } }; },
       prepareLaunch: async (requirements: Parameters<typeof createRunnerProviderLaunch>[0]) => {
-        if (requirements.identity.runId === targetId) { entered(); await gate; }
+        if (boundary === "preparing" && requirements.identity.runId === targetId) { entered(); await gate; }
         return { configurationId: `configuration-${requirements.identity.runId}`, requirementsDigest: runnerLaunchRequirementsDigest(requirements),
           provider: createRunnerProviderLaunch(requirements, { options: {}, root: remote, cwd: remote, codexHome: remote,
             codexCommand: "", providerNodeCommand: wrapper, opencodeProxyPath: "", acpxSidecarPath: script }) };
@@ -137,7 +167,8 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       const checkpoint = await loadNativeRunnerCheckpoint(f.db, { companyId: shared.companyId, issueId: f.issueId, runId: targetId });
       expect(checkpoint).not.toBeNull();
       const publication = nativeGenericWarmAttachmentPublication(checkpoint!, owner(targetId));
-      expect(publication).toMatchObject({ phase: "preparing", sourceIdentity, targetIdentity });
+      expect(publication).toMatchObject({ phase: boundary === "transition" ? "queued" : "preparing", sourceIdentity, targetIdentity });
+      if (boundary === "transition") expect((await options.readRunnerState()).warmTransition.phase).toBe("prepared");
       const recover = () => resolveNativeGenericWarmAttachmentRecovery({ db: f.db, currentRun: currentRun!, publication: publication!,
         header: checkpoint!.records.get("header")!, owner: owner(targetId) });
       const proof = await recover(); expect(proof).not.toBeNull();
@@ -159,7 +190,7 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: changed }).where(eq(heartbeatRuns.id, targetId));
       expect(await recover()).toBeNull();
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: currentRun!.runnerProfileJson }).where(eq(heartbeatRuns.id, targetId));
-      await first.detachControllerForRestart(); release(); expect(await attachment).toBeInstanceOf(Error);
+      const detached = first.detachControllerForRestart(); release(); await detached; expect(await attachment).toBeInstanceOf(Error);
       checkpoint!.restoreSessionDirectory(newRoot); await rm(oldRoot, { recursive: true, force: true });
       const noSpawn = vi.fn(() => { throw new Error("duplicate Runner launch"); });
       successor = createCapabilityRunnerdCodexTransport({ ...options, stateDirectory: newRoot, prpIdentity: targetIdentity,
@@ -173,6 +204,7 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
         warmTransitionRegistrationMode: "routed_same_endpoint", runnerProcessLauncher: noSpawn,
         adoptExistingRunner: { pid, processGroupId: pid, startedAt, isAlive: () => { try { process.kill(pid, 0); return true; } catch { return false; } }, signal: () => false } });
       const resumed = await within("successor adoption", successor.transport.request("thread/read", {}));
+      if (boundary === "transition") expect(serializedTransitionProven).toBe(true);
       expect(resumed.thread).toMatchObject({ id: (opened.thread as any).id });
       expect(successor.evidence().runnerPid).toBe(pid); expect(noSpawn).not.toHaveBeenCalled(); expect(launch).toHaveBeenCalledTimes(1);
       expect((await options.readRunnerState()).runId).toBe(targetId);

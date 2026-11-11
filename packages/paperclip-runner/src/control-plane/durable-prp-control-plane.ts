@@ -2803,7 +2803,7 @@ export class DurablePrpControlPlane {
     }
     if (this.#store.state.warmTransition && canonicalJson(this.#store.state.warmTransition) === canonicalJson(proof.transition)) return;
     const candidate = structuredClone(this.#store.state);
-    candidate.schema = stagedCoreStateSchema;
+    candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;
     candidate.warmTransition = structuredClone(proof.transition);
     this.#store.commit(candidate);
   }

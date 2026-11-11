@@ -6710,9 +6710,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const authorizeAdoption = !this.options.recoveryLaunch
       && this.options.adoptExistingRunner && this.options.authorizeRunnerAdoption;
     if (this.options.prepareLaunch && authorizeAdoption) {
-      const configurationId = core.preparedLaunchConfigurationId(desiredIdentity);
+      const adoptionIdentity = this.options.genericWarmAttachment && warmRecovery ? warmRecovery.runnerIdentity : desiredIdentity;
+      const configurationId = core.preparedLaunchConfigurationId(adoptionIdentity);
       if (!configurationId) throw new Error("runner_launch_recovery_configuration_unavailable");
-      await authorizeAdoption(configurationId, structuredClone(desiredIdentity));
+      await authorizeAdoption(configurationId, structuredClone(adoptionIdentity));
       this.#assertStartupOpen();
       this.#recordPreparedWorkingDirectory({ provider: record(record(controlPlaneState!.runAttachTemplate).provider) });
     }
@@ -6910,7 +6911,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (recoveringAttachment && this.options.controlPlaneRegistration) {
       try {
         if (!recoverySource || !recoveryTarget || !expectedRecoveryConnection
-          || (expectedRecoveryConnection.mode !== "connect" && !(staged && this.options.adoptExistingRunner
+          || (expectedRecoveryConnection.mode !== "connect" && !((staged || this.options.genericWarmAttachment) && this.options.adoptExistingRunner
             && this.options.warmTransitionRegistrationMode === "routed_same_endpoint"))) {
           throw new Error("native_runner_warm_transition_requires_exact_owned_endpoint");
         }
