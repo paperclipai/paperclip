@@ -41,6 +41,12 @@ describe("handed-off task decision policy", () => {
       effects: [{ kind: "release_checkout" }, { kind: "schedule_retry", cause: "x", summary: "Retry", agentId: "agent-a" }] };
     expect(supersedeHandedOffDecision(failedTurn, person)).toEqual({ ...failedTurn, effects: [{ kind: "release_checkout" }] });
   });
+  it("drops a finalization error that is not a workspace save failure", () => {
+    const monitorLost: NativeStatusDecision = { ...incomplete, statusAction: "preserve", toStatus: "in_review",
+      reasonCode: "native_monitor_authority_lost", effects: [{ kind: "record_finalization_error",
+        cause: "native_monitor_authority_lost", nextAction: "Reschedule", agentId: "agent-a" }] };
+    expect(supersedeHandedOffDecision(monitorLost, person)).toEqual({ ...monitorLost, effects: [] });
+  });
   it("keeps the workspace repair of a failed finalization, so saved work is not lost", () => {
     const finalizationFailed: NativeStatusDecision = { ...incomplete, statusAction: "preserve", toStatus: "in_review",
       reasonCode: "finalization_failed_claim_preserved", effects: [{ kind: "record_finalization_error",
@@ -113,6 +119,11 @@ describe.skipIf(!support.supported)("native run hands its own task to a person",
     const unrecorded = await runningNativeTask();
     await handOffToPerson(unrecorded, { record: false });
     await expect(assertCurrentWakeCommentsRead(db, binding(unrecorded), null)).rejects.toThrow("native_current_wake_comments_binding_changed");
+
+    // A truncated chat wake: after the hand-off the run must still have read the wake it started with.
+    const wake = { bindingDigest: "wake-digest" } as unknown as Parameters<typeof assertCurrentWakeCommentsRead>[2];
+    // It passes the binding comparison and reaches the read requirement, which it has not met.
+    await expect(assertCurrentWakeCommentsRead(db, binding(recorded), wake)).rejects.toThrow("native_current_wake_comments_unread");
 
     // A later reassignment to someone else is not the hand-off this run made.
     const other = randomUUID();

@@ -15570,9 +15570,15 @@ export function issueRoutes(
         // Record the native hand-off on the run before the task changes, so the
         // run's terminal fence accepts the task it gave away. A failed update
         // leaves the record unused: the fence also requires the person to own it.
-        if (isHumanSelfHandoff && runToStopForReassignment.runtimeMode === "native") {
-          await recordNativeHumanSelfHandoff(db, { companyId: existing.companyId, runId: runToStopForReassignment.id,
-            agentId: runToStopForReassignment.agentId, issueId: existing.id, assigneeUserId: nextAssigneeUserId as string });
+        if (isHumanSelfHandoff && runToStopForReassignment.runtimeMode === "native" &&
+            !await recordNativeHumanSelfHandoff(db, { companyId: existing.companyId, runId: runToStopForReassignment.id,
+              agentId: runToStopForReassignment.agentId, issueId: existing.id, assigneeUserId: nextAssigneeUserId as string })) {
+          // The run is no longer the running native run of this task: do not
+          // save an assignment its own terminal fence would then refuse.
+          throw conflict("The run handing off this task is no longer running it. Read the task again and retry.", {
+            code: "native_self_handoff_run_changed",
+            runId: runToStopForReassignment.id,
+          });
         }
         if (runToStopForReassignment && !isHumanSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;

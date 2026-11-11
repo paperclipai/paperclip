@@ -157,7 +157,10 @@ export function supersedeHandedOffDecision(
   issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
 ): NativeStatusDecision {
   if (issue.assigneeAgentId !== null || !issue.assigneeUserId) return decision;
-  const effects = decision.effects.filter(effect => !OUTGOING_AGENT_TASK_EFFECTS.has(effect.kind));
+  // A finalization error only stays for a failed workspace save: it repairs
+  // and re-runs the save of the run's work. Other causes are task recovery.
+  const effects = decision.effects.filter(effect => !OUTGOING_AGENT_TASK_EFFECTS.has(effect.kind)
+    && !(effect.kind === "record_finalization_error" && effect.cause !== "workspace_finalization_failed"));
   const governed = effects.some(effect => effect.kind === "create_interaction");
   if (decision.statusAction === "preserve" || governed) {
     return effects.length === decision.effects.length ? decision : { ...decision, effects };

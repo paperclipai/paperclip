@@ -800,7 +800,9 @@ export async function assertCurrentWakeCommentsRead(
     } else if (!handedOff && (locked.issueAssigneeAgentId !== input.agentId || locked.issueExecutionRunId !== input.runId)) {
       throw new Error("native_current_wake_comments_binding_changed");
     }
-    const currentBinding = await resolveCurrentWakeCommentsBinding(
+    // After its own hand-off the run no longer resolves a current binding (it
+    // does not own the task). It still must have read the wake it started with.
+    const currentBinding = handedOff ? expectedBinding ?? null : await resolveCurrentWakeCommentsBinding(
       tx as unknown as Db,
       {
         companyId: input.companyId,

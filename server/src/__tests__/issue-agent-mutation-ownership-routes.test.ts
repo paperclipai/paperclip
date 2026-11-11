@@ -2972,6 +2972,17 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
 
+    it("refuses a native hand-off when the run can no longer record it, without saving the assignment", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...runningRun, runtimeMode: "native" });
+      mockRecordNativeHumanSelfHandoff.mockResolvedValueOnce(false);
+      const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.code ?? res.body.details?.code).toBe("native_self_handoff_run_changed");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
     it("recognizes the caller when the active run is resolved without an issue execution lock", async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
       mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(runningRun);
