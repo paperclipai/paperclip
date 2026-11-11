@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 
 /** Native binary headers bind the packaged executable to its actual target. */
@@ -22,11 +22,36 @@ export function runnerBinaryTarget(bytes: Buffer): string | null {
   return null;
 }
 
+const RUNNER_BINARY_HEADER_BYTES = 64 * 1024;
+
+/**
+ * `runnerBinaryTarget(readFileSync(path))`, reading only the 64 KiB header
+ * unless the header cannot answer. A daemon is tens of megabytes; reading all
+ * of it to classify the target blocked the server's event loop on a slow disk.
+ */
+export function runnerBinaryFileTarget(path: string): string | null {
+  const descriptor = openSync(path, "r");
+  try {
+    const header = Buffer.alloc(RUNNER_BINARY_HEADER_BYTES);
+    let length = 0;
+    let ended = false;
+    while (length < header.length) {
+      const bytesRead = readSync(descriptor, header, length, header.length - length, null);
+      if (bytesRead === 0) { ended = true; break; }
+      length += bytesRead;
+    }
+    const target = runnerBinaryTarget(header.subarray(0, length));
+    return target !== null || ended ? target : runnerBinaryTarget(readFileSync(path));
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 export function resolvePackagedRunnerBinary(outputRoot: string, platform = process.platform, architecture = process.arch): string | null {
   const target = `${platform}-${architecture}`, executable = platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
   for (const binary of [resolve(outputRoot, "bin", target, executable), resolve(outputRoot, "bin", executable)]) {
     if (!existsSync(binary)) continue;
-    if (runnerBinaryTarget(readFileSync(binary)) !== target) {
+    if (runnerBinaryFileTarget(binary) !== target) {
       throw new Error(`runner_runtime_incompatible: packaged daemon does not match ${target}; install the matching Paperclip release`);
     }
     return binary;

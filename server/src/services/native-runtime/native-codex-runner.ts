@@ -1,8 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, chmodSync, constants, mkdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
 
@@ -14,7 +13,8 @@ import { agentSessionGoalActions, agentTaskSessions } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
 import {
-  bundledRemoteProviderPackManifestPath,
+  BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH,
+  bundledRemoteRunnerRelease,
   createPaperclipRunnerAuthorizedToolSet,
   defaultCapabilityRunnerdBinary,
   runnerBinaryTarget,
@@ -260,16 +260,9 @@ export async function resolveRemotePaperclipRunnerBinary(input: {
 export async function verifiedBundledRemoteRunnerBinary(
   target: "linux-x64" | "linux-arm64" = "linux-x64",
 ): Promise<string> {
-  const outputRoot = resolve(dirname(bundledRemoteProviderPackManifestPath(undefined, target)), "../..");
-  const release = JSON.parse(await readFile(join(outputRoot, "bin/release-manifest.json"), "utf8"));
-  const artifact = release?.platforms?.[target];
-  if (release?.schema !== "paperclip.runner.release-binaries.v1" || !/^[a-f0-9]{40}$/.test(release.sourceRevision ?? "") ||
-      artifact?.path !== `${target}/paperclip-runnerd` || !/^sha256:[a-f0-9]{64}$/.test(artifact.sha256 ?? "")) {
-    throw new Error("runner_remote_artifact_unavailable: install the complete Paperclip release with its Linux daemon");
-  }
-  const binary = join(outputRoot, "bin", artifact.path);
-  if (await binaryTargetFromHeader(binary, runnerBinaryTarget) !== target || await cachedFileSha256(binary) !== artifact.sha256) {
-    throw new Error("runner_remote_artifact_incompatible: packaged Linux daemon identity mismatch");
+  const { binary, sha256 } = bundledRemoteRunnerRelease(undefined, target);
+  if (await binaryTargetFromHeader(binary, runnerBinaryTarget) !== target || await cachedFileSha256(binary) !== sha256) {
+    throw new Error(BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH);
   }
   return binary;
 }
