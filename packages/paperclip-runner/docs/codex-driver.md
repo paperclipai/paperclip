@@ -83,17 +83,15 @@ equal to or below that assigned workspace so sibling and symlink escapes fail
 before provider startup.
 
 When the execution target is itself the sandbox (a remote sandbox such as
-Daytona sets `PAPERCLIP_RUNNER_EXTERNAL_SANDBOX=1`), the Runner starts every
-Codex thread and turn with the external sandbox policy, including read-only
-planning runs. Codex's own bubblewrap helper cannot set up a network namespace
-inside that container (`bwrap: loopback: Failed RTM_NEWADDR`), and Codex loads
-`AGENTS.md` through that helper, so a nested Codex sandbox fails thread
-creation. A planning run there keeps Codex's native plan collaboration mode and
-Paperclip's planning constraints instead of the read-only permission profile.
-Local runners keep the read-only profile for planning. Standard and ask runs use
-the default execution mode (ask restricts Paperclip mutation tools, not the
-Codex sandbox), so in an external sandbox they also start with the external
-sandbox policy and no plan collaboration mode.
+Daytona sets `PAPERCLIP_RUNNER_EXTERNAL_SANDBOX=1`), standard and ask runs use
+the default execution mode. The Runner starts their Codex threads and turns
+with the external sandbox policy and sends no collaboration mode. Ask mode
+restricts Paperclip mutation tools, not the Codex sandbox. Planning runs keep
+the `paperclip-runner-workspace-read-only` profile everywhere, because Codex's
+plan collaboration mode is a prompt and does not block writes or commands.
+Inside a container without network-namespace rights, that profile's helper can
+fail thread creation (`bwrap: loopback: Failed RTM_NEWADDR`); the run then ends
+as a provider startup failure with Retry (see `durable-recovery.md`).
 
 The returned sandbox facts remain authoritative. Codex 0.132.0 may inject a
 provider-managed writable root such as `~/.codex/memories` after a first run,

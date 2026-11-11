@@ -46,7 +46,7 @@ describe("native session.open the provider rejected before any provider work", (
     message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
     ...fields });
 
-  async function rejectSessionOpen(failure: Error) {
+  async function rejectSessionOpen(failure: Error, attempt = 0) {
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Plan the change", status: "in_progress", workMode: "standard",
       assigneeAgentId: agentId, createdByUserId: "board-user", responsibleUserId: "board-user" });
@@ -58,14 +58,14 @@ describe("native session.open the provider rejected before any provider work", (
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const native = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
-    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed" });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed", attempt });
     const execution: NativeExecutionInputV1 = {
       schema: "paperclip.native-execution-input.v1",
       binding: { companyId, runId, issueId, agentId, executionWorkspaceId: runId },
-      provider: { kind: "opencode", model: "openrouter/test-model" },
+      provider: { kind: "codex", model: "gpt-test" },
       task: { identifier: issueId, title: issue.title, description: null, prompt: "Plan the change.", workMode: "standard" },
       workspace: { cwd: "/tmp", repoUrl: null, repoRef: null, branchName: null },
-      session: { normalizedSessionId: native.normalizedSessionId, driverKind: "opencode_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      session: { normalizedSessionId: native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
       completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
         contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
       interactionResponses: [], credentialBindings: [],
@@ -80,8 +80,9 @@ describe("native session.open the provider rejected before any provider work", (
     return { issueId, runId, coordinator };
   }
 
-  it("fails the run on the first rejection with a plain explanation, and Retry starts a new run", async () => {
-    const { issueId, runId, coordinator } = await rejectSessionOpen(rejection(startupFailure()));
+  it("fails the run on the first deterministic rejection with a plain explanation, and Retry starts a new run", async () => {
+    const { issueId, runId, coordinator } = await rejectSessionOpen(rejection(startupFailure({ category: "authentication",
+      retryability: "requires_action", message: "error creating thread: the AI connection was revoked" })));
     expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null,
       failureDetail: expect.objectContaining({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
         providerFailure: expect.objectContaining({ phase: "startup" }),
@@ -100,9 +101,21 @@ describe("native session.open the provider rejected before any provider work", (
     await heartbeat.drainActiveRunExecutions();
   }, 120_000);
 
-  it("keeps a bounded same-run retry for a startup failure that can clear by itself", async () => {
-    const { coordinator } = await rejectSessionOpen(rejection(startupFailure({ category: "overloaded", retryability: "transient", httpStatus: 503 })));
+  it.each([
+    startupFailure(),
+    startupFailure({ message: "Query closed before response received" }),
+    startupFailure({ category: "overloaded", retryability: "transient", httpStatus: 503 }),
+  ])("retries an unknown or transient local startup failure on the same run: $message", async (failure) => {
+    const { coordinator } = await rejectSessionOpen(rejection(failure));
     expect(coordinator).toMatchObject({ phase: "retryable_failure", failureCode: "native_session_interrupted",
       failureDetail: expect.objectContaining({ recoveryMode: "bootstrap_retry" }) });
+  }, 120_000);
+
+  it("ends with Retry once the bounded startup retries are spent", async () => {
+    const { issueId, coordinator } = await rejectSessionOpen(rejection(startupFailure({ message: "Query closed before response received" })), 2);
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
+      failureDetail: expect.objectContaining({ nextAction: expect.stringContaining("retry the task") }) });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await expect(taskInterruptionPresentation(db, issue)).resolves.toMatchObject({ state: "failed", canRetry: true });
   }, 120_000);
 });

@@ -1353,12 +1353,14 @@ provider cannot run the selected model (`requested_model_unsupported`,
 `grok_model_mismatch`) is a model rejection, not a startup interruption. It
 stops on its first attempt as `native_provider_model_rejected`, with no
 same-run bootstrap retry, and leaves an active board recovery action that asks
-for a supported model. A definite rejection whose `providerFailure` is a
-startup failure that waiting cannot clear (no HTTP status or provider code, or
-`requires_action` for authentication, permission or an invalid request) stops
-on its first attempt as `native_provider_startup_rejected`. No provider work
-began, so the board offers Retry, which starts a new run with a fresh provider
-session. Other `session.open` rejections keep the bounded startup retry. An
+for a supported model. A definite rejection whose startup `providerFailure`
+is `requires_action` for `authentication`, `permission` or `invalid_request`
+stops on its first attempt as `native_provider_startup_rejected`. On a remote
+execution target, any definite rejection with a startup `providerFailure` stops
+the same way, because a remote same-run bootstrap cannot prove ownership. No
+provider work began, so the board offers Retry, which starts a new run with a
+fresh provider session. Other local `session.open` rejections keep the bounded
+startup retry and end with Retry when it is spent. An
 indeterminate `session.open` outcome stays unclassified.
 
 ### Workspace scan failures before provider startup

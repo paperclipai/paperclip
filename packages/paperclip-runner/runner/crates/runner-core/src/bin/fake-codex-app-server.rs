@@ -803,9 +803,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let require_external_sandbox = args
         .iter()
         .any(|value| value == "--require-external-sandbox");
-    let require_plan_collaboration = args
-        .iter()
-        .any(|value| value == "--require-plan-collaboration");
     let forbid_plan_collaboration = args
         .iter()
         .any(|value| value == "--forbid-plan-collaboration");
@@ -1761,11 +1758,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         || message.pointer("/params/permissions").is_some())
                 {
                     return Err("turn/start omitted the external sandbox boundary".into());
-                }
-                if require_plan_collaboration
-                    && message.pointer("/params/collaborationMode/mode") != Some(&json!("plan"))
-                {
-                    return Err("turn/start omitted native plan collaboration mode".into());
                 }
                 if forbid_plan_collaboration
                     && message.pointer("/params/collaborationMode").is_some()

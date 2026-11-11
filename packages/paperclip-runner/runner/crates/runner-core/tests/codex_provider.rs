@@ -649,25 +649,6 @@ fn delegates_command_isolation_to_an_explicit_external_sandbox() {
 }
 
 #[test]
-fn plans_inside_an_explicit_external_sandbox_without_a_nested_codex_sandbox() {
-    let directory = temporary_directory("external-sandbox-plan");
-    let mut config = provider_config(
-        &directory,
-        &["--require-external-sandbox", "--require-plan-collaboration"],
-    );
-    config.externally_sandboxed = true;
-    config.read_only = true;
-
-    let mut provider = CodexProvider::start(&config, None)
-        .expect("start a planning Codex thread inside the external sandbox boundary");
-    provider
-        .start_turn("Write the plan only.", &config.cwd)
-        .expect("start the planning turn with the external sandbox policy");
-    provider.shutdown().expect("stop fake Codex provider");
-    fs::remove_dir_all(directory).expect("remove external sandbox plan test directory");
-}
-
-#[test]
 fn provider_receives_the_isolated_codex_auth_home() {
     let directory = temporary_directory("isolated-auth-home");
     fs::write(directory.join("auth.json"), r#"{"auth_mode":"apikey"}"#)

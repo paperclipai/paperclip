@@ -8499,15 +8499,22 @@ const RUNNER_PROVIDER_SESSION_CLOSED = "provider_session_closed";
 
 export const NATIVE_PROVIDER_STARTUP_REJECTED = "native_provider_startup_rejected";
 export const NATIVE_PROVIDER_STARTUP_REJECTED_ACTION =
-  "The provider refused to start a session, so no provider work began, and retrying this run would fail the same way. Read the provider message, fix its cause in the agent's environment or AI connection, then Retry. Retry starts a new run with a fresh provider session.";
+  "The provider refused to start a session, so no provider work began. Read the provider message and fix its cause in the agent's environment or AI connection if needed, then Retry. Retry starts a new run with a fresh provider session.";
 
 function deterministicProviderStartupFailure(error: unknown): boolean {
   const failure = providerFailureFromError(error);
-  if (!failure || failure.phase !== "startup") return false;
-  if (failure.category === "unknown")
-    return failure.httpStatus === undefined && failure.providerCode === undefined && failure.retryability !== "transient";
-  return failure.retryability === "requires_action"
+  return failure?.phase === "startup" && failure.retryability === "requires_action"
     && ["authentication", "permission", "invalid_request"].includes(failure.category);
+}
+
+export function nativeRemoteStartupRejectionCode<Code extends string>(
+  sourceFailureCode: Code,
+  error: unknown,
+  remoteTarget: boolean,
+): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED {
+  return remoteTarget && sourceFailureCode === "provider_session_open_rejected"
+    && providerFailureFromError(error)?.phase === "startup"
+    ? NATIVE_PROVIDER_STARTUP_REJECTED : sourceFailureCode;
 }
 
 /** Reads the Runner's closed class from an authenticated turn.start failure. */
@@ -12314,7 +12321,7 @@ async function executePaperclipNativeSessionAttempt(
           ? classifiedFailureCode
           : providerUsageLimitObserved
             ? "native_provider_usage_limit"
-            : classifiedFailureCode;
+            : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote");
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
           && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
           ? {
