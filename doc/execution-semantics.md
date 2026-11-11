@@ -1440,11 +1440,13 @@ status, errno-style code), never by provider text. On exhaustion, the task gets 
 specific recovery notice, and generic recovery does not grant another budget.
 
 An environment provider that refuses a new lease with a transient status (HTTP
-408, 425, 429, 500, 502, 503 or 504, or a closed connection errno) before provider
-dispatch uses the same bounded bootstrap budget (`environment_provider_unavailable`).
-The status comes only from structured fields: the worker's validated acquisition
-envelope or the in-process error's status; message text is never parsed, and
-other statuses stay `setup_failed`. Each retry is a new creation attempt with its
+408, 425, 429, 500, 502, 503 or 504, or a closed connection errno), or whose
+acquisition reached its own deadline, before provider dispatch uses the same
+bounded bootstrap budget (`environment_provider_unavailable`). The status comes
+only from structured fields: the worker's validated acquisition envelope, its
+acquisition diagnostic (a first failure at or after the expired budget), or the
+in-process error's status; message text is never parsed, and other statuses and
+earlier setup failures stay `setup_failed`. Each retry is a new creation attempt with its
 own durable creation record and provider name. A provisional allocation whose
 cleanup could not be confirmed stays owned by its own record, which the creation
 reconciler settles; a retry neither reuses nor abandons it. The task shows the
@@ -3017,6 +3019,18 @@ drops and other unclassified resume failures keep the existing retry and
 replacement behavior. When a replacement does archive remote continuity state
 and the remote move fails, the local state is not moved, and the run error keeps
 the bounded, redacted exit status and output of that move.
+
+When the provider state backup fails to save after the run's result was
+accepted, and the run used a per-turn sandbox (no reusable lease), that backup
+was the only copy of the provider session. The server records
+`nativeProviderStateUnsaved` with the code `native_provider_state_incompatible`
+in that run's runner profile. The run's status, result and task outcome do not
+change. The next run on the session does not rebind that checkpoint: it starts
+a fresh provider session in the same workspace with the full task context,
+without first trying to resume, and its transcript shows the session as started
+rather than resumed. A failure before the result is accepted, a backup that
+saves after a retry, a retained sandbox, an SSH host, and records saved without
+the key keep the resume path described next.
 
 A Runner that keeps no control-plane state for the saved session (none is live
 and no archived authority epoch matches it) reports a typed refusal. This
@@ -4621,6 +4635,10 @@ If shutdown cannot be proven, the run retains its checkpoint and the named
 `native_governed_wait_settlement_pending` condition. The existing bounded
 same-run recovery schedule owns further settlement; it grants no replacement
 or tool replay. The task explains that work is saved and shutdown is pending.
+The active recovery action that schedules this same run's resume is the
+authority for that resume, not a hold against it: the dispatch gate of the
+resumed run (including a resolved-interaction continuation) skips only that
+action and keeps every other reconciliation hold on the task.
 Exhausted or gated recovery holds continuation and names the shutdown problem.
 Actual provider failures and integrity failures retain their existing meaning.
 Accounting keeps its separate receipt and reconciliation requirements.
@@ -4691,7 +4709,18 @@ generation ends at once as
 `user_action_required`) and goes to the board. It is not retried on the automatic
 schedule, and it never falls back to the last save, so the run's unsaved files stay
 in the retained sandbox and the workspace keeps its previous saved version. The
-board's Retry saves again; once the save succeeds, the accepted Retry starts one run.
+board's Retry saves again. Once the save succeeds, the accepted Retry applies the
+run's saved accepted result and finishes the run and task from it, with no new
+agent turn and no provider spend. Retry admission waits (`finalizing_saved_result`)
+while any saved-work hold of that run is still saving, then preserved-result
+finalization coalesces the Retry into the source run (`finalize_result`, activity
+`issue.saved_result_finalization_resumed`). This applies to any accepted Retry
+(`evaluate`) of a terminal run whose coordinator still holds an accepted,
+succeeded result, whose saved-work recovery completed with a verified receipt,
+and which has no recorded Stop, newer run, current execution or other owner. A
+record that lacks any of these, including one written by an older server, keeps
+the previous behaviour: the Retry starts one run. If the save still finds the
+disk full, the hold rests again as `sandbox_disk_full` with its Retry.
 A reclaim whose outcome is unknown keeps the scheduled retry, because its journal
 resumes on the next attempt and can still free space.
 
@@ -4909,8 +4938,12 @@ and identify `inheritedFromRunId`. The first receipt is immutable history.
 `nativeProviderPackAdmissionState` separately describes current admission proof:
 `pending`, `verified` or `unknown`, with an opaque admission epoch. The mandatory
 coordinator claim atomically sets a new pending epoch before session admission.
-Only the matching owner and epoch can publish post-attachment proof. Failed
-receipt writes leave pending evidence; changed or unsupported admission leaves
+Only the matching owner and epoch can publish post-attachment proof. A write
+that waits for its claim retries a contended write (lock timeout, deadlock or
+serialization abort) up to five times, because the runner's durable checkpoint
+writes hold the same coordinator row. Each attempt re-proves the claim, run and
+epoch in a new transaction. The run log names the database cause of a write
+that still fails. Failed receipt writes leave pending evidence; changed or unsupported admission leaves
 unknown evidence and does not prevent authorized execution. A missing legacy
 receipt remains unknown; the current release cannot supply that missing history.
 Retained recovery needs positively verified prior provenance, captured before

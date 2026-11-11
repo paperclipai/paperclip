@@ -649,6 +649,44 @@ fn delegates_command_isolation_to_an_explicit_external_sandbox() {
 }
 
 #[test]
+fn planning_in_an_external_sandbox_keeps_the_read_only_profile_on_thread_and_turn() {
+    let directory = temporary_directory("external-sandbox-planning");
+    let log = directory.join("requests.ndjson");
+    let mut config = provider_config(&directory, &["--request-log", log.to_str().unwrap()]);
+    config.externally_sandboxed = true;
+    config.read_only = true;
+
+    let mut provider = CodexProvider::start(&config, None)
+        .expect("start a read-only Codex thread inside an external sandbox");
+    provider
+        .start_turn("Plan the change without editing files.", &config.cwd)
+        .expect("start the planning turn");
+    provider.shutdown().expect("stop fake Codex provider");
+
+    let frames = skill_wire_requests(&directory);
+    let thread = frames
+        .iter()
+        .find(|frame| frame["method"] == "thread/start")
+        .expect("thread/start request");
+    assert_eq!(
+        thread["params"]["permissions"],
+        "paperclip-runner-workspace-read-only"
+    );
+    assert!(thread["params"].get("sandbox").is_none());
+    let turn = frames
+        .iter()
+        .find(|frame| frame["method"] == "turn/start")
+        .expect("turn/start request");
+    assert_eq!(
+        turn["params"]["permissions"],
+        "paperclip-runner-workspace-read-only"
+    );
+    assert!(turn["params"].get("sandboxPolicy").is_none());
+    assert_eq!(turn["params"]["collaborationMode"]["mode"], "plan");
+    fs::remove_dir_all(directory).expect("remove external sandbox planning test directory");
+}
+
+#[test]
 fn provider_receives_the_isolated_codex_auth_home() {
     let directory = temporary_directory("isolated-auth-home");
     fs::write(directory.join("auth.json"), r#"{"auth_mode":"apikey"}"#)
