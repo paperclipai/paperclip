@@ -1359,6 +1359,20 @@ describe("PaperclipRunnerToolAuthority", () => {
       arguments: { idempotencyKey: "orphaned-write-stale", key: "orphan-brief", title: "Brief",
         body: "Stale.", baseRevisionId: applied!.latestRevisionId, changeSummary: "Stale" },
     };
+    // A task switched to ask mode refuses a write that never applied, while
+    // a write that did apply still replays its receipt.
+    await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issueId));
+    try {
+      const askMode = await authority.recover({ ...notApplied, callId: "orphaned-write-ask",
+        arguments: { ...notApplied.arguments, idempotencyKey: "orphaned-write-ask", key: "orphan-ask" } });
+      expect(JSON.stringify(askMode)).toContain("paperclip_runner_tool_mode_denied");
+      expect(askMode).toMatchObject({ isError: true });
+      expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-ask")).toBeNull();
+      expect(await authority.recover(update)).toEqual({ result: original });
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+
     const conflict = await authority.recover(stale);
     expect(conflict).toMatchObject({ isError: true, result: { success: false } });
     expect(JSON.stringify(conflict)).toContain("Document was updated by someone else");

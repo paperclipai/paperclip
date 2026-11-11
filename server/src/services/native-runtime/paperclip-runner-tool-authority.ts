@@ -181,7 +181,12 @@ const RECOVERABLE_READ_OPERATIONS = new Set([
 const TRANSACTIONAL_RECEIPT_OPERATIONS = new Set(["write_document"]);
 const TRANSACTIONAL_RECOVERY_REFUSALS = new Set([
   "paperclip_runner_tool_idempotency_conflict", "paperclip_runner_tool_input_invalid",
+  "paperclip_runner_tool_mode_denied",
 ]);
+function nativeToolAllowedInMode(operationId: string, workMode: string): boolean {
+  return CAPABILITY_SEMANTIC_TOOL_CATALOG.some(candidate => candidate.operationId === operationId
+    && candidate.allowedModes.includes(workMode as "standard" | "planning" | "ask"));
+}
 const RECOVERABLE_READ_ERRORS = new Set([
   "paperclip_runner_document_not_found", "paperclip_runner_agent_not_found",
   "paperclip_runner_approval_not_found", "paperclip_runner_tool_input_invalid",
@@ -562,7 +567,7 @@ export class PaperclipRunnerToolAuthority {
    */
   async #recoverTransactionalWrite(tool: string, input: Record<string, unknown>) {
     try {
-      if (tool === "write_document") return { result: await this.#writeDocument(input) };
+      if (tool === "write_document") return { result: await this.#writeDocument(input, true) };
       throw new Error(`paperclip_runner_transactional_recovery_unsupported: ${tool}`);
     } catch (error) {
       // Each of these is raised before the transaction commits, so it rolls the
@@ -1885,10 +1890,16 @@ export class PaperclipRunnerToolAuthority {
     return result;
   }
 
-  async #writeDocument(input: Record<string, unknown>): Promise<unknown> {
+  async #writeDocument(input: Record<string, unknown>, recovering = false): Promise<unknown> {
     const idempotencyKey = requiredString(input.idempotencyKey);
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("write_document", idempotencyKey, input, async (tx, context) => {
+      // execute() checks the work mode before dispatch. A recovered write
+      // applies later, so it checks the mode it locked; a saved receipt
+      // still replays without this check because its effect already applied.
+      if (recovering && !nativeToolAllowedInMode("write_document", context.issue.workMode)) {
+        throw new Error("paperclip_runner_tool_mode_denied");
+      }
       const sourceTrust = this.binding.museRuntime ? await resolveActorSourceTrustForIssue({ db: tx, issue: context.issue,
         actor: { actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId } }) : undefined;
       const write = await documentService(tx).upsertIssueDocument({
