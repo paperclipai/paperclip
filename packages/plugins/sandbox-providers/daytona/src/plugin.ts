@@ -3022,6 +3022,8 @@ const plugin = definePlugin(trackDaytonaHooks({
       return timeoutFailure();
     };
     const createWithinCap = async (creating: Promise<Sandbox>): Promise<Sandbox> => {
+      let createdBeforeDecision = false;
+      creating.then(() => { createdBeforeDecision = true; }, () => undefined);
       let capTimer: ReturnType<typeof setTimeout> | undefined;
       const capReached = await Promise.race([
         creating.then(() => false, () => false),
@@ -3030,7 +3032,7 @@ const plugin = definePlugin(trackDaytonaHooks({
       if (!capReached || !cleanup || expired || phase !== "create" || firstFailure) return creating;
       const elapsedMs = Math.max(createCapMs, Date.now() - startedAt);
       const observed = await lookupCreation(config, cleanup);
-      if (expired || allocationClaim === "cleanup" || firstFailure) return creating;
+      if (expired || createdBeforeDecision || allocationClaim === "cleanup" || firstFailure) return creating;
       if (observed.state === "started" && observed.sandbox) {
         allocationClaim = "adopted";
         cleanup.observedProviderLeaseId = observed.sandbox.id;

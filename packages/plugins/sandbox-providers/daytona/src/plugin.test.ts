@@ -1437,6 +1437,17 @@ describe("Daytona sandbox provider plugin", () => {
       expect(found!.delete).not.toHaveBeenCalled();
     });
 
+    it("uses a create that succeeds while its 90 second lookup is still pending", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 91_000)));
+      mockGet.mockImplementation(() => new Promise(() => {}));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      await vi.advanceTimersByTimeAsync(96_000);
+      expect(await pending).toMatchObject({ providerLeaseId: sandbox.id });
+      expect(sandbox.getWorkDir).toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
+
     it("never adopts a sandbox whose failed create already started its cleanup", async () => {
       const createError = new MockDaytonaTimeoutError("SDK wait ended");
       mockCreate.mockImplementation(() => new Promise((_resolve, reject) => setTimeout(() => reject(createError), 91_000)));
