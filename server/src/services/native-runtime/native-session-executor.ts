@@ -16627,14 +16627,18 @@ async function createRunnerdBackendWithinSessionClaim(
   // provider session instead of failing once on the missing state. A retained
   // sandbox or SSH host keeps the live state, so it keeps the resume path.
   let providerStateUnsavedMarked = false;
+  // Set once the durable backup is stored. A later local publication, stamp,
+  // or cleanup failure leaves that backup restorable, so it is not marked.
+  let checkpointBackupStored = false;
   const checkpointRemoteRunner = async (
     settlement: "settled" | "unsettled",
   ) => {
     let saved: boolean;
+    checkpointBackupStored = false;
     try {
       saved = await persistRemoteRunnerCheckpoint(settlement);
     } catch (error) {
-      if (remoteTarget?.transport === "sandbox" && remoteTarget.reusableLeaseConfigured !== true) {
+      if (!checkpointBackupStored && remoteTarget?.transport === "sandbox" && remoteTarget.reusableLeaseConfigured !== true) {
         providerStateUnsavedMarked = await markAcceptedRunProviderStateUnsaved(input.db, input.execution.binding)
           .catch(() => false) || providerStateUnsavedMarked;
         // A log failure cannot replace the checkpoint error.
@@ -16799,6 +16803,10 @@ async function createRunnerdBackendWithinSessionClaim(
                     scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), root: pendingRoot,
                     signal: AbortSignal.timeout(300_000) });
                 }
+                // Without durable storage the local publication below is the
+                // save; its result is uncertain once it starts, so keep the
+                // resume path rather than discard a backup that may exist.
+                checkpointBackupStored = true;
                 await publishNativeHarnessBackup({
                   db: input.db, companyId: input.execution.binding.companyId,
                   scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), backupRoot, pendingRoot,

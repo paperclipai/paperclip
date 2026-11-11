@@ -2333,7 +2333,7 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-new-durable-store-failed", "opencode-new-durable-publish-failed", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
     const firstDurable = provider.startsWith("opencode-new-durable");
     // A sandbox connection drops once while the settled state is read out.
     let checkpointReadResets = provider === "opencode-new-durable-reset" ? 1 : 0;
@@ -2429,6 +2429,9 @@ describe("remote provider pack manifest", () => {
       const capture = vi.spyOn(providerArtifactCapture, "captureRemoteNativeProviderArtifacts");
       const backup = vi.spyOn(harnessStorage, "persistNativeHarnessBackup").mockImplementation(async input => {
         expect(JSON.parse(await readFile(join(input.root, "manifest.json"), "utf8")).providerArtifacts).toEqual(newReceipt);
+        if (provider === "opencode-new-durable-store-failed") throw new Error("SlowDown: Please reduce your request rate.");
+        // The durable backup is stored; only the later local publication fails.
+        if (provider === "opencode-new-durable-publish-failed") await rm(input.root, { recursive: true, force: true });
         return undefined as never;
       });
       onTestFinished(() => { storage.mockRestore(); owner.mockRestore(); validate.mockRestore(); retain.mockRestore(); capture.mockRestore(); backup.mockRestore(); });
@@ -2532,7 +2535,17 @@ describe("remote provider pack manifest", () => {
         expect(providerArtifactStorage.retainNativeProviderArtifacts).toHaveBeenCalledWith(expect.objectContaining({
           owner: expect.objectContaining({ runId: remoteExecution.binding.runId }), source: expect.objectContaining({ manifest: installed, launchRoot, accountUid: 1000 }) }));
         if (inspectionReset) inspectionResets = 1;
+        providerStateUnsaved.mark.mockClear();
+        if (provider === "opencode-new-durable-store-failed" || provider === "opencode-new-durable-publish-failed") {
+          await expect(driver.mock.calls.at(-1)![0].checkpoint!("settled")).rejects.toThrow();
+          // Only a backup that was never stored makes the next run start fresh.
+          if (provider === "opencode-new-durable-store-failed") {
+            expect(providerStateUnsaved.mark).toHaveBeenCalledWith(preparedDb, remoteExecution.binding);
+          } else expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
+          return;
+        }
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");
+        expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
         expect(harnessStorage.persistNativeHarnessBackup).toHaveBeenCalledTimes(1);
         expect(checkpointReadResets).toBe(0);
         expect(inspectionResets).toBe(0);
