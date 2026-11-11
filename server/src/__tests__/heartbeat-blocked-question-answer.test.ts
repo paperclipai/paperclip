@@ -20,7 +20,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { heartbeatService } from "../services/heartbeat.ts";
 import { issueService } from "../services/issues.ts";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
-import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
+import { arbitrateNativeStatus, NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
+import { classifyNativeEvidence } from "../services/native-runtime/evidence-classifier.js";
 
 const mockAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0, signal: null, timedOut: false, errorMessage: null,
@@ -81,7 +82,8 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     return { companyId, agentId, issueId, question: question! };
   }
 
-  async function agentReportsBlocker(input: { companyId: string; agentId: string; issueId: string }): Promise<void> {
+  async function agentReportsBlocker(input: { companyId: string; agentId: string; issueId: string;
+    blocker?: Record<string, unknown> }): Promise<void> {
     const runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: input.companyId, issueId: input.issueId,
       revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
@@ -100,14 +102,25 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, assessmentJson: {}, inputDigest: assessmentId });
     await db.insert(nativeRunFinalizations).values({ runId, companyId: input.companyId, issueId: input.issueId,
       phase: "arbitrating", resultId, assessmentId });
+    const decision = input.blocker ? arbitrateNativeStatus({
+      assessment: await classifyNativeEvidence({ db, companyId: input.companyId, issueId: input.issueId, runId,
+        contract: { revision: "1", objective: "Write the brief", criteria: [{ id: "objective", requirement: "Write the brief" }] },
+        result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "blocked",
+          summary: "Waiting for the codename answer.", blocker: input.blocker,
+          completionClaim: { contractRevision: "1", objectiveSatisfied: false,
+            criteria: [{ criterionId: "objective", status: "not_satisfied", evidenceRefs: [] }],
+            remainingWork: [{ description: "Write the brief after the answer.", blocksCompletion: true }] },
+          evidence: [], verification: [], attentionRequests: [], artifacts: [] } }),
+      terminalState: "succeeded", workspaceFinalizeStatus: "succeeded", agentId: input.agentId,
+      priorIssueStatus: snapshot!.status as "in_review",
+    }) : { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "blocked" as const, toStatus: "blocked" as const,
+      reasonCode: "current_track_blocker_waiting",
+      unblockDescriptor: { owner: "board" as const, action: "Answer the pending codename question." },
+      effects: [{ kind: "release_checkout" as const }] };
     await commitNativeStatusDecision({
       db, companyId: input.companyId, issueId: input.issueId, runId, assessmentId,
       priorStatus: snapshot!.status, priorStatusVersion: Number(snapshot!.statusVersion),
-      priorDecisionId: snapshot!.lastStatusDecisionId,
-      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "blocked", toStatus: "blocked",
-        reasonCode: "current_track_blocker_waiting",
-        unblockDescriptor: { owner: "board", action: "Answer the pending codename question." },
-        effects: [{ kind: "release_checkout" }] },
+      priorDecisionId: snapshot!.lastStatusDecisionId, decision,
     });
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
   }
@@ -147,6 +160,33 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue).toMatchObject({ blockedTransitionAt: null, unblockDescriptor: null });
   }, 60_000);
+
+  it.each([
+    ["user", { kind: "user", name: "Board" }, "task_wide"],
+    ["external", { kind: "external", name: "Requester" }, "task_wide"],
+    ["user current track", { kind: "user", name: "Board" }, "current_track"],
+  ])("delivers the answer for the agent's own blocker owned by a person (%s)", async (_label, owner, scope) => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    await agentReportsBlocker({ companyId, agentId, issueId, blocker: { owner, scope,
+      reasonCode: "awaiting_codename_answer", unblockAction: `Answer the existing codename question (${question.id}).` } });
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(blocked).toMatchObject({ status: "blocked", unblockDescriptor: { owner: scope === "task_wide" && owner.kind === "external" ? { agentId } : "board" } });
+    await answer(question);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect({ status: run?.status, errorCode: run?.errorCode ?? null }).toEqual({ status: "succeeded", errorCode: null });
+  }, 60_000);
+
+  it.each([["agent", { kind: "agent", name: "Writer" }], ["system", { kind: "system", name: "Paperclip" }]])(
+    "keeps cancelling the answer for a blocker the agent or the system owns (%s)", async (_label, owner) => {
+      mockAdapterExecute.mockClear();
+      const { agentId, issueId, question, companyId } = await seed();
+      await agentReportsBlocker({ companyId, agentId, issueId, blocker: { owner, scope: "task_wide",
+        reasonCode: "awaiting_input", unblockAction: "Resolve the blocker." } });
+      await answer(question);
+      const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+      expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    }, 60_000);
 
   it("keeps cancelling the answer when a person blocked the task after the agent", async () => {
     mockAdapterExecute.mockClear();

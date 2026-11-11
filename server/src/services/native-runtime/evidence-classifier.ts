@@ -27,6 +27,14 @@ export interface NativeEvidenceRefAssessment {
   durableRecordId: string | null;
 }
 
+export type NativeBlockerOwnerKind = "agent" | "user" | "system" | "external" | "board" | "unspecified";
+
+export function nativeBlockerOwnerKind(owner: Record<string, unknown>): NativeBlockerOwnerKind {
+  if (owner.owner === "board") return "board";
+  return ["agent", "user", "system", "external", "board"].includes(String(owner.kind))
+    ? owner.kind as NativeBlockerOwnerKind : "unspecified";
+}
+
 export interface NativeEvidenceAssessment {
   objectiveClaimSatisfied: boolean;
   objectiveSatisfied: boolean;
@@ -65,6 +73,7 @@ export interface NativeEvidenceAssessment {
   blocker: {
     unblockAction: string;
     boardOwned: boolean;
+    ownerKind?: NativeBlockerOwnerKind;
     scope: "current_track" | "task_wide";
   } | null;
   continuation: {
@@ -417,7 +426,8 @@ export async function classifyNativeEvidence(input: {
     blocker: reported === "blocked" && typeof blocker.unblockAction === "string"
       ? {
           unblockAction: blocker.unblockAction,
-          boardOwned: blockerOwner.kind === "board" || blockerOwner.owner === "board",
+          boardOwned: ["board", "user"].includes(String(blockerOwner.kind)) || blockerOwner.owner === "board",
+          ownerKind: nativeBlockerOwnerKind(blockerOwner),
           scope: blocker.scope === "task_wide" ? "task_wide" : "current_track",
         }
       : null,

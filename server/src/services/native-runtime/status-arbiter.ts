@@ -95,6 +95,7 @@ export interface NativeStatusDecision {
     action: string;
   } | null;
   effects: NativeStatusEffect[];
+  blockerOwnerKind?: string;
 }
 
 /**
@@ -575,6 +576,7 @@ export function arbitrateNativeStatus(input: {
         statusAction: "blocked",
         toStatus: "blocked",
         reasonCode: "task_wide_blocker_bound",
+        blockerOwnerKind: input.assessment.blocker.ownerKind,
         unblockDescriptor: {
           owner,
           action: input.assessment.blocker.unblockAction,
@@ -598,6 +600,7 @@ export function arbitrateNativeStatus(input: {
       statusAction: "blocked",
       toStatus: "blocked",
       reasonCode: "current_track_blocker_waiting",
+      blockerOwnerKind: input.assessment.blocker.ownerKind,
       // A provider's current_track label is not evidence that another
       // authorized, productive track exists. Bind the actual unblock request
       // without waking the same agent to repeat the blocked work or old title.
