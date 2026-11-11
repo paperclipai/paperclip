@@ -39,6 +39,12 @@ patchedDependencies:
   '@discordjs/ws@1.2.3':
     hash: vbylpnnxt5av2zdnuqmf6hjyjy
     path: patches/@discordjs__ws@1.2.3.patch
+  '@grpc/grpc-js@1.14.5':
+    hash: 2gupk5aljoylvwm3bxxadj7gqq
+    path: patches/@grpc__grpc-js@1.14.5.patch
+  '@photon-ai/advanced-imessage@2.2.0':
+    hash: olz4onnbjnmzkp3l73buyb3day
+    path: patches/@photon-ai__advanced-imessage@2.2.0.patch
   acpx@0.12.0:
     hash: 6st5fzvttegjv64llnfegwwpca
     path: patches/acpx@0.12.0.patch
@@ -946,7 +952,7 @@ importers:
         version: 1.2.3(patch_hash=vbylpnnxt5av2zdnuqmf6hjyjy)
       '@grpc/grpc-js':
         specifier: 1.14.5
-        version: 1.14.5
+        version: 1.14.5(patch_hash=2gupk5aljoylvwm3bxxadj7gqq)
       '@modelcontextprotocol/sdk':
         specifier: ^1.31.0
         version: 1.31.0(zod@4.6.7)
@@ -1012,7 +1018,7 @@ importers:
         version: link:../packages/skills-catalog
       '@photon-ai/advanced-imessage':
         specifier: 2.2.0
-        version: 2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
+        version: 2.2.0(patch_hash=olz4onnbjnmzkp3l73buyb3day)(@grpc/grpc-js@1.14.5(patch_hash=2gupk5aljoylvwm3bxxadj7gqq))(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
       '@vercel/connect':
         specifier: 2.3.3
         version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.16(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))
@@ -10854,7 +10860,7 @@ snapshots:
   '@github/copilot-linux-x64@1.0.88':
     optional: true
 
-  '@grpc/grpc-js@1.14.5':
+  '@grpc/grpc-js@1.14.5(patch_hash=2gupk5aljoylvwm3bxxadj7gqq)':
     dependencies:
       '@grpc/proto-loader': 0.8.1
       '@js-sdsl/ordered-map': 4.4.2
@@ -11868,11 +11874,11 @@ snapshots:
     dependencies:
       '@noble/hashes': 1.8.0
 
-  '@photon-ai/advanced-imessage@2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)':
+  '@photon-ai/advanced-imessage@2.2.0(patch_hash=olz4onnbjnmzkp3l73buyb3day)(@grpc/grpc-js@1.14.5(patch_hash=2gupk5aljoylvwm3bxxadj7gqq))(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)':
     dependencies:
       '@bufbuild/protobuf': 2.16.0
     optionalDependencies:
-      '@grpc/grpc-js': 1.14.5
+      '@grpc/grpc-js': 1.14.5(patch_hash=2gupk5aljoylvwm3bxxadj7gqq)
       nice-grpc: 2.1.17
       nice-grpc-common: 2.0.4
 
@@ -16217,7 +16223,7 @@ snapshots:
 
   nice-grpc@2.1.17:
     dependencies:
-      '@grpc/grpc-js': 1.14.5
+      '@grpc/grpc-js': 1.14.5(patch_hash=2gupk5aljoylvwm3bxxadj7gqq)
       abort-controller-x: 0.5.0
       nice-grpc-common: 2.0.4
 
