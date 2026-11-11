@@ -27,7 +27,7 @@ describe("bounded Codex model fallback", () => {
   it.each([
     ["gpt-6.1-sol", "0.159.0"], ["gpt-6-sol", "0.157.0"], ["gpt-5.6-sol", "0.156.0"],
     ["team-model", "0.156.0"], [null, "0.156.0"], ["gpt-6.1-sol", null],
-    ["gpt-6.1-sol", "0.148.9"], ["gpt-6.1-sol", "0.161.0"], ["gpt-6.1-sol", "0.160.0-alpha.1"],
+    ["gpt-6.1-sol", "0.148.9"], ["gpt-6.1-sol", "0.167.0"], ["gpt-6.1-sol", "0.166.0-alpha.1"],
   ])("preserves %s on %s when no safe startup substitution applies", (model, version) => {
     expect(compatibleCodexModel(model, version)).toBe(model);
   });
@@ -79,7 +79,7 @@ describe("remote model compatibility preflight", () => {
   });
 
   it.each([
-    ["codex-cli 0.148.9", {}], ["codex-cli 0.161.0", {}], ["codex-cli 0.160.0-alpha.1", {}],
+    ["codex-cli 0.148.9", {}], ["codex-cli 0.167.0", {}], ["codex-cli 0.166.0-alpha.1", {}],
     ["codex-cli 0.156.0\ncodex-cli 0.160.0", {}], ["codex-cli 0.156.0", { timedOut: true }],
     ["codex-cli 0.156.0", { exitCode: 1 }],
   ])("keeps the launch verifier authoritative for invalid probes: %s %j", async (stdout, overrides) => {

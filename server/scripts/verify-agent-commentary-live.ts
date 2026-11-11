@@ -97,7 +97,7 @@ try {
           runnerEnvironment: { ...process.env, CODEX_HOME: codexHome }, useRunnerd: true, onLog,
           runnerExecutionTarget: remote?.target, runnerIngressAuthorized: Boolean(remote),
           runnerRemoteBinaryPath: remote ? process.env.PAPERCLIP_LIVE_LINUX_RUNNER : undefined,
-          runnerRemoteCodexNpmSpec: remote ? "@openai/codex@0.160.0" : undefined,
+          runnerRemoteCodexNpmSpec: remote ? "@openai/codex@0.166.0" : undefined,
           managedAiCredentialHome: codexHome,
         }).catch((error) => { throw new Error(redactSensitiveText(log.slice(-3000)), { cause: error }); });
       }
