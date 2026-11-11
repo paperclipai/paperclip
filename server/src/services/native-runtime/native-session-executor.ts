@@ -3219,6 +3219,7 @@ export async function verifyStoppedNativeSessionForContinuation(
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" |
     "status" | "finishedAt" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId" | "runnerProfileJson" |
     "errorCode" | "createdAt" | "processPid" | "processGroupId" | "processStartedAt">,
+  options: { cleanup?: boolean } = {},
 ): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
   try {
     if (run.runtimeMode !== "native" || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status) ||
@@ -3289,6 +3290,21 @@ export async function verifyStoppedNativeSessionForContinuation(
       if (ownerLeases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
           lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return null;
       owner = retained;
+    }
+    if (process.platform === "win32" && execution.provider.kind === "codex") {
+      if (typeof ownerExecution.workspace.cwd !== "string") return null;
+      const { proveStoppedWindowsReadOnlySession } = await import("./native-stopped-windows-session.js");
+      const proof = await proveStoppedWindowsReadOnlySession({ db, owner, root, cwd: ownerExecution.workspace.cwd, snapshot, cleanup: options.cleanup,
+        unchanged: () => idle() && !activeNativeSessions.has(owner.id) &&
+          cleanupStateSnapshot(root, providerFile).fingerprint === snapshot.fingerprint });
+      if (!proof) return null;
+      return { evidence: { ...proof.evidence, ownerRunId: owner.id,
+          executionWorkspaceId: execution.binding.executionWorkspaceId, workspaceCwd: execution.workspace.cwd },
+        retire: () => {
+          try { return proof.unchanged() && [owner.id, run.id].every(runId => completeTerminatedLocalNativeSessionCleanup({
+            companyId: run.companyId, runId, runnerInstanceId: run.runnerInstanceId!,
+          })); } catch { return false; }
+        } };
     }
     let stop = await readNativeLocalProcessStop(db, owner.companyId, owner.id);
     if (!stop && owner.processPid && owner.processPid > 1 && owner.processGroupId === owner.processPid &&
@@ -3515,8 +3531,8 @@ export async function verifyStoppedNativeSessionForAutomaticReplacement(
   run: typeof heartbeatRuns.$inferSelect,
 ): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
   const replacement = await verifyStoppedNativeSessionForReplacement(db, run);
-  if (replacement || run.errorCode !== "native_session_cleanup_quarantined") return replacement;
-  return verifyStoppedNativeSessionForContinuation(db, run);
+  if (replacement || process.platform !== "win32" && run.errorCode !== "native_session_cleanup_quarantined") return replacement;
+  return verifyStoppedNativeSessionForContinuation(db, run, { cleanup: true });
 }
 
 const SESSION_OPEN_EVENT_TYPES = ["session.started", "session.resumed", "session.reconciled"] as const;

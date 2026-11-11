@@ -5653,3 +5653,19 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+### Windows recovery of a closed read-only Codex turn
+
+Retry and the existing automatic replacement worker can release a stopped local
+Windows session when its saved Codex thread proves that the interrupted turn used
+only declared read operations. The proof binds the durable runner identity,
+independent session receipts, workspace, provider thread and final turn. All
+turns must be closed. Native commands, file changes, MCP calls, child agents,
+unknown items and write operations retain the recovery hold.
+
+The reader uses a disposable home and never resumes the saved thread. It copies
+no credentials or provider configuration. An orphan provider can stop only after
+this proof and an exact check of its executable, parent, birth time and saved
+home. A read-only readiness check cannot stop processes. Source changes invalidate
+the proof. Admission retains the original files, results and session history and
+creates at most one successor through the existing ownership and budget gates.

@@ -537,7 +537,7 @@ export async function admitExplicitNativeContinuation(input: {
       // the old runner, provider and tools are proven stopped.
       const { verifyStoppedNativeSessionForContinuation, provenStoppedOwnNativeSession, retireStoppedSessionCleanupGates } =
         await import("./native-runtime/native-session-executor.js");
-      let stopped = await verifyStoppedNativeSessionForContinuation(db, run);
+      let stopped = await verifyStoppedNativeSessionForContinuation(db, run, { cleanup: input.dryRun !== true });
       // The run's own session (s9107 t04): its saved state may be past the
       // states the inventory proof reads, but its exact runner and every
       // provider process it recorded are durably proven stopped.
