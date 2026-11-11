@@ -4,6 +4,20 @@ Product map: [Hiring, agent configuration, and organization](../feature-map/agen
 
 Feature ID: `agents`.
 
+papermarketing keeps the existing scoped create/hire/update APIs. The optional
+`metadata.marketingAgent` extension is validated on writes. Its absence remains
+valid for legacy/imported agents; the visual marketing form requires a type.
+It does not change actor permissions, tool grants, model or connection authority.
+
+The papermarketing qualification harness exercises two real workspaces with
+separate human sessions and agent keys, including negative read/write cases and
+foreign secret references (`scripts/papermarketing/workspace-isolation-smoke.mjs`).
+Passing this harness qualifies those API operations, not process or filesystem
+containment. Local `runChildProcess` strips inherited `DATABASE_URL` and
+`BETTER_AUTH_SECRET`; explicitly configured agent bindings remain supported.
+Local runtimes still share the application host. See
+`docker/papermarketing/README.md` for the deployment boundary.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).

@@ -25,7 +25,7 @@ export function AgentGraphPage() {
   }, [setBreadcrumbs]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select an organization to view the agent graph." />;
+    return <EmptyState icon={Network} message="Select an workspace to view the agent graph." />;
   }
   if (view.kind === "error") {
     return (
@@ -40,7 +40,7 @@ export function AgentGraphPage() {
   }
   if (!agentsQuery.data) return <PageSkeleton variant="org-chart" />;
   if (agentsQuery.data.length === 0) {
-    return <EmptyState icon={Network} message="No agents yet. Create an agent to build the organization." />;
+    return <EmptyState icon={Network} message="No agents yet. Create an agent to build the workspace." />;
   }
   return (
     <div className="flex h-full min-h-0 flex-col">

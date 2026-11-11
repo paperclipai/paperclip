@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
   companies,
   companySecrets,
   createDb,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   heartbeatRuns,
   issues,
   principalPermissionGrants,
@@ -222,9 +223,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
       tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-access-policy-");
       db = createDb(tempDb.connectionString);
     }
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
+    vi.useRealTimers();
     await db.delete(toolRateLimitCounters);
     await db.delete(toolActionRequests);
     await db.delete(toolInvocations);
@@ -1022,6 +1024,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
   });
 
   it("enforces rate-limit policies before explicit grants", async () => {
+    vi.setSystemTime(new Date("2026-11-09T12:30:30.000Z"));
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
@@ -1052,6 +1055,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
   });
 
   it("atomically consumes the final rate-limit slot", async () => {
+    vi.setSystemTime(new Date("2026-11-09T12:30:30.000Z"));
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
@@ -1079,7 +1083,11 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(decisions.filter((decision) => decision.reasonCode === "rate_limited")).toHaveLength(1);
   });
 
-  async function admittedRateLimitedInvocation(limit = 1) {
+  async function admittedRateLimitedInvocation(limit = 1, now = new Date("2026-11-09T12:30:30.000Z")) {
+    // These assertions concern admission within one fixed bucket. Real wall
+    // time can cross the hour between SQL calls; Date-only mocking preserves
+    // real PostgreSQL I/O and timers while making that boundary explicit.
+    vi.setSystemTime(now);
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const issue = await createIssue(db, company.id);
@@ -1104,6 +1112,15 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await db.update(toolInvocations).set({ status: "executing" }).where(eq(toolInvocations.id, invocation.id));
     return { company, agent, input: { ...input, consumeRateLimit: false }, invocation, ratePolicy, svc };
   }
+
+  it("starts a new rate-limit bucket at the exact hour boundary", async () => {
+    const { input, svc } = await admittedRateLimitedInvocation(1, new Date("2026-11-09T12:59:59.999Z"));
+    expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
+    vi.setSystemTime(new Date("2026-11-09T13:00:00.000Z"));
+    expect(await svc.decide(input)).toMatchObject({ allowed: true, decision: "allow" });
+    expect(await svc.decide({ ...input, consumeRateLimit: true })).toMatchObject({ allowed: true });
+    expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
+  });
 
   it.each(["allow", "approved"] as const)("retains the consumed final rate-limit slot for the same executing %s invocation", async authorization => {
     const { input, invocation, ratePolicy, svc } = await admittedRateLimitedInvocation();

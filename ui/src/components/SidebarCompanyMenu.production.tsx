@@ -192,7 +192,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
     hiddenSettingsLoaded &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
-  const switcherNoun = "company";
+  const switcherNoun = "workspace";
   const currentName = selectedCompany?.name ?? null;
   // Managed hosts forbid local company creation. Their extension owns that action.
   const companyCreationManaged = Boolean(useCloudInstance());
@@ -231,7 +231,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
     // Skip the front-door "how would you like to get started?" choice and land
-    // directly on "Name your organization" — this entry point is unambiguously
+    // directly on "Name your workspace" — this entry point is unambiguously
     // "create a new company" (PAP-431).
     openOnboarding({ initialStep: 1 });
   }
@@ -297,7 +297,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
       >
         <div className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
           <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
-            Organizations
+            Workspaces
           </DropdownMenuLabel>
           <button
             type="button"
@@ -366,7 +366,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
               <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
                 <Plus className="size-4" />
               </span>
-              <span className="min-w-0 flex-1 truncate">Create organization</span>
+              <span className="min-w-0 flex-1 truncate">Create workspace</span>
             </DropdownMenuItem>
           )}
           {showInvitePeople ? (

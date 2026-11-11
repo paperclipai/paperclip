@@ -85,9 +85,9 @@ export function HireDraftDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Request hire for {draft?.name ?? "this draft"}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This sends a hire request through the normal hiring flow. If the organization requires board approval, the
-            agent stays pending until the board approves it. Budget, credentials, environment variables, instructions
-            and permissions are not copied. Set them on the agent after the hire.
+            Continue to review the marketing profile, then configure an account and model. The agent stays paused
+            during setup. Finishing setup follows the workspace’s approval policy. Credentials, environment
+            variables and permissions are never copied.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {draft ? (

@@ -1,0 +1,62 @@
+name: papermarketing
+
+services:
+  db:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: papermarketing
+      POSTGRES_USER: papermarketing
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Generate .env with init-env.mjs first}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U papermarketing -d papermarketing"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # The database is reachable only on the Compose network.
+
+  app:
+    image: papermarketing:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      # Select the self-hosted stage, not the upstream Cloud stage.
+      target: production
+      args:
+        PAPERCLIP_BUILD_COMMIT: ${PAPERCLIP_BUILD_COMMIT:-}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PAPERMARKETING_PORT:-3100}:3100"
+    pids_limit: 2048
+    stop_grace_period: 90s
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3100"
+      SERVE_UI: "true"
+      DATABASE_URL: postgresql://papermarketing:${POSTGRES_PASSWORD}@db:5432/papermarketing
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_DEPLOYMENT_MODE: authenticated
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}
+      PAPERCLIP_ALLOWED_HOSTNAMES: ${PAPERCLIP_ALLOWED_HOSTNAMES:-}
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Generate .env with init-env.mjs first}
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: ${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?Generate .env with init-env.mjs first}
+    volumes:
+      - application:/paperclip
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3100/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 10
+
+volumes:
+  database:
+  application:

@@ -1,6 +1,9 @@
 .git
 .github
 .paperclip
+# Local self-hosting secrets and backups must never enter image layers.
+/docker/papermarketing/.env
+/docker/papermarketing/backups
 .pnpm-store
 node_modules
 **/node_modules

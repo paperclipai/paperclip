@@ -32,6 +32,11 @@ Agent access: [companion](../agent-access-map/agents.md).
 Use New agent from the roster or `/agents/new`.
 
 Submitting the name creates an inactive record before adapter selection or account setup.
+In papermarketing, first choose a marketing type and review its editable profile.
+The twelve-type picker does not choose a model or grant tool permissions.
+A saved setup retains the versioned profile; finishing setup writes the reviewed
+instructions. Verify this with `MarketingAgentFields.test.tsx` and
+`NewAgentDialog.test.tsx`; these tests do not prove live provider execution.
 A name-only draft returns to adapter selection when reopened.
 Save & exit keeps its configuration; Finish setup on the agent returns to the
 same record. Final submission requests approval when required, then follows the

@@ -1,0 +1,165 @@
+name: papermarketing qualification
+
+on:
+  push:
+    branches: [feat/self-hosting-validation, feat/marketing-ui-integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: papermarketing-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PAPERCLIP_TELEMETRY_DISABLED: "1"
+  NODE_OPTIONS: --max-old-space-size=6144
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - name: server-1
+            args: --mode general --group general-server-without-chat-or-native-runner --shard-index 0 --shard-count 4
+          - name: server-2
+            args: --mode general --group general-server-without-chat-or-native-runner --shard-index 1 --shard-count 4
+          - name: server-3
+            args: --mode general --group general-server-without-chat-or-native-runner --shard-index 2 --shard-count 4
+          - name: server-4
+            args: --mode general --group general-server-without-chat-or-native-runner --shard-index 3 --shard-count 4
+          - name: chat
+            args: --mode general --group general-chat
+          - name: native-runner
+            args: --mode general --group general-server-native-runner
+          - name: ui-cli
+            args: --mode general --group general-workspaces-a
+          - name: packages
+            args: --mode general --group general-workspaces-b
+          - name: database
+            args: --mode general --group general-workspaces-c
+          - name: routes-1
+            args: --mode serialized --shard-index 0 --shard-count 4
+          - name: routes-2
+            args: --mode serialized --shard-index 1 --shard-count 4
+          - name: routes-3
+            args: --mode serialized --shard-index 2 --shard-count 4
+          - name: routes-4
+            args: --mode serialized --shard-index 3 --shard-count 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies with CI-owned lock resolution
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+      - run: node scripts/ensure-plugin-build-deps.mjs
+      - name: Run complete assigned Vitest partition
+        run: |
+          set -o pipefail
+          mkdir -p qualification-results
+          node scripts/run-vitest-stable.mjs ${{ matrix.args }} 2>&1 | tee qualification-results/tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qualification-${{ matrix.name }}-${{ github.sha }}
+          path: qualification-results/
+          retention-days: 7
+
+  contracts:
+    name: Full ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: typecheck
+            command: pnpm -r typecheck
+          - check: build
+            command: pnpm build
+          # This package owns a separate suite outside the root Vitest projects.
+          - check: runner-tests
+            command: pnpm --filter @paperclipai/paperclip-runner test
+          - check: runner-support
+            command: pnpm test:e2e:runner:unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies with CI-owned lock resolution
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+      - run: node scripts/ensure-plugin-build-deps.mjs
+      - name: Run complete repository check
+        run: |
+          set -o pipefail
+          mkdir -p qualification-results
+          ${{ matrix.command }} 2>&1 | tee qualification-results/${{ matrix.check }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qualification-${{ matrix.check }}-${{ github.sha }}
+          path: qualification-results/
+          retention-days: 7
+
+  image:
+    name: Build and test Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      COMPOSE_PROJECT_NAME: papermarketing-qualification
+      PAPERMARKETING_TEST_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record disposable runner capacity
+        run: df -h /var/lib/docker
+      - uses: docker/setup-buildx-action@v4
+      - name: Build self-hosted image without publishing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          load: true
+          push: false
+          tags: papermarketing:local
+          build-args: PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=papermarketing-production
+          cache-to: type=gha,scope=papermarketing-production,mode=min,ignore-error=true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Boot disposable authenticated stack
+        run: |
+          node docker/papermarketing/init-env.mjs
+          docker compose --env-file docker/papermarketing/.env -f docker/papermarketing/compose.yaml up -d --no-build --wait --wait-timeout 240
+      - name: Exercise boot, authentication boundary and persistence
+        run: node scripts/papermarketing/image-smoke.mjs
+      - name: Remove only this test stack and its test volumes
+        if: always()
+        run: |
+          if [ -f docker/papermarketing/.env ]; then
+            docker compose --env-file docker/papermarketing/.env -f docker/papermarketing/compose.yaml down --volumes --remove-orphans
+          fi

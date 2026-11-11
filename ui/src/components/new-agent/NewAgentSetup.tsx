@@ -93,7 +93,7 @@ export function NewAgentSetup() {
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
-        Select an organization to create an agent.
+        Selecione um workspace para criar um agente.
       </p>
     );
   if (params.get("adapterType") === "muse" || params.get("runnerProvider") === "muse") return <ExternalAgentInviteDialog companyId={selectedCompanyId} initialPreset="muse" initialMuseName={params.get("name") ?? ""} onClose={() => navigate("/agents/all")} onBack={() => navigate("/agents/all")} />;
@@ -197,11 +197,8 @@ function Setup({
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("");
   const [createdInSession, setCreated] = useState<Agent | null>(null);
-  const setupId = useRef(setupAgentId ?? crypto.randomUUID());
-  if (setupAgentId) setupId.current = setupAgentId;
   const creating = useRef(false);
   const restored = useRef<string | null>(null);
-  const [creationAttempt, setCreationAttempt] = useState(0);
   const recordId = createdAgentId ?? setupAgentId;
   const currentCreated = !recordId || createdInSession?.id === recordId ? createdInSession : null;
   const savedAgent = useQuery({
@@ -595,41 +592,12 @@ function Setup({
   }
 
   useEffect(() => {
-    if (pendingAntigravity || !name || !adapterType || !connectionSettingsReady || createdAgentId || created || creating.current
-      || (setupAgentId && !savedAgent.isError)) return;
-    if (savedAgent.error && (!(savedAgent.error instanceof ApiError) || savedAgent.error.status !== 404)) return;
-    creating.current = true;
-    setError(null);
-    navigate(`/agents/new?${new URLSearchParams({ name, adapterType, runnerProvider,
-      runner, setupAgentId: setupId.current })}`, { replace: true });
-    const existing = agents.data ?? [];
-    const leader = existing.find(agent => agent.role === "ceo" && agent.status !== "terminated");
-    void agentsApi.create(companyId, {
-      setupId: setupId.current, name, appearance: appearanceDraft.appearance,
-      role: existing.length ? "general" : "ceo", ...(leader ? { reportsTo: leader.id } : {}),
-      adapterType: requestAdapterType, runner,
-      adapterConfig: requestAdapterType === "paperclip_runner" ? {
-        provider: ["claude", "grok", "copilot", "pi", "antigravity", "kimi"].includes(runnerProvider) ? "acpx" : runnerProvider,
-        ...(["claude", "grok", "copilot", "pi", "antigravity", "kimi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
-        ...(antigravityCandidate ? { model: antigravityCandidate.model } : {}),
-      } : {}, defaultEnvironmentId: nativeCursorCloud ? null : environmentOverride || (forced.forced || managedOnly ? environmentId : null),
-      runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
-    }).then(async agent => {
-      await cache.cancelQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      setCreated(agent);
-      cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
-      void cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-    }).catch(cause => setError(cause instanceof Error ? cause.message : "Could not create the agent."))
-      .finally(() => { creating.current = false; });
-  }, [name, adapterType, companyId, connectionSettingsReady, creationAttempt, createdAgentId, setupAgentId, savedAgent.isError, created, pendingAntigravity]);
-
-  useEffect(() => {
     if (!savedAgent.data || restored.current === savedAgent.data.id || savedAgent.data.companyId !== companyId) return;
     restored.current = savedAgent.data.id;
     const agent = savedAgent.data;
     if (agent.pauseReason !== "setup") { setScreen("saved"); return; }
     const config = agent.adapterConfig;
-    if (multiProvider || adapterType === "cursor_cloud") setRunner(agent.adapterType === "paperclip_runner" ? "paperclip" : "legacy");
+    if ((multiProvider && initialRunner !== "auto") || adapterType === "cursor_cloud") setRunner(agent.adapterType === "paperclip_runner" ? "paperclip" : "legacy");
     setModel(typeof config.model === "string" && config.model ? config.model : antigravityCandidate?.model ?? "");
     setEffort(String(config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? config.thinkingEffort ?? config.piThinkingLevel ?? config.thinking ?? ""));
     setEnvironmentOverride(agent.defaultEnvironmentId ?? "");
@@ -800,6 +768,9 @@ function Setup({
         appearance: created.appearance ?? appearanceDraft.appearance,
         role: created.role,
         reportsTo: created.reportsTo,
+        title: created.title,
+        capabilities: created.capabilities,
+        metadata: created.metadata,
         adapterType: requestAdapterType,
         ...(["codex_local", "claude_local", "opencode_local", "pi_local", "cursor_cloud"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
         adapterConfig: config,
@@ -860,7 +831,7 @@ function Setup({
       agent.id === current.id && (agent.lifecycleVersion ?? 0) <= (current.lifecycleVersion ?? 0) ? { ...agent, ...current } : agent));
     openNewIssue({ assigneeAgentId: current.id, status: "todo" });
   }
-  if (recordId && !created && !creating.current && savedAgent.error && !(savedAgent.error instanceof ApiError && savedAgent.error.status === 404))
+  if (recordId && !created && !creating.current && savedAgent.error)
     return (
       <p
         role={savedAgent.error ? "alert" : "status"}
@@ -872,7 +843,7 @@ function Setup({
       </p>
     );
   if (resumeSavedChoice) return <p role="status" className="text-sm text-muted-foreground">Loading your agent setup…</p>;
-  if (choosingAdapter || !name || !adapterType || (created?.metadata?.setupAdapterPending === true && !unreleasedAntigravity))
+  if (choosingAdapter || (!setupAgentId && !createdAgentId) || !name || !adapterType || (created?.metadata?.setupAdapterPending === true && !unreleasedAntigravity))
     return (
       <AgentBasicsDialog
         open
@@ -889,8 +860,8 @@ function Setup({
       />
     );
   if (!created && connectionSettingsReady && !pendingAntigravity) return <div className="space-y-4">
-    <p role={error ? "alert" : "status"}>{error ?? "Creating your agent…"}</p>
-    {error && <Button onClick={() => setCreationAttempt(value => value + 1)}>Retry</Button>}
+    <p role={error ? "alert" : "status"}>{error ?? "Carregando seu agente…"}</p>
+    {error && <Button onClick={() => void savedAgent.refetch()}>Tentar novamente</Button>}
   </div>;
   const steps = [
     ...(connectionAdapter ? ["connect" as const] : []),

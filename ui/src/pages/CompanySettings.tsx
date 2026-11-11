@@ -152,14 +152,14 @@ export function CompanySettings() {
       // still makes sense (another active company, the Cloud portfolio, or
       // the companies list), with a toast naming what happened.
       const archived = companies.find((company) => company.id === companyId);
-      const archivedName = archived?.name ?? "Organization";
+      const archivedName = archived?.name ?? "Workspace";
       const departure = resolveCompanyArchiveDeparture({
         archivedCompanyId: companyId,
         companies,
         cloudPortfolioUrl: cloudPortfolioManageUrl(cloud?.cloudBaseUrl),
       });
       if (departure.kind === "cloud_portfolio") {
-        // The whole organization is on its way to being archived by the
+        // The whole workspace is on its way to being archived by the
         // control plane; a full navigation to the Cloud portfolio replaces
         // this document, so cache invalidation below would never run.
         navigateTopLevel(departure.url);
@@ -202,7 +202,7 @@ export function CompanySettings() {
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No organization selected. Select an organization from the switcher above.
+        No workspace selected. Select an workspace from the switcher above.
       </div>
     );
   }
@@ -227,7 +227,7 @@ export function CompanySettings() {
           General
         </div>
         <div className="space-y-3">
-          <Field label="Organization name" hint="The display name for your organization.">
+          <Field label="Workspace name" hint="The display name for your workspace.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -243,13 +243,13 @@ export function CompanySettings() {
           </Field>
           <Field
             label="Description"
-            hint="Optional description shown in the organization profile."
+            hint="Optional description shown in the workspace profile."
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional organization description"
+              placeholder="Optional workspace description"
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -370,7 +370,7 @@ export function CompanySettings() {
         </div>
         <div className="space-y-3 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this organization to hide it from the sidebar. This persists in
+            Archive this workspace to hide it from the sidebar. This persists in
             the database.
           </p>
           <div className="flex items-center gap-2">
@@ -384,7 +384,7 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive organization "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  `Archive workspace "${selectedCompany.name}"? It will be hidden from the sidebar.`
                 );
                 if (!confirmed) return;
                 archiveMutation.mutate({ companyId: selectedCompanyId });
@@ -394,7 +394,7 @@ export function CompanySettings() {
                 ? "Archiving..."
                 : selectedCompany.status === "archived"
                 ? "Already archived"
-                : "Archive organization"}
+                : "Archive workspace"}
             </Button>
             {archiveMutation.error && (
               <span className="text-xs text-destructive">

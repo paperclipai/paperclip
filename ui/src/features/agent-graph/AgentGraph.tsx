@@ -21,12 +21,15 @@ import {
 import "@xyflow/react/dist/style.css";
 import "./agent-graph.css";
 import {
+  readMarketingAgentProfile,
   AGENT_GRAPH_MAX_DRAFTS,
   AGENT_GRAPH_MAX_STICKIES,
   type Agent,
   type AgentGraphLayout,
   type AgentGraphSticky,
 } from "@paperclipai/shared";
+import { AgentBasicsDialog } from "@/components/new-agent/AgentBasicsDialog";
+import { useNavigate } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { describeError } from "@/api/errors";
 import { heartbeatsApi } from "@/api/heartbeats";
@@ -44,7 +47,6 @@ import { layoutHierarchy, type LayoutDirection } from "./lib/auto-layout";
 import {
   PASTE_OFFSET,
   buildClipboard,
-  draftToHireRequest,
   resolveDraftManager,
   materializePaste,
   parseClipboard,
@@ -96,6 +98,8 @@ export function AgentGraph(props: AgentGraphProps) {
 
 function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: AgentGraphProps) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [reviewingHireProfile, setReviewingHireProfile] = useState(false);
   const { theme } = useTheme();
   const { pushToast } = useToastActions();
   const flow = useReactFlow<GraphFlowNode, Edge>();
@@ -236,29 +240,6 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
   });
 
   const hireDraft = hireDraftId ? layout?.drafts.find((draft) => draft.id === hireDraftId) ?? null : null;
-  const hireMutation = useMutation({
-    mutationFn: (draftId: string) => {
-      const draft = layout?.drafts.find((item) => item.id === draftId);
-      if (!draft) throw new Error("This draft no longer exists.");
-      return agentsApi.hire(companyId, draftToHireRequest(resolveDraftManager(draft, managerIdsRef.current)));
-    },
-    onSuccess: async (result, draftId) => {
-      document.purgeDraft(draftId);
-      setHireDraftId(null);
-      pushToast({
-        tone: "success",
-        title: result.approval ? "Hire request sent for board approval" : "Agent hired",
-        body: result.approval
-          ? `${result.agent.name} stays pending until the board approves the hire.`
-          : `${result.agent.name} was created. Review its configuration before it runs.`,
-      });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.org(companyId) }),
-        queryClient.invalidateQueries({ queryKey: ["approvals", companyId] }),
-      ]);
-    },
-  });
 
   const actions = useMemo<AgentGraphActions>(
     () => ({
@@ -268,13 +249,13 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
           stickies: current.stickies.map((sticky) => (sticky.id === id ? { ...sticky, ...patch } : sticky)),
         })),
       requestHire: (draftId) => {
-        hireMutation.reset();
+        setReviewingHireProfile(false);
         setHireDraftId(draftId);
       },
       removeDraft: (draftId) =>
         apply((current) => ({ ...current, drafts: current.drafts.filter((draft) => draft.id !== draftId) })),
     }),
-    [apply, hireMutation.reset],
+    [apply],
   );
 
   const selectionClipboard = useCallback(() => {
@@ -629,14 +610,30 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
             setPendingReparent(null);
           }}
         />
+        {hireDraft && reviewingHireProfile ? <AgentBasicsDialog
+          key={hireDraft.id}
+          open
+          initialName={hireDraft.name}
+          initialAdapter={hireDraft.adapterType}
+          initialModel={hireDraft.model}
+          initialReportsTo={resolveDraftManager(hireDraft, managerIdsRef.current).reportsTo}
+          initialProfile={readMarketingAgentProfile(agents.find(agent => agent.id === hireDraft.sourceAgentId)?.metadata)}
+          onClose={() => { setReviewingHireProfile(false); setHireDraftId(null); }}
+          onContinue={basics => {
+            document.purgeDraft(hireDraft.id);
+            setReviewingHireProfile(false);
+            setHireDraftId(null);
+            navigate(`/agents/new?${new URLSearchParams(basics)}`);
+          }}
+        /> : null}
         <HireDraftDialog
-          draft={hireDraft}
+          draft={reviewingHireProfile ? null : hireDraft}
           managerName={hireManagerName}
-          busy={hireMutation.isPending}
-          error={hireMutation.error ? describeError(hireMutation.error, { action: "send the hire request" }).body : null}
-          onConfirm={() => hireDraftId && hireMutation.mutate(hireDraftId)}
+          busy={false}
+          error={null}
+          onConfirm={() => setReviewingHireProfile(true)}
           onCancel={() => {
-            hireMutation.reset();
+            setReviewingHireProfile(false);
             setHireDraftId(null);
           }}
         />

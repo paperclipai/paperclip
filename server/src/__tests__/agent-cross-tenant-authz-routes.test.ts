@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.unmock("http");
 vi.unmock("node:http");
@@ -242,6 +242,11 @@ async function loadRouteModules() {
   ]);
   return routeModules;
 }
+
+// Loading the full route graph is setup work. A cold import inside the first
+// test can exceed its request deadline and keep resetting shared mocks after
+// Vitest has already started the next authorization test.
+beforeAll(async () => { await loadRouteModules(); }, 120_000);
 
 async function createApp(actor: Record<string, unknown>) {
   const [{ errorHandler }, { agentRoutes }] = await loadRouteModules();

@@ -1,3 +1,4 @@
+import { agentGraphLayoutSchema, dashboardLayoutSchema, uiLayoutSurfaceSchema } from "@paperclipai/shared";
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
@@ -7065,6 +7066,28 @@ registerCurrentRoute({
   body: z.object({ coordinatorWorkspaceEnabled: z.boolean() }).strict(),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
+
+const uiLayoutDocumentSchema = z.union([agentGraphLayoutSchema, dashboardLayoutSchema]);
+const uiLayoutPreferenceResponse = z.object({
+  surface: uiLayoutSurfaceSchema,
+  schemaVersion: z.number().int().nullable(),
+  layout: uiLayoutDocumentSchema.nullable(),
+  updatedAt: z.string().datetime().nullable(),
+});
+for (const method of ["get", "put", "delete"] as const) {
+  registry.registerPath({
+    method,
+    path: "/api/companies/{companyId}/ui-layouts/{surface}/me",
+    tags: ["ui-layouts"],
+    summary: method === "get" ? "Get my workspace layout" : method === "put" ? "Save my workspace layout" : "Reset my workspace layout",
+    description: "Personal board-user preference scoped to the selected workspace and authenticated user. Agent credentials cannot access layouts. The layout must match the requested surface and may not exceed 262144 serialized bytes. An absent or reset layout returns null layout, schemaVersion and updatedAt.",
+    request: {
+      params: z.object({ companyId: z.string(), surface: uiLayoutSurfaceSchema }),
+      ...(method === "put" ? { body: jsonBody(z.object({ layout: uiLayoutDocumentSchema })) } : {}),
+    },
+    responses: { 200: r.ok(uiLayoutPreferenceResponse), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
 
 registry.registerPath({
   method: "get",

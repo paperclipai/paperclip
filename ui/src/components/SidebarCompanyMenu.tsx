@@ -196,7 +196,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
     hiddenSettingsLoaded &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
-  const switcherNoun = "organization";
+  const switcherNoun = "workspace";
   const currentName = selectedCompany?.name ?? null;
   // Managed hosts forbid local company creation. Their extension owns that action.
   const companyCreationManaged = Boolean(useCloudInstance());
@@ -235,7 +235,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
     // Skip the front-door "how would you like to get started?" choice and land
-    // directly on "Name your organization" — this entry point is unambiguously
+    // directly on "Name your workspace" — this entry point is unambiguously
     // "create a new company" (PAP-431).
     openOnboarding({ initialStep: 1 });
   }
@@ -302,7 +302,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
       >
         <FlyoutHeader className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
           <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
-            Organizations
+            Workspaces
           </DropdownMenuLabel>
           <button
             type="button"
@@ -344,7 +344,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
             // offer the way back.
             companyListUnavailable ? (
               <>
-                <DropdownMenuItem disabled>Couldn&apos;t load organizations</DropdownMenuItem>
+                <DropdownMenuItem disabled>Couldn&apos;t load workspaces</DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={(event) => {
                     // Keep the menu open so the result of the retry is visible.
@@ -357,7 +357,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
                 </DropdownMenuItem>
               </>
             ) : (
-              <DropdownMenuItem disabled>No organizations</DropdownMenuItem>
+              <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
             )
           ) : null}
         </FlyoutOptions>
@@ -371,7 +371,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
               <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
                 <Plus className="size-4" />
               </span>
-              <TruncatedText className="min-w-0 flex-1 truncate">Create organization</TruncatedText>
+              <TruncatedText className="min-w-0 flex-1 truncate">Create workspace</TruncatedText>
             </DropdownMenuItem>
           )}
           {showInvitePeople ? (

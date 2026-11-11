@@ -16,6 +16,10 @@ const renders = vi.hoisted(() => ({ total: 0, byAgent: new Map<string, number>()
 const agentsApi = vi.hoisted(() => ({ update: vi.fn(), hire: vi.fn(), create: vi.fn() }));
 const heartbeatsApi = vi.hoisted(() => ({ liveRunsForCompany: vi.fn(), list: vi.fn() }));
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
+const setup = vi.hoisted(() => ({ props: null as any, navigate: vi.fn() }));
+vi.mock("@/components/new-agent/AgentBasicsDialog", () => ({
+  AgentBasicsDialog: (props: any) => { setup.props = props; return <div data-testid="marketing-profile-review" />; },
+}));
 const pushToast = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "user-1" } }) } }));
@@ -25,7 +29,7 @@ vi.mock("@/api/uiLayouts", () => ({ uiLayoutsApi }));
 vi.mock("../../api/uiLayouts", () => ({ uiLayoutsApi }));
 vi.mock("@/context/ThemeContext", () => ({ useTheme: () => ({ theme: "light" }) }));
 vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast }) }));
-vi.mock("@/lib/router", () => ({ Link: ({ children }: { children: unknown }) => children }));
+vi.mock("@/lib/router", () => ({ Link: ({ children }: { children: unknown }) => children, useNavigate: () => setup.navigate }));
 vi.mock("@/components/AgentAvatar", () => ({
   AgentAvatar: ({ agent }: { agent: { id: string } }) => {
     renders.total += 1;
@@ -175,7 +179,7 @@ describe("AgentGraph with 250 agents", () => {
     expect(renders.total).toBe(beforeTotal);
   });
 
-  it("pastes agents as hire drafts and only hires through the governed endpoint after confirmation", async () => {
+  it("keeps copied agents as drafts until marketing profile review and routes held setup through the normal hiring flow", async () => {
     const agents = roster();
     await mount(agents);
     const source = agents[3]!;
@@ -189,7 +193,6 @@ describe("AgentGraph with 250 agents", () => {
     expect(agentsApi.hire).not.toHaveBeenCalled();
     expect(agentsApi.create).not.toHaveBeenCalled();
 
-    agentsApi.hire.mockResolvedValue({ agent: { name: "Agent 3 (copy)" }, approval: { id: "approval-1" } });
     const requestButton = [...drafts[0]!.querySelectorAll("button")].find((button) => button.textContent?.includes("Request hire"))!;
     await act(async () => requestButton.click());
     expect(agentsApi.hire).not.toHaveBeenCalled();
@@ -199,18 +202,17 @@ describe("AgentGraph with 250 agents", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(agentsApi.hire).toHaveBeenCalledTimes(1);
-    expect(agentsApi.hire).toHaveBeenCalledWith("company-1", {
-      name: "Agent 3 (copy)",
-      role: "engineer",
-      title: null,
-      capabilities: "Ships code",
-      adapterType: "claude_local",
-      adapterConfig: { model: "example-model" },
-      reportsTo: source.reportsTo,
-    });
+    expect(agentsApi.hire).not.toHaveBeenCalled();
+    expect(agentsApi.create).not.toHaveBeenCalled();
+    expect(setup.props).toMatchObject({ initialName: "Agent 3 (copy)", initialAdapter: "claude_local",
+      initialModel: "example-model", initialReportsTo: source.reportsTo, initialProfile: null });
+    expect(host.querySelectorAll('[data-testid="agent-graph-draft"]')).toHaveLength(1);
+    const basics = { name: "Agent 3 (copy)", adapterType: "claude_local", runnerProvider: "codex",
+      runner: "auto", setupAgentId: "held-marketing-agent" };
+    await act(async () => setup.props.onContinue(basics));
+    expect(setup.navigate).toHaveBeenCalledWith(`/agents/new?${new URLSearchParams(basics)}`);
     expect(host.querySelectorAll('[data-testid="agent-graph-draft"]')).toHaveLength(0);
-    expect(pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Hire request sent for board approval" }));
+    expect(agentsApi.hire).not.toHaveBeenCalled();
 
     const graph = host.querySelector('[data-testid="agent-graph"]')!;
     for (const shiftKey of [false, true, true, false]) {
@@ -279,13 +281,12 @@ describe("AgentGraph with 250 agents", () => {
     await act(async () => request.click());
     const dialog = document.querySelector('[role="alertdialog"]')!;
     const shown = [...dialog.querySelectorAll("dd")].at(-1)!.textContent;
-    agentsApi.hire.mockResolvedValue({ agent: { name: "copy" }, approval: null });
     const confirm = [...dialog.querySelectorAll("button")].find((element) => element.textContent === "Request hire") as HTMLButtonElement;
     await act(async () => confirm.click());
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    return { shown, sent: agentsApi.hire.mock.calls[0]![1].reportsTo as string | null, draftText: draft.textContent ?? "" };
+    return { shown, sent: setup.props.initialReportsTo as string | null, draftText: draft.textContent ?? "" };
   }
 
   it("shows the manager that the hire request sends when a filter hides that manager", async () => {
@@ -334,11 +335,11 @@ describe("AgentGraph with 250 agents", () => {
     await act(async () => [...draft.querySelectorAll("button")].find((element) => element.textContent?.includes("Request hire"))!.click());
     const dialog = document.querySelector('[role="alertdialog"]')!;
     expect([...dialog.querySelectorAll("dd")].at(-1)!.textContent).toBe("No manager");
-    agentsApi.hire.mockResolvedValue({ agent: { name: "Saved draft" }, approval: null });
     await act(async () => ([...dialog.querySelectorAll("button")].find((element) => element.textContent === "Request hire") as HTMLButtonElement).click());
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(agentsApi.hire.mock.calls[0]![1].reportsTo).toBeNull();
+    expect(setup.props.initialReportsTo).toBeNull();
+    expect(agentsApi.hire).not.toHaveBeenCalled();
   });
 });

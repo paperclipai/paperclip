@@ -1,3 +1,34 @@
+# papermarketing
+
+Ferramenta open source e auto-hospedável para equipes de agentes de marketing.
+Repositório oficial: [arthurbonora/papermarketing](https://github.com/arthurbonora/papermarketing).
+
+Este fork começa no Paperclip **v2026.1106.0**, commit
+`d69631b01b9c658f80bf8bed389863dce82643e1`. A licença MIT e os avisos de autoria
+upstream são preservados. Os pacotes e as APIs mantêm seus nomes internos para
+facilitar atualizações.
+
+- **Workspaces** como única divisão administrativa, com projetos e tarefas dentro deles.
+- **12 tipos de agentes** com perfil inicial editável: CMO, VP de Estratégia, Designer,
+  Redação / Copywriting, Analista de Mídia Paga, Analista de Mídia Orgânica,
+  Social Media, Tecnologia / Desenvolvimento, Motion Designer, BI & Data Analytics,
+  Pesquisa e Insights e Coordenador de Performance.
+- Modelo, runtime e conta independentes do cargo. Cadastro salvo antes da conexão
+  permanece em configuração e não inicia tarefas.
+- Estrutura existente de equipe visual, documentos, aprovações e histórico.
+- Sem WordPress, CMS, rede social ou analytics obrigatórios.
+
+Comece pelo [guia de auto-hospedagem](docker/papermarketing/README.md).
+O pacote está em desenvolvimento; a execução de contêineres, o isolamento dos
+trabalhadores e o uso efetivo das assinaturas exigem homologação antes do MVP.
+Veja [o escopo do primeiro incremento](doc/plans/2026-11-09-papermarketing-foundation.md).
+
+As instruções abaixo documentam o **Paperclip original**. Comandos `npx paperclipai`
+instalam o upstream; para usar as alterações deste fork, construa a partir deste
+repositório seguindo o guia acima.
+
+---
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
