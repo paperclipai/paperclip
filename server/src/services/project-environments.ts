@@ -70,7 +70,6 @@ export async function projectEnvironmentOptions(db: Db, companyId: string, actor
   };
 }
 
-/** Chooses a new project's storage owner. The environment only identifies a compatible storage group. */
 export async function withDefaultProjectStorage(db: Db, companyId: string, rawPolicy: unknown, actor: ProjectCreationEnvironment = {}) {
   const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
   if (policy?.storageProviderPluginId !== undefined && !actor.environmentId && actor.expectedStorageProviderPluginId === undefined) return rawPolicy;

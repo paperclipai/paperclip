@@ -54,8 +54,6 @@ import {
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
-import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
@@ -87,7 +85,6 @@ export function projectRoutes(db: Db) {
     enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
   });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
-  const environmentsSvc = environmentService(db);
 
   /**
    * Managed-sandbox-only policy (`enableManagedSandboxOnly`): a project
@@ -112,21 +109,6 @@ export function projectRoutes(db: Db) {
     throw unprocessable(
       "This instance runs agents only in the platform-managed environment; local folders are not configurable.",
     );
-  }
-
-  async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
-    if (environmentId === undefined || environmentId === null) return;
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ["local", "ssh", "sandbox"],
-    });
-  }
-
-  function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
-    if (!policy || typeof policy !== "object" || !("environmentId" in policy)) {
-      return undefined;
-    }
-    const environmentId = (policy as { environmentId?: unknown }).environmentId;
-    return typeof environmentId === "string" || environmentId === null ? environmentId : undefined;
   }
 
   async function resolveCompanyIdForProjectReference(req: Request) {
@@ -401,10 +383,6 @@ export function projectRoutes(db: Db) {
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
-    await assertProjectEnvironmentSelection(
-      companyId,
-      readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
-    );
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       [
@@ -529,10 +507,6 @@ export function projectRoutes(db: Db) {
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
-    );
-    await assertProjectEnvironmentSelection(
-      existing.companyId,
-      readProjectPolicyEnvironmentId(body.executionWorkspacePolicy),
     );
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);

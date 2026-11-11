@@ -54,7 +54,6 @@ export async function lockProjectRootMutation(tx: ProjectTransaction, projectId:
 
 type ProjectRow = typeof projects.$inferSelect;
 
-/** Older clients may still send `executionWorkspacePolicy.environmentId`; projects no longer select a run environment. */
 function legacyProjectEnvironmentId(policy: Record<string, unknown> | null | undefined) {
   const id = policy?.environmentId;
   return typeof id === "string" || id === null ? id : undefined;
@@ -997,7 +996,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
       projectData.executionWorkspacePolicy = withoutLegacyProjectEnvironment(projectData.executionWorkspacePolicy);
-      // Storage is chosen once at creation. Neither core nor plugin projects move afterward.
       const currentStorage = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
       if (projectData.executionWorkspacePolicy !== undefined) {
         const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;

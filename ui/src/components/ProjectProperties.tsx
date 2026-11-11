@@ -261,7 +261,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   });
   const providerConfiguration = project.workspaceProvider;
   const projectStoragePluginId = project.executionWorkspacePolicy?.storageProviderPluginId ?? null;
-  // Storage is chosen at creation and never changes. The note only matters when a storage plugin is involved.
   const showStorageAvailability = Boolean(projectStoragePluginId || providerConfiguration?.providers.length);
   const storagePluginUnavailable = Boolean(projectStoragePluginId
     && !providerConfiguration?.providers.some(provider => provider.id === projectStoragePluginId));

@@ -203,7 +203,6 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const managedSandboxEnvironment = managedSandboxOnly && !providerApiPlacement
     ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
     : null;
-  // A later default change affects new admissions, never a surviving provider process.
   const savedEnvironment = parseObject(parseObject(run.contextSnapshot).paperclipEnvironment);
   const admittedLeaseId = persistedNativeExecutionInput && !controllerOnly
     ? readNonEmptyString(savedEnvironment.leaseId) ?? readNativeWorkspaceSyncReference(persistedRunnerProfile.nativeWorkspaceSync)?.leaseId
