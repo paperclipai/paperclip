@@ -244,6 +244,8 @@ describe("T-oracles", () => {
       retry: { at: 2, observedRunId: "r1", httpStatus: null, accepted: null, error: "ui_retry_button_missing", via: "ui", bannerText: "Saving files" } } as unknown as TaskRecord;
     expect(gradeR3(record)).toEqual({ verdict: "fail", detail: "ui_retry_button_missing (user saw: Saving files)" });
     expect(gradeR3({ ...record, retry: { ...record.retry!, clicked: true, error: "ui_retry_no_request" } } as TaskRecord).detail).toMatch(/^ui_retry_no_request/);
+    expect(gradeR3({ ...record, retry: { ...record.retry!, error: "ui_retry_blocked_by_modal" } } as TaskRecord).detail)
+      .toBe("ui_retry_blocked_by_modal (user saw: Saving files)");
   });
 
   it("reports R2 as not checked for a sandbox-only workspace instead of passing it", () => {

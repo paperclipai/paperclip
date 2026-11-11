@@ -1,3 +1,4 @@
+import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
@@ -1920,7 +1921,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         const remaining = commentIds.filter(commentId => !delivered.has(commentId));
         const now = new Date();
         await db.update(agentWakeupRequests).set(remaining.length === 0
-          ? { status: "cancelled", finishedAt: now, updatedAt: now, error: "Queued messages were already delivered to a completed run" }
+          ? { status: "cancelled", finishedAt: now, updatedAt: now, error: QUEUED_MESSAGES_DELIVERED_REASON }
           : { payload: withQueuedCommentIdsInWakePayload(parseObject(receipt.payload), remaining), updatedAt: now })
           .where(and(eq(agentWakeupRequests.id, receipt.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
       }

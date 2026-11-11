@@ -162,6 +162,8 @@ export const STOP_PROOF_RECOVERY_KEY = "stopProofRecovery";
 export const STOP_PROOF_RECOVERY_SCHEMA = "paperclip.stop-proof-recovery.v1";
 export const STOP_PROOF_MAX_REARMS = 4;
 export const STOP_PROOF_WAIT_CODE = "agent_stop_unconfirmed";
+/** Coordinator phases after which no finalizer or provider work runs under the coordinator. */
+export const FINISHED_COORDINATOR_PHASES = ["committed", "terminal_failure", "applied"] as const;
 
 export function readStopProofRecovery(evidence: Record<string, unknown> | null | undefined): { rearms: number; nextRearmAt: number | null } | null {
   const marker = evidence?.[STOP_PROOF_RECOVERY_KEY] as Record<string, unknown> | undefined;
@@ -192,6 +194,10 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
     return "Recovery of saved work is waiting to confirm that the previous run stopped. "
       + "Paperclip tries again automatically, and the agent will not repeat its work.";
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  if (state.failure?.cause?.label === "sandbox_disk_full")
+    return "Saving the agent's files stopped because the sandbox disk is full. Paperclip deletes only inactive tool "
+      + "caches it can prove safe, and that did not free enough space. Automatic recovery does not repeat a save that fails the same way. "
+      + "Retry saves the files again. The agent's result is kept, and the agent will not repeat its work.";
   if (isDeterministicRecoveryRefusal(state)) {
     const code = state.failure!.code;
     // Never promise a release. A retained-file hold the fallback settles

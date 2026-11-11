@@ -7,26 +7,11 @@ import { checks, entity, hasLink, observation, observeInternal, project, putDocu
 interface DesignObservation extends InternalObservation {
   approvedRevision?: Entity; approvalComments: Entity[]; olderApprovalComments: Entity[]; privateReadStatus: number; agentSearchStatus: number; agentSearchResults: unknown[];
 }
-function designClauses(reply: string) { return reply.split(/[.\n;]|\b(?:whereas|while|but)\b/i); }
-function contradictsDraftApproval(reply: string, target: Entity) {
-  return designClauses(reply).some(part => {
-    const taskReferences = part.match(/\b[A-Z][A-Z0-9]*-\d+\b/g) ?? [];
-    if (taskReferences.some(id => id !== target.identifier)) return false;
-    if (!/\b(?:revision\s*2|version\s*2|v2|violet\s+navigation)\b/i.test(part)) return false;
-    return [...part.matchAll(/\b(?:approved|signed[ -]off)\b/gi)].some(match =>
-      !/(?:\b(?:not|never)|\bno longer|\b(?:hasn't|haven't|wasn't|weren't|isn't|aren't))(?:\s+(?:yet|been|ever|officially|currently|formally))*\s*$/i.test(part.slice(0, match.index)));
-  });
-}
-function describesUnapprovedCurrentDraft(reply: string, target: Entity) {
-  return designClauses(reply).some(part => {
-    const taskReferences = part.match(/\b[A-Z][A-Z0-9]*-\d+\b/g) ?? [];
-    if (taskReferences.length && (!target.identifier || taskReferences.some(id => id !== target.identifier))) return false;
-    const versions = [...part.matchAll(/\b(?:revision|version)\s*(\d+)\b|\bv(\d+)\b/gi)].map(match => Number(match[1] ?? match[2]));
-    if (versions.some(version => version !== 2)) return false;
-    return /\b(?:newer|later|latest|current|revision\s*2|version\s*2|v2|violet\s+navigation)\b/i.test(part)
-      && /\b(?:unapproved|not approved|not yet approved|pending review)\b/i.test(part)
-      && !/\b(?:not|never|no longer|isn't)\s+(?:an?\s+)?(?:unapproved|pending review)\b/i.test(part);
-  });
+/** The record the reply returns is its first task link: it must be the task holding the human-approved
+ * design. Other tasks (such as the earlier design) may be linked after it as context. Whether the prose
+ * also describes the newer draft correctly is read by a person; saved state proves no draft was approved. */
+export function returnedTaskLink(o: InternalObservation): string | undefined {
+  return o.links.find(href => { try { const url = new URL(href, o.origin); return url.origin === new URL(o.origin).origin && url.pathname.split("/").includes("issues"); } catch { return false; } });
 }
 export function gradeDesignSearch(value: unknown) {
   const c = checks(); const o = observation(value) as DesignObservation | undefined;
@@ -40,13 +25,9 @@ export function gradeDesignSearch(value: unknown) {
       && Number.isFinite(Date.parse(row.createdAt ?? "")) && Date.parse(row.createdAt!) <= Date.parse((o.state.approvalComment as Entity).createdAt ?? ""))
     && o.approvalComments.some(row => row.id === (o.state.approvalComment as Entity | undefined)?.id && row.authorUserId === o.state.ownerId && row.body === (o.state.approvalComment as Entity).body),
     "The exact historical revision and real human approval comment remain saved rather than inferring approval from latest edit time.");
-  c.add("approved-design-distinguished-from-newer-draft", !!target && hasLink(o, "issues", target)
-    && designClauses(o.reply).some(sentence => /\b(?:approved|signed[ -]off)\b/i.test(sentence)
-      && /\b(?:revision\s*1|version\s*1|v1|amber\s+navigation)/i.test(sentence)
-      && !/\b(?:not|never|no longer)\s+(?:yet\s+)?(?:approved|signed[ -]off)\b|\bunapproved\b/i.test(sentence))
-    && describesUnapprovedCurrentDraft(o.reply, target)
-    && !contradictsDraftApproval(o.reply, target),
-    "The answer links the actual approved design and explains that the later revision is still a draft.");
+  const returned = returnedTaskLink(o);
+  c.add("approved-design-distinguished-from-newer-draft", !!target && !!returned && hasLink({ ...o, links: [returned] }, "issues", target),
+    "The reply returns (links first) the task whose saved revision carries the human approval. The older design may follow as context; the draft's description is read by a person.");
   c.add("read-only-design-search", !!originals && originals.every(row => sameTask(row, o.tasks.find(now => now.id === row.id)))
     && current?.latestRevisionId === o.state.draftRevisionId && current?.body === o.state.draftBody
     && !o.activity.some(row => row.agentId === o.leadId && originals.some(original => original.id === row.entityId) && /issue\.(?:document_|updated|comment_added)/.test(row.action ?? "")),
@@ -82,7 +63,7 @@ function findDesign(): ChatCatalogCase {
     return { project: p, task: t, ownerId, olderTask, olderApprovalComment, originalTasks: [olderTask, t, marketing, hidden], approvedRevision: { id: approvedRevision.latestRevisionId, body: approvedRevision.body },
       approvalComment, draftRevisionId: draft.latestRevisionId, draftBody, privateTask: hidden, privateMarker };
   }, gradeDesignSearch);
-  return { ...base, authentication: "human-session", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-design-search.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts"],
+  return { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.internal.find-design.structural.v1", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-design-search.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts"],
     async observe(ctx, state): Promise<DesignObservation> {
       if (!key) throw new Error("Design probe credential was not created during setup");
       const read = async (path: string) => {

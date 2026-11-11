@@ -1,5 +1,6 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
+import { QUEUED_MESSAGES_DELIVERED_REASON } from "../domain/policy.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
@@ -272,7 +273,7 @@ async function runReleaseDrain(
         reason: commentAction.selfAuthored
           ? "Deferred wake contained only comments authored by the finishing run"
           : liveness.deliveredCommentIds?.length
-            ? "Queued messages were already delivered to a completed run"
+            ? QUEUED_MESSAGES_DELIVERED_REASON
             : "Queued messages were discarded before promotion",
         now: input.now,
       });

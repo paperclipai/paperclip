@@ -1141,6 +1141,15 @@ orphan recovery.
 pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/src/__tests__/heartbeat-agent-status-recovery.test.ts
 ```
 
+## Task document bodies
+
+The native `write_document` tool preserves the supplied Markdown body, including
+leading whitespace, hard-break spaces, line endings, and final newlines. It still
+requires a nonblank body and normalizes key/title fields. `write_task_document`
+and REST document PUT also retain surrounding whitespace. Those REST-backed
+paths keep their existing escaped-line-break normalization: a body with no real
+line breaks can have literal `\n` sequences converted to newlines.
+
 ## Test Commands
 
 The [feature map](../maps/feature-map/README.md) is an optional reference for user
@@ -1433,6 +1442,11 @@ The generated configs and declarations go in
 The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
+
+If a compiler child terminates on a signal, the wrapper reports the signal,
+layer, command, and working directory on stderr, then stops with a nonzero exit.
+Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
+not establish that the process ran out of memory.
 
 `src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
 editor and the typecheck report the same errors. Server tests reach Daytona plugin
@@ -5196,6 +5210,14 @@ Run `node scripts/check-query-error-rendering.mjs`. The guard now enforces acros
 The browser saves a small read cache in `paperclip:query-cache:v1:*` local storage records. It contains session display identity, health and shell preferences, company and sidebar data, agent/project lists, plugin UI contribution metadata, the first inbox page (including up to 100 rows per legacy Inbox query), and up to 20 recently opened tasks. Records belong to one user and company, expire 24 hours after each read, and are discarded when the build changes. Normal in-memory query garbage collection does not erase saved recent tasks or extend their expiry. Builds without a source commit stamp skip read-cache hydration and persistence, but still revoke and clear saved reads on sign-out. Plugin contributions use the existing instance-wide query inside the user's root record. Session tokens, bootstrap payloads, documents, comments, browser viewer capabilities, pairing data, other queries and mutations are excluded. Task content in this allowlist remains on the browser until expiry or sign-out; use the normal sign-out action to clear it across tabs. Account changes also detach pending shared GETs so a new user cannot join the previous user’s private reads. Editors that need fields excluded from the display cache, including bulk agent settings, fetch complete current data before opening.
 
 Restored identity permits cached display only. Restored inline task drafts compare their saved base with a fresh field read before each replay; conflicting edits stay in the editor for review. Account-bound writes wait for a fresh server session and are cancelled if its user changes. A definitive session denial removes saved account reads. Service-worker updates reload hidden tabs only after connectivity is online and mutations, durable sends and autosaves have settled. Durable queues synchronously report each unresolved operation, including the intervals between online rate-limit retries. Sign-out revocation also works on plain-HTTP installs without `crypto.randomUUID`.
+
+The read cache also retains up to 100 learned link previews for the current user
+and accessible companies, including unavailable results. Reloading restores the
+last known PR status without a provider request. Preview timestamps keep their
+original age: hover or keyboard focus reuses a fresh result and refreshes a stale
+one. Stale status stays visible until then. Preview retention uses the same
+24-hour expiry, build boundary, membership checks, and sign-out cleanup as other
+saved reads. It does not add polling or fetch every PR on page load.
 
 Embedded plan documents and preview work products are stripped from saved payloads. A denied task clears its UUID and identifier projections. Sign-out revocation markers contain no task content and remain after sign-out to reject stale records and delayed writes from older tabs. Session responses started before revocation cannot restore those reads, even before the storage event reaches the other tab.
 
