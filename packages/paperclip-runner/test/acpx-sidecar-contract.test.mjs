@@ -162,7 +162,7 @@ test("public Pi descriptors preserve effective thinking levels without invalidat
   const validateDescriptor = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile(descriptorSchema);
   const historical = {
     provider: "acpx", driver: "acpx_runtime", model: "model", executionKind: "local_process",
-    providerVersion: "0.13.1", agent: "pi", requestedModel: "model", acpProtocolVersion: 1,
+    providerVersion: "0.22.0", agent: "pi", requestedModel: "model", acpProtocolVersion: 1,
     agentServerPackage: "pi-acp", agentServerVersion: "0.0.33", acpxRecordId: null, agentProcessId: null,
   };
   assert.equal(validateDescriptor(historical), true, JSON.stringify(validateDescriptor.errors));

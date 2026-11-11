@@ -73,7 +73,7 @@ async function makeRepo() {
     "pnpm-lock.yaml": "lockfileVersion: 9\n",
     "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
     "tsconfig.base.json": "{}\n",
-    "patches/acpx@0.13.1.patch": "--- a\n+++ b\n",
+    "patches/acpx@0.22.0.patch": "--- a\n+++ b\n",
     "patches/pi-acp@0.0.33.patch": "--- c\n+++ d\n",
     "packages/paperclip-runner/package.json": '{"name":"@paperclipai/paperclip-runner"}\n',
     "packages/paperclip-runner/src/index.ts": "export const one = 1;\n",
@@ -121,7 +121,7 @@ test("the input set covers sources, the eval kernel, root patches and root confi
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/runner/src/main.rs",
       "packages/paperclip-runner/src/index.ts",
-      "patches/acpx@0.13.1.patch",
+      "patches/acpx@0.22.0.patch",
       "patches/pi-acp@0.0.33.patch",
       "pnpm-lock.yaml",
       "pnpm-workspace.yaml",
@@ -178,7 +178,7 @@ test("the digest is stable, ignores outputs and caches, and tracks every kind of
     await expectChange("a Rust source", { "packages/paperclip-runner/runner/src/main.rs": "fn main() { }\n" });
     await expectChange("an eval-kernel source", { "packages/paperclip-eval-kernel/src/index.ts": "export const kernel = 2;\n" });
     await expectChange("the pi-acp patch the build copies into dist", { "patches/pi-acp@0.0.33.patch": "--- c\n+++ d\n+e\n" });
-    await expectChange("the acpx patch the profile check hashes", { "patches/acpx@0.13.1.patch": "--- a\n+++ b\n+c\n" });
+    await expectChange("the acpx patch the profile check hashes", { "patches/acpx@0.22.0.patch": "--- a\n+++ b\n+c\n" });
     await expectChange("a new patch", { "patches/brace-expansion@5.0.9.patch": "--- x\n+++ y\n" });
     await expectChange("the lockfile", { "pnpm-lock.yaml": "lockfileVersion: 9\nchanged: true\n" });
     await expectChange("the base tsconfig", { "tsconfig.base.json": '{"compilerOptions":{}}\n' });

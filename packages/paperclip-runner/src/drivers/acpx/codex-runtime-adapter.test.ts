@@ -153,7 +153,7 @@ describe("Codex ACPX runtime adapter", () => {
         _meta: { "x.ai/sessionConfig": { options: [{ id: "high", category: "mode", selected: true }] } } } });
     };
     vi.mocked(runtime.ensureSession).mockImplementation(async input => {
-      expect(input.sessionOptions).toMatchObject({ model: "grok-4.7" });
+      expect(input.sessionOptions).not.toHaveProperty("model");
       if (!restoring) { spawnProvider(); acknowledge(); }
       return HANDLE;
     });
@@ -422,7 +422,7 @@ describe("Codex ACPX runtime adapter", () => {
     await port.close({ reason: "test finished" });
   });
 
-  it("installs per-connection policy authority only for Copilot and rejects native commands before a turn starts", async () => {
+  it("enforces Copilot policy from the observed wire and rejects native commands before a turn starts", async () => {
     for (const agent of ["copilot", "codex", "claude", "grok"] as const) {
       const runtime = fakeRuntime();
       let created!: AcpRuntimeOptions;
@@ -431,14 +431,49 @@ describe("Codex ACPX runtime adapter", () => {
       const port = await openCodexAcpxRuntime(options, {
         createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
       });
+      // Copilot no longer needs a patched ACPX admission hook; Grok keeps one
+      // to place task instructions in session/new `_meta.rules`.
+      if (agent === "grok") {
+        const guard = created.protocolGuardFactory!();
+        const request = { method: "session/new", params: { cwd: "/w", _meta: { systemPrompt: "x" } } };
+        guard("outbound", request);
+        // Grok binds its model at open even when no effort is selected.
+        expect(request.params._meta).toEqual({ rules: options.systemInstructions ?? "", modelId: options.profile.reportedModelId });
+      } else expect(created.protocolGuardFactory).toBeUndefined();
       if (agent === "copilot") {
-        expect(created.protocolGuardFactory).toBeTypeOf("function");
-        expect(created.protocolGuardFactory!()).not.toBe(created.protocolGuardFactory!());
         expect(() => port.startTurn({ text: "\n/yolo on", requestId: "bad" })).toThrow(/admitted permission policy/);
         expect(runtime.startTurn).not.toHaveBeenCalled();
-      } else expect(created.protocolGuardFactory).toBeUndefined();
+        // A load that restores autopilot is observed before ACPX handles it.
+        created.onAcpMessage!("outbound", { jsonrpc: "2.0", id: 7, method: "session/load", params: { sessionId: "backend-1" } });
+        created.onAcpMessage!("inbound", { jsonrpc: "2.0", id: 7, result: { modes: { currentModeId: "autopilot" } } });
+        expect(() => port.startTurn({ text: "Perform the task", requestId: "after-violation" }))
+          .toThrow(expect.objectContaining({ code: "COPILOT_POLICY_VIOLATION" }));
+        expect(runtime.startTurn).not.toHaveBeenCalled();
+        await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1", toolCall: { toolCallId: "tool-1" } }, inferredKind: "execute" } as never,
+          { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+      }
       await port.close({ reason: "test complete" });
     }
+  });
+  it("stops Copilot detached work before its permission request can be approved", async () => {
+    const runtime = fakeRuntime();
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "copilot" };
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    created.onAcpMessage!("inbound", { jsonrpc: "2.0", method: "session/update", params: { sessionId: "backend-1", update: {
+      sessionUpdate: "tool_call", toolCallId: "native-detached", kind: "execute", status: "pending",
+      rawInput: { command: "fixture", mode: "async", detach: true },
+    } } });
+    created.onAcpMessage!("inbound", { jsonrpc: "2.0", id: 3, method: "session/request_permission",
+      params: { sessionId: "backend-1", toolCall: { toolCallId: "native-detached", rawInput: { detach: true } } } });
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1", toolCall: { toolCallId: "native-detached" } }, inferredKind: "execute" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+    expect(() => port.startTurn({ text: "Run the task", requestId: "after-detach" }))
+      .toThrow(expect.objectContaining({ code: "COPILOT_DETACHED_WORK_UNSUPPORTED" }));
+    await port.close({ reason: "test complete" });
   });
   it.each(["claude"] as const)("rejects approvals without a workflow in preconfigured %s sessions", async (agent) => {
     const runtime = fakeRuntime();
@@ -460,11 +495,11 @@ describe("Codex ACPX runtime adapter", () => {
     else expect(sessionOptions?.allowedTools).toBeUndefined();
     expect(created.nonInteractivePermissions).toBe("deny");
     expect(created.permissionPolicy).toMatchObject({ defaultAction: "deny", autoApprove: undefined, escalate: undefined });
-    expect(created.spawnEnvironment!().PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBeUndefined();
-    if (agent === "claude") expect(created.spawnEnvironment!()).toMatchObject({
+    expect(spawnedAgentEnvironment(created, options.command)!.PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBeUndefined();
+    if (agent === "claude") expect(spawnedAgentEnvironment(created, options.command)).toMatchObject({
       ANTHROPIC_MODEL: options.profile.reportedModelId, ANTHROPIC_CUSTOM_MODEL_OPTION: options.profile.reportedModelId,
     });
-    else expect(created.spawnEnvironment!().ANTHROPIC_CUSTOM_MODEL_OPTION).toBeUndefined();
+    else expect(spawnedAgentEnvironment(created, options.command)!.ANTHROPIC_CUSTOM_MODEL_OPTION).toBeUndefined();
     await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "execute" } as never,
       { signal: new AbortController().signal })).resolves.toEqual({ outcome: "reject_once" });
     expect(runtime.setMode).not.toHaveBeenCalled();
@@ -487,10 +522,10 @@ describe("Codex ACPX runtime adapter", () => {
       await expect(created.onPermissionRequest!(request as never, { signal })).resolves.toEqual({ outcome: "reject_once" });
     }
     expect(handler).not.toHaveBeenCalled();
-    const responseDelivery = Promise.resolve();
-    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never, { signal, responseDelivery })).resolves.toEqual({ outcome: "allow_once" });
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never, { signal })).resolves.toEqual({ outcome: "allow_once" });
     expect(handler).toHaveBeenCalledOnce();
-    expect(handler).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ responseDelivery }));
+    // The adapter, not ACPX, supplies the delivery receipt.
+    expect(handler).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ responseDelivery: expect.any(Promise) }));
     options.permissionMode = "approve-all";
     await expect(created.onPermissionRequest!({ sessionId: "forged", raw: {}, inferredKind: "edit" } as never, { signal })).resolves.toEqual({ outcome: "reject_once" });
     pending.settle(); await turn.result; await port.close({ reason: "session checks complete" });
@@ -510,7 +545,7 @@ describe("Codex ACPX runtime adapter", () => {
     }));
     const turn = port.startTurn({ text: "Write", requestId: "turn-1", onPermissionRequest: handler });
     const permission = created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never,
-      { signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+      { signal: new AbortController().signal });
     expect(callbackSignal.aborted).toBe(false);
     const oldMode = options.permissionMode;
     options.permissionMode = "approve-all";
@@ -615,20 +650,20 @@ describe("Codex ACPX runtime adapter", () => {
         return runtime;
       },
     });
-    expect(created.clientCapabilities).toEqual(options.clientCapabilities);
+    // Runner always advertises typed AIR failures alongside profile capabilities.
+    expect(created.clientCapabilities).toEqual({ _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } }, cursor: { test: true } } });
     expect(JSON.stringify(vi.mocked(runtime.ensureSession).mock.calls)).not.toContain("clientCapabilities");
     const notification = vi.fn();
     const request = vi.fn(async (_method, _params, context) => ({ requestId: context.requestId }));
     const onTerminalSessionFailure = vi.fn();
     const admittedFirst = port.startTurn({ text: "First", requestId: "turn-1", onExtensionRequest: request, onExtensionNotification: notification, onTerminalSessionFailure });
     // ACPX reports only a generic terminal error; the typed reason must reach the host.
-    expect(vi.mocked(runtime.startTurn).mock.calls.at(-1)?.[0]).toMatchObject({ onTerminalSessionFailure });
+    expect(vi.mocked(runtime.startTurn).mock.calls.at(-1)?.[0]).not.toHaveProperty("onTerminalSessionFailure");
     const signal = new AbortController().signal;
     await expect(created.onExtensionRequest!("cursor/ask_question", { sessionId: "backend-1" }, { requestId: 0, signal })).resolves.toEqual({ requestId: 0 });
     const sessionless = { toolCallId: "native-cursor-plan", plan: "Review the complete plan" };
-    const responseDelivery = Promise.resolve();
-    await expect(created.onExtensionRequest!("cursor/create_plan", sessionless, { requestId: "plan", signal, responseDelivery })).resolves.toEqual({ requestId: "plan" });
-    expect(request).toHaveBeenLastCalledWith("cursor/create_plan", { ...sessionless, sessionId: "backend-1" }, expect.objectContaining({ requestId: "plan", responseDelivery }));
+    await expect(created.onExtensionRequest!("cursor/create_plan", sessionless, { requestId: "plan", signal })).resolves.toEqual({ requestId: "plan" });
+    expect(request).toHaveBeenLastCalledWith("cursor/create_plan", { ...sessionless, sessionId: "backend-1" }, expect.objectContaining({ requestId: "plan", responseDelivery: expect.any(Promise) }));
     expect(sessionless).not.toHaveProperty("sessionId");
     await expect(created.onExtensionRequest!("pi/steer", {}, { requestId: 1, signal })).rejects.toThrow("admitted active turn");
     await expect(created.onExtensionRequest!("cursor/ask_question", { sessionId: "other" }, { requestId: 1, signal })).rejects.toThrow("admitted active turn");
@@ -656,7 +691,7 @@ describe("Codex ACPX runtime adapter", () => {
     const pending = pendingExtensionTurn("turn-1");
     const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async (_input: unknown) => ({ accepted: true })) });
     vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
-    let created!: AcpRuntimeOptions & { onAgentInitialize?: (result: unknown) => void };
+    let created!: AcpRuntimeOptions;
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "pi" };
     options.piThinkingLevel = "low";
@@ -673,7 +708,7 @@ describe("Codex ACPX runtime adapter", () => {
     });
     const turn = port.startTurn({ text: "Initial", requestId: "turn-1" });
     await expect(port.steerActiveTurn!("Update", "turn-1")).rejects.toThrow("supported active turn");
-    created.onAgentInitialize!({ agentCapabilities: { _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: true } } } });
+    initializeOverWire(created, { agentCapabilities: { _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: true } } } });
     expect(port.steeringCapability!()).toEqual({ steering: true, queuedFollowUp: true });
     await expect(port.steerActiveTurn!("Update", "wrong")).rejects.toThrow("supported active turn");
     await port.steerActiveTurn!("Update", "turn-1");
@@ -694,13 +729,93 @@ describe("Codex ACPX runtime adapter", () => {
     await port.close({ reason: "test finished" });
   });
 
+  it("keeps the agent's goal capability with its saved capabilities and restores it without reconnecting", async () => {
+    const goal = { version: 1, controlMethod: "_session/goal", actions: ["set", "pause", "resume", "clear"] };
+    const saved: AcpSessionRecord[] = [];
+    let created!: AcpRuntimeOptions;
+    const baseRecord = { acpxRecordId: "record-1", acpSessionId: "backend-1", cwd: "/workspace",
+      agentCapabilities: { loadSession: true, _meta: { vendor: { kept: true } } } } as unknown as AcpSessionRecord;
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(),
+      createStore: () => ({ load: vi.fn(), save: vi.fn(async (record: AcpSessionRecord) => { saved.push(structuredClone(record)); }) }),
+      createRuntime: (value) => { created = value; return fakeRuntime(); },
+    });
+    expect(port.goalCapability!()).toBeNull();
+    initializeOverWire(created, { agentCapabilities: { loadSession: true }, _meta: { goal } });
+    expect(port.goalCapability!()).toEqual(goal);
+    await created.sessionStore!.save(baseRecord);
+    expect(saved.at(-1)?.agentCapabilities).toEqual({ loadSession: true, _meta: { vendor: { kept: true }, "paperclip.goalCapability": goal } });
+    // ACPX's own in-memory record is not modified.
+    expect(baseRecord.agentCapabilities).toEqual({ loadSession: true, _meta: { vendor: { kept: true } } });
+    initializeOverWire(created, { agentCapabilities: { loadSession: true } });
+    await created.sessionStore!.save(saved.at(-1)!);
+    expect(saved.at(-1)?.agentCapabilities).toEqual({ loadSession: true, _meta: { vendor: { kept: true } } });
+    await port.close({ reason: "test finished" });
+
+    let restored!: AcpRuntimeOptions;
+    const piOptions = openOptions(fakeCommand());
+    piOptions.profile = { ...piOptions.profile, agent: "pi" };
+    piOptions.piThinkingLevel = "low";
+    const record = { ...baseRecord, agentCapabilities: { loadSession: true,
+      _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: false }, "paperclip.goalCapability": goal } } } as unknown as AcpSessionRecord;
+    const piRuntime = fakeRuntime();
+    // Admit Pi's thinking level the way the earlier Pi test does.
+    vi.mocked(piRuntime.setConfigOption!).mockImplementation(async input => {
+      const guard = restored.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { modes: { currentModeId: "high" }, configOptions: [{ id: "thought_level", currentValue: "high" }] } });
+      guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
+      guard("inbound", { id: 1, result: { configOptions: [{ id: "thought_level", currentValue: "low" }] } });
+    });
+    const restoredPort = await openCodexAcpxRuntime(piOptions, {
+      createRegistry: () => registry(),
+      createStore: () => ({ load: vi.fn(async () => structuredClone(record)), save: vi.fn() }),
+      createRuntime: (value) => { restored = value; return piRuntime; },
+    });
+    // A reused session restores both without the agent reinitializing.
+    await restored.sessionStore!.load("record-1");
+    expect(restoredPort.goalCapability!()).toEqual(goal);
+    expect(restoredPort.steeringCapability!()).toEqual({ steering: true, queuedFollowUp: false });
+    await restoredPort.close({ reason: "test finished" });
+  });
+
+  it("restores goal support that ACPX 0.13.1 saved in its own record field", async () => {
+    const goal = { version: 1, controlMethod: "_session/goal", actions: ["set", "clear"] };
+    // The record ACPX 0.13.1 wrote; ACPX 0.22 drops `agent_goal_capability` when it parses it.
+    const saved = JSON.parse(await readFile(new URL("../../../test/fixtures/acpx-0.13.1-session-record.json", import.meta.url), "utf8"));
+    const stateDirectory = await mkdtemp(join(tmpdir(), "acpx-legacy-goal-"));
+    try {
+      await mkdir(join(stateDirectory, "sessions"));
+      await writeFile(join(stateDirectory, "sessions", "carried-key.json"), JSON.stringify(saved));
+      const parsed = { acpxRecordId: "carried-key", acpSessionId: "carried-session", cwd: "/workspace",
+        agentCapabilities: { loadSession: true } } as unknown as AcpSessionRecord;
+      const saves: AcpSessionRecord[] = [];
+      let created!: AcpRuntimeOptions;
+      const options = openOptions(fakeCommand());
+      options.stateDirectory = stateDirectory;
+      const port = await openCodexAcpxRuntime(options, {
+        createRegistry: () => registry(),
+        createStore: () => ({ load: vi.fn(async () => structuredClone(parsed)), save: vi.fn(async (record: AcpSessionRecord) => { saves.push(structuredClone(record)); }) }),
+        createRuntime: (value) => { created = value; return fakeRuntime(); },
+      });
+      await created.sessionStore!.load("carried-key");
+      expect(port.goalCapability!()).toEqual(goal);
+      // The next save keeps it under the current key, so the old field is read once.
+      await created.sessionStore!.save(parsed);
+      expect(saves.at(-1)?.agentCapabilities).toEqual({ loadSession: true, _meta: { "paperclip.goalCapability": goal } });
+      await port.close({ reason: "test finished" });
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("does not grant steering to Copilot or Cursor when an untrusted initialize result claims Pi support", async () => {
     const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "copilot" };
     const runtime = fakeRuntime();
     const port = await openCodexAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (created) => {
-        (created as AcpRuntimeOptions & { onAgentInitialize: (result: unknown) => void }).onAgentInitialize({ agentCapabilities: { _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: true } } } });
+        initializeOverWire(created, { agentCapabilities: { _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: true } } } });
         return runtime;
       },
     });
@@ -829,11 +944,11 @@ describe("Codex ACPX runtime adapter", () => {
     expect(
       JSON.stringify(vi.mocked(runtime.ensureSession).mock.calls[0]?.[0]),
     ).not.toContain("credential-secret");
-    expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
+    expect(spawnedAgentEnvironment(runtimeOptions, command)).toEqual({
       CODEX_HOME: "/runtime/agent-home",
       OPENAI_API_KEY: "credential-secret",
     });
-    expect(runtimeOptions?.spawnCwd).toBe("/workspace");
+    expect(runtimeOptions).not.toHaveProperty("spawnCwd");
     expect(runtimeOptions?.elicitationModes).toEqual(["form"]);
     expect(await port.identity()).toEqual({
       acpxRecordId: "record-1",
@@ -866,7 +981,7 @@ describe("Codex ACPX runtime adapter", () => {
         },
       });
 
-      expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
+      expect(spawnedAgentEnvironment(runtimeOptions, command)).toEqual({
         PATH: "/verified/bin",
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "",
@@ -899,7 +1014,7 @@ describe("Codex ACPX runtime adapter", () => {
           return fakeRuntime();
         },
       });
-      expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
+      expect(spawnedAgentEnvironment(runtimeOptions, options.command)).toEqual({
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
       });
@@ -931,7 +1046,11 @@ describe("Codex ACPX runtime adapter", () => {
         return runtime;
       },
     });
-    expect(command.spawn).toHaveBeenCalledWith(["--stdio"], spawnOptions, {
+    // The adapter supplies the agent's launch environment, not ACPX's.
+    expect(command.spawn).toHaveBeenCalledWith(["--stdio"], { ...spawnOptions, env: {
+      CODEX_HOME: "/runtime/agent-home",
+      OPENAI_API_KEY: "credential-secret",
+    } }, {
       credentialFenceFds: [42, 43],
       activateCredentialFenceOwner: expect.any(Function),
     });
@@ -980,8 +1099,8 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(runtime.startTurn).mockImplementation(input => {
       const wireId = ++sequence;
       durableRecord.lastRequestId = input.requestId;
-      created.onAcpMessage?.("outbound", { id: wireId, method: "session/prompt", params: { sessionId: "backend-1" } });
-      created.onAcpMessage?.("inbound", { id: wireId, result: { _meta: {
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: wireId, method: "session/prompt", params: { sessionId: "backend-1" } });
+      created.onAcpMessage?.("inbound", { jsonrpc: "2.0", id: wireId, result: { _meta: {
         sessionId: "backend-1", promptId: `prompt-${wireId}`, requestId: `prompt-${wireId}`,
         usage: { inputTokens: 50, outputTokens: 5, totalTokens: 55, cachedReadTokens: 20, cacheCreationTokens: 0,
           reasoningTokens: 2, modelCalls: 1, costUsdTicks: wireId === 1 ? 10000000 : 5000000 },
@@ -999,7 +1118,7 @@ describe("Codex ACPX runtime adapter", () => {
           cost: { amount, currency: "USD", basis: "turn" },
           breakdown: { inputTokens: 30, outputTokens: 5, cachedReadTokens: 20, thoughtTokens: 0 },
         });
-        created.onAcpMessage?.("inbound", { id: sequence, error: { message: "late conflicting response" } });
+        created.onAcpMessage?.("inbound", { jsonrpc: "2.0", id: sequence, error: { code: -32603, message: "late conflicting response" } });
         expect(await port.getStatus()).toEqual(after);
       }
     } finally { await port.close({ reason: "fixture done" }); }
@@ -1021,12 +1140,12 @@ describe("Codex ACPX runtime adapter", () => {
       const turn = port.startTurn({ requestId: "journaled-turn", text: "fixture", dispatchJournal: journal });
       expect(order).toEqual(["received", "runtime.startTurn"]);
       // Other outbound traffic never counts as the prompt.
-      created.onAcpMessage?.("outbound", { id: 7, method: "session/set_config_option", params: {} });
-      created.onAcpMessage?.("outbound", { method: "session/cancel", params: {} });
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: 7, method: "session/set_config_option", params: {} });
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", method: "session/cancel", params: {} });
       expect(journal.markDispatched).not.toHaveBeenCalled();
-      created.onAcpMessage?.("outbound", { id: 8, method: "session/prompt", params: { sessionId: "backend-1" } });
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: 8, method: "session/prompt", params: { sessionId: "backend-1" } });
       // Only the first prompt of the turn is journaled.
-      created.onAcpMessage?.("outbound", { id: 9, method: "session/prompt", params: { sessionId: "backend-1" } });
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: 9, method: "session/prompt", params: { sessionId: "backend-1" } });
       expect(order).toEqual(["received", "runtime.startTurn", "dispatched"]);
       pending.settle();
       await turn.result;
@@ -1044,7 +1163,7 @@ describe("Codex ACPX runtime adapter", () => {
     try {
       const turn = port.startTurn({ requestId: "unjournaled-start", text: "fixture",
         dispatchJournal: { markReceived: () => false, markDispatched } });
-      created.onAcpMessage?.("outbound", { id: 1, method: "session/prompt", params: {} });
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: 1, method: "session/prompt", params: {} });
       expect(markDispatched).not.toHaveBeenCalled();
       pending.settle();
       await turn.result;
@@ -1063,9 +1182,11 @@ describe("Codex ACPX runtime adapter", () => {
         markReceived: () => true,
         markDispatched: () => { throw new Error("ENOSPC: journal write failed"); },
       } });
-      // ACPX calls this hook before it writes the bytes; a throw rejects that write.
-      expect(() => created.onAcpMessage?.("outbound", { id: 1, method: "session/prompt", params: {} }))
-        .toThrow("ENOSPC: journal write failed");
+      // ACPX 0.22 ignores observer errors, so the failure surfaces from the
+      // turn's assertActive, which ACPX calls next, before it writes the bytes.
+      expect(() => created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: 1, method: "session/prompt", params: {} })).not.toThrow();
+      const assertActive = vi.mocked(runtime.startTurn).mock.calls.at(-1)![0].assertActive!;
+      expect(assertActive).toThrow("ENOSPC: journal write failed");
       pending.settle();
       await turn.result;
     } finally { await port.close({ reason: "fixture done" }); }
@@ -1084,7 +1205,7 @@ describe("Codex ACPX runtime adapter", () => {
       createRuntime: value => { created = value; return runtime; } });
     vi.mocked(runtime.startTurn).mockImplementation(input => {
       durableRecord.lastRequestId = input.requestId;
-      created.onAcpMessage?.("outbound", { id: 1, method: "session/prompt", params: { sessionId: "backend-1" } });
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: 1, method: "session/prompt", params: { sessionId: "backend-1" } });
       return { requestId: input.requestId, promptStarted: Promise.resolve(), events: (async function* () {})(), result,
         cancel: async () => undefined, closeStream: async () => undefined };
     });
@@ -1092,8 +1213,8 @@ describe("Codex ACPX runtime adapter", () => {
       const before = await port.getStatus();
       const turn = port.startTurn({ requestId: "runner-cancelled", text: "fixture" });
       await turn[stop]({ reason: "fixture stopped" });
-      created.onAcpMessage?.("outbound", { id: 2, method: "session/prompt", params: { sessionId: "backend-1" } });
-      created.onAcpMessage?.("inbound", { id: 1, result: { _meta: {
+      created.onAcpMessage?.("outbound", { jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: "backend-1" } });
+      created.onAcpMessage?.("inbound", { jsonrpc: "2.0", id: 1, result: { _meta: {
         sessionId: "backend-1", promptId: "prompt-1", requestId: "prompt-1",
         usage: { inputTokens: 50, outputTokens: 5, totalTokens: 55, cachedReadTokens: 20, cacheCreationTokens: 0,
           reasoningTokens: 2, modelCalls: 1, costUsdTicks: 10000000 },
@@ -1105,7 +1226,7 @@ describe("Codex ACPX runtime adapter", () => {
         cost: { amount: 0.001, currency: "USD", basis: "turn" },
         breakdown: { inputTokens: 30, outputTokens: 5, cachedReadTokens: 20, thoughtTokens: 0 },
       });
-      created.onAcpMessage?.("inbound", { id: 1, error: { message: "late conflicting response" } });
+      created.onAcpMessage?.("inbound", { jsonrpc: "2.0", id: 1, error: { code: -32603, message: "late conflicting response" } });
       expect(await port.getStatus()).toEqual(after);
     } finally { settle({ status: "completed" }); await port.close({ reason: "fixture done" }); }
   });
@@ -1121,7 +1242,6 @@ describe("Codex ACPX runtime adapter", () => {
       request_token_usage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       cumulative_cost: { amount: 0.1, currency: "USD" },
       messages: [{ User: { id: "prompt", content: [] } }],
-      cursor_prompt_usage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       acpx: {
         current_model_id: "gpt-5.6-sol",
         available_models: ["gpt-5.6-sol"],
@@ -1145,7 +1265,6 @@ describe("Codex ACPX runtime adapter", () => {
       requestTokenUsage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       usageCost: { amount: 0.1, currency: "USD" },
       promptMessageIds: ["prompt"],
-      cursorPromptUsage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       models: {
         currentModelId: "gpt-5.6-sol",
         availableModelIds: ["gpt-5.6-sol"],
@@ -2188,6 +2307,48 @@ describe("Codex ACPX runtime adapter", () => {
     }
   });
 
+  it("fails a turn whose prompt response reports a typed AIR session failure", async () => {
+    for (const status of ["completed", "cancelled"] as const) {
+      const runtime = fakeRuntime();
+      vi.mocked(runtime.startTurn).mockReturnValue({
+        requestId: "turn-1",
+        promptStarted: Promise.resolve(),
+        events: { async *[Symbol.asyncIterator]() {} },
+        result: Promise.resolve({ status, stopReason: "end_turn", _meta: { jetbrains: { air: { version: 1,
+          sessionFailure: { severity: "error", category: "limit", title: "Usage limit", details: "Monthly allowance exhausted" } } } } }),
+        cancel: vi.fn(),
+        closeStream: vi.fn(),
+      });
+      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+        createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+      });
+      const onTerminalSessionFailure = vi.fn();
+      const turn = port.startTurn({ text: "Complete the task.", requestId: "turn-1", onTerminalSessionFailure });
+      await expect(turn.result).resolves.toEqual({ status: "failed", error: { message: "ACP agent reported a terminal limit failure.", code: "RUNTIME" } });
+      expect(onTerminalSessionFailure).toHaveBeenCalledExactlyOnceWith({ category: "limit", title: "Usage limit", details: "Monthly allowance exhausted" });
+      await port.close({ reason: "test complete" });
+    }
+  });
+
+  it("keeps a completed turn when its response carries no typed failure", async () => {
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.startTurn).mockReturnValue({
+      requestId: "turn-1",
+      promptStarted: Promise.resolve(),
+      events: { async *[Symbol.asyncIterator]() {} },
+      result: Promise.resolve({ status: "completed" as const, _meta: { jetbrains: { air: { version: 1, sessionFailure: { severity: "warning", category: "limit" } } } } }),
+      cancel: vi.fn(),
+      closeStream: vi.fn(),
+    });
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    });
+    const onTerminalSessionFailure = vi.fn();
+    await expect(port.startTurn({ text: "Complete the task.", requestId: "turn-1", onTerminalSessionFailure }).result).resolves.toMatchObject({ status: "completed" });
+    expect(onTerminalSessionFailure).not.toHaveBeenCalled();
+    await port.close({ reason: "test complete" });
+  });
+
   it("maps prompt turns to the admitted ACPX handle", async () => {
     const runtime = fakeRuntime();
     const turn = {
@@ -2222,8 +2383,20 @@ describe("Codex ACPX runtime adapter", () => {
       mode: "prompt",
       requestId: "turn-1",
       signal: expect.any(AbortSignal),
-      onElicitation,
+      onElicitation: expect.any(Function),
+      assertActive: expect.any(Function),
     });
+    // ACPX receives a stock callback; the host callback also gets a receipt
+    // that resolves once its response is handed back to ACPX.
+    const stock = vi.mocked(runtime.startTurn).mock.calls[0]![0].onElicitation!;
+    vi.mocked(onElicitation).mockImplementationOnce(async (_request, context) => {
+      let delivered = false;
+      void (context as { responseDelivery: Promise<void> }).responseDelivery.then(() => { delivered = true; });
+      await Promise.resolve();
+      expect(delivered).toBe(false);
+      return { action: "cancel" };
+    });
+    await expect(stock({} as never, { requestId: 1, signal: new AbortController().signal })).resolves.toEqual({ action: "cancel" });
   });
 
   it("observes prompt admission rejection when the sidecar consumes only events and the result", async () => {
@@ -3683,7 +3856,7 @@ function openOptions(
     profile: {
       driverKind: "acpx_runtime",
       protocolVersion: 1,
-      acpxVersion: "0.13.1",
+      acpxVersion: "0.22.0",
       agent: "codex",
       agentProfileVersion: 1,
       agentServerPackage: "@agentclientprotocol/codex-acp",
@@ -3870,4 +4043,28 @@ function registry(): AcpAgentRegistry {
 
 function store(): AcpSessionStore {
   return { load: vi.fn(), save: vi.fn() };
+}
+
+/** The environment the adapter gives the verified lease when ACPX spawns the agent. */
+function spawnedAgentEnvironment(
+  created: AcpRuntimeOptions | undefined,
+  command: VerifiedAcpxCommandLease,
+): NodeJS.ProcessEnv | undefined {
+  // Capture the launch, then fail it so no fake provider joins the session.
+  let captured: NodeJS.ProcessEnv | undefined;
+  vi.mocked(command.spawn).mockImplementationOnce((_args, spawnOptions) => {
+    captured = spawnOptions?.env;
+    throw new Error("captured launch");
+  });
+  // ACPX derives its own environment from this process; the adapter replaces it.
+  expect(() => created!.spawnAgent!({ command: "agent", args: [], options: { env: { HOST_ONLY: "host" } } })).toThrow("captured launch");
+  return captured;
+}
+
+let initializeId = 1000;
+/** Deliver an initialize reply the way ACPX reports it: through `onAcpMessage`. */
+function initializeOverWire(created: AcpRuntimeOptions, result: Record<string, unknown>): void {
+  const id = ++initializeId;
+  created.onAcpMessage!("outbound", { jsonrpc: "2.0", id, method: "initialize", params: { protocolVersion: 1 } });
+  created.onAcpMessage!("inbound", { jsonrpc: "2.0", id, result: { protocolVersion: 1, ...result } });
 }

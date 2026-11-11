@@ -2017,6 +2017,22 @@
       "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
     },
     {
+      "app": "sentry",
+      "method": "mcp-user-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Sentry API actions allowed by the token's scopes and its creator's organization role, including issue triage and project/team changes.",
+      "evidence": [
+        "https://github.com/getsentry/sentry-mcp#remote-server",
+        "https://docs.sentry.io/account/auth-tokens/"
+      ],
+      "reviewedAt": "2026-11-11",
+      "liveProof": "not-run",
+      "keyPermissions": "Create a user auth token with org:read, project:read, project:write, team:read, team:write and event:write. The token acts as its creator; Paperclip cannot increase an existing token's permissions."
+    },
+    {
       "app": "shopify",
       "method": "ucp-commerce",
       "auth": "none",

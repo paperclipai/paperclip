@@ -1498,6 +1498,43 @@ function invalidateHeartbeatProgressQueries(
   }
 }
 
+// Actions that can change the status, retry or recovery fields that related
+// tasks embed in their `blockedBy`/`blocks` summaries.
+const ISSUE_RELATION_SUMMARY_ACTIVITY_ACTIONS = new Set([
+  "issue.updated",
+  "issue.deleted",
+  "issue.status_decision_recorded",
+  "issue.checked_out",
+  "issue.released",
+  "issue.recovery_action_resolved",
+  "issue.recovery_generation_replaced",
+  "issue.retry_requested",
+  "issue.scheduled_retry_retry_now",
+]);
+
+/**
+ * A task detail embeds summaries of its blockers and the tasks it blocks. When
+ * one of those changes, refresh every cached detail that embeds it so the
+ * dependent page does not keep showing the old blocker status.
+ */
+function invalidateIssueDetailsEmbeddingRelation(queryClient: QueryClient, refs: Iterable<string>) {
+  const changed = new Set(refs);
+  if (changed.size === 0) return;
+  const embeds = (summaries: unknown) =>
+    Array.isArray(summaries) &&
+    summaries.some((summary) => {
+      const record = readRecord(summary);
+      return !!record && (changed.has(readString(record.id) ?? "") || changed.has(readString(record.identifier) ?? ""));
+    });
+  queryClient.invalidateQueries({
+    queryKey: ["issues", "detail"],
+    predicate: (query) => {
+      const cached = readRecord(query.state.data);
+      return !!cached && !changed.has(readString(cached.id) ?? "") && (embeds(cached.blockedBy) || embeds(cached.blocks));
+    },
+  });
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -1649,6 +1686,9 @@ function invalidateActivityQueries(
         details,
         options,
       );
+      if (action && ISSUE_RELATION_SUMMARY_ACTIVITY_ACTIONS.has(action)) {
+        invalidateIssueDetailsEmbeddingRelation(queryClient, [entityId, ...issueRefs]);
+      }
       const taskDocumentsChanged = !!action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action);
       const caseWorkChanged = !!action && ISSUE_CASE_WORK_ACTIVITY_ACTIONS.has(action);
       if (caseWorkChanged) {

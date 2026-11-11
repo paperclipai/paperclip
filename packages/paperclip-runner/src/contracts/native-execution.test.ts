@@ -394,7 +394,7 @@ describe("NativeExecutionInputV1", () => {
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.22.0",
         agent: "pi",
         agentProfileVersion,
         agentServerPackage: "pi-acp",
@@ -664,7 +664,7 @@ describe("native task context ownership", () => {
     { driverKind: "opencode_server", provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny" } },
     { driverKind: "acpx_runtime", provider: {
       kind: "acpx", agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny-all",
-      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "pi", agentProfileVersion: 1,
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "pi", agentProfileVersion: 1,
         agentServerPackage: "pi-acp", agentServerVersion: "0.0.33", agentRuntimePackage: "@earendil-works/pi-coding-agent",
         agentRuntimeVersion: "0.84.2", commandDigest: `sha256:${"a".repeat(64)}` },
     } },
@@ -700,7 +700,7 @@ describe("native task context ownership", () => {
     const current = currentInput();
     const provider = {
       kind: "acpx", agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-all", mode: "architect",
-      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "codex", agentProfileVersion: 3,
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "codex", agentProfileVersion: 3,
         agentServerPackage: "@agentclientprotocol/codex-acp", agentServerVersion: "1.6.2",
         agentRuntimePackage: "@openai/codex", agentRuntimeVersion: "0.160.0", commandDigest: `sha256:${"a".repeat(64)}` },
     };

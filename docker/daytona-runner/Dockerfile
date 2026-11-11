@@ -172,7 +172,7 @@ RUN /bin/sh -lc 'set -eu; \
     test "$(codex --version)" = "codex-cli 0.160.0"; \
     test "$(claude --version)" = "2.1.286 (Claude Code)"; \
     test "$(opencode --version)" = "1.18.34"; \
-    test "$(acpx --version)" = "0.13.1"; \
+    test "$(acpx --version)" = "0.22.0"; \
     test "$(claude-agent-acp --version)" = "0.73.0"; \
     test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'
 

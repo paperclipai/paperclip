@@ -4,12 +4,15 @@ import { kimiReadOnlyPermissionAllowed } from "./kimi-config.js";
 import { createGrokPromptUsageCollector } from "./grok-usage.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
+import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
-import { acpxProviderFailure } from "./provider-failure.js";
+import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
   createAcpRuntime,
@@ -20,6 +23,7 @@ import {
   type AcpRuntime,
   type AcpRuntimeHandle,
   type AcpRuntimeOptions,
+  type AcpRuntimeTurnResult,
   type AcpSessionRecord,
   type AcpSessionStore,
 } from "acpx/runtime";
@@ -39,14 +43,16 @@ import {
   awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
 } from "./installation-integrity.js";
-import type { AcpxModelStatus } from "./model-verification.js";
+import { createAcpxPromptReceiptCollector } from "./prompt-receipts.js";
+import { createAcpxEffectiveModelGate, type AcpxEffectiveModelGate, type AcpxModelStatus } from "./model-verification.js";
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
 import { createAntigravityAdmission } from "./antigravity-admission.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
 import { isAcpPromptRequest, type AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
-import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
+import { assertCopilotPromptPolicy, createCopilotPolicyEnforcement, type CopilotPolicyEnforcement } from "./copilot-policy.js";
+import { acpxElicitationHandler, createAcpxPermissionReplyConfirmations, withReturnedResponseDelivery, type AcpxHostExtensionRequestHandler, type AcpxHostPermissionHandler } from "./interaction-delivery.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -96,11 +102,6 @@ interface GoalAwareAcpRuntime extends AcpRuntime {
   }): Promise<Record<string, unknown>>;
 }
 
-type GoalAwareAcpRuntimeOptions = AcpRuntimeOptions & {
-  onAgentInitialize?: (result: unknown) => void;
-  onSessionNotification?: (notification: unknown) => void;
-};
-
 interface AcpxRuntimeGoalState {
   capability: AcpxRuntimeGoalCapability | null;
   snapshot: AcpxRuntimeGoalSnapshot | null;
@@ -114,7 +115,7 @@ interface AcpxRuntimeExtensionTurn {
   controller: AbortController;
   signal: AbortSignal;
   promptStarted: Promise<void>;
-  onRequest?: AcpRuntimeOptions["onExtensionRequest"];
+  onRequest?: AcpxHostExtensionRequestHandler;
   onNotification?: AcpRuntimeOptions["onExtensionNotification"];
   onPlanProposal?: (proposal: AcpxPlanProposal) => void;
 }
@@ -124,7 +125,7 @@ interface AcpxRuntimeExtensionBoundary {
   sessionIds: Set<string>;
   steering: AcpxRuntimeSteeringCapability | null;
   /** The started turn whose first session/prompt request is not yet written. */
-  promptDispatch: { turn: AcpxRuntimeExtensionTurn; journal: AcpxTurnDispatchJournal } | null;
+  promptDispatch: { turn: AcpxRuntimeExtensionTurn; journal: AcpxTurnDispatchJournal; failure?: { error: unknown } } | null;
 }
 
 /**
@@ -300,10 +301,25 @@ export async function openQualifiedAcpxRuntime(
       );
     }
   };
+  // A reused session may never reinitialize its agent. Its goal capability is
+  // kept beside the agent capabilities ACPX already saves, and restored with
+  // them, so goal controls and Pi steering stay available after a restore.
+  // `null` means the latest initialize advertised no goal support.
+  let initializedGoalCapability: AcpxRuntimeGoalCapability | null | undefined;
   const sessionStore: AcpSessionStore = {
     async load(sessionId) {
       const record = await baseStore.load(sessionId);
-      if (record !== undefined) rememberHandshakeHandle(record);
+      if (record !== undefined) {
+        rememberHandshakeHandle(record);
+        const capabilities = objectRecord(record.agentCapabilities);
+        const stored = objectRecord(capabilities._meta)[GOAL_CAPABILITY_META_KEY];
+        // A session saved by ACPX 0.13.1 kept goal support in its own field.
+        const legacy = stored === undefined ? await legacyGoalCapability(options.stateDirectory, record.acpxRecordId) : null;
+        // Persist it under the current key on the next save.
+        if (legacy && initializedGoalCapability === undefined) initializedGoalCapability = legacy;
+        const goal = stored ?? legacy ?? undefined;
+        applyAgentInitialize({ agentCapabilities: capabilities, ...(goal === undefined ? {} : { _meta: { goal } }) });
+      }
       return record;
     },
     async save(record) {
@@ -311,8 +327,31 @@ export async function openQualifiedAcpxRuntime(
       // the store to persist it. Capture cleanup authority first so a storage
       // rejection cannot orphan the live session created by the handshake.
       rememberHandshakeHandle(record);
-      await baseStore.save(record);
+      await baseStore.save(withPersistedGoalCapability(record, initializedGoalCapability));
     },
+  };
+  const initializeRequests = new Set<string | number>();
+  const observeAgentInitialize = (direction: "inbound" | "outbound", message: unknown): void => {
+    const value = objectRecord(message);
+    const id = value.id;
+    if (typeof id !== "string" && typeof id !== "number") return;
+    if (direction === "outbound") {
+      if (value.method === "initialize" && initializeRequests.size < 16) initializeRequests.add(id);
+      return;
+    }
+    if (value.method !== undefined || !initializeRequests.delete(id) || value.result === undefined) return;
+    initializedGoalCapability = goalCapabilityFromAcpMessage({ result: value.result });
+    applyAgentInitialize(value.result);
+  };
+  const applyAgentInitialize = (result: unknown): void => {
+    const capability = goalCapabilityFromAcpMessage({ result });
+    if (capability) goalState.capability = capability;
+    // Only the runner-owned Pi wrapper has an admitted steering contract.
+    // Never infer it from generic ACP prompt support or native-only features.
+    const pi = objectRecord(objectRecord(objectRecord(objectRecord(result).agentCapabilities)._meta).paperclipPi);
+    extensionBoundary.steering = options.profile.agent === "pi" && pi.version === 1
+      ? { steering: pi.steering === true, queuedFollowUp: pi.queuedFollowUp === true }
+      : null;
   };
   const runnerOwnedMcpServerNames = new Set(
     options.mcpServers
@@ -322,12 +361,24 @@ export async function openQualifiedAcpxRuntime(
   const permissionBoundary: {
     active: AbortController | null;
     hasAdmittedTurn: boolean;
-    handler?: AcpRuntimeOptions["onPermissionRequest"];
+    handler?: AcpxHostPermissionHandler;
   } = { active: null, hasAdmittedTurn: false };
   const extensionProfile = ACPX_CAPABILITY_PROFILES[options.profile.agent];
   const extensionRequests = new Set(extensionProfile.extensionRequests);
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const promptUsage = options.profile.agent === "grok" ? createGrokPromptUsageCollector() : undefined;
+  const promptReceipts = createAcpxPromptReceiptCollector(options.profile.agent);
+  const permissionReplies = createAcpxPermissionReplyConfirmations();
+  const modelGate = createAcpxEffectiveModelGate(options.profile.reportedModelId);
+  // Copilot's admitted permission policy is enforced from the observed wire:
+  // a violation stops the provider and refuses every later prompt.
+  const copilotPolicy = options.profile.agent === "copilot"
+    ? createCopilotPolicyEnforcement(options.profile.reportedModelId, (error) => {
+      permissionBoundary.active?.abort(error);
+      extensionBoundary.active?.controller.abort(error);
+      void children.terminate().catch(() => undefined);
+    })
+    : null;
   const extensionBoundary: AcpxRuntimeExtensionBoundary = {
     active: null, sessionIds: new Set(), steering: null, promptDispatch: null,
   };
@@ -372,7 +423,26 @@ export async function openQualifiedAcpxRuntime(
     ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
     : null;
   const contextAdmission = instructionAdmission ?? antigravityAdmission;
-  const runtimeOptions: GoalAwareAcpRuntimeOptions = {
+  // The agent's complete launch environment. ACPX's own environment handling
+  // (credential checks, ACP terminals) keeps reading this process's environment.
+  const agentEnvironment = (): Record<string, string> => ({
+    ...definedEnvironment(options.launchEnvironment),
+    ...(options.profile.agent === "claude"
+      ? {
+          ...(preconfigured ? {
+            // Advertise the requested exact ID without rewriting user settings.
+            ANTHROPIC_MODEL: options.profile.reportedModelId,
+            ANTHROPIC_CUSTOM_MODEL_OPTION: options.profile.reportedModelId,
+          } : { PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1" }),
+          // This URL comes from the runner-owned authenticated tool bridge,
+          // never provider-supplied permission-request metadata.
+          PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
+            (server): server is Extract<typeof server, { url: string }> => "url" in server && server.runnerOwned && server.name === "paperclip",
+          )?.url ?? "",
+        }
+      : {}),
+  });
+  const runtimeOptions: AcpRuntimeOptions = {
     cwd: options.cwd,
     ...(instructionAdmission || modeBinding ? { protocolGuardFactory: () => {
       const instructions = instructionAdmission?.createGuard();
@@ -380,7 +450,11 @@ export async function openQualifiedAcpxRuntime(
       return (direction: "inbound" | "outbound", message: unknown) => { instructions?.(direction, message); mode?.(direction, message); };
     } } : {}),
     ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
-    ...(effortAdmission ? { protocolGuardFactory: () => effortAdmission.createGuard() } : {}),
+    ...(options.profile.agent === "grok" ? { protocolGuardFactory: () => {
+      const open = createGrokSessionOpenGuard({ rules: options.systemInstructions ?? "", model: options.profile.reportedModelId });
+      const effort = effortAdmission?.createGuard();
+      return (direction: "inbound" | "outbound", message: unknown) => { open(direction, message); effort?.(direction, message); };
+    } } : effortAdmission ? { protocolGuardFactory: () => effortAdmission.createGuard() } : {}),
     ...(antigravityAdmission ? { protocolGuardFactory: () => antigravityAdmission.createGuard() } : {}),
     sessionStore,
     agentRegistry: createRegistry({
@@ -396,11 +470,8 @@ export async function openQualifiedAcpxRuntime(
       ? "approve-reads"
       : options.permissionMode,
     elicitationModes: ["form"],
-    ...(options.clientCapabilities === undefined ? {} : { clientCapabilities: structuredClone(options.clientCapabilities) }),
+    clientCapabilities: acpxTypedSessionFailureClientCapabilities(options.clientCapabilities),
     extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
-    ...(options.profile.agent === "copilot" ? {
-      protocolGuardFactory: () => createCopilotProtocolGuard(options.profile.reportedModelId),
-    } : {}),
     onExtensionRequest: async (method, params, context) => {
       const active = extensionBoundary.active;
       if (!extensionRequests.has(method) || !active?.onRequest || !ownsExtensionTurn(active, params) || context.signal.aborted) {
@@ -410,10 +481,15 @@ export async function openQualifiedAcpxRuntime(
       // Cursor's native extensions omit sessionId. Only after admission may
       // that omission inherit this exact prompt's ACP wire session identity.
       const boundParams = params.sessionId === undefined ? { ...params, sessionId: active.sessionId } : params;
-      const response = await abortableExtensionResult(active.onRequest(method, boundParams, { requestId: context.requestId, signal, responseDelivery: context.responseDelivery }), signal);
-      signal.throwIfAborted();
-      if (!ownsExtensionTurn(active, params)) throw new Error("ACPX extension request turn expired");
-      return response;
+      const onRequest = active.onRequest;
+      return await withReturnedResponseDelivery(
+        (responseDelivery) => abortableExtensionResult(onRequest(method, boundParams, { requestId: context.requestId, signal, responseDelivery }), signal),
+        (response) => {
+          signal.throwIfAborted();
+          if (!ownsExtensionTurn(active, params)) throw new Error("ACPX extension request turn expired");
+          return response;
+        },
+      );
     },
     onExtensionNotification: (method, params) => {
       const active = extensionBoundary.active;
@@ -444,6 +520,7 @@ export async function openQualifiedAcpxRuntime(
     })),
     onPermissionRequest: async (request, context) => {
       if (preconfigured) return { outcome: "reject_once" };
+      if (copilotPolicy?.violation) return { outcome: "cancel" };
       const rawSessionId = objectRecord(request.raw).sessionId;
       if (!extensionBoundary.sessionIds.has(request.sessionId)
         || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
@@ -481,14 +558,22 @@ export async function openQualifiedAcpxRuntime(
         if (active && turn && handler && !active.signal.aborted && !turn.signal.aborted && !context.signal.aborted) {
           // Capture this turn's callback before awaiting. A session-lifetime
           // callback must never acquire the next turn's approval authority.
-          const decision = await handler(request, {
-            signal: AbortSignal.any([active.signal, turn.signal, context.signal]),
-            responseDelivery: context.responseDelivery,
-          });
+          const signal = AbortSignal.any([active.signal, turn.signal, context.signal]);
+          const reply = permissionReplies.bind(request, signal);
+          let decision: Awaited<ReturnType<AcpxHostPermissionHandler>>;
+          try {
+            decision = await handler(request, { signal, responseDelivery: reply.delivery });
+          } catch (error) {
+            reply.fail(new Error("ACP permission callback failed before its decision was returned"));
+            throw error;
+          }
           if (permissionBoundary.active !== active || extensionBoundary.active !== turn || active.signal.aborted || turn.signal.aborted || context.signal.aborted) {
+            reply.select({ outcome: "cancel" });
             return { outcome: "cancel" };
           }
-          return decision ?? { outcome: "cancel" };
+          const selected = decision ?? { outcome: "cancel" as const };
+          reply.select(selected);
+          return selected;
         }
         // This runtime has no interactive approval bridge. Stop the active
         // turn instead of asking the model to recover from an unexplained
@@ -498,46 +583,35 @@ export async function openQualifiedAcpxRuntime(
       }
       return { outcome: disposition };
     },
-    onAgentInitialize: (result) => {
-      const capability = goalCapabilityFromAcpMessage({ result });
-      if (capability) goalState.capability = capability;
-      // Only the runner-owned Pi wrapper has an admitted steering contract.
-      // Never infer it from generic ACP prompt support or native-only features.
-      const pi = objectRecord(objectRecord(objectRecord(objectRecord(result).agentCapabilities)._meta).paperclipPi);
-      extensionBoundary.steering = options.profile.agent === "pi" && pi.version === 1
-        ? { steering: pi.steering === true, queuedFollowUp: pi.queuedFollowUp === true }
-        : null;
-    },
-    onSessionNotification: acceptGoalNotification,
     onAcpMessage: (direction, message) => {
+      observeAgentInitialize(direction, message);
+      copilotPolicy?.observe(direction, message);
+      modelGate.observe(direction, message);
+      // Goal updates belong to this runtime's own ACP session, not Cursor children.
+      if (direction === "inbound" && (extensionBoundary.sessionIds.size === 0
+        || extensionBoundary.sessionIds.has(String(objectRecord(objectRecord(message).params).sessionId)))) {
+        acceptGoalNotification(message);
+      }
+      permissionReplies.observe(direction, message);
       const active = extensionBoundary.active;
       // ACPX calls this synchronously before it writes an outbound message to
-      // the provider stream, so a thrown journal error aborts the prompt write.
+      // the provider stream, so the record is durable before the prompt leaves.
+      // ACPX 0.22 swallows observer errors: keep a failed write for the turn's
+      // assertActive, which ACPX calls next and which aborts the prompt write.
       const dispatch = extensionBoundary.promptDispatch;
       if (direction === "outbound" && dispatch && dispatch.turn === active && isAcpPromptRequest(message)) {
         extensionBoundary.promptDispatch = null;
-        dispatch.journal.markDispatched();
+        try {
+          dispatch.journal.markDispatched();
+        } catch (error) {
+          dispatch.failure = { error };
+        }
       }
-      if (active && (direction === "inbound" || !active.signal.aborted)) promptUsage?.observe(direction, message);
+      if (active && (direction === "inbound" || !active.signal.aborted)) {
+        promptUsage?.observe(direction, message);
+        promptReceipts?.observe(direction, message);
+      }
     },
-    spawnEnvironment: () => ({
-      ...definedEnvironment(options.launchEnvironment),
-      ...(options.profile.agent === "claude"
-        ? {
-            ...(preconfigured ? {
-              // Advertise the requested exact ID without rewriting user settings.
-              ANTHROPIC_MODEL: options.profile.reportedModelId,
-              ANTHROPIC_CUSTOM_MODEL_OPTION: options.profile.reportedModelId,
-            } : { PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1" }),
-            // This URL comes from the runner-owned authenticated tool bridge,
-            // never provider-supplied permission-request metadata.
-            PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
-              (server): server is Extract<typeof server, { url: string }> => "url" in server && server.runnerOwned && server.name === "paperclip",
-            )?.url ?? "",
-          }
-        : {}),
-    }),
-    spawnCwd: options.cwd,
     spawnAgent: (input) => {
       // ACPX can invoke this callback after its handshake caller has already
       // been cancelled. Check at the last host-owned boundary so a late
@@ -545,8 +619,11 @@ export async function openQualifiedAcpxRuntime(
       options.signal?.throwIfAborted();
       options.assertWorkspaceHeld?.();
       commandLaunches.count += 1;
+      // Each stdio connection starts with fresh Copilot admission state.
+      copilotPolicy?.connect();
+      modelGate.connect();
       return children.add(
-        options.command.spawn(input.args, input.options, {
+        options.command.spawn(input.args, { ...input.options, env: agentEnvironment() }, {
           credentialFenceFds,
           activateCredentialFenceOwner: options.activateCredentialFenceOwner!,
         }) as ChildProcess,
@@ -571,8 +648,10 @@ export async function openQualifiedAcpxRuntime(
         cwd: options.cwd,
         sessionOptions: {
           // Forward the requested model unchanged; verify the provider's
-          // reported selection before admitting a billable prompt.
-          model: options.profile.reportedModelId,
+          // reported selection before admitting a billable prompt. Grok binds
+          // its model when the native session opens and rejects any later
+          // selection, so ACPX must not replay one after a load.
+          ...(options.profile.agent === "grok" ? {} : { model: options.profile.reportedModelId }),
           ...(preconfigured && options.profile.agent === "claude" ? {
             allowedTools: options.mcpServers
               .filter(server => server.runnerOwned && server.name.startsWith("paperclip_runner_"))
@@ -749,6 +828,9 @@ export async function openQualifiedAcpxRuntime(
       options.profile.agent === "copilot",
       options.profile.agent === "copilot" ? assertCopilotPromptPolicy : undefined,
       promptUsage,
+      copilotPolicy,
+      modelGate,
+      promptReceipts,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -1195,11 +1277,14 @@ function runtimePort(
   runtimeCloseTimeoutMs: number,
   goalState: AcpxRuntimeGoalState,
   commandLaunches: { count: number; refreshConsumedCommand?: () => Promise<void> },
-  permissionBoundary: { active: AbortController | null; hasAdmittedTurn: boolean; handler?: AcpRuntimeOptions["onPermissionRequest"] },
+  permissionBoundary: { active: AbortController | null; hasAdmittedTurn: boolean; handler?: AcpxHostPermissionHandler },
   extensionBoundary: AcpxRuntimeExtensionBoundary,
   monitorProviderDeath: boolean,
   assertPromptPolicy?: (text: string) => void,
   promptUsage?: ReturnType<typeof createGrokPromptUsageCollector>,
+  copilotPolicy?: CopilotPolicyEnforcement | null,
+  modelGate?: AcpxEffectiveModelGate,
+  promptReceipts?: ReturnType<typeof createAcpxPromptReceiptCollector>,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
   let extensionControls: Promise<void> = Promise.resolve();
@@ -1459,7 +1544,11 @@ function runtimePort(
     },
     async getStatus() {
       const status = await persistedRuntimeStatus(sessionStore, handle, identity);
-      return promptUsage ? { ...status, terminalPromptUsage: promptUsage.snapshot() } : status;
+      return {
+        ...status,
+        ...(promptUsage ? { terminalPromptUsage: promptUsage.snapshot() } : {}),
+        ...promptReceipts?.statusFields(),
+      };
     },
     steeringCapability() {
       return extensionBoundary.steering === null ? null : structuredClone(extensionBoundary.steering);
@@ -1559,6 +1648,7 @@ function runtimePort(
         }
       : {}),
     startTurn(input) {
+      copilotPolicy?.assertActive();
       if (providerProcessLost) throw new AcpxProviderProcessLostError();
       assertPromptPolicy?.(input.text);
       if (extensionBoundary.active) throw new Error("ACPX runtime already has an active turn");
@@ -1575,8 +1665,10 @@ function runtimePort(
         onPlanProposal: input.onPlanProposal,
       };
       extensionBoundary.active = extensionTurn;
-      extensionBoundary.promptDispatch = dispatchJournal ? { turn: extensionTurn, journal: dispatchJournal } : null;
+      const promptDispatch: AcpxRuntimeExtensionBoundary["promptDispatch"] = dispatchJournal ? { turn: extensionTurn, journal: dispatchJournal } : null;
+      extensionBoundary.promptDispatch = promptDispatch;
       promptUsage?.begin(input.requestId, identity.backendSessionId);
+      promptReceipts?.begin(input.requestId, identity.backendSessionId);
       // A guardian can outlive the provider while ACP awaits a callback.
       // Native exit or a typed ACP agent disconnect retires this turn; losing
       // the controller connection must preserve deliverable input instead.
@@ -1616,11 +1708,13 @@ function runtimePort(
             ? AbortSignal.any([input.signal, approval.signal])
             : approval.signal,
           ...(input.onElicitation
-            ? { onElicitation: input.onElicitation }
+            ? { onElicitation: acpxElicitationHandler(input.onElicitation) }
             : {}),
-          ...(input.onTerminalSessionFailure
-            ? { onTerminalSessionFailure: input.onTerminalSessionFailure }
-            : {}),
+          assertActive: () => {
+            if (promptDispatch?.failure) throw promptDispatch.failure.error;
+            copilotPolicy?.assertActive();
+            modelGate?.assertActive();
+          },
         });
       } catch (error) {
         releaseExtensionTurn();
@@ -1633,7 +1727,9 @@ function runtimePort(
       void promptStarted.catch(() => undefined);
       extensionTurn.promptStarted = promptStarted;
       const result = abortableExtensionResult(guarded.result, providerDeath.signal).then(
-        (value) => {
+        (settled) => {
+          copilotPolicy?.assertActive();
+          const value = typedTerminalTurnResult(settled, input.onTerminalSessionFailure);
           if (monitorProviderDeath && value.status === "failed"
             && (value.error?.code === "AGENT_DISCONNECTED" || value.error?.detailCode === "AGENT_DISCONNECTED")) {
             // ACP can terminalize before the independent exit observer runs.
@@ -1649,7 +1745,7 @@ function runtimePort(
           }
           return value;
         },
-        (error: unknown) => { approval.signal.throwIfAborted(); throw error; },
+        (error: unknown) => { copilotPolicy?.assertActive(); approval.signal.throwIfAborted(); throw error; },
       ).finally(() => {
         releaseExtensionTurn();
         if (permissionBoundary.active === approval) { permissionBoundary.active = null; permissionBoundary.handler = undefined; approval.abort(); }
@@ -1786,7 +1882,6 @@ async function persistedRuntimeStatus(
     agentSessionId: persistedAgentSessionId,
     lastRequestId: record.lastRequestId,
     requestTokenUsage: structuredClone(record.request_token_usage ?? {}),
-    cursorPromptUsage: structuredClone(record.cursor_prompt_usage),
     promptMessageIds: (record.messages ?? []).flatMap(message => typeof message === "object" && message !== null && "User" in message ? [message.User.id] : []),
     usageCost: structuredClone(record.cumulative_cost),
     ...(currentModelId === undefined && !availableModelIds?.length
@@ -2369,4 +2464,57 @@ function definedEnvironment(
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   );
+}
+
+/** A typed AIR session failure fails the turn even though ACP reported a normal stop. */
+function typedTerminalTurnResult(
+  result: AcpRuntimeTurnResult,
+  onFailure?: (failure: AcpxTerminalSessionFailure) => void,
+): AcpRuntimeTurnResult {
+  if (result.status === "failed") return result;
+  const failure = acpxTypedTerminalSessionFailure(result._meta);
+  if (!failure) return result;
+  try {
+    onFailure?.(failure);
+  } catch {
+    // Diagnostics cannot change the failed terminal outcome.
+  }
+  return { status: "failed", error: { message: `ACP agent reported a terminal ${failure.category} failure.`, code: "RUNTIME" } };
+}
+
+const GOAL_CAPABILITY_META_KEY = "paperclip.goalCapability";
+
+/** Store the agent's goal capability under a Paperclip key ACPX persists verbatim. */
+function withPersistedGoalCapability(
+  record: AcpSessionRecord,
+  capability: AcpxRuntimeGoalCapability | null | undefined,
+): AcpSessionRecord {
+  // Unknown since the last load: keep whatever the record already carries.
+  if (capability === undefined || record.agentCapabilities === undefined) return record;
+  const { [GOAL_CAPABILITY_META_KEY]: _previous, ...meta } = objectRecord(record.agentCapabilities._meta);
+  return {
+    ...record,
+    agentCapabilities: {
+      ...record.agentCapabilities,
+      _meta: capability === null ? meta : { ...meta, [GOAL_CAPABILITY_META_KEY]: structuredClone(capability) },
+    },
+  };
+}
+
+/**
+ * ACPX 0.13.1 with Paperclip's patch saved an agent's goal support as the
+ * record field `agent_goal_capability`. ACPX 0.22 drops unknown fields when it
+ * parses a record, so read that field from the saved file itself.
+ */
+async function legacyGoalCapability(stateDirectory: string, recordId: string): Promise<AcpxRuntimeGoalCapability | null> {
+  try {
+    const raw = JSON.parse(await readFile(join(stateDirectory, "sessions", `${encodeURIComponent(recordId)}.json`), "utf8"));
+    const legacy = objectRecord(objectRecord(raw).agent_goal_capability);
+    if (Object.keys(legacy).length === 0) return null;
+    return goalCapabilityFromAcpMessage({ result: { _meta: { goal: {
+      version: legacy.version, controlMethod: legacy.control_method, actions: legacy.actions,
+    } } } });
+  } catch {
+    return null;
+  }
 }

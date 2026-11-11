@@ -72,7 +72,7 @@ import {
   frameAcpxToolClassification,
   parseAcpxSidecarRequest,
   record,
-  sanitizeAcpxPlanEntries,
+  acpxPlanSnapshot,
   stringifyAcpxSidecarFrame,
   text,
   type AcpxExpectedSessionIdentity,
@@ -1208,12 +1208,8 @@ function boundRuntimeEventForNormalization(
 
 function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & KimiProjectedMessageEvent<AcpRuntimeEvent>): Record<string, unknown> {
   const runtimeType = text(record(event).type);
-  if (runtimeType === "plan") {
-    return {
-      type: "plan",
-      entries: sanitizeAcpxPlanEntries(record(event).entries),
-    };
-  }
+  const planEntries = acpxPlanSnapshot(event);
+  if (planEntries) return { type: "plan", entries: planEntries };
   const statusNotice = claudeStatusBannerNotice(event);
   if (statusNotice) return statusNotice;
   if (event.type === "text_delta") {

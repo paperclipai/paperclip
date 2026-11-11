@@ -178,7 +178,7 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
-function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
+export function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
 }
 
@@ -317,7 +317,11 @@ export function createIsolatedCodexAppServerArgs(
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="write"}`,
   ].join(",");
-  const planningFilesystemRules = [
+  const planningFilesystemRules = externalRunnerSandbox ? [
+    `":root"="read"`,
+    ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
+      ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
+  ].join(",") : [
     `":root"="none"`,
     `":minimal"="read"`,
     `":tmpdir"="none"`,

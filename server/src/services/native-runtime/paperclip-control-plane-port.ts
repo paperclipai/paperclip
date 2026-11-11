@@ -10,6 +10,7 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   nativeRunnerCheckpoints,
+  toolInvocations,
 } from "@paperclipai/db";
 import type {
   CompleteControlPlaneRunInput,
@@ -36,6 +37,7 @@ import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransac
   type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -510,6 +512,34 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       else if (event.sourceSeq > cursor + 1) break;
     }
     return { events, highestContiguousSourceSeq: cursor };
+  }
+
+  /**
+   * Proves from durable rows, across every runner instance, that this run has
+   * no provider event, source-sequenced runner event, tool invocation, or
+   * accepted result. Any such row, or a read failure, denies the proof.
+   */
+  async provesNoRunProviderWork(options: { signal: AbortSignal }): Promise<boolean> {
+    options.signal.throwIfAborted();
+    const { companyId, runId } = this.#binding;
+    const providerEvents = sql.join([...NATIVE_PROVIDER_DURABLE_EVENT_TYPES].map(value => sql`${value}`), sql`, `);
+    const result = await this.#db.execute(sql`select
+      exists (select 1 from ${heartbeatRunEvents} event where event.company_id = ${companyId} and event.run_id = ${runId}
+        and (event.source_event_id is not null or event.source_instance_id is not null
+          or event.event_type in (${providerEvents})
+          or event.event_type ~ '^(turn|item|tool|semantic_tool|run[.]result)[.]')) as "providerEvent",
+      exists (select 1 from ${toolInvocations} invocation where invocation.company_id = ${companyId}
+        and invocation.run_id = ${runId}) as "toolInvocation",
+      exists (select 1 from ${nativeRunResults} result where result.company_id = ${companyId}
+        and result.run_id = ${runId}) as "acceptedResult",
+      exists (select 1 from ${nativeRunFinalizations} coordinator where coordinator.run_id = ${runId}
+        and coordinator.result_id is not null) as "finalizedResult"`);
+    options.signal.throwIfAborted();
+    const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;
+    const row = rows[0];
+    if (!row) return false;
+    return row.providerEvent === false && row.toolInvocation === false
+      && row.acceptedResult === false && row.finalizedResult === false;
   }
 
   async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {

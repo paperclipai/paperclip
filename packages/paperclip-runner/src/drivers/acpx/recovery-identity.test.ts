@@ -59,6 +59,20 @@ describe("ACPX recovery identity", () => {
     expect(() => verifyExpectedAcpxIdentity({ ...priorExpected, profileDigest: next.commandDigest }, next, record)).toThrow(/persisted runtime record/);
   });
 
+  it("keeps a session saved under ACPX 0.13.1 after the ACPX upgrade", async () => {
+    const fixture = await recoveryFixture();
+    const current = await createAcpxRecoveryBinding(fixture.input);
+    const previous = await createAcpxRecoveryBinding({ ...fixture.input,
+      profile: { ...fixture.input.profile, acpxVersion: "0.13.1" as never } });
+    // The same session key finds the saved ACPX record, and its persisted
+    // identity record still verifies.
+    expect(current.profileSessionKey).toBe(previous.profileSessionKey);
+    expect(current.profileDigest).toBe(previous.profileDigest);
+    const expected = { ...fixture.expected, profileDigest: previous.commandDigest };
+    const record = createAcpxIdentityRecord(expected, previous);
+    expect(acpxProviderSessionIdentity(record, current).acpxRecordId).toBe(record.acpxRecordId);
+  });
+
   it("binds Cursor mode on recovery and rejects missing or changed persisted mode", async () => {
     const fixture = await recoveryFixture();
     const input = { ...fixture.input, profile: resolveQualifiedAcpxProfile("cursor", fixture.input.requestedModel), mode: "agent" };

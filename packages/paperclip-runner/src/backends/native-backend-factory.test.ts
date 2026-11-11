@@ -488,6 +488,7 @@ describe("native backend factory", () => {
           recovered: false,
           reason: expect.stringContaining("PRP provider resume state is unavailable"),
           failureClass: PROVIDER_STATE_INCOMPATIBLE,
+          resumeStateUnavailable: true,
         });
     });
 
@@ -499,6 +500,7 @@ describe("native backend factory", () => {
       const recovered = await backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal });
       expect(recovered).toMatchObject({ recovered: false, reason: expect.stringContaining("PRP provider resume state is unavailable") });
       expect(recovered).not.toHaveProperty("failureClass");
+      expect(recovered).not.toHaveProperty("resumeStateUnavailable");
     });
   });
 
@@ -750,7 +752,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "acpx_runtime",
-      version: "0.13.1",
+      version: "0.22.0",
       capabilities: {
         resume: true,
         interruption: true,
@@ -774,7 +776,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
         capabilities: {
           steering: false,
           resume: true,
@@ -800,7 +802,7 @@ describe("native backend factory", () => {
     const backend = createNativeSessionBackend(input, {
       codexTransportFactory: () => { throw new Error("descriptor must not launch the transport"); },
     });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["claude" as const])(
@@ -812,7 +814,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
       });
     },
   );
@@ -823,7 +825,7 @@ describe("native backend factory", () => {
     const profile = resolveQualifiedAcpxProfile("pi", "custom/explicit-test-model");
     Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, piThinkingLevel: "low", profile });
     const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {

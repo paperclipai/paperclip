@@ -593,6 +593,26 @@ describe("provider-neutral events", () => {
     expect(event.payload.complete).toBe(false);
   });
 
+  it("maps an ACPX 0.22 plan status event, including a cleared plan, to a plan update", () => {
+    const [updated] = canonicalProviderEventsFromAcpxRuntimeEvent(
+      { type: "status", tag: "plan", text: "plan", entries: [
+        { content: "Inspect", status: "completed", priority: "high" },
+        { content: "Verify", status: "pending", priority: "low" },
+      ] } as never,
+      "fallback",
+      "turn-acp",
+    );
+    expect(updated).toMatchObject({ eventType: "plan.updated", itemId: "turn-acp", payload: { planId: "turn-acp", complete: false } });
+    expect((updated!.payload as { steps: unknown[] }).steps).toHaveLength(2);
+    const [cleared] = canonicalProviderEventsFromAcpxRuntimeEvent(
+      { type: "status", tag: "plan", text: "plan", entries: [] } as never,
+      "fallback",
+      "turn-acp",
+    );
+    expect(cleared).toMatchObject({ eventType: "plan.updated", payload: { planId: "turn-acp" } });
+    expect((cleared!.payload as { steps: unknown[] }).steps).toEqual([]);
+  });
+
   it("preserves every structured ACPX plan entry in a stable turn snapshot", () => {
     const event = canonicalProviderEventsFromAcpxRuntimeEvent(
       {

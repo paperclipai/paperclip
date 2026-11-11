@@ -6749,6 +6749,33 @@ mod tests {
             CodexCommandExecutor::stable_launch_args(&unsafe_args)
         );
     }
+
+    #[test]
+    fn external_sandbox_planning_profile_rules_carry_saved_launches_forward() {
+        let launch = |filesystem: &str, network: &str| -> Vec<String> {
+            vec![
+                "-c".to_owned(),
+                "default_permissions=\"paperclip-runner-external-sandbox\"".to_owned(),
+                "-c".to_owned(),
+                format!("permissions.paperclip-runner-workspace-read-only.filesystem={filesystem}"),
+                "-c".to_owned(),
+                format!(
+                    "permissions.paperclip-runner-workspace-read-only.network.enabled={network}"
+                ),
+                "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+                "app-server".to_owned(),
+            ]
+        };
+        let saved = launch(
+            "{\":root\"=\"none\",\":minimal\"=\"read\",\":tmpdir\"=\"none\",\"/home/daytona/.codex\"=\"none\",\":workspace_roots\"={\".\"=\"read\"}}",
+            "false",
+        );
+        let current = launch("{\":root\"=\"read\"}", "true");
+        assert_eq!(
+            CodexCommandExecutor::stable_launch_args(&saved),
+            CodexCommandExecutor::stable_launch_args(&current)
+        );
+    }
     use super::*;
 
     fn schema_rejection(operation_id: &str, input: Value) -> ToolResult {

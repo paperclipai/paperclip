@@ -1928,7 +1928,7 @@ class CodexAcpxSession implements HarnessSession {
   async #handleElicitation(
     turnId: string,
     request: AcpElicitationRequest,
-    context: AcpElicitationContext,
+    context: AcpElicitationContext & { responseDelivery?: Promise<void> },
   ): Promise<AcpElicitationResponse> {
     if (
       this.#closed ||

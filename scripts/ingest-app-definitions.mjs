@@ -776,19 +776,51 @@ const apps = [
     "developer",
     "sentry.io",
     ["https://mcp.sentry.dev/*"],
-    method(
-      "mcp-oauth",
-      "mcp_remote",
-      "oauth",
-      {
-        serverUrl: "https://mcp.sentry.dev/mcp",
-        discoveryUrl:
-          "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
-      },
-      "S2",
-      "Connect the Sentry organization and projects agents need for incident work.",
-      { requiredResourceFilters: ["organization", "project", "environment"] },
-    ),
+    [
+      method(
+        "mcp-oauth",
+        "mcp_remote",
+        "oauth",
+        {
+          serverUrl: "https://mcp.sentry.dev/mcp",
+          discoveryUrl:
+            "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
+        },
+        "S2",
+        "Connect the Sentry organization and projects agents need for incident work.",
+        { requiredResourceFilters: ["organization", "project", "environment"] },
+      ),
+      method(
+        "mcp-user-token",
+        "mcp_remote",
+        "api_key",
+        { serverUrl: "https://mcp.sentry.dev/mcp" },
+        "S2",
+        "Connect with a Sentry user auth token for unattended agents. Browser sign-in grants expire and need the owner to sign in again; a user auth token lasts until you revoke it.",
+        {
+          label: "Use a user auth token",
+          whenToUse:
+            "Use a user auth token when an unattended agent needs Sentry access that does not expire with a browser sign-in grant.",
+          credentialFields: [
+            {
+              ...field("authorization", "Sentry user auth token", "sntryu_..."),
+              helperMd:
+                "Create a user auth token with org:read, project:read, project:write, team:read, team:write and event:write. The token acts as its creator, limited to that person's organization role.",
+            },
+          ],
+          keyPlacement: {
+            location: "header",
+            name: "Authorization",
+            prefix: "Sentry-Bearer ",
+          },
+          consoleLinks: {
+            keys: "https://sentry.io/settings/account/api/auth-tokens/",
+            docs: "https://github.com/getsentry/sentry-mcp#remote-server",
+          },
+          requiredResourceFilters: ["organization", "project", "environment"],
+        },
+      ),
+    ],
   ],
   [
     "vercel",

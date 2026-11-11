@@ -1,82 +1,83 @@
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { COPILOT_AGENT_MODE, createCopilotProtocolGuard } from "./copilot-policy.js";
+import { COPILOT_AGENT_MODE, createCopilotPolicyEnforcement } from "./copilot-policy.js";
+import { acpxInternals } from "../../../test/support/acpx-bundle-internals.mjs";
 
-// Exercise the installed, patched wire stream, not a mock observer. This is a
+// Exercise the installed ACPX wire stream with its stock observer. This is a
 // pinned internal bundle export; the package-contract suite guards its version.
-const bundle = new URL("./dist/live-checkpoint-BSIrfgVo.js", pathToFileURL(createRequire(import.meta.url).resolve("acpx/package.json")));
-const { k: AcpClient } = await import(bundle.href);
+const { AcpClient } = await acpxInternals(["AcpClient"]);
 const safe = { sessionId: "s", modes: { currentModeId: COPILOT_AGENT_MODE }, configOptions: [
   { id: "mode", currentValue: COPILOT_AGENT_MODE }, { id: "allow_all", currentValue: "off" }, { id: "model", currentValue: "gpt-5.6-luna" },
 ] };
 
-function connection(guarded = true) {
+function connection() {
   const written: unknown[] = [];
   let inbound!: ReadableStreamDefaultController;
-  const kill = vi.fn();
-  const client = new AcpClient({ cwd: "/tmp", agentCommand: "fixture-never-spawned", permissionMode: "deny-all",
-    ...(guarded ? { protocolGuardFactory: () => createCopilotProtocolGuard("gpt-5.6-luna") } : {}),
-  });
-  client.agent = { kill };
+  const stop = vi.fn();
+  const policy = createCopilotPolicyEnforcement("gpt-5.6-luna", stop);
+  const client = new AcpClient({ cwd: "/tmp", agentCommand: "fixture-never-spawned", permissionMode: "deny-all" });
+  client.setEventHandlers({ onAcpMessage: (direction: "inbound" | "outbound", message: unknown) => policy.observe(direction, message) });
   const stream = client.createTappedStream({
     readable: new ReadableStream({ start(controller) { inbound = controller; } }),
     writable: new WritableStream({ write(message) { written.push(message); } }),
   });
-  return { client, writer: stream.writable.getWriter(), reader: stream.readable.getReader(), inbound, written, kill };
+  return { policy, stop, writer: stream.writable.getWriter(), reader: stream.readable.getReader(), inbound, written };
 }
 
-describe("patched ACPX admission guard", () => {
-  it.each(["session/new", "session/load", "session/resume"])("rejects unsafe %s before it reaches the SDK", async method => {
+async function open(c: ReturnType<typeof connection>, method = "session/new"): Promise<void> {
+  await c.writer.write({ id: 0, method, params: method === "session/new" ? {} : { sessionId: "s" } });
+  c.inbound.enqueue({ id: 0, result: safe });
+  await c.reader.read();
+}
+
+describe("Copilot policy enforcement on the stock ACPX stream", () => {
+  it.each(["session/new", "session/load", "session/resume"])("stops the provider when %s restores autopilot, before the SDK sees the reply", async method => {
     const c = connection();
     await c.writer.write({ id: 0, method, params: { sessionId: "s" } });
-    const read = c.reader.read();
     c.inbound.enqueue({ id: 0, result: { ...safe, modes: { currentModeId: "autopilot" } } });
-    await expect(read).rejects.toMatchObject({ code: "COPILOT_POLICY_VIOLATION" });
-    expect(c.kill).toHaveBeenCalledWith("SIGTERM");
+    await c.reader.read();
+    expect(c.stop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "COPILOT_POLICY_VIOLATION" }));
+    expect(() => c.policy.assertActive()).toThrow(expect.objectContaining({ code: "COPILOT_POLICY_VIOLATION" }));
   });
-  it("rejects permission controls before any bytes reach the provider", async () => {
+
+  it("stops the provider when a permission control is written", async () => {
     const c = connection();
-    await c.writer.write({ id: 0, method: "session/new", params: {} });
-    c.inbound.enqueue({ id: 0, result: safe }); await c.reader.read();
-    await expect(c.writer.write({ id: 1, method: "session/set_config_option", params: { sessionId: "s", configId: "allow_all", value: "on" } })).rejects.toThrow(/admitted permission policy/);
-    expect(c.written).toHaveLength(1); expect(c.kill).toHaveBeenCalledOnce();
-    c.inbound.close();
+    await open(c);
+    await c.writer.write({ id: 1, method: "session/set_config_option", params: { sessionId: "s", configId: "allow_all", value: "on" } });
+    expect(c.stop).toHaveBeenCalledOnce();
+    expect(() => c.policy.assertActive()).toThrow(/admitted permission policy/);
   });
-  it("errors and stops the provider on drift even without a notification observer", async () => {
+
+  it("stops the provider on mid-session mode drift", async () => {
     const c = connection();
-    await c.writer.write({ id: 0, method: "session/new", params: {} });
-    c.inbound.enqueue({ id: 0, result: safe }); await c.reader.read();
+    await open(c);
     await c.writer.write({ id: 1, method: "session/prompt", params: { sessionId: "s", prompt: [{ type: "text", text: "Perform task" }] } });
-    const read = c.reader.read();
     c.inbound.enqueue({ method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "current_mode_update", currentModeId: "autopilot" } } });
-    await expect(read).rejects.toMatchObject({ code: "COPILOT_POLICY_VIOLATION" });
-    expect(c.kill).toHaveBeenCalledWith("SIGTERM");
+    await c.reader.read();
+    expect(c.stop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "COPILOT_POLICY_VIOLATION" }));
   });
-  it("preserves unguarded provider wire behavior", async () => {
-    const c = connection(false);
-    const message = { method: "session/update", params: { update: { sessionUpdate: "current_mode_update", currentModeId: "other-provider-mode" } } };
-    c.inbound.enqueue(message);
-    expect((await c.reader.read()).value).toEqual(message);
-    expect(c.kill).not.toHaveBeenCalled();
-    c.inbound.close();
-  });
-  it("blocks detached command before the permission request can authorize a side effect", async () => {
+
+  it("records detached work before its permission request reaches the SDK", async () => {
     const c = connection();
-    await c.writer.write({ id: 0, method: "session/new", params: {} });
-    c.inbound.enqueue({ id: 0, result: safe }); await c.reader.read();
+    await open(c);
     await c.writer.write({ id: 1, method: "session/prompt", params: { sessionId: "s", prompt: [{ type: "text", text: "Run task" }] } });
-    const read = c.reader.read();
-    const pendingSdkRequest = c.client.runConnectionRequest(() => new Promise(() => {}));
-    const pendingRejection = expect(pendingSdkRequest).rejects.toMatchObject({ code: "COPILOT_DETACHED_WORK_UNSUPPORTED" });
     c.inbound.enqueue({ method: "session/update", params: { sessionId: "s", update: {
       sessionUpdate: "tool_call", toolCallId: "native-detached", kind: "execute", status: "pending",
       rawInput: { command: "fixture", mode: "async", detach: true },
     } } });
-    c.inbound.enqueue({ id: 0, method: "session/request_permission", params: { sessionId: "s", toolCall: { toolCallId: "native-detached" } } });
-    await expect(read).rejects.toMatchObject({ code: "COPILOT_DETACHED_WORK_UNSUPPORTED", message: expect.stringContaining("Run the command attached") });
-    await pendingRejection;
-    expect(c.written).toHaveLength(2); // Only session/new and session/prompt; no permission response.
-    expect(c.kill).toHaveBeenCalledWith("SIGTERM");
+    await c.reader.read();
+    expect(c.stop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "COPILOT_DETACHED_WORK_UNSUPPORTED" }));
+    expect(() => c.policy.assertActive()).toThrow(/Run the command attached/);
+  });
+
+  it("keeps a safe session admitted and starts each connection fresh", async () => {
+    const c = connection();
+    await open(c);
+    await c.writer.write({ id: 1, method: "session/prompt", params: { sessionId: "s", prompt: [{ type: "text", text: "Perform task" }] } });
+    expect(c.stop).not.toHaveBeenCalled();
+    c.policy.assertActive();
+    c.policy.connect();
+    // A new connection has no admitted session until it opens one.
+    c.policy.observe("outbound", { id: 2, method: "session/prompt", params: { sessionId: "s", prompt: [{ type: "text", text: "Perform task" }] } });
+    expect(c.stop).toHaveBeenCalledOnce();
   });
 });

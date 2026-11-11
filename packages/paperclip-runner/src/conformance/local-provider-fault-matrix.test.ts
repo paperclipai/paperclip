@@ -66,7 +66,7 @@ const RUNNERD_FACADE_PROFILES = [
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.22.0",
         agent: "claude",
         agentProfileVersion: 1,
         agentServerPackage: "@agentclientprotocol/claude-agent-acp",
@@ -88,7 +88,7 @@ const RUNNERD_FACADE_PROFILES = [
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.22.0",
         agent: "codex",
         agentProfileVersion: 1,
         agentServerPackage: "@agentclientprotocol/codex-acp",

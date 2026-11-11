@@ -250,6 +250,81 @@ export async function runAcceptsFirstTurnQueuedInput(
   return !accepted;
 }
 
+/** The wake facts `deferredWakeJoinsFirstTurn` reads, without the rest of a large payload. */
+export const firstTurnWakeColumns = {
+  agentId: agentWakeupRequests.agentId,
+  reason: agentWakeupRequests.reason,
+  requestedByActorType: agentWakeupRequests.requestedByActorType,
+  requestedByActorId: agentWakeupRequests.requestedByActorId,
+};
+
+/** The lean payload fields `deferredWakeJoinsFirstTurn` reads, for a `jsonb_build_object` projection. */
+export function firstTurnWakePayloadFields(payload: typeof agentWakeupRequests.payload) {
+  return sql`'interactionId', ${payload}->'interactionId',
+    'queuedCommentInterrupt', ${payload}->'queuedCommentInterrupt'->'requestedAt',
+    'externalChatProvider', ${payload}->'externalChatProvider'`;
+}
+
+/** The lean `_paperclipWakeContext` fields `deferredWakeJoinsFirstTurn` reads. */
+export function firstTurnWakeContextFields(payload: typeof agentWakeupRequests.payload) {
+  return sql`'wakeReason', ${payload}->'_paperclipWakeContext'->'wakeReason',
+    'interactionId', ${payload}->'_paperclipWakeContext'->'interactionId',
+    'interactionStatus', ${payload}->'_paperclipWakeContext'->'interactionStatus',
+    'resumeIntent', ${payload}->'_paperclipWakeContext'->'resumeIntent',
+    'chatConversationId', ${payload}->'_paperclipWakeContext'->'chatConversationId'`;
+}
+
+/**
+ * The messages in one deferred queue that the running run's first turn takes:
+ * the ones it already sealed, or, while it is still starting, the ones its
+ * claim will take under the same rule as `claimFirstTurnQueuedInput`. A queue
+ * view shows these as sent instead of waiting for Steer, which cannot reach a
+ * run whose provider session (for example a booting sandbox) is not up yet.
+ * Presentation only: delivery still belongs to the claim and the deferred wake.
+ */
+export async function firstTurnQueuedCommentIds(
+  tx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    issueId: string;
+    runId: string;
+    wake: { agentId: string; status: string; reason: string | null; requestedByActorType: string | null;
+      requestedByActorId: string | null; payload: unknown };
+  },
+): Promise<string[]> {
+  const { wake } = input;
+  if (wake.status !== DEFERRED_WAKE_STATUS) return [];
+  const wakeIds = queuedCommentIdsFromWakePayload(wake.payload);
+  if (wakeIds.length === 0) return [];
+  // Read only the receipt and dispatch choice; a run snapshot can be large.
+  const [row] = await tx.select({
+    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
+    runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt, responsibleUserId: heartbeatRuns.responsibleUserId,
+    dispatchAdapterType: sql<string | null>`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`,
+    receipt: sql<unknown>`${heartbeatRuns.contextSnapshot}->${FIRST_TURN_QUEUED_INPUT_KEY}`,
+    executionRunId: issues.executionRunId, conversationAgentId: issues.conversationAgentId,
+  }).from(heartbeatRuns)
+    .leftJoin(issues, and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId))).limit(1);
+  if (!row || row.status !== "running" || row.agentId !== wake.agentId) return [];
+  const run = { ...row, runnerProfileJson: { adapterDispatch: { adapterType: row.dispatchAdapterType } },
+    contextSnapshot: { [FIRST_TURN_QUEUED_INPUT_KEY]: row.receipt } };
+  const receipt = readFirstTurnQueuedInputReceipt(run);
+  if (receipt) {
+    const sealed = new Set(receipt.commentIds);
+    return wakeIds.filter(id => sealed.has(id));
+  }
+  if (row.conversationAgentId || row.executionRunId !== run.id || !run.responsibleUserId) return [];
+  if (!deferredWakeJoinsFirstTurn(wake, run)) return [];
+  if (!(await runAcceptsFirstTurnQueuedInput(tx, run))) return [];
+  const eligible = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+    inArray(issueComments.id, wakeIds),
+    firstTurnEligibleComment({ companyId: input.companyId, issueId: input.issueId, responsibleUserId: run.responsibleUserId })));
+  const ids = new Set(eligible.map(row => row.id));
+  return wakeIds.filter(id => ids.has(id));
+}
+
 /**
  * True when the first turn would take every pending message in this queue,
  * under the same rule as the claim. Another user's message, an agent's, or one

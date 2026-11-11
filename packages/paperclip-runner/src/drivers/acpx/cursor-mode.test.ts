@@ -183,7 +183,9 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
       const turn = second.runtime.startTurn({ handle: secondHandle, text: "fixture", mode: "prompt", requestId: "cold-mode-turn", timeoutMs: 2000 });
       const drain = (async () => { for await (const _event of turn.events) { /* drain */ } })();
       expect((await turn.result).status).toBe("completed"); await drain;
-      expect(methods.filter(m => m === "session/set_config_option")).toHaveLength(2);
+      // The cold model control's load replays the saved model before setting
+      // it, then mode; the turn's reconnect replays the saved model and mode.
+      expect(methods.filter(m => m === "session/set_config_option")).toHaveLength(5);
       expect(methods.filter(m => m === "session/load")).toHaveLength(3);
       expect(methods.filter(m => m === "session/prompt")).toHaveLength(1);
     }

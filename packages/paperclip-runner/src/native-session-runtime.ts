@@ -18,7 +18,7 @@ import type {
   NativeSession,
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
-import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
+import type { NativeSessionRecoveryResult, PersistedNativeSession } from "./contracts/native-session-backend.js";
 import {
   PROVIDER_ATTACH_REFUSED,
   PROVIDER_SIDE_EFFECT_PENDING,
@@ -1917,6 +1917,61 @@ function checkpointCursor(cursor: string | null | undefined): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+/**
+ * A follow-up after a governed wait normally requires the same provider
+ * session. When the Runner proved the saved session state is gone, and nothing
+ * proves this run started provider work of its own, a fresh session cannot
+ * repeat a turn or a tool side effect: only the earlier conversation context is
+ * lost. Every other case keeps the named refusal. The reconciled checkpoint must
+ * be the untouched rebind of the previous run (no cursor progress, turn,
+ * runtime request, result, terminal or governed wait of this run), and the
+ * control plane must prove durably, across runner instances, that the run has
+ * no provider event, tool invocation or accepted result. A control plane
+ * without that proof, or a checkpoint missing those fields, keeps the refusal.
+ */
+const GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS = 30_000;
+
+async function governedWaitFollowUpMayStartFresh(input: {
+  input: NativeExecutionInput;
+  checkpoint: PersistedNativeSession;
+  recovery: NativeSessionRecoveryResult;
+  restartInterruption: boolean;
+  controlPlane: ControlPlanePort;
+  timeoutMs: number;
+}): Promise<boolean> {
+  const { checkpoint, recovery } = input;
+  if (
+    checkpoint.providerRecoveryPolicy !== "allow_replacement_after_governed_wait" ||
+    ("homeMode" in input.input && input.input.homeMode === "preconfigured") ||
+    recovery.failureClass !== PROVIDER_STATE_INCOMPATIBLE ||
+    recovery.resumeStateUnavailable !== true ||
+    input.restartInterruption ||
+    checkpoint.identity.runId !== input.input.binding.runId ||
+    !(checkpoint.cursor === null || checkpoint.cursor === "0") ||
+    checkpoint.activeTurnId !== null ||
+    !Array.isArray(checkpoint.terminalTurns) || checkpoint.terminalTurns.length > 0 ||
+    !Array.isArray(checkpoint.pendingRuntimeRequests) || checkpoint.pendingRuntimeRequests.length > 0 ||
+    checkpoint.semanticResult !== null ||
+    checkpoint.terminal !== null ||
+    checkpoint.governedWait !== undefined ||
+    checkpoint.dispositionOnlyRecoveryConsumed !== false ||
+    !input.controlPlane.provesNoRunProviderWork
+  ) return false;
+  const controlPlane = input.controlPlane;
+  // A proof that fails or expires is no proof: keep the named refusal and its
+  // Retry rather than surfacing a generic interruption.
+  const timeoutMs = Math.min(input.timeoutMs, GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS);
+  try {
+    return await runAbortableOperationWithin({
+      timeoutMs,
+      timeoutMessage: `native session provider-work proof timed out after ${timeoutMs}ms`,
+      operation: (signal) => controlPlane.provesNoRunProviderWork!({ signal }),
+    }) === true;
+  } catch {
+    return false;
+  }
+}
+
 async function reconcileRecoveryCheckpoint(input: {
   controlPlane: ControlPlanePort;
   checkpoint: PersistedNativeSession;
@@ -2520,7 +2575,15 @@ export async function executeNativeSession(
       if (recovery.failureClass === PROVIDER_ATTACH_REFUSED) {
         throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
       }
-      if (!replacementAllowed) {
+      const governedWaitFollowUpLostState = !replacementAllowed && await governedWaitFollowUpMayStartFresh({
+        input,
+        checkpoint: providerRecoveryCheckpoint,
+        recovery,
+        restartInterruption: Boolean(checkpointedInterruption),
+        controlPlane: options.controlPlane,
+        timeoutMs: recoveryTimeoutMs,
+      });
+      if (!replacementAllowed && !governedWaitFollowUpLostState) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
         }
@@ -2529,7 +2592,9 @@ export async function executeNativeSession(
         );
       }
       continuityBreak = {
-        reason: recovery.reason ?? "provider session is no longer recoverable",
+        reason: governedWaitFollowUpLostState
+          ? `saved provider state is unavailable, so the follow-up continues in a fresh provider session without the earlier conversation context (${recovery.reason ?? "unknown"})`
+          : recovery.reason ?? "provider session is no longer recoverable",
         previousDriverSessionId: providerRecoveryCheckpoint.sessionId,
         previousProviderSessionId:
           providerRecoveryCheckpoint.providerSessionId ?? null,

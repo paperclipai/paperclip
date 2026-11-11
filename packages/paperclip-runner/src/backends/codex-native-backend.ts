@@ -1,6 +1,7 @@
 import { describeRunnerdMuseDriver } from "../drivers/muse/runnerd-muse-driver.js";
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
 import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
@@ -101,7 +102,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       return {
         kind: "acpx_runtime",
         displayName: `${ACPX_CAPABILITY_PROFILES[input.provider.agent].displayName} via ACPX`,
-        version: "0.13.1",
+        version: QUALIFIED_ACPX_VERSION,
       };
     default:
       throw new Error(
