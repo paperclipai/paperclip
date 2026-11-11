@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, type LeadApiCall } from "./identity-accounting.js";
+import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, type LeadApiCall } from "./identity-accounting.js";
 import { callApiInputDigest } from "./api-read-receipts.js";
 import type { IdentityObservation } from "./identity-support.js";
 const costRead = (runId: string, operationId: string, status = 200, digest = "d"): LeadApiCall => ({ runId, operationId, digest, ok: status < 300, status });
@@ -16,7 +16,7 @@ function valid(scenarioId: string): IdentityObservation {
       originalUsagePreserved: true, originalLogPreserved: true, originalTaskPreserved: true, unresolvedBefore: { canRetry: true, runs: [{ runId: "original", reason: "retryable" }], events: [] },
       receiptOrigin: "public-imported-synthetic-fixture", weekFrom: "2026-10-26T00:00:00Z", weekTo: "2026-11-02T00:00:00Z",
       issueCosts: [{ costCents: 137 }, { costCents: 263 }], projectCosts: [{ projectId: "launch", costCents: 400 }], agentRetryStatus: 403, humanRetryHttpStatus: 200, retryAccounted: false, retryReceiptVisible: true, retryQuality: { runs: [{ runId: "original", reason: "retryable" }], events: [] }, retryLedger: [],
-      initialReplyCommentIds: ["c1"], leadApiCalls: repair ? [costRead("final", "GET /api/companies/{companyId}/costs/by-agent-model")] : [], finalReply: "The saved cost still remains unresolved; it is not a confirmed charge.", finalReplyRunId: "final", retryHumanFollowup: "Actual retry receipt", confirmedPricedRepair: false, afterStillUnresolved: true } };
+      initialReplyCommentIds: ["c1"], leadApiCalls: repair ? [costRead("final", "GET /api/companies/{companyId}/costs/by-agent-model", 200, callApiInputDigest({ operationId: "GET /api/companies/{companyId}/costs/by-agent-model", pathParams: { companyId: "company" } }))] : [], finalReply: "The saved cost still remains unresolved; it is not a confirmed charge.", finalReplyRunId: "final", retryHumanFollowup: "Actual retry receipt", confirmedPricedRepair: false, afterStillUnresolved: true } };
 }
 describe("actual saved native accounting contexts", () => {
   for (const d of accountingIdentityCases) {
@@ -110,17 +110,38 @@ describe("saved-run retry prerequisite classification", () => {
 });
 
 // Paid run 43115760592: the post-retry run re-read the original run record (its saved accounting state),
-// with an input whose digest differed from the first, bound read of that run.
+// with an input whose digest differed from the first, bound read of that run, and cited that read in its result.
 describe("post-retry read of the original run record", () => {
-  const original = "11111111-1111-4111-8111-111111111111";
+  const original = "11111111-1111-4111-8111-111111111111", own = "22222222-2222-4222-8222-222222222222";
   const bound = callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: original } });
   const runRead = (runId: string, digest: string, status = 200) => costRead(runId, "GET /api/heartbeat-runs/{runId}", status, digest);
-  it("accepts a bound read of the original run in the post-retry run", () => expect(readSavedAccounting([runRead("final", bound)], "final", undefined, original)).toBe(true));
-  it("accepts a re-read once an earlier run read the original run by its bound digest", () =>
-    expect(readSavedAccounting([runRead("initial", bound), runRead("final", "other-input")], "final", undefined, original)).toBe(true));
-  it("rejects an unbound run read when no run ever read the original run", () => expect(readSavedAccounting([runRead("final", "other-input")], "final", undefined, original)).toBe(false));
+  it("accepts a bound read of the original run in the post-retry run", () => expect(readSavedAccounting([runRead("final", bound)], "final", { originalRunId: original })).toBe(true));
+  it("accepts a re-read the reading run cites as a read of the original run", () =>
+    expect(readSavedAccounting([runRead("final", "other-input")], "final", { originalRunId: original, citedRunReads: [`GET /api/heartbeat-runs/${original}`] })).toBe(true));
+  it("rejects an unbound read that cites another run, or none, even after an earlier bound read", () => {
+    expect(readSavedAccounting([runRead("initial", bound), runRead("final", "other-input")], "final", { originalRunId: original })).toBe(false);
+    expect(readSavedAccounting([runRead("initial", bound), runRead("final", "other-input")], "final", { originalRunId: original, citedRunReads: [`GET /api/heartbeat-runs/${own}`] })).toBe(false);
+  });
   it("rejects a denied run read and a read in another run", () => {
-    expect(readSavedAccounting([runRead("initial", bound), runRead("final", bound, 403)], "final", undefined, original)).toBe(false);
-    expect(readSavedAccounting([runRead("initial", bound)], "final", undefined, original)).toBe(false);
+    expect(readSavedAccounting([runRead("final", bound, 403)], "final", { originalRunId: original })).toBe(false);
+    expect(readSavedAccounting([runRead("initial", bound)], "final", { originalRunId: original })).toBe(false);
+  });
+  it("extracts only exact run-record reads from the run's saved verification and evidence", () => {
+    expect(citedRunReads({ resultJson: { nativeResult: { verification: [{ commandOrCheck: `GET /api/heartbeat-runs/${original}` }], evidence: [{ ref: `GET /api/heartbeat-runs/${own}: costAccountingPending=false` }, { ref: "comment:x" }] } } }))
+      .toEqual([`GET /api/heartbeat-runs/${original}`, `GET /api/heartbeat-runs/${own}`]);
+    expect(citedRunReads({ resultJson: { nativeResult: { verification: [{ commandOrCheck: `GET /api/heartbeat-runs/${original}x` }] } } })).toEqual([]);
+  });
+});
+describe("company cost reads and task summaries bound to the repaired run", () => {
+  const company = "33333333-3333-4333-8333-333333333333", task = { id: "44444444-4444-4444-8444-444444444444", identifier: "COM-2" };
+  const read = (operationId: string, input: Record<string, unknown>) => costRead("final", operationId, 200, callApiInputDigest({ operationId, ...input }));
+  it("accepts an unranged company report and the task summary including the task", () => {
+    expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/by-agent-model", { pathParams: { companyId: company } })], "final", { companyId: company })).toBe(true);
+    expect(readSavedAccounting([read("GET /api/issues/{id}/cost-summary", { pathParams: { id: task.identifier } })], "final", { task })).toBe(true);
+  });
+  it("rejects a ranged company report, another company, and a children-only task summary", () => {
+    expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: company }, query: { from: "2020-01-01", to: "2020-01-02" } })], "final", { companyId: company })).toBe(false);
+    expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: "other" } })], "final", { companyId: company })).toBe(false);
+    expect(readSavedAccounting([read("GET /api/issues/{id}/cost-summary", { pathParams: { id: task.id }, query: { excludeRoot: "true" } })], "final", { task })).toBe(false);
   });
 });

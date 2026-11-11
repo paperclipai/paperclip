@@ -86,22 +86,32 @@ export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadAp
   }
   return calls;
 }
-/** Agent-readable saved cost projections. Company reports are bound by operation (one company per attempt);
- * the task cost summary is bound to the prerequisite task, and the run record (which carries its saved
- * accounting state and usage cost status) to the original run, by input digest. */
-const COMPANY_COST_READS = new Set(["summary", "by-agent", "by-agent-model", "by-provider", "by-biller", "by-project", "data-quality"]
-  .map(segment => `GET /api/companies/{companyId}/costs/${segment}`));
-export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, task: Pick<Entity, "id" | "identifier"> | undefined, originalRunId?: string) {
-  const taskDigests = task ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "true" }, { excludeRoot: "false" }] }]) : new Set<string>();
+/** Agent-readable saved cost projections, each bound by input digest: company reports for this company with no
+ * date range (a range could exclude the run), the prerequisite task's cost summary including the task itself,
+ * and the original run's record (which carries its saved accounting state and usage cost status). */
+const COMPANY_COST_SEGMENTS = ["summary", "by-agent", "by-agent-model", "by-provider", "by-biller", "by-project", "data-quality"];
+export interface SavedAccountingTarget { companyId?: string; task?: Pick<Entity, "id" | "identifier">; originalRunId?: string;
+  /** Run-record reads the reading run itself cites in its saved result, as `GET /api/heartbeat-runs/<runId>`. */
+  citedRunReads?: readonly string[] }
+export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
+  const { companyId, task, originalRunId } = target;
+  const companyDigests = companyId ? apiReadDigests(COMPANY_COST_SEGMENTS.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
+    pathParams: recordParams("companyId", companyId), queries: [{ period: "all" }] }))) : new Set<string>();
+  const taskDigests = task ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "false" }] }]) : new Set<string>();
   const runDigests = originalRunId ? apiReadDigests([{ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", originalRunId) }]) : new Set<string>();
-  const ok = (call: LeadApiCall) => call.ok && call.status >= 200 && call.status < 300;
-  const runRead = (call: LeadApiCall) => call.operationId === "GET /api/heartbeat-runs/{runId}" && ok(call);
-  // A re-read of the run record can carry extra input fields that change its digest. It counts once the
-  // conversation has already read the original run by its bound digest, so the agent knows which run it checks.
-  const originalRunKnown = calls.some(call => runRead(call) && runDigests.has(call.digest));
-  return calls.some(call => call.runId === runId && ok(call)
-    && (COMPANY_COST_READS.has(call.operationId) || call.operationId === "GET /api/issues/{id}/cost-summary" && taskDigests.has(call.digest)
-      || runRead(call) && (runDigests.has(call.digest) || originalRunKnown)));
+  // A re-read of the run record can carry extra input fields that change its digest. It still counts when the reading
+  // run's own saved result names exactly that read of the original run; a read of any other run does not.
+  const originalRunCited = !!originalRunId && (target.citedRunReads ?? []).some(ref => ref === `GET /api/heartbeat-runs/${originalRunId}`);
+  return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
+    && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
+      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited)));
+}
+/** `GET /api/heartbeat-runs/<runId>` reads a run cites as its own verification or evidence. */
+export function citedRunReads(run: { resultJson?: unknown } | undefined) {
+  const result = objectRecord(objectRecord(run?.resultJson).nativeResult);
+  const refs = [...(Array.isArray(result.verification) ? result.verification : []).map(row => objectRecord(row).commandOrCheck),
+    ...(Array.isArray(result.evidence) ? result.evidence : []).map(row => objectRecord(row).ref)];
+  return refs.filter((ref): ref is string => typeof ref === "string").map(ref => ref.match(/^GET \/api\/heartbeat-runs\/[0-9a-f-]{36}(?=$|[\s:])/i)?.[0]).filter((ref): ref is string => !!ref);
 }
 /** A successful agent write to cost, finance, budget or accounting records, or to run/issue execution, would
  * fabricate the repair or redo the work. Denied attempts (403) are not writes. */
@@ -152,7 +162,7 @@ export function gradeAccounting(value: unknown) {
     const ledger = o.state.retryLedger as CostByAgentModel[] | undefined;
     const afterQuality = o.state.retryQuality as CostDataQualityReport | undefined;
     const actualUnresolved = !!afterQuality && ([...afterQuality.runs, ...afterQuality.events].some(row => row.runId === before?.id) || ledger?.some(row => row.estimatedEventCount > 0) === true);
-    const actualRecorded = !!afterQuality && !actualUnresolved && o.state.retryAccounted === true && !!ledger?.length && ledger.every(row => row.agentId === entity(o.state, "worker").id && row.eventCount > 0 && row.estimatedEventCount === 0);
+    const actualRecorded = !!afterQuality && !actualUnresolved && !!ledger?.length && ledger.every(row => row.agentId === entity(o.state, "worker").id && row.eventCount > 0 && row.estimatedEventCount === 0);
     c.add("independent-post-retry-ledger-classification", !!afterQuality && Array.isArray(ledger) && o.state.afterStillUnresolved === actualUnresolved && o.state.confirmedPricedRepair === actualRecorded && (actualUnresolved || actualRecorded),
       "Actual saved quality records and the sole original worker's ledger, not HTTP success or fixture booleans alone, classify the human retry result.");
     const finalReply = typeof o.state.finalReply === "string" ? o.state.finalReply : "";
@@ -165,7 +175,7 @@ export function gradeAccounting(value: unknown) {
     // saved accounting: the post-retry run must read it through a product cost projection.
     const calls = Array.isArray(o.state.leadApiCalls) ? o.state.leadApiCalls as LeadApiCall[] : undefined;
     const preflight = o.state.preflightTask as Entity | undefined;
-    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, preflight, String(o.state.originalRunId ?? "")),
+    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, { companyId: o.companyId, task: preflight, originalRunId: String(o.state.originalRunId ?? ""), citedRunReads: citedRunReads(finalRun) }),
       "After the human retry, the chat run reads the saved cost projections before explaining whether the cost is recorded or still unresolved.");
     const initialIds = Array.isArray(o.state.initialReplyCommentIds) ? o.state.initialReplyCommentIds as string[] : [];
     c.add("initial-guidance-links-saved-cost-retry", initialIds.length > 0 && costsPageLinked(o, initialIds),
@@ -268,7 +278,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
       const after = await ctx.input.api.get<CostDataQualityReport>(`${root}/costs/data-quality?period=all`); state.retryQuality = after; state.afterStillUnresolved = [...after.runs, ...after.events].some(row => row.runId === state.originalRunId);
       const ledger = (await ctx.input.api.get<CostByAgentModel[]>(`${root}/costs/by-agent-model?period=all`)).filter(row => row.agentId === entity(state, "worker").id);
       state.retryLedger = ledger;
-      state.confirmedPricedRepair = result.accounted === true && state.afterStillUnresolved === false && ledger.length > 0 && ledger.every(row => row.eventCount > 0 && row.estimatedEventCount === 0);
+      state.confirmedPricedRepair = state.afterStillUnresolved === false && ledger.length > 0 && ledger.every(row => row.eventCount > 0 && row.estimatedEventCount === 0);
       state.afterStillUnresolved = state.afterStillUnresolved === true || ledger.some(row => row.estimatedEventCount > 0);
       if (!state.confirmedPricedRepair && !state.afterStillUnresolved) throw new Error("Retry returned no independently classifiable recorded or unresolved accounting outcome");
       await ctx.input.evidence("identity-saved-usage-retry.json", { runId: state.originalRunId, actualHumanHttpStatus: receipt.status(), accounted: result.accounted, confirmedPricedRepair: state.confirmedPricedRepair,
