@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { link, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +46,21 @@ it("recovers a claim interrupted between publishing the marker and removing its 
   await writeFile(join(dir, ".volume-free-owner.json.stale"), "partial");
   expect(await claimVolumeFreeControllerState(true, dir)).toBe("claimed");
   expect(await readdir(dir)).toEqual([".volume-free-owner.json"]);
+});
+
+it("leaves a live overlapping start's claim in place and removes one whose writer has exited", async () => {
+  const dir = await base();
+  await mkdir(dir, { recursive: true });
+  const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]).pid;
+  const live = join(dir, `.volume-free-owner.json.${process.pid}.overlapping-start`);
+  const abandoned = join(dir, `.volume-free-owner.json.${exited}.interrupted-start`);
+  await writeFile(live, "in progress");
+  await writeFile(abandoned, "partial");
+  expect(await claimVolumeFreeControllerState(true, dir)).toBe("claimed");
+  expect((await readdir(dir)).sort()).toEqual([".volume-free-owner.json", `.volume-free-owner.json.${process.pid}.overlapping-start`]);
+  expect(await readFile(live, "utf8")).toBe("in progress");
+  await rm(live);
+  expect(await claimVolumeFreeControllerState(true, dir)).toBe("owned");
 });
 
 it("ignores a marker with the wrong schema", async () => {
