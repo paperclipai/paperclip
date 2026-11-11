@@ -174,6 +174,40 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     }
   }, 30_000);
 
+  it("keeps carriage returns in json and text values when the JavaScript restore path runs", async () => {
+    const source = await createTempDatabase();
+    const target = await createSiblingDatabase(source, "line_ending_restore_target");
+    const sourceSql = postgres(source, { max: 1, onnotice: () => {} });
+    const targetSql = postgres(target, { max: 1, onnotice: () => {} });
+    const previousPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+    const backupDir = createTempDir("line-ending-backup-");
+    try {
+      await sourceSql.unsafe(`
+        CREATE TABLE public.line_ending_records (id integer PRIMARY KEY, j json, body text);
+        INSERT INTO public.line_ending_records VALUES
+          (1, E'{\\r\\n  "a": 1,\\r  "b": [1,\\r\\n2]\\r\\n}', E'first\\r\\nsecond\\rthird');
+      `);
+      const before = [...await sourceSql`SELECT id, j::text AS j, body FROM public.line_ending_records ORDER BY id`];
+      expect(before[0]?.j).toContain("\r\n");
+      const backup = await runDatabaseBackup({
+        connectionString: source,
+        backupDir,
+        backupEngine: "javascript",
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      });
+      // No psql at this path, so the restore uses the JavaScript statement reader.
+      process.env.PAPERCLIP_PSQL_PATH = path.join(backupDir, "missing-psql");
+      await runDatabaseRestore({ connectionString: target, backupFile: backup.backupFile });
+      expect([...await targetSql`SELECT id, j::text AS j, body FROM public.line_ending_records ORDER BY id`])
+        .toEqual(before);
+    } finally {
+      if (previousPsqlPath === undefined) delete process.env.PAPERCLIP_PSQL_PATH;
+      else process.env.PAPERCLIP_PSQL_PATH = previousPsqlPath;
+      await sourceSql.end();
+      await targetSql.end();
+    }
+  }, 30_000);
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {

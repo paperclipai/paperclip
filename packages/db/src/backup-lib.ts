@@ -1,6 +1,5 @@
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
@@ -410,40 +409,55 @@ async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
   }
 }
 
+// Splits a backup into statements at breakpoint lines. Lines are split on
+// "\n" only and keep their own line endings, so "\r\n" or a lone "\r" inside
+// a literal reaches the database unchanged.
 async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
   const raw = createReadStream(backupFile);
   const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
   stream.setEncoding("utf8");
-  const reader = createInterface({
-    input: stream,
-    crlfDelay: Infinity,
-  });
-  let statementLines: string[] = [];
+  let statement = "";
+  let pending = "";
+
+  const isBreakpoint = (line: string) =>
+    line === `${STATEMENT_BREAKPOINT}\n` ||
+    line === `${STATEMENT_BREAKPOINT}\r\n` ||
+    line === STATEMENT_BREAKPOINT;
 
   const flushStatement = () => {
-    const statement = statementLines.join("\n").trim();
-    statementLines = [];
-    return statement;
+    const flushed = statement.trim();
+    statement = "";
+    return flushed;
   };
 
   try {
-    for await (const line of reader) {
-      if (line === STATEMENT_BREAKPOINT) {
-        const statement = flushStatement();
-        if (statement.length > 0) {
-          yield statement;
+    for await (const chunk of stream) {
+      pending += String(chunk);
+      let lineStart = 0;
+      let newline = pending.indexOf("\n", lineStart);
+      while (newline !== -1) {
+        const line = pending.slice(lineStart, newline + 1);
+        lineStart = newline + 1;
+        if (isBreakpoint(line)) {
+          const flushed = flushStatement();
+          if (flushed.length > 0) yield flushed;
+        } else {
+          statement += line;
         }
-        continue;
+        newline = pending.indexOf("\n", lineStart);
       }
-      statementLines.push(line);
+      pending = pending.slice(lineStart);
     }
 
+    if (isBreakpoint(pending)) {
+      pending = "";
+    }
+    statement += pending;
     const trailingStatement = flushStatement();
     if (trailingStatement.length > 0) {
       yield trailingStatement;
     }
   } finally {
-    reader.close();
     stream.destroy();
     raw.destroy();
   }
