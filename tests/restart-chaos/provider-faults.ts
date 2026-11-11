@@ -25,18 +25,10 @@ export const PROVIDER_FAULT_KINDS = ["PV1", "PV2", "PV3"] as const;
 export type ProviderFaultKind = (typeof PROVIDER_FAULT_KINDS)[number];
 export const PROVIDER_FAULT_ACTIONS: Record<ProviderFaultKind, "delay" | "drop" | "duplicate"> = { PV1: "delay", PV2: "drop", PV3: "duplicate" };
 
-/**
- * `terminal`: the turn/completed that follows a turn/interrupt. `interrupt_ack`: the response to that turn/interrupt.
- * `tool_completed`: Codex's `item/completed` for the turn's first Paperclip tool call that is not
- * `paperclip_finish` or `paperclip_block`. The model got the result, but the runner never records that it
- * did, as when Codex cancels the nested exec cell that made the call (two staging Codex runs, 2026-11-11:
- * every later finish was refused with `terminal_call_before_results` and the run failed). Codex only.
- */
+/** `terminal`: the turn/completed that follows a turn/interrupt. `interrupt_ack`: the response to that turn/interrupt. `tool_completed`: Codex's item/completed for the first non-terminal Paperclip tool call. */
 export const PROVIDER_MESSAGES = ["terminal", "interrupt_ack", "tool_completed"] as const;
 export type ProviderMessage = (typeof PROVIDER_MESSAGES)[number];
-/** Messages the turn sends without a turn/interrupt. Their workloads are those whose agent calls a Paperclip tool before finishing. */
 export const UNINTERRUPTED_PROVIDER_MESSAGES: readonly ProviderMessage[] = ["tool_completed"];
-/** Workloads whose agent saves a document with a Paperclip tool and then finishes: the target of `tool_completed`. */
 export const TOOL_COMPLETED_WORKLOADS: readonly WorkloadId[] = ["A1", "C1"];
 
 /** Restarts a provider fault may straddle: K1 kill -9, K2 SIGTERM graceful restart, K4 kill -9 then an outage hold. */

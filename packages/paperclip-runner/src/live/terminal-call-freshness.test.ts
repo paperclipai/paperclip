@@ -54,13 +54,9 @@ it("forgets calls of a provider turn lost on restore once a new turn starts (res
 });
 
 describe("a call whose result never reaches the agent (two staging Codex runs, 2026-11-11)", () => {
-  // Codex cancelled the nested exec cell that made the search, so it never
-  // committed tool.execution.completed for it. The controller had returned
-  // its result. Every finish was refused with terminal_call_before_results
-  // and the turn ended with no semantic result.
   const commands = [{ type: "semantic_tool.result", payload: { callId: "s", operationId: "paperclip_search_assigned_tools" } }];
 
-  it("refuses the first finish but lets the finish decided after that refusal through", () => {
+  it("names the returned call once; a later finish is judged without it", async () => {
     const first = started("f1", "paperclip_finish");
     const second = started("f2", "paperclip_finish");
     const events = [
@@ -68,29 +64,28 @@ describe("a call whose result never reaches the agent (two staging Codex runs, 2
       started("r", "read_document"), result("r"), completed("r", "read_document"),
       first, completed("f1", "paperclip_finish"), second,
     ];
-    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: first.sourceEventId, turnId: "turn-1" }))
-      .toEqual(["paperclip_search_assigned_tools"]);
+    const refused = await settleEarlierToolCalls(() => ({ events, commands }), { terminalSourceEventId: first.sourceEventId, turnId: "turn-1" });
+    expect(refused).toEqual({ unseen: ["paperclip_search_assigned_tools"], unseenCallIds: ["s"], pending: [] });
+    const acknowledged = new Set(refused!.unseenCallIds);
     expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1" }))
+      .toEqual(["paperclip_search_assigned_tools"]);
+    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1", acknowledged }))
       .toEqual([]);
   });
 
-  it("still refuses for a call made after the earlier terminal call", () => {
-    const second = started("f2", "paperclip_block");
-    const later = [{ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }];
-    const events = [
-      event("turn.started", {}), started("f1", "paperclip_finish"), completed("f1", "paperclip_finish"),
-      started("w", "write_document"), second,
-    ];
-    expect(unseenReturnedToolCalls(events, later, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1" }))
-      .toEqual(["write_document"]);
-  });
-
-  it("does not excuse a held terminal call that was decided before the agent saw the first refusal", () => {
-    const first = started("f1", "paperclip_block");
-    const second = started("f2", "paperclip_block");
-    const events = [event("turn.started", {}), started("s", "paperclip_search_assigned_tools"), first, second, completed("f1", "paperclip_block")];
-    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1" }))
-      .toEqual(["paperclip_search_assigned_tools"]);
+  it("still refuses for a write that was pending at the earlier refusal and returned unseen during the next wait", async () => {
+    const second = started("f2", "paperclip_finish");
+    const events = [event("turn.started", {}), started("w", "write_document"), started("f1", "paperclip_finish"),
+      completed("f1", "paperclip_finish"), second];
+    const writeCommands: { type: string; payload: Record<string, unknown> }[] = [];
+    const first = await settleEarlierToolCalls(() => ({ events, commands: writeCommands }),
+      { terminalSourceEventId: events[2]!.sourceEventId, turnId: "turn-1" }, { timeoutMs: 20, pollMs: 5 });
+    expect(first).toMatchObject({ unseen: [], unseenCallIds: [], pending: ["write_document"] });
+    const acknowledged = new Set(first!.unseenCallIds);
+    setTimeout(() => writeCommands.push({ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }), 20);
+    const next = await settleEarlierToolCalls(() => ({ events, commands: writeCommands }),
+      { terminalSourceEventId: second.sourceEventId, turnId: "turn-1", acknowledged }, { timeoutMs: 5_000, pollMs: 5 });
+    expect(next).toEqual({ unseen: ["write_document"], unseenCallIds: ["w"], pending: [] });
   });
 });
 
@@ -119,7 +114,7 @@ describe("settleEarlierToolCalls", () => {
     setTimeout(() => commands.push({ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }), 30);
     const settled = await settleEarlierToolCalls(() => ({ events, commands }),
       { terminalSourceEventId: block.sourceEventId }, { timeoutMs: 5_000, pollMs: 5 });
-    expect(settled).toEqual({ unseen: ["write_document"], pending: [] });
+    expect(settled).toEqual({ unseen: ["write_document"], unseenCallIds: ["w"], pending: [] });
   });
 
   it("reports a call still pending after the bound", async () => {
@@ -127,7 +122,7 @@ describe("settleEarlierToolCalls", () => {
     const events = [started("w", "write_document"), block];
     const settled = await settleEarlierToolCalls(() => ({ events, commands: [] }),
       { terminalSourceEventId: block.sourceEventId }, { timeoutMs: 20, pollMs: 5 });
-    expect(settled).toEqual({ unseen: [], pending: ["write_document"] });
+    expect(settled).toEqual({ unseen: [], unseenCallIds: [], pending: ["write_document"] });
     const outcome = staleTerminalCallResult("paperclip_block", settled!.unseen, settled!.pending);
     expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
     expect(outcome.result.error.message).toContain("has not returned yet");
@@ -138,7 +133,7 @@ describe("settleEarlierToolCalls", () => {
     const events = [started("w", "write_document"), result("w"), completed("w", "write_document"), block];
     const startedAt = Date.now();
     expect(await settleEarlierToolCalls(() => ({ events, commands: [] }), { terminalSourceEventId: block.sourceEventId }))
-      .toEqual({ unseen: [], pending: [] });
+      .toEqual({ unseen: [], unseenCallIds: [], pending: [] });
     expect(Date.now() - startedAt).toBeLessThan(1_000);
     expect(await settleEarlierToolCalls(() => null, {})).toBeNull();
   });

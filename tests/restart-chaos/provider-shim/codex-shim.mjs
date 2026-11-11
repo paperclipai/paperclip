@@ -8,10 +8,7 @@
 //   - "terminal": the `turn/completed` notification that follows a `turn/interrupt`
 //     request (a governed wait or a board Stop);
 //   - "interrupt_ack": the response to that `turn/interrupt` request;
-//   - "tool_completed": the `item/completed` notification of a Paperclip dynamic
-//     tool call other than paperclip_finish/paperclip_block. The model has the
-//     result, but the runner never records that it reached the model, as when
-//     Codex cancels the nested exec cell that made the call.
+//   - "tool_completed": Codex's `item/completed` for a non-terminal Paperclip tool call.
 // Rules are armed per task in the control file, by the task's nonce. A process is
 // bound to a nonce once the nonce appears in its traffic (the task's prompt or a
 // tool result). Every rule applies at most once per task (an exclusive marker file
@@ -117,7 +114,6 @@ function classify(message) {
   if (message.method === "item/completed" && message.params?.item?.type === "dynamicToolCall"
     && typeof message.params.item.tool === "string" && !TERMINAL_TOOLS.has(message.params.item.tool)) {
     const threadId = message.params?.threadId;
-    // Not an interruption: the rule applies on an ordinary turn.
     return { message: "tool_completed", afterInterrupt: true, threadId: typeof threadId === "string" ? threadId : null,
       turnStatus: null, tool: message.params.item.tool };
   }

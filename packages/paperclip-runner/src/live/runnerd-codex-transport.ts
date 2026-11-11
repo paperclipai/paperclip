@@ -3941,6 +3941,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     ],
   });
   #handlerInstalled = false;
+  readonly #acknowledgedReturnedCalls = new Set<string>();
   readonly #handlerReady: Promise<void>;
   #resolveHandlerReady!: () => void;
   #core: DurablePrpControlPlane | null = null;
@@ -7288,12 +7289,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // (restart chaos t05) before judging what the agent had seen.
       const settled = await settleEarlierToolCalls(
         () => this.#closed || core !== this.#core ? null : { events: core.store.state.committedEvents, commands: core.store.state.commands },
-        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId },
+        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId, acknowledged: this.#acknowledgedReturnedCalls },
       );
       if (!settled || this.#closed || core !== this.#core || epoch !== this.#turnStartResponseEpoch || threadId !== this.#threadId) {
         throw new SemanticToolNotDispatchedError();
       }
       if (settled.unseen.length || settled.pending.length) {
+        for (const id of settled.unseenCallIds) this.#acknowledgedReturnedCalls.add(id);
         return staleTerminalCallResult(call.operationId, settled.unseen, settled.pending);
       }
     }

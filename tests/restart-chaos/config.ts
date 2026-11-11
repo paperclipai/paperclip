@@ -222,8 +222,6 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // Every PV task gets its own restart through --provider-fault-restart; a planned K cell would be a different task.
     if (options.faults.length) throw new Error("Provider message faults (PV*) do not share a wave with planned restart faults (K*); use --provider-fault-restart K1 to restart after each provider fault");
     const messages = parseProviderMessages(values["provider-fault-message"]);
-    // Every planned task gets the fault. An interrupt message needs a workload that sends turn/interrupt;
-    // tool_completed needs one whose agent saves a document with a Paperclip tool before finishing.
     const messageFor = (id: WorkloadId) => messages.byWorkload?.[id] ?? messages.message ?? "terminal";
     const idle = options.workloads.filter(id => !(UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id))
       ? TOOL_COMPLETED_WORKLOADS : PROVIDER_FAULT_WORKLOADS).includes(id));
@@ -232,7 +230,6 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
         ? `--provider-fault-message tool_completed needs workloads that save a document before finishing (${TOOL_COMPLETED_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`
         : `Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
     }
-    // The ACPX tap has no tool-completion message; only the Codex shim drops it.
     if (options.workloads.some(id => UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id))) && adapters.some(adapter => adapter !== "codex")) {
       throw new Error("--provider-fault-message tool_completed shims Codex only; run it with --adapters codex");
     }

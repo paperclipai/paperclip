@@ -46,11 +46,6 @@ function baseline(row: Copy) {
 function actor(row: Copy): AuthorizationActor {
   return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
 }
-/**
- * How long an agent-directory operation waits for another holder of the
- * agent's directory lock. Holders are bounded collect/checkpoint/release
- * operations (each remote command has its own timeout).
- */
 export const AGENT_DIRECTORY_LOCK_WAIT_MS = 120_000;
 const AGENT_DIRECTORY_LOCK_BUSY = Symbol("agent-directory-lock-busy");
 
@@ -663,12 +658,6 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     if (!disposableRemoteCopy(row)) return run();
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
-    // The lock is agent-wide: a previous attempt of the same run, its deferred
-    // cleanup, or a sibling run of the agent can hold it for one bounded
-    // collect/checkpoint/release. Wait for that holder instead of failing the
-    // run on contention (two staging Codex runs failed terminally on
-    // a same-run retry). Each try is its own short transaction, so waiting
-    // holds no connection and no row lock.
     const deadline = Date.now() + lockWaitMs;
     for (let delayMs = 100; ; delayMs = Math.min(delayMs * 2, 2_000)) {
       const result = await withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {

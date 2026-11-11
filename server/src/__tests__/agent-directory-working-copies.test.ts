@@ -981,7 +981,6 @@ describe("persistent agent directories", () => {
         return;
       }
       if (scenario === "other-controller") {
-        // A holder that never releases within the wait still refuses, after a bounded wait.
         const shortWait = agentInstructionWorkingCopyService(db, { agentDirectoryLockWaitMs: 300 });
         await db.transaction(async tx => {
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
@@ -993,8 +992,6 @@ describe("persistent agent directories", () => {
       }
       let holder: Promise<void> | null = null;
       if (scenario === "released-holder") {
-        // The previous attempt of this same run is still releasing its copy
-        // when the same-run retry prepares (two staging Codex runs, 2026-11-11).
         let acquired!: () => void;
         const held = new Promise<void>(resolve => { acquired = resolve; });
         holder = db.transaction(async tx => {

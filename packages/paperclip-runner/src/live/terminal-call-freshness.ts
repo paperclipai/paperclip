@@ -28,15 +28,6 @@
  * a bounded time, for earlier calls of its turn that have not returned. If
  * any is still pending after the wait the terminal call is refused too: the
  * agent decided without it, and its outcome is not known yet.
- *
- * A refusal is told to the agent once. Some calls never reach the agent at
- * all: Codex cancels a nested exec cell without a `tool.execution.completed`
- * for the calls it made, so their results stay "returned but unseen" forever.
- * Once the agent has received the answer to an earlier terminal call of the
- * turn (that refusal named every returned call), a later terminal call was
- * decided with that knowledge, so those returned calls no longer refuse it.
- * Without this every later finish or block is refused and the turn ends with
- * no semantic result (two staging Codex runs, 2026-11-11).
  */
 
 const TERMINAL_OPERATIONS = new Set(["paperclip_finish", "paperclip_block"]);
@@ -47,19 +38,25 @@ type Command = { type: string; payload: Record<string, unknown> };
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-type TerminalCallScope = { terminalSourceEventId?: string | null; turnId?: string | null };
-type ToolCallState = { name: string; returned: boolean; seen: boolean; refusalSeen: boolean; order: number };
+type TerminalCallScope = {
+  terminalSourceEventId?: string | null;
+  turnId?: string | null;
+  acknowledged?: ReadonlySet<string>;
+};
+type ToolCallState = { name: string; returned: boolean; seen: boolean };
 
-/**
- * Names of calls that returned before the terminal call but that the agent had
- * neither seen nor been told about by an earlier terminal-call answer.
- */
+/** Names of calls that returned before the terminal call but that the agent had not yet seen. */
 export function unseenReturnedToolCalls(
   events: readonly CommittedEvent[],
   commands: readonly Command[],
   input: TerminalCallScope,
 ): string[] {
-  return callNames(earlierToolCalls(events, commands, input), call => call.returned && !call.seen && !call.refusalSeen);
+  return callNames(unseenReturnedCalls(events, commands, input));
+}
+
+function unseenReturnedCalls(events: readonly CommittedEvent[], commands: readonly Command[], input: TerminalCallScope) {
+  return [...earlierToolCalls(events, commands, input)]
+    .filter(([id, call]) => call.returned && !call.seen && !input.acknowledged?.has(id));
 }
 
 /**
@@ -74,11 +71,11 @@ export function pendingEarlierToolCalls(
   commands: readonly Command[],
   input: TerminalCallScope,
 ): string[] {
-  return callNames(earlierToolCalls(events, commands, input), call => !call.returned && !call.seen);
+  return callNames([...earlierToolCalls(events, commands, input)].filter(([, call]) => !call.returned && !call.seen));
 }
 
-function callNames(calls: Map<string, ToolCallState>, keep: (call: ToolCallState) => boolean): string[] {
-  return [...new Set([...calls.values()].filter(call => keep(call) && !TERMINAL_OPERATIONS.has(call.name)).map(call => call.name))];
+function callNames(calls: [string, ToolCallState][]): string[] {
+  return [...new Set(calls.filter(([, call]) => !TERMINAL_OPERATIONS.has(call.name)).map(([, call]) => call.name))];
 }
 
 function earlierToolCalls(
@@ -102,15 +99,8 @@ function earlierToolCalls(
     if ((type === "tool.execution.started" || type === "tool.execution.completed") && payload.transport === "dynamic") {
       const id = typeof payload.executionId === "string" ? payload.executionId : null;
       if (!id) continue;
-      const call = calls.get(id) ?? { name: typeof payload.name === "string" ? payload.name : "tool", returned: false, seen: false, refusalSeen: false, order: calls.size };
-      if (type === "tool.execution.completed") {
-        call.seen = true;
-        // The agent received the answer to an earlier terminal call. Every
-        // call made before that terminal call was named there if unseen.
-        if (TERMINAL_OPERATIONS.has(call.name)) {
-          for (const earlier of calls.values()) if (earlier.order < call.order) earlier.refusalSeen = true;
-        }
-      }
+      const call = calls.get(id) ?? { name: typeof payload.name === "string" ? payload.name : "tool", returned: false, seen: false };
+      if (type === "tool.execution.completed") call.seen = true;
       calls.set(id, call);
       continue;
     }
@@ -137,14 +127,15 @@ export async function settleEarlierToolCalls(
   read: () => { events: readonly CommittedEvent[]; commands: readonly Command[] } | null,
   input: TerminalCallScope,
   options: { timeoutMs?: number; pollMs?: number } = {},
-): Promise<{ unseen: string[]; pending: string[] } | null> {
+): Promise<{ unseen: string[]; unseenCallIds: string[]; pending: string[] } | null> {
   const deadline = Date.now() + (options.timeoutMs ?? TERMINAL_CALL_SETTLE_TIMEOUT_MS);
   for (;;) {
     const state = read();
     if (!state) return null;
     const pending = pendingEarlierToolCalls(state.events, state.commands, input);
     if (pending.length === 0 || Date.now() >= deadline) {
-      return { unseen: unseenReturnedToolCalls(state.events, state.commands, input), pending };
+      const unseen = unseenReturnedCalls(state.events, state.commands, input);
+      return { unseen: callNames(unseen), unseenCallIds: unseen.filter(([, call]) => !TERMINAL_OPERATIONS.has(call.name)).map(([id]) => id), pending };
     }
     await new Promise(resolve => setTimeout(resolve, options.pollMs ?? 50));
   }

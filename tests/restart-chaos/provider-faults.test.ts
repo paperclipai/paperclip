@@ -149,7 +149,6 @@ describe("provider message fault shim", () => {
     expect(result.terminals).toHaveLength(1);
     expect((await installed.eventsFor("eeee4444")).filter(event => event.event === "applied"))
       .toMatchObject([{ kind: "PV2", message: "tool_completed", action: "drop", tool: "write_document" }]);
-    // Once per task, and other tasks are untouched.
     expect((await turnThroughShim(root, "nonce eeee4444")).toolCompletions).toEqual(["write_document", "paperclip_finish"]);
     expect((await turnThroughShim(root, "nonce ffff5555")).toolCompletions).toEqual(["write_document", "paperclip_finish"]);
   });
