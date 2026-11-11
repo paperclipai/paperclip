@@ -71,13 +71,17 @@ describe("plugin SDK test harness", () => {
       }],
     });
 
-    await expect(harness.ctx.executionWorkspaces.get("workspace-1", "company-1")).resolves.toMatchObject({
+    await expect(
+      harness.withCompanyScope("company-1", () => harness.ctx.executionWorkspaces.get("workspace-1", "company-1")),
+    ).resolves.toMatchObject({
       id: "workspace-1",
       cwd: "/tmp/paperclip-test",
       branchName: "feature/test",
       providerMetadata: { sandboxId: "sandbox-1" },
     });
-    await expect(harness.ctx.executionWorkspaces.get("workspace-1", "company-2")).resolves.toBeNull();
+    await expect(
+      harness.withCompanyScope("company-2", () => harness.ctx.executionWorkspaces.get("workspace-1", "company-2")),
+    ).resolves.toBeNull();
   });
 
   it("requires execution.workspaces.read before returning workspace metadata", async () => {
@@ -186,7 +190,9 @@ describe("plugin SDK test harness", () => {
       }],
     });
 
-    const comments = await harness.ctx.issues.listComments("issue-1", "company-1");
+    const comments = await harness.withCompanyScope("company-1", () =>
+      harness.ctx.issues.listComments("issue-1", "company-1"),
+    );
 
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({
@@ -238,7 +244,9 @@ describe("plugin SDK test harness", () => {
     });
 
     await expect(
-      harness.ctx.issues.createComment("issue-1", "relayed reply", "company-1", { actorUserId: "user-1" }),
+      harness.withCompanyScope("company-1", () =>
+        harness.ctx.issues.createComment("issue-1", "relayed reply", "company-1", { actorUserId: "user-1" }),
+      ),
     ).rejects.toThrow('actorUserId "user-1" is not an active human member of this company');
   });
 
@@ -280,7 +288,9 @@ describe("plugin SDK test harness", () => {
     });
 
     await expect(
-      harness.ctx.issues.createComment("issue-1", "relayed reply", "company-1", { actorUserId: "user-1" }),
+      harness.withCompanyScope("company-1", () =>
+        harness.ctx.issues.createComment("issue-1", "relayed reply", "company-1", { actorUserId: "user-1" }),
+      ),
     ).rejects.toThrow("viewer (read-only) access");
   });
 
@@ -318,11 +328,13 @@ describe("plugin SDK test harness", () => {
       }],
     });
 
-    const comment = await harness.ctx.issues.createComment(
-      "issue-1",
-      "relayed reply",
-      "company-1",
-      { actorUserId: "user-1" },
+    const comment = await harness.withCompanyScope("company-1", () =>
+      harness.ctx.issues.createComment(
+        "issue-1",
+        "relayed reply",
+        "company-1",
+        { actorUserId: "user-1" },
+      ),
     );
 
     expect(comment).toMatchObject({
