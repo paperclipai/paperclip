@@ -233,6 +233,16 @@ Attaching starts no turn, and the runner admits the new command only for a
 settled session, so the run continues instead of failing on the old command.
 Warm transitions and staged attachments keep their exact replay paths.
 
+A restart can kill the runner inside `runner.suspend` in the same way. The
+next runner replays it from the welcome as `execution_indeterminate`, sends it
+as `failed`, and still treats it as terminal: it records `suspended` and exits
+once the controller acknowledges the result. The controller therefore keeps the
+terminal fence for that result (it lifts the fence only for a suspension the
+runner refused), and its acknowledgement names the runner's journal status
+`indeterminate`. Current runners accept either `indeterminate` or `failed`; older
+runners accept only `indeterminate` and otherwise exit with "terminal command
+result acknowledgement changed its durable identity".
+
 A kill during that attachment's provider launch can also leave a `spawned`
 startup fence over a `prepared` state that holds a saved thread. The next runner
 retires that fence once the recorded provider process and its group have exited,
