@@ -197,11 +197,11 @@ describe("durable inbound chat scheduler receipts", () => {
   }
 
   it.each([
-    ...["unmentioned", "mentioned", "coalesced", "recovery", "deferred"].map((scenario) => ({ scenario, isDM: false })),
+    ...["unmentioned", "mentioned", "reply", "coalesced_reply", "coalesced", "recovery", "deferred"].map((scenario) => ({ scenario, isDM: false })),
     ...["unmentioned", "coalesced"].map((scenario) => ({ scenario, isDM: true })),
   ])("checks Slack channel mentions after a real heartbeat queue wait ($scenario, DM=$isDM)", async ({ scenario, isDM }) => {
     const mentioned = scenario === "mentioned" || scenario === "coalesced";
-    const allowed = isDM || scenario === "mentioned" || scenario === "recovery";
+    const allowed = isDM || scenario === "mentioned" || scenario === "recovery" || scenario === "reply" || scenario === "coalesced_reply";
     const f = await fixture();
     await db.update(agents).set({ adapterType: "durable_chat_retry_test" }).where(eq(agents.id, f.agentId));
     const applicationId = randomUUID(), connectionId = randomUUID(), endpointId = randomUUID();
@@ -215,7 +215,7 @@ describe("durable inbound chat scheduler receipts", () => {
       authorUserId: "board-user", body: mentioned ? "@bot work" : "Work" });
     const [delivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId,
       providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: isDM ? "direct_message" : "message", state: "processed",
-      normalizedEvent: { trigger: isDM ? "direct_message" : "subscribed_message", conversation: { isDirectMessage: isDM }, message: { mentionedBot: mentioned } } }).returning();
+      normalizedEvent: { trigger: isDM ? "direct_message" : "subscribed_message", conversation: { isDirectMessage: isDM, externalThreadId: "slack:C-MENTION:7300.1" }, message: { providerMessageId: scenario === "reply" || scenario === "coalesced_reply" ? "7300.2" : "7300.1", mentionedBot: mentioned } } }).returning();
     await db.insert(chatActions).values({ id: request.id, companyId: f.companyId, endpointId,
       deliveryId: delivery.id, kind: "inbound_wakeup", providerActionId: randomUUID(), status: "processed",
       payload: { issueId: f.issueId, commentId: request.commentId } });
@@ -231,13 +231,13 @@ describe("durable inbound chat scheduler receipts", () => {
         .where(eq(heartbeatRuns.id, receipt.runId!));
     }
     let deferredRequestId: string | undefined;
-    if (scenario === "coalesced" || scenario === "deferred") {
+    if (scenario === "coalesced" || scenario === "coalesced_reply" || scenario === "deferred") {
       const second = f.request();
       await db.insert(issueComments).values({ id: second.commentId, companyId: f.companyId, issueId: f.issueId,
         authorUserId: "board-user", body: scenario === "deferred" ? "@bot follow-up" : "Unmentioned follow-up" });
       const [secondDelivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId,
         providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: isDM ? "direct_message" : "message", state: "processed",
-        normalizedEvent: { trigger: isDM ? "direct_message" : "subscribed_message", conversation: { isDirectMessage: isDM }, message: { mentionedBot: scenario === "deferred" } } }).returning();
+        normalizedEvent: { trigger: isDM ? "direct_message" : "subscribed_message", conversation: { isDirectMessage: isDM, externalThreadId: "slack:C-MENTION:7300.1" }, message: { providerMessageId: scenario === "coalesced_reply" ? "7300.3" : "7300.1", mentionedBot: scenario === "deferred" } } }).returning();
       await db.insert(chatActions).values({ id: second.id, companyId: f.companyId, endpointId,
         deliveryId: secondDelivery.id, kind: "inbound_wakeup", providerActionId: randomUUID(), status: "processed",
         payload: { issueId: f.issueId, commentId: second.commentId } });

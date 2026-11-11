@@ -127,6 +127,7 @@
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",
+              "api/tool-gateway-tokens",
               "api/activity",
               "api/dashboard"
             ]

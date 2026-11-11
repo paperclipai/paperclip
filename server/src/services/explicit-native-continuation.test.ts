@@ -10,10 +10,10 @@ import { issueTreeControlService } from "./issue-tree-control.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 import * as nativeExecutor from "./native-runtime/native-session-executor.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PRIOR_OWNER_FENCE_REFUSED, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -26,6 +26,7 @@ import {
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "./adapter-execution-control.js";
 import { CONVERSATION_CONTINUATION_POLICY } from "./conversation-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
@@ -117,13 +118,16 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     // and Retry then waited forever for a stop record of a process that never
     // existed.
     { shape: "was refused at the prior-owner runner-state fence before launch", errorCode: "adapter_failed", launched: false,
-      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
+      prepared: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
     { shape: "was refused at the prior-owner runner-state fence with a coordinator", errorCode: "adapter_failed", launched: false,
-      prepared: true, coordinator: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
+      prepared: true, coordinator: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
     { shape: "was refused at the prior-owner runner-state fence after it requested a launch", errorCode: "adapter_failed", launched: true,
-      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+      prepared: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
     { shape: "was refused at the prior-owner runner-state fence after a runner event", errorCode: "adapter_failed", launched: false,
-      runnerEvent: true, prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+      runnerEvent: true, prepared: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+    // The fence's own server-authored event is the proof, never the error text.
+    { shape: "carries the prior-owner refusal text without the fence event", errorCode: "adapter_failed", launched: false,
+      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
     { shape: "failed its own runner-state authority check", errorCode: "adapter_failed", launched: false,
       prepared: true, error: "runner_state_identity_mismatch: authority_indeterminate",
       comment: "process_identity_missing", retry: "process_identity_missing" },
@@ -134,8 +138,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     { shape: "was interrupted without a process record after native selection", status: "interrupted", errorCode: "process_lost", launched: false,
       coordinator: true, comment: "process_identity_missing", retry: "process_identity_missing" },
   ] as Array<{ shape: string; status?: "timed_out" | "interrupted"; errorCode: string; launched: boolean; runnerEvent?: boolean; prepared?: boolean; coordinator?: boolean;
-    error?: string; comment: string | null; retry: string | null }>)("routes input after a run $shape to the gate that can clear it", async ({
-    status, errorCode, launched, runnerEvent, prepared, coordinator, error, comment, retry }) => {
+    error?: string; fenced?: boolean; comment: string | null; retry: string | null }>)("routes input after a run $shape to the gate that can clear it", async ({
+    status, errorCode, launched, runnerEvent, prepared, coordinator, error, fenced, comment, retry }) => {
     // s7532/t04: a Retry's run failed at the quarantine fence before it asked
     // for a runner. Input then waited for a stop record of a process that
     // never existed ("process_identity_missing", Retry still offered) instead
@@ -156,6 +160,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     if (runnerEvent) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
       seq: 1, eventType: "session.started", stream: "system", level: "info", message: "runner event",
       sourceEventId: "runner-event-1", payload: {} });
+    if (fenced) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+      seq: 2, eventType: PRIOR_OWNER_FENCE_REFUSED, stream: "system", level: "warn", message: "fence refused before launch",
+      payload: { reason: "prior_owner_terminal_state_indeterminate" } });
     if (prepared) await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, nativeSessionId: randomUUID(), runnerInstanceId: randomUUID() })
       .where(eq(heartbeatRuns.id, f.sourceRunId));
     const { result, blocked } = await readAdmission(f, false);
@@ -1182,6 +1189,19 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(source.resultJson).toEqual(resultJson);
   });
 
+  // Rows saved by earlier releases carry operator-facing text. The task
+  // notice shows plain wording instead; nothing asks an administrator to act.
+  it("shows plain wording for a cleanup refusal saved with the earlier operator text", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined",
+      error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine." })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    const notice = await getExecutionBlocker(db, f.companyId, f.issueId);
+    expect(notice).toMatchObject({ runId: f.sourceRunId, canRetry: false });
+    expect(notice?.runError).toMatch(/still shutting down/);
+    expect(notice?.runError).not.toMatch(/operator|admin|controlled restart/i);
+  });
+
   it.each(["verified", "unproven", "changed", "dry_run", "retry", "duplicate"])(
     "requires exact local cleanup for a new turn after worker loss (%s)", async mode => {
       const f = await seed();
@@ -1194,13 +1214,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
           ? await db.transaction(tx => admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db,
               reason: "retry_failed_run", failedRunId: f.sourceRunId }))
           : await admit(f, mode === "dry_run");
-        expect(Boolean(result)).toBe(["verified", "dry_run", "duplicate"].includes(mode));
-        expect(retire).toHaveBeenCalledTimes(["verified", "changed", "duplicate"].includes(mode) ? 1 : 0);
+        // A native Retry starts a fresh conversation, so the same verified stop
+        // admits it; it never resumes the interrupted turn.
+        expect(Boolean(result)).toBe(["verified", "dry_run", "duplicate", "retry"].includes(mode));
+        expect(retire).toHaveBeenCalledTimes(["verified", "changed", "duplicate", "retry"].includes(mode) ? 1 : 0);
         const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
-        expect(Boolean(actions[0].evidence.explicitUserContinuation)).toBe(["verified", "duplicate"].includes(mode));
+        expect(Boolean(actions[0].evidence.explicitUserContinuation)).toBe(["verified", "duplicate", "retry"].includes(mode));
         const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.sourceRunId),
           eq(heartbeatRunEvents.eventType, "native.stopped_conversation_verified")));
-        expect(events).toHaveLength(["verified", "duplicate"].includes(mode) ? 1 : 0);
+        expect(events).toHaveLength(["verified", "duplicate", "retry"].includes(mode) ? 1 : 0);
         if (mode === "duplicate") {
           expect(await admit(f)).toBeNull();
           expect(retire).toHaveBeenCalledTimes(1);
@@ -1256,6 +1278,87 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         else expect(admitted).toBeNull();
         // Only a real admission records the stop; a later launch invalidates it.
         expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(kind === "absent");
+      } finally {
+        if (child) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+        if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["proven", "coarse_before_request", "coarse_same_second", "state_after_request", "lineage_after_request", "previous_release",
+    "earlier_runner_unproven", "live_runner"] as const)(
+    "starts a Retry after restarts cut off a relaunch whose earlier runners were proven stopped (%s)", async kind => {
+      const f = await seed();
+      const stateBase = await mkdtemp(join(tmpdir(), "relaunched-runner-"));
+      const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      let child: ReturnType<typeof spawn> | undefined;
+      try {
+        const nativeSessionId = randomUUID();
+        const execution = {
+          schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+          binding: { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, runId: f.sourceRunId, executionWorkspaceId: "workspace" },
+          task: { identifier: "TEST", title: "Continue", description: null, prompt: "Continue", workMode: "standard" },
+          workspace: { cwd: stateBase, repoUrl: null, repoRef: null, branchName: null },
+          session: { normalizedSessionId: nativeSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+          completionContract: { id: "contract", sha256: "sha", schemaVersion: "paperclip.completion-contract.v1",
+            contract: { revision: "1", objective: "Continue", criteria: [{ id: "objective", requirement: "Continue" }] } },
+          interactionResponses: [], credentialBindings: [],
+        };
+        await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, nativeSessionId: null, runnerInstanceId: null,
+          errorCode: "adapter_failed", runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+        const event = (eventType: string, payload: Record<string, unknown>) => appendHeartbeatRunEvent(db, {
+          companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId, eventType, payload });
+        const host = os.hostname(), deadPid = 999999998;
+        await event(PROCESS_START_REQUESTED, { hostname: host, providerAttempt: 1 });
+        await event(PROCESS_IDENTITY_RECORDED, { hostname: host, targetKind: "local", processPid: deadPid, processGroupId: deadPid,
+          processStartedAt: "2026-11-10T11:13:34.000Z" });
+        if (kind !== "earlier_runner_unproven") await event("native.local_process_stopped",
+          { processPid: deadPid, processGroupId: deadPid, processStartedAt: "2026-11-10T11:13:34.000Z" });
+        const canonical = (value: unknown): string => value && typeof value === "object" && !Array.isArray(value)
+          ? `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`).join(",")}}`
+          : JSON.stringify(value);
+        const root = join(stateBase, createHash("sha256").update(canonical({
+          schema: "paperclip.native-session-scope.v2", companyId: f.companyId, agentId: f.agentId,
+          workspace: { kind: "managed", executionWorkspaceId: "workspace" },
+          provider: { driverKind: "codex_app_server", identity: { kind: "codex" } }, normalizedSessionId: nativeSessionId,
+        })).digest("hex"));
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await mkdir(join(root, "runner"), { recursive: true });
+        await mkdir(join(root, "runner/process-lineage"), { recursive: true });
+        await writeFile(join(root, "control-plane/control-plane-state.json"), JSON.stringify({
+          schema: "paperclip.runner.durable.control-plane-state.v1", identity: { runId: f.sourceRunId } }));
+        await writeFile(join(root, "runner/runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1" }));
+        await writeFile(join(root, `runner/process-lineage/writer-${deadPid}.json`), JSON.stringify({ schema: "paperclip.runner.process-lineage-writer.v1" }));
+        const requestedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 59_500);
+        const earlier = new Date(requestedAt.getTime() - 30_000), later = new Date(requestedAt.getTime() + 30_250);
+        const stateTimes: Partial<Record<typeof kind, Date>> = { state_after_request: later,
+          coarse_same_second: new Date(requestedAt.getTime() - 500), coarse_before_request: new Date(requestedAt.getTime() - 3_500) };
+        const stateTime = stateTimes[kind] ?? earlier;
+        await utimes(join(root, "runner/runner-state.json"), earlier, stateTime);
+        await utimes(join(root, `runner/process-lineage/writer-${deadPid}.json`), earlier, kind === "lineage_after_request" ? later : earlier);
+        await event(PROCESS_START_REQUESTED, { hostname: host, providerAttempt: 1,
+          ...(kind === "previous_release" ? {} : { requestedAt: requestedAt.toISOString() }) });
+        if (kind === "live_runner") {
+          child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", f.sourceRunId], { stdio: "ignore" });
+          await once(child, "spawn");
+        }
+        const blocked: string[] = [];
+        const admitted = await db.transaction(async tx => {
+          await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+          return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db, reason: "retry_failed_run",
+            failedRunId: f.sourceRunId, onBlocked: reason => blocked.push(reason) });
+        });
+        if (kind === "proven" || kind === "coarse_before_request") {
+          expect(admitted).toMatchObject({ previousRunId: f.sourceRunId, failedRunId: f.sourceRunId });
+          expect(blocked).toEqual([]);
+        } else {
+          expect(admitted).toBeNull();
+          expect(blocked).toEqual(["process_identity_missing"]);
+        }
+        expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(kind === "proven" || kind === "coarse_before_request");
       } finally {
         if (child) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
         if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -2704,7 +2807,28 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       .toMatchObject({ status: "deferred_issue_execution", runId: null });
   });
 
-  it.each(["message", "queued_message", "task_retry"] as const)("continues a terminal retained result after verified copy-back: %s", async origin => {
+  // A Retry asks for the accepted result, which now has its saved files. It is
+  // applied by preserved-result finalization, never replaced by a new turn.
+  it("holds a Retry of a terminal retained result after verified copy-back until its accepted result is applied", async () => {
+    const f = await recoveredCopybackFixture("task_retry");
+    const [before] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
+    const waits: string[] = [];
+    expect(await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db, onBlocked: reason => { waits.push(reason); } });
+    })).toBeNull();
+    expect(waits).toEqual(["finalizing_saved_result"]);
+    expect(await resumePreservedResultFinalization(db, f.companyId, f.sourceRunId)).toBe(true);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId)))[0])
+      .toMatchObject({ status: "coalesced", runId: f.sourceRunId, payload: { taskRetry: { strategy: "finalize_result" } } });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0])
+      .toMatchObject({ phase: "workspace_finalizing", resultId: f.resultId });
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0]).toEqual(before);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.id} <> ${f.sourceRunId}`))).toEqual([]);
+  });
+
+  it.each(["message", "queued_message"] as const)("continues a terminal retained result after verified copy-back: %s", async origin => {
     const f = await recoveredCopybackFixture(origin);
     const [before] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));

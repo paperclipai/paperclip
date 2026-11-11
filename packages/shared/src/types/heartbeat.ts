@@ -258,6 +258,7 @@ export type HeartbeatRunStatusPhase =
   | "restore"
   | "export"
   | "finalize"
+  | "waiting_for_storage"
   | "run_activity";
 
 export type HeartbeatRunOutputSilenceLevel =

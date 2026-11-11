@@ -289,6 +289,40 @@ describe("S3 run log store", () => {
       .rejects.toThrow("object_journal_source_prefix_proof_invalid");
   });
 
+  it("resumes a run log through the prefix read and proof while the store still hides the head it just published", async () => {
+    const m = memory(),
+      options = { provider: m.provider, keyPrefix: "logs", flushMs: 10, assertWriterAuthority: async () => undefined };
+    const lagged = { ...input, runId: "lagged-run" };
+    const a = createObjectRunLogStore(options),
+      handle = await a.begin(lagged);
+    await Promise.all([1, 2, 3].map((seq) => a.append(handle, event(seq))));
+    const b = createObjectRunLogStore(options),
+      successor = await b.begin(lagged);
+    const original = m.provider.getObject;
+    let hiddenHeadReads = 0;
+    m.provider.getObject = async (i) => {
+      if (i.objectKey === "logs/segments-v1/company/agent/lagged-run/head.json") {
+        hiddenHeadReads++;
+        throw Object.assign(Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      }
+      return original(i);
+    };
+    const read = await b.read(successor, { limitBytes: successor.initialBytes });
+    expect(read.content.trim().split("\n").map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3]);
+    await b.recordVerifiedSourcePrefix!(successor, 0);
+    expect(successor.initialSourcePrefixVerified).toBe(false);
+    expect(hiddenHeadReads).toBeGreaterThanOrEqual(2);
+    m.provider.getObject = original;
+    await b.append(successor, event(4));
+    const resumed = await b.read(successor);
+    expect(resumed.content.trim().split("\n").map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3, 4]);
+  });
+  it("fails a read of a run log that was never written", async () => {
+    const m = memory(),
+      store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", assertWriterAuthority: async () => undefined });
+    await expect(store.read({ store: "s3_segments", logRef: "company/agent/never-written", attemptId: "attempt" }))
+      .rejects.toMatchObject({ status: 404, message: "Run log not found" });
+  });
   it("batches concurrent appends, confirms durability, and resumes offsets/sequence on a replacement", async () => {
     const m = memory(),
       options = {

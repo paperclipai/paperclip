@@ -50,6 +50,7 @@ import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
+import { completedTurnCleanupHoldWhere, settleCompletedTurnCleanupHolds } from "../native-runtime/completed-turn-cleanup-hold-settlement.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -1076,6 +1077,15 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleHeldInterruptedPreparation,
+  },
+  {
+    // No-replay holds of a run that completed its turn and was then refused by
+    // the in-process cleanup gate. Its owner is the controller that closed the
+    // session (the coordinator's stamp); once that process is proven gone, so
+    // is its gate, and the holds settle without replaying anything.
+    ...nrfKind("native_completed_turn_cleanup_hold", "Completed-turn cleanup hold", "ownership",
+      completedTurnCleanupHoldWhere()),
+    settle: settleCompletedTurnCleanupHolds,
   },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),

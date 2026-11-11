@@ -2,9 +2,8 @@ import { AdapterTypeDropdown, ModelDropdown, ThinkingEffortDropdown, Experimenta
 export { AdapterTypeDropdown, ModelDropdown } from "./HarnessConfigControls";
 import { Link } from "@/lib/router";
 import { harnessPoolsApi } from "@/api/harness-pools";
-import { AgentLoginTarget } from "./AgentLoginTarget";
 import { environmentSupportsLoginPty } from "@paperclipai/shared";
-import { useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
+import { matchesAdapterLoginTarget, useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
 import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
@@ -1319,7 +1318,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showAdapterLogin =
     (isCreate || !selectedRuntime.aiConnection) &&
     adapterSupportsSandboxLogin &&
-    (effectiveLoginEnvironment?.driver === "sandbox" || effectiveLoginEnvironment?.driver === "plugin") &&
+    (effectiveLoginEnvironment?.driver === "sandbox" || (effectiveLoginEnvironment?.driver === "plugin" && !isCreate)) &&
     Boolean(effectiveLoginEnvironmentId) &&
     Boolean(selectedCompanyId) &&
     Boolean(authMissingCheck) &&
@@ -2538,11 +2537,8 @@ export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   const getCapabilities = useAdapterCapabilities();
   const Panel = getCapabilities(props.adapterType).login?.panelMode === "submitted_browser_code"
     ? SubmittedBrowserCodeLoginPanel : DisplayedCodeLoginPanel;
-  return props.requiresAgent
-    ? <AgentLoginTarget companyId={props.companyId} environmentId={props.environmentId} agentId={props.agentId}>
-        {agentId => <Panel key={agentId} {...props} agentId={agentId} />}
-      </AgentLoginTarget>
-    : <Panel {...props} agentId={undefined} />;
+  const agentId = props.requiresAgent ? props.agentId : undefined;
+  return <Panel key={agentId} {...props} agentId={agentId} />;
 }
 
 class AdapterLoginConflictError extends Error {
@@ -2553,6 +2549,7 @@ class AdapterLoginConflictError extends Error {
 
 function DisplayedCodeLoginPanel({
   active: loginActive = true,
+  requiresAgent,
   companyId,
   adapterType,
   environmentId,
@@ -2567,6 +2564,7 @@ function DisplayedCodeLoginPanel({
   onRetryReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const automaticComputer = Boolean(requiresAgent && !agentId && aiConnection);
   const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, false, sessionId, { environmentId, aiConnection });
   const [retrying, setRetrying] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2634,7 +2632,11 @@ function DisplayedCodeLoginPanel({
       try {
         const active = await cancellation.resume(() => agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType, { signal }));
         if (!active) return null;
-        if (active.agentId !== agentId || (aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new AdapterLoginConflictError(active.sessionId);
+        const wrongComputer = !automaticComputer && active.agentId !== agentId;
+        const wrongConnection = aiConnection
+          ? !matchesAdapterLoginTarget(active, { environmentId, aiConnection })
+          : Boolean(active.aiConnection);
+        if (wrongComputer || wrongConnection) throw new AdapterLoginConflictError(active.sessionId);
         return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
@@ -2889,6 +2891,7 @@ function DisplayedCodeLoginPanel({
       <ProviderSubscriptionCard
         loading={retryLogin.isPending || (!prompt && !failure)}
         failure={failure}
+        failureMessage={automaticComputer ? startError ?? undefined : undefined}
         onRetry={!onRetryReady && retryReady ? retryAction : undefined}
         providerName={connectSourceName(adapterType)}
         authorizationUrl={prompt?.url}
@@ -3094,6 +3097,7 @@ const CLAUDE_LOGIN_TIMED_OUT_MESSAGE = "The login timed out. Start the login aga
 // only the server `stored` state as success, and it never shows the OAuth token.
 function SubmittedBrowserCodeLoginPanel({
   active: loginActive = true,
+  requiresAgent,
   companyId,
   adapterType,
   environmentId,
@@ -3112,6 +3116,7 @@ function SubmittedBrowserCodeLoginPanel({
   onRetryReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const automaticComputer = Boolean(requiresAgent && !agentId && aiConnection);
   const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, true, sessionId, { environmentId, aiConnection });
   const [retrying, setRetrying] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -3279,7 +3284,11 @@ function SubmittedBrowserCodeLoginPanel({
       try {
         const active = await cancellation.resume(() => agentsApi.getActiveClaudeSetupTokenLoginSession(companyId, { signal }));
         if (!active) return null;
-        if (active.agentId !== agentId || (aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        const wrongComputer = !automaticComputer && active.agentId !== agentId;
+        const wrongConnection = aiConnection
+          ? !matchesAdapterLoginTarget(active, { environmentId, aiConnection })
+          : Boolean(active.aiConnection);
+        if (wrongComputer || wrongConnection) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
         return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
@@ -3684,6 +3693,7 @@ function SubmittedBrowserCodeLoginPanel({
       <ProviderSubscriptionCard
         loading={retryLogin.isPending || (!authorizationUrl && !failure)}
         failure={failure}
+        failureMessage={automaticComputer ? startError ?? undefined : undefined}
         onRetry={!onRetryReady && retryReady ? retryAction : undefined}
         providerName={connectSourceName(adapterType)}
         authorizationUrl={authorizationUrl ?? undefined}

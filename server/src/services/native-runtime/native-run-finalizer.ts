@@ -1,5 +1,6 @@
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { isContextCompactionRun } from "../context-compaction.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE } from "../remote-workspace-transport.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
@@ -28,6 +29,7 @@ import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.j
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
@@ -60,6 +62,7 @@ import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  supersedeHandedOffDecision,
   supersedeStaleOwnerCompletion,
   type NativeAuthoritativeIssueStatus,
 } from "./status-arbiter.js";
@@ -309,6 +312,11 @@ export function readWorkspaceFailureCause(value: unknown): string | null {
 
 function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined,
   failureCause?: string | null) {
+  if (failureCode === "native_workspace_sync_out_retry_exhausted" && isSandboxStorageExhausted(failureCause)) {
+    return "Saving the workspace stopped because the sandbox disk is full. The agent's result is kept, and Paperclip "
+      + "saves the files again from the retained sandbox without repeating the agent's work; follow the run's recovery "
+      + `action if that cannot free enough space. Last cause: ${failureCause}`;
+  }
   if (failureCode === "native_workspace_sync_out_retry_exhausted") {
     // This code also covers local-directory and plugin workspaces, so the
     // message stays general and defers to the recovery action's next step.
@@ -324,6 +332,33 @@ function terminalFinalizationFailureMessage(failureCode: string, failureScope: "
   return failureScope === "workspace"
     ? `Native workspace finalization failed (${failureCode}).`
     : `Native run finalization failed (${failureCode}).`;
+}
+
+/**
+ * A full sandbox disk stops every copy-back the same way: the archive is built
+ * in that sandbox, and nothing frees space between finalizer attempts. It is
+ * recognised on the first failure and handed to saved-work recovery, which can
+ * reclaim the retained sandbox's inactive provider cache before saving again.
+ */
+function isSandboxStorageExhausted(failureCause: string | null | undefined) {
+  return typeof failureCause === "string" && failureCause.startsWith(`${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}:`);
+}
+
+const NATIVE_FINALIZATION_RETRY_LIMIT = 3;
+/**
+ * Contention while applying a saved, accepted, provider-succeeded result is
+ * transient. When its quick retries run out, the finalizer waits these longer
+ * delays and tries the same saved result again, with no provider work, before
+ * it hands the task to the board with a Retry. Bounded: one entry per delay.
+ */
+export const NATIVE_FINALIZATION_AUTOMATIC_BACKOFF_MS = [2 * 60_000, 10 * 60_000] as const;
+const TRANSIENT_FINALIZATION_FAILURE_CODES = new Set(["status_cas_exhausted", "side_effect_planning_failed"]);
+export const AUTOMATIC_FINALIZATION_BACKOFF_KIND = "automatic_finalization_backoff";
+
+/** Failed finalizations of this run's saved result. Rows saved before the count existed start at zero. */
+function readFinalizationFailureCount(resultJson: unknown) {
+  const count = record(resultJson).finalizationFailureCount;
+  return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0;
 }
 
 async function recordRetryableFailure(input: {
@@ -449,11 +484,37 @@ async function recordRetryableFailure(input: {
             ? priorFailureDetail.workspaceFinalizeAttempt
             : 0) + 1
         : null;
-    const exhausted =
+    // Finalization has its own budget. `coordinator.attempt` counts provider
+    // attempts, so a run resumed three times after restarts would otherwise
+    // turn its first transient finalization failure into a terminal one and
+    // strand an accepted result. The count lives on the run's result because
+    // every claim clears the coordinator's failure detail.
+    let finalizationFailureCount = input.failureScope === "workspace"
+      ? null
+      : readFinalizationFailureCount(input.run.resultJson) + 1;
+    const budgetExhausted =
       input.permanent === true ||
+      (input.failureScope === "workspace" && isSandboxStorageExhausted(failureCause)) ||
       (workspaceFinalizeAttempt !== null
         ? workspaceFinalizeAttempt >= 3
-        : input.coordinator.attempt >= 3);
+        : finalizationFailureCount! >= NATIVE_FINALIZATION_RETRY_LIMIT);
+    // A saved, accepted, provider-succeeded result that only lost status races
+    // is re-applied after a longer delay instead of stranding the task. Each
+    // delay is used once; the result is never recreated and no provider runs.
+    const automaticBackoffsUsed = input.coordinator.recoveryHistory
+      .filter((entry) => entry.kind === AUTOMATIC_FINALIZATION_BACKOFF_KIND).length;
+    const automaticBackoffMs = budgetExhausted && !supersededByNewerRun && input.permanent !== true
+      && input.failureScope !== "workspace" && Boolean(input.coordinator.resultId)
+      && acceptedRunTerminalState === "succeeded" && input.run.status !== "cancelled"
+      && !preservedResultHasStop(input.run.resultJson)
+      && TRANSIENT_FINALIZATION_FAILURE_CODES.has(input.failureCode)
+      ? NATIVE_FINALIZATION_AUTOMATIC_BACKOFF_MS[automaticBackoffsUsed] ?? null
+      : null;
+    const exhausted = budgetExhausted && automaticBackoffMs === null;
+    if (automaticBackoffMs !== null) {
+      nextAttemptAt.setTime(now.getTime() + automaticBackoffMs);
+      finalizationFailureCount = 0;
+    }
     const phase =
       supersededByNewerRun || exhausted
         ? ("terminal_failure" as const)
@@ -497,6 +558,13 @@ async function recordRetryableFailure(input: {
           nextAction: input.nextAction,
         },
         nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
+        ...(automaticBackoffMs === null ? {} : {
+          recoveryHistory: [...input.coordinator.recoveryHistory, {
+            kind: AUTOMATIC_FINALIZATION_BACKOFF_KIND, resultId: input.coordinator.resultId,
+            previousFailureCode: input.failureCode, delayMs: automaticBackoffMs,
+            nextAttemptAt: nextAttemptAt.toISOString(), at: now.toISOString(),
+          }],
+        }),
         updatedAt: now,
       })
       .where(eq(nativeRunFinalizations.runId, input.run.id));
@@ -541,6 +609,7 @@ async function recordRetryableFailure(input: {
           originalFailureCode: input.failureCode,
           // The latest attempt's redacted cause; cleared when it named none.
           failureCause,
+          ...(finalizationFailureCount === null ? {} : { finalizationFailureCount }),
           nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
         })}::jsonb`,
         updatedAt: now,
@@ -1045,7 +1114,7 @@ async function recoverCommittedNativeChatResponseInScope(
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
           // stage or a blocker holds its task; it still answered the person.
-          (conversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
+          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
@@ -1058,7 +1127,9 @@ async function recoverCommittedNativeChatResponseInScope(
               sql`${heartbeatRunEvents.payload}->'prpEvent'->>'normalizedSessionId' = ${run.nativeSessionId}`) : undefined,
             sql`${heartbeatRunEvents.payload}->'prpEvent'->>'turnId' = ${accepted.turnId}`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
-            sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
+            currentConversation
+              ? inArray(sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}'`, ["final", "unknown"])
+              : sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
           )).orderBy(desc(heartbeatRunEvents.seq)).limit(200);
         const proposedItemIds = completedPlanProposalIds(await tx.select({ payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
@@ -1081,10 +1152,12 @@ async function recoverCommittedNativeChatResponseInScope(
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
         const resolved = resolveHeartbeatRunResponse({
           resultJson: { ...record(run.resultJson), nativeResult: result },
+          nativeConversationFinalResponse: conversation,
           // The same answered rule as live run completion.
-          conversationTurnFinished: conversation && await conversationTurnPresentsAnswer({
+          conversationTurnFinished: currentConversation && await conversationTurnPresentsAnswer({
             db: tx, ...input, finalizationPhase: coordinator.phase, finalizationReasonCode: decision.reasonCode,
           }),
+          interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
         });
@@ -1584,6 +1657,10 @@ export async function finalizeNativeRun(input: {
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
       providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
       failureRetryCount: executionFailureRetryCount(run),
+      // Only the task's current owner may turn its own failed continuation
+      // into a blocker; the committer rechecks that under the issue lock.
+      failedTurnContinuationUsed: terminalState === "failed" && ownsProviderFailureDecision && !reviewContext
+        && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -1630,6 +1707,7 @@ export async function finalizeNativeRun(input: {
     // new owner's task. The status committer rechecks this under the issue lock.
     if (!isConversation(authoritativeIssue)) {
       proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId, run.id);
+      if (!reviewContext) proposedDecision = supersedeHandedOffDecision(proposedDecision, authoritativeIssue);
     }
     if (proposedDecision.statusAction === "done") {
       const continuation = record(run.contextSnapshot?.executionContinuation);
@@ -1728,6 +1806,7 @@ export async function finalizeNativeRun(input: {
           ? { agentId: run.agentId, reviewContext }
           : undefined,
         requireProviderFailureOwner: decision.reasonCode?.startsWith("native_provider_overloaded")
+          || decision.reasonCode === "native_run_failed_continuation_exhausted"
           ? { agentId: run.agentId, reviewContext } : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait

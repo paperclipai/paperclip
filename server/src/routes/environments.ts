@@ -59,7 +59,7 @@ import {
   assertAgentsReadyForEnvironmentChange,
 } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { assertBoard, assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrgAccess, boardAccessRequired, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
@@ -388,6 +388,7 @@ export function environmentRoutes(
   }
 
   function assertCanAccessInstanceEnvironments(req: Request) {
+    if (req.actor.type === "agent") throw boardAccessRequired(req);
     if (req.actor.type !== "board") {
       throw forbidden("Instance environment management is restricted to board operators");
     }
@@ -427,10 +428,17 @@ export function environmentRoutes(
   }
 
   function presentEnvironmentForRead<T extends {
+    driver: string;
     config: Record<string, unknown> | null;
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
+    if (environment.driver === "plugin") {
+      const { pluginKey, driverKey } = environment.config ?? {};
+      if (typeof pluginKey === "string" && typeof driverKey === "string") {
+        environment = { ...environment, pluginDriver: { pluginKey, driverKey } };
+      }
+    }
     if (environment.metadata) {
       const { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: _probe, ...metadata } = environment.metadata;
       environment = { ...environment, metadata };

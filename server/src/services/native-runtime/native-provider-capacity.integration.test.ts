@@ -26,6 +26,12 @@ import type {
 } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 
+// This suite exercises persisted failover with a mocked provider on a supported target.
+vi.mock("../../lib/agent-runner-platform.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/agent-runner-platform.js")>()),
+  localAgentRunnerTarget: () => ({ driver: "local", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" }),
+}));
+
 const provider = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   ...(await importOriginal<

@@ -3,6 +3,7 @@ import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChang
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
+import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
 import {
   createContext,
   useCallback,
@@ -21,9 +22,12 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import {
+  AMBIENT_INVALIDATION_SPACING_MS,
   createCoalescingQueryClient,
   createInvalidationBatcher,
+  createLaneRoutingBatcher,
   excludingQueryKeys,
+  type InvalidationBatcher,
 } from "../lib/query-invalidation-batcher";
 import {
   patchRunStatusInList,
@@ -1322,7 +1326,7 @@ function buildRunStatusToast(
   // feedback; the terminal event must not announce a cancelled/failed run.
   if (errorCode === "operator_interrupted") return null;
   // Workspace contention is ordinary scheduling, not a failed user action.
-  if (errorCode === "workspace_busy") return null;
+  if (errorCode === "workspace_busy" || errorCode === "agent_directory_busy") return null;
   const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? "Agent";
@@ -1494,6 +1498,43 @@ function invalidateHeartbeatProgressQueries(
   }
 }
 
+// Actions that can change the status, retry or recovery fields that related
+// tasks embed in their `blockedBy`/`blocks` summaries.
+const ISSUE_RELATION_SUMMARY_ACTIVITY_ACTIONS = new Set([
+  "issue.updated",
+  "issue.deleted",
+  "issue.status_decision_recorded",
+  "issue.checked_out",
+  "issue.released",
+  "issue.recovery_action_resolved",
+  "issue.recovery_generation_replaced",
+  "issue.retry_requested",
+  "issue.scheduled_retry_retry_now",
+]);
+
+/**
+ * A task detail embeds summaries of its blockers and the tasks it blocks. When
+ * one of those changes, refresh every cached detail that embeds it so the
+ * dependent page does not keep showing the old blocker status.
+ */
+function invalidateIssueDetailsEmbeddingRelation(queryClient: QueryClient, refs: Iterable<string>) {
+  const changed = new Set(refs);
+  if (changed.size === 0) return;
+  const embeds = (summaries: unknown) =>
+    Array.isArray(summaries) &&
+    summaries.some((summary) => {
+      const record = readRecord(summary);
+      return !!record && (changed.has(readString(record.id) ?? "") || changed.has(readString(record.identifier) ?? ""));
+    });
+  queryClient.invalidateQueries({
+    queryKey: ["issues", "detail"],
+    predicate: (query) => {
+      const cached = readRecord(query.state.data);
+      return !!cached && !changed.has(readString(cached.id) ?? "") && (embeds(cached.blockedBy) || embeds(cached.blocks));
+    },
+  });
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -1579,6 +1620,8 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    // Browser lists stop polling while connected; this activity refreshes them.
+    if (entityId && action?.startsWith("browser.")) refreshTaskBrowsers(queryClient, entityId);
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
     const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
     const ownChatDelivery = readString(details?.conversationUserId) === (currentActor.userId ?? "local-board");
@@ -1643,6 +1686,9 @@ function invalidateActivityQueries(
         details,
         options,
       );
+      if (action && ISSUE_RELATION_SUMMARY_ACTIVITY_ACTIONS.has(action)) {
+        invalidateIssueDetailsEmbeddingRelation(queryClient, [entityId, ...issueRefs]);
+      }
       const taskDocumentsChanged = !!action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action);
       const caseWorkChanged = !!action && ISSUE_CASE_WORK_ACTIVITY_ACTIONS.has(action);
       if (caseWorkChanged) {
@@ -2153,6 +2199,41 @@ function handleLiveEvent(
   }
 }
 
+/**
+ * Company-scoped query families whose data is a company-wide list or
+ * projection: task lists and summaries, the agent list, run lists, badges,
+ * the dashboard, costs and the company activity feed. Many events in a busy
+ * company change them, and no single task view depends on them for its own
+ * state. Task detail, comments, runs and other per-entity keys are not listed.
+ */
+const AMBIENT_COMPANY_QUERY_ROOTS: ReadonlySet<string> = new Set([
+  "issues",
+  "agents",
+  "heartbeats",
+  "live-runs",
+  "dashboard",
+  "sidebar-badges",
+  "costs",
+  "activity",
+]);
+
+function isAmbientCompanyQueryKey(companyId: string | null, queryKey: readonly unknown[]): boolean {
+  return !!companyId && queryKey[1] === companyId
+    && typeof queryKey[0] === "string" && AMBIENT_COMPANY_QUERY_ROOTS.has(queryKey[0]);
+}
+
+function createLiveInvalidationBatcher(
+  queryClient: QueryClient,
+  companyId: string | null,
+  ambientSpacingMs: number = AMBIENT_INVALIDATION_SPACING_MS,
+): InvalidationBatcher {
+  return createLaneRoutingBatcher(
+    createInvalidationBatcher(queryClient),
+    createInvalidationBatcher(queryClient, undefined, { minSpacingMs: ambientSpacingMs }),
+    (queryKey) => isAmbientCompanyQueryKey(companyId, queryKey),
+  );
+}
+
 function resolveLiveCompanyId(
   selectedCompanyId: string | null,
   selectedCompanyLiveId: string | null,
@@ -2196,6 +2277,8 @@ function closeSocketQuietly(
 }
 
 export const __liveUpdatesTestUtils = {
+  createLiveInvalidationBatcher,
+  isAmbientCompanyQueryKey,
   MENTION_POOL_REFRESH_WINDOW_MS,
   buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
@@ -2272,10 +2355,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
   // Coalesce the per-event invalidation storm. Optimistic setQueryData writes
   // still pass straight through (immediate); only invalidateQueries is batched
-  // and flushed at most a few times per second.
+  // and flushed at most a few times per second. Company-wide lists and
+  // projections use a slower lane, so a busy company does not refetch them on
+  // every batch while a task is open.
   const invalidationBatcher = useMemo(
-    () => createInvalidationBatcher(queryClient),
-    [queryClient],
+    () => createLiveInvalidationBatcher(queryClient, liveCompanyId),
+    [queryClient, liveCompanyId],
   );
   const coalescingClient = useMemo(
     () => createCoalescingQueryClient(queryClient, invalidationBatcher),
@@ -2383,6 +2468,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         // too. Reconcile that gap as well as reconnects: events are not replayed.
         const initialHealthyOpen = !hasOpenedSocket.current && !hasNeededSocketRecovery.current;
         hasOpenedSocket.current = true;
+        // Browser lists stop polling on an empty result. A reconcile that joins
+        // an older read needs one more read after it. Scan before reconciling,
+        // so the reconcile's own reads are not followed up again.
+        refreshPendingTaskBrowserReads(queryClient);
         void queryClient.invalidateQueries({
           type: "active",
           predicate: initialHealthyOpen ? (query) => {
@@ -2403,6 +2492,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           const parsed = JSON.parse(raw) as LiveEvent;
           if (transcripts.receive(parsed, recoverQueries)) {
             if ((parsed as { type: string }).type === "live.resync") {
+              refreshPendingTaskBrowserReads(queryClient);
               void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
             }
             return;

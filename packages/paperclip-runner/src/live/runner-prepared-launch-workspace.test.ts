@@ -71,7 +71,7 @@ it("reproduces the controller-side remote cwd requirement for plugin-owned launc
   try {
     const { backend, prepareLaunch, launches } = await pluginBackend(root, root, "remote_runner");
     await expect(backend.openSession({ identity: sessionIdentity, workingDirectory: "/controller/workspace" }))
-      .rejects.toThrow("Remote Codex working directory requires an assigned workspace");
+      .rejects.toThrow("Remote agent working directory requires an assigned workspace");
     expect(prepareLaunch).not.toHaveBeenCalled();
     expect(launches).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }

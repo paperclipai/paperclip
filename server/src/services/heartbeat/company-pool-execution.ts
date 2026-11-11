@@ -20,7 +20,22 @@ export function companyPoolSourceAgent<T extends Pick<typeof agents.$inferSelect
       (config.acpxSessionMode != null && config.acpxSessionMode !== "agent") ||
       (config.opencodePermissionMode != null && config.opencodePermissionMode !== "allow"))
     throw unprocessable("Cannot preserve the configured execution policy for a run without a task.", { code: "pool_execution_policy_incompatible" });
+  let executionConfig: Record<string, unknown> = { ...config, engine: "cli" };
+  if (adapterType === "codex_local") {
+    // Native Codex ignores CLI switches. Activating them here could override the imposed sandbox.
+    const hasArguments = ["args", "extraArgs", "filesystemExtraPaths"].some(key => {
+      const value = config[key];
+      return Array.isArray(value) ? value.length > 0 : value != null && value !== "";
+    });
+    const command = typeof config.command === "string" ? config.command.trim() : "";
+    if (hasArguments || (command && !["codex", "codex.cmd", "codex.exe"].includes(command)) ||
+        (config.filesystemSandboxCommand != null && config.filesystemSandboxCommand !== "bwrap"))
+      throw unprocessable("Cannot preserve the configured execution policy for a run without a task.", { code: "pool_execution_policy_incompatible" });
+    executionConfig = { ...executionConfig, command: command || "codex", args: [],
+      filesystemScope: "workspace", dangerouslyBypassApprovalsAndSandbox: false, dangerouslyBypassSandbox: false,
+      extraArgs: ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=false"] };
+  }
   const { harnessPool: _pool, ...runtime } = agent.runtimeConfig;
-  return { ...agent, adapterType, adapterConfig: { ...config, engine: "cli" },
+  return { ...agent, adapterType, adapterConfig: executionConfig,
     runtimeConfig: { ...runtime, aiConnection: { mode: "router", connectionId: poolId } } };
 }

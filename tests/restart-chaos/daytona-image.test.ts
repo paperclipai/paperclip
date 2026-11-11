@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertControllerMatchesImage, copyImageToDir, extractFromLayers, prepareDaytonaImageArtifacts, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
+import { assertControllerMatchesImage, assertProviderPackMismatch, copyImageToDir, extractFromLayers, prepareDaytonaImageArtifacts, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
 
 type Entry =
   | { path: string; type: "file"; content: string; mode?: number }
@@ -190,6 +190,19 @@ describe("assertControllerMatchesImage", () => {
   });
   it("names both content IDs and the image revision when they differ", async () => {
     await expect(assertControllerMatchesImage(image, "/unused", "e".repeat(64))).rejects.toThrow(/does not match the Daytona image[\s\S]*d{40}[\s\S]*e{64}/);
+  });
+});
+
+describe("assertProviderPackMismatch", () => {
+  const controller = { image: "ghcr.io/x/y@sha256:" + "a".repeat(64), providerPackDigest: `sha256:${"1".repeat(64)}` };
+  it("accepts a sandbox image whose provider pack differs", () => {
+    expect(() => assertProviderPackMismatch(controller,
+      { image: "ghcr.io/x/y@sha256:" + "b".repeat(64), providerPackDigest: `sha256:${"2".repeat(64)}` })).not.toThrow();
+  });
+  it("refuses another image that carries the same provider pack, which would skip the upload path", () => {
+    expect(() => assertProviderPackMismatch(controller,
+      { image: "ghcr.io/x/y@sha256:" + "b".repeat(64), providerPackDigest: controller.providerPackDigest }))
+      .toThrow(/carries the controller's provider pack/);
   });
 });
 

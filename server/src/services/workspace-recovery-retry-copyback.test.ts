@@ -114,6 +114,17 @@ describe("automatic retained workspace recovery", () => {
   }
   const queuedSuccessors = async (companyId: string) => db.select().from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+  async function systemWake(f: Awaited<ReturnType<typeof restartAllocationLostSource>>, proof?: { providerTurnIssued?: false }) {
+    await db.update(agentWakeupRequests).set({ requestedByActorType: "system", requestedByActorId: null,
+      reason: "issue_monitor_due" }).where(eq(agentWakeupRequests.id, f.wake.id));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeReason: "issue_monitor_due" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    // The executor's refused reattachment (see withRemoteRunnerTurnProof).
+    if (proof) await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: f.agentId,
+      eventType: "native.remote_runner_recovery_failed", stream: "system", level: "error", message: "Could not verify the existing remote runner.",
+      payload: { remoteRunnerRecovery: { stage: "process_verification", reason: "process_not_running",
+        runnerLifecycle: "ready", runnerSettled: false, ...proof } } });
+  }
 
   it.each([
     { title: "the first attachment found the previous runner gone", turn: "none" as const, error: "runner_remote_process_identity_unavailable", initial: true },
@@ -122,8 +133,14 @@ describe("automatic retained workspace recovery", () => {
     { title: "a same-run retry found the settled turn's remote runner gone", turn: "settled" as const, error: "runner_remote_process_identity_unavailable", initial: false },
     { title: "a same-run retry found the settled turn's sandbox lease gone", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
     { title: "a same-run retry named the lease check that failed", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch: stage=environment_acquire field=lease_status", initial: false },
-  ])("continues a user turn once, without a second message, after $title and recovery saved the work", async ({ turn, error, initial }) => {
+    // Staging class T (c14bab19): a monitor wake's session snapshot timed out
+    // before any turn, then the same-run retry found the Runner gone. Its
+    // controller journal proved no turn command was ever issued, so nothing can
+    // be repeated and the run's responsible user's Retry continues it once.
+    { title: "a system wake's run found its runner gone and its journal proved no turn", turn: "none" as const, error: "runner_remote_process_identity_unavailable", initial: false, system: true },
+  ])("continues a user turn once, without a second message, after $title and recovery saved the work", async ({ turn, error, initial, system }) => {
     const f = await restartAllocationLostSource(turn, error);
+    if (system) await systemWake(f, { providerTurnIssued: false });
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
     // Keep the agent's only slot busy so the successor stays observable as queued.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
@@ -164,15 +181,28 @@ describe("automatic retained workspace recovery", () => {
   it.each([
     { title: "its provider turn was still in flight", change: "turn" },
     { title: "its provider turn ended without an observed provider terminal", change: "unproven" },
-    { title: "the source was a system wake", change: "system" },
+    { title: "the source was a system wake whose provider turn settled", change: "system" },
+    // No run events is not proof: a turn can reach the provider before its
+    // events are stored. Only the controller journal can prove it.
+    { title: "the source was a system wake with no run events but no journal proof", change: "system_unproven" },
+    { title: "the source was a system wake whose run used a tool before its turn event", change: "system_tool" },
+    { title: "the source was a system wake whose run had no responsible user", change: "system_unowned" },
     { title: "the failure was not a lost runner or allocation", change: "error" },
+    // Staging class P: the new sandbox had no Runner state to resume the saved
+    // provider session. The Runner now names it, so the run ends with the
+    // permanent code and Retry continues in a fresh provider session.
+    { title: "the Runner had no saved state to resume the provider session", change: "unrestorable" },
   ])("does not continue automatically when $title, and offers a Retry that works on first use", async ({ change }) => {
-    const f = await restartAllocationLostSource(change === "turn" ? "in_flight" : change === "unproven" ? "unproven" : "none");
-    if (change === "system") await db.update(agentWakeupRequests).set({ requestedByActorType: "system", requestedByActorId: null,
-      reason: "issue_children_completed" }).where(eq(agentWakeupRequests.id, f.wake.id));
-    if (change === "system") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeReason: "issue_children_completed" } })
-      .where(eq(heartbeatRuns.id, f.runId));
+    const f = await restartAllocationLostSource(change === "turn" ? "in_flight" : change === "unproven" ? "unproven"
+      : change === "system" ? "settled" : "none");
+    if (change.startsWith("system")) await systemWake(f, change === "system_unproven" ? undefined : { providerTurnIssued: false });
+    if (change === "system_tool") await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId,
+      agentId: f.agentId, eventType: "tool.execution.started", stream: "system", level: "info", message: "tool" });
+    if (change === "system_unowned") await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, f.runId));
     if (change === "error") await db.update(heartbeatRuns).set({ error: "native_provider_terminal_failed" }).where(eq(heartbeatRuns.id, f.runId));
+    if (change === "unrestorable") await db.update(heartbeatRuns).set({ errorCode: "native_provider_state_incompatible",
+      error: "native_session_recovery_failed: NativeRunnerResumeStateUnavailableError: PRP provider resume state is unavailable" })
+      .where(eq(heartbeatRuns.id, f.runId));
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toMatchObject({ requested: false,
@@ -195,7 +225,8 @@ describe("automatic retained workspace recovery", () => {
     await service.resumeTaskRetry(f.companyId, receipt.requestId!);
     const successors = await queuedSuccessors(f.companyId);
     expect(successors).toHaveLength(1);
-    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId });
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId,
+      forceFreshSession: true });
   }, 30_000);
 
   // S54: the automatic Retry's own run then lost its runner too. Saved-work
