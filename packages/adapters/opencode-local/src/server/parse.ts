@@ -106,6 +106,17 @@ export function createOpenCodeJsonlParser() {
   };
 }
 
+export function openCodeErrorStatusCodes(stdout: string): number[] {
+  const statuses: number[] = [];
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const event = parseJson(rawLine.trim());
+    if (!event || asString(event.type, "") !== "error") continue;
+    const status = parseObject(parseObject(event.error).data).statusCode;
+    if (typeof status === "number" && Number.isInteger(status)) statuses.push(status);
+  }
+  return statuses;
+}
+
 export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

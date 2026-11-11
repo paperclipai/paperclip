@@ -4,7 +4,7 @@ import { bandwidthDraw } from "./storage-bandwidth.js";
 import { lagFaultRules } from "./storage-lag.js";
 import { multipartFaultRules } from "./storage-multipart.js";
 
-export const STORAGE_FAULT_KINDS = ["ST1", "ST2", "ST3", "ST4", "ST5", "ST5R", "ST7"] as const;
+export const STORAGE_FAULT_KINDS = ["ST1", "ST2", "ST3", "ST4", "ST5", "ST5R", "ST7", "ST8"] as const;
 export type StorageFaultKind = typeof STORAGE_FAULT_KINDS[number];
 
 export interface StorageFaultWindow { kind: StorageFaultKind; startMs: number; durationMs: number; rules: StorageFaultRule[] }
@@ -30,6 +30,8 @@ export function storageFaultRules(kind: StorageFaultKind, random: () => number):
     case "ST4": return multipartFaultRules(random);
     case "ST5": case "ST5R": return credentialFaultRules(kind, random);
     case "ST7": return lagFaultRules(random);
+    case "ST8": return [{ fault: { kind: "throttle" }, methods: ["PUT"], pathIncludes: "native-harness-backups",
+      firstObjectOnly: true, remaining: 9 + Math.floor(random() * 4) }];
   }
 }
 

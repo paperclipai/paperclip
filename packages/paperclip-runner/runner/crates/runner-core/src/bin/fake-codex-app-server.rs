@@ -1327,6 +1327,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(delay) = argument(&args, "--thread-start-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
                 }
+                // A definite provider startup rejection, as Codex answers when
+                // its sandbox helper cannot start (no thread is created).
+                if let Some(reason) = argument(&args, "--reject-thread-start") {
+                    send(json!({"id": id, "error": {"code": -32603, "message": reason}}))?;
+                    continue;
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())

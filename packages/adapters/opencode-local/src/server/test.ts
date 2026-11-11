@@ -27,7 +27,7 @@ import {
   overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, requireOpenCodeModelId } from "./models.js";
-import { parseOpenCodeJsonl } from "./parse.js";
+import { openCodeErrorStatusCodes, parseOpenCodeJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 
@@ -418,6 +418,7 @@ export async function testEnvironment(
         const parsed = parseOpenCodeJsonl(probe.stdout);
         const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
         const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
+        const providerRejectedAuth = openCodeErrorStatusCodes(probe.stdout).includes(401);
 
         if (probe.timedOut) {
           checks.push({
@@ -450,7 +451,7 @@ export async function testEnvironment(
             ...(detail ? { detail } : {}),
             hint: "Run `opencode models` and choose an available provider/model ID.",
           });
-        } else if (OPENCODE_AUTH_REQUIRED_RE.test(authEvidence)) {
+        } else if (providerRejectedAuth || OPENCODE_AUTH_REQUIRED_RE.test(authEvidence)) {
           checks.push({
             code: "opencode_hello_probe_auth_required",
             level: "warn",

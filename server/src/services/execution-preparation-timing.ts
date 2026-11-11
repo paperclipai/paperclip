@@ -16,7 +16,7 @@ type PreparationPhase = "environment_selection" | "execution_configuration" | "s
   | "configuration_ai_runtime" | "configuration_skills" | "configuration_connector_assignments"
   | "configuration_connector_skills" | "configuration_connector_delivery"
   | "configuration_connection_instructions" | "configuration_agent_identity"
-  | "workspace_source_resolution"
+  | "workspace_source_resolution" | "workspace_verification"
   | "workspace_provision_policy"
   | "workspace_base_validation"
   | "workspace_source_authorization"

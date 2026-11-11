@@ -81,8 +81,8 @@ const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
  * A `result` task in a storm also fires its own K1 or K2 just after its run
  * accepts a result, the window of RC-30, RC-33 and RC-41.
  */
-function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes" | "providerFaults" | "diskFullFaults" | "sessionFaults">, trigger: TriggerId): readonly TaskFaultKind[] {
-  if (!options.stormMinutes) return [...options.faults, ...(options.providerFaults ?? []), ...(options.diskFullFaults ?? []), ...(options.sessionFaults ?? [])];
+function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "baseline">, trigger: TriggerId): readonly TaskFaultKind[] {
+  if (!options.stormMinutes) return [...options.faults, ...(options.providerFaults ?? []), ...(options.diskFullFaults ?? []), ...(options.sessionFaults ?? []), ...(options.baseline ? ["K0" as const] : [])];
   if (trigger === "time") return ["K13"];
   if (trigger !== "result") throw new Error(`A K13 storm fires on its own clock; --triggers ${trigger} does not combine with it (use time or result)`);
   const faults = options.faults.filter(fault => STORM_RESULT_FAULTS.includes(fault));
@@ -98,7 +98,7 @@ function pinnedFireAfterMs(faultAfterMs: number | undefined, drawn: number): num
   return faultAfterMs ?? drawn;
 }
 
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "rrGapMs">): TaskPlan[] {
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "diskFullFaults" | "sessionFaults" | "rrGapMs" | "baseline">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
@@ -128,7 +128,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       index,
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
-      fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
+      fireAfterMs: cell.fault === "K13" || cell.fault === "K0" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
       holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
         : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
         : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
@@ -154,7 +154,9 @@ function replayMasks(source: readonly string[] | undefined, added: readonly stri
 
 export function planWave(waveId: string, options: WaveOptions, createdAt = new Date()): WavePlan {
   return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed,
-    createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options),
+    createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options)
+      // `--long-turn-minutes` is part of each task's plan, so a replay keeps it.
+      .map(task => options.longTurnMinutes ? { ...task, longTurnMinutes: options.longTurnMinutes } : task),
     ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
 }
 

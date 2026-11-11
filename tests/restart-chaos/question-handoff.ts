@@ -12,7 +12,7 @@
 import type { ChaosApi } from "./api.js";
 import type { OracleArtifacts, OracleResult, TaskRecord, TaskSample } from "./types.js";
 import type { WorkloadDefinition } from "./workloads.js";
-import type { SessionRotation } from "./session-faults.js";
+import { PREDECESSOR_RETIREMENT_UNPROVEN_CAUSE, type SessionRotation } from "./session-faults.js";
 
 type Json = Record<string, any>;
 
@@ -44,7 +44,9 @@ export interface QuestionAnswer {
 export interface QuestionArtifacts extends QuestionRecord {
   runs: Array<{ id: string; status: string; errorCode: string | null; createdAt: string | null; startedAt?: string | null;
     /** SR1: the run's normalized provider session, read only when the board replaced the session. */
-    nativeSessionId?: string | null }>;
+    nativeSessionId?: string | null;
+    /** SR1U: the run's failure cause and the sandbox it ran on. */
+    failureCause?: string | null; providerLeaseId?: string | null }>;
   statuses: Record<string, string>;
 }
 
@@ -214,10 +216,14 @@ export async function collectQuestionArtifacts(api: Pick<ChaosApi, "get">, issue
   const question = record.question ?? { interactionIds: [], seenAt: null, askedByRunId: null, pendingNow: false };
   // SR1 proves its follow-up started a new provider session, so a pass is not a resumed session.
   const sessions = new Map<string, string | null>();
+  const sandboxes = new Map<string, { failureCause: string | null; providerLeaseId: string | null }>();
   if (question.rotation) for (const run of runs ?? []) {
     const id = String(run.runId ?? run.id);
     const detail = await api.get<Json>(`/api/heartbeat-runs/${id}`, 10_000).catch(() => null);
     sessions.set(id, typeof detail?.nativeSessionId === "string" ? detail.nativeSessionId : null);
+    const failureCause = detail?.resultJson?.failureCause, providerLeaseId = detail?.runnerProfileJson?.remoteWorkspace?.providerLeaseId;
+    sandboxes.set(id, { failureCause: typeof failureCause === "string" ? failureCause : null,
+      providerLeaseId: typeof providerLeaseId === "string" ? providerLeaseId : null });
   }
   return {
     ...question,
@@ -225,7 +231,8 @@ export async function collectQuestionArtifacts(api: Pick<ChaosApi, "get">, issue
     statuses: Object.fromEntries(interactions.map(interaction => [String(interaction.id), String(interaction.status)])),
     runs: (runs ?? []).map(run => ({ id: String(run.runId ?? run.id), status: String(run.status), errorCode: run.errorCode ?? null,
       createdAt: run.createdAt ?? null, startedAt: run.startedAt ?? null,
-      ...(sessions.has(String(run.runId ?? run.id)) ? { nativeSessionId: sessions.get(String(run.runId ?? run.id)) } : {}) })),
+      ...(sessions.has(String(run.runId ?? run.id)) ? { nativeSessionId: sessions.get(String(run.runId ?? run.id)) } : {}),
+      ...(question.rotation?.predecessorUnretirable ? sandboxes.get(String(run.runId ?? run.id)) ?? {} : {}) })),
   };
 }
 
@@ -238,13 +245,32 @@ function followUpSessionCheck(runs: QuestionArtifacts["runs"], asked: QuestionAr
     detail: `asked=${before ?? "unknown"} followUps=${followUps.map(run => run.nativeSessionId ?? "unknown").join(",") || "none"}` };
 }
 
+/**
+ * SR1U: the retained owner could not be retired, so the follow-up's first
+ * attempt failed before provider work and its retry finished on another
+ * sandbox. Those pre-provider failures are the fallback, not a failed attempt.
+ */
+function freshSandboxChecks(runs: QuestionArtifacts["runs"], asked: QuestionArtifacts["runs"][number] | undefined, answeredAt: number | null) {
+  const fellBack = runs.filter(run => run.status === "failed" && run.failureCause === PREDECESSOR_RETIREMENT_UNPROVEN_CAUSE);
+  const reused = asked?.providerLeaseId ?? null;
+  const fresh = runs.filter(run => run.id !== asked?.id && run.status === "succeeded" && answeredAt !== null && run.createdAt
+    && Date.parse(run.createdAt) > answeredAt && typeof run.providerLeaseId === "string" && run.providerLeaseId !== reused);
+  return [
+    { name: "predecessor_unretirable_fell_back", ok: fellBack.length > 0, detail: fellBack.map(run => run.id).join(",") || "none" },
+    { name: "follow_up_fresh_sandbox", ok: reused !== null && fresh.length > 0,
+      detail: `asked=${reused ?? "unknown"} followUps=${fresh.map(run => run.providerLeaseId).join(",") || "none"}` },
+  ];
+}
+
 export function gradeQuestionHandoff(nonce: string, artifacts: OracleArtifacts): OracleResult {
   const question = artifacts.question;
   const code = q1Code(nonce);
   const brief = artifacts.documents.brief ?? "";
   const bullets = brief.split(/\r?\n/).filter(line => /^\s*[-*] \S/.test(line)).length;
   const runs = question?.runs ?? [];
-  const failed = runs.filter(run => run.status === "failed" || run.status === "timed_out");
+  const unretirable = question?.rotation?.predecessorUnretirable === true;
+  const failed = runs.filter(run => (run.status === "failed" || run.status === "timed_out")
+    && !(unretirable && run.failureCause === PREDECESSOR_RETIREMENT_UNPROVEN_CAUSE));
   const asked = question?.askedByRunId ? runs.find(run => run.id === question.askedByRunId) : undefined;
   const answeredAt = question?.answer?.at ?? null;
   // Repeated work: another run that started (or was created) after the question was saved and
@@ -264,6 +290,7 @@ export function gradeQuestionHandoff(nonce: string, artifacts: OracleArtifacts):
     ...(question?.rotation ? [followUpSessionCheck(runs, asked, answeredAt), { name: "session_rotated_before_answer", ok: question.rotation.httpStatus === 200
       && (answeredAt === null || question.rotation.at < answeredAt),
       detail: `idleTimeoutMs=${question.rotation.idleTimeoutMs} http=${question.rotation.httpStatus}${question.rotation.error ? ` ${question.rotation.error}` : ""}` }] : []),
+    ...(unretirable ? freshSandboxChecks(runs, asked, answeredAt) : []),
     { name: "brief_has_answer", ok: brief.includes(q1AnswerMarker(nonce, code)), detail: q1AnswerMarker(nonce, code) },
     { name: "brief_has_three_bullets", ok: bullets >= 3, detail: `bullets=${bullets}` },
   ];

@@ -591,7 +591,7 @@ export async function admitExplicitNativeContinuation(input: {
     // holds can describe the same failed run; each hold must permit the reuse.
     const sourceRunIds = new Set(freshCandidates.map(candidate => candidate.run.id));
     const only = sourceRunIds.size === 1 && freshCandidates.every(candidate => !candidate.remote) ? freshCandidates[0]! : null;
-    let retained: { id: string; cwd: string } | null = null;
+    let retained: { id: string; cwd: string | null } | null = null;
     const gitProbes = new Map<string, Promise<boolean>>();
     for (const candidate of only ? freshCandidates : []) {
       const checked = await retainedIssueWorkspaceForRetry(db, { companyId, issueId, agentId,

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { agents, authUsers, companyMemberships, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, createDb, environmentLeases, environments, heartbeatRuns, issueComments,
+  issueRecoveryActions, issues } from "@paperclipai/db";
+import { NativePredecessorRetirementUnprovenError } from "../services/native-runtime/predecessor-retirement.js";
 import type { NativeRunIdentity, NativeSession, NativeSessionBackend, PrpEvent } from "@paperclipai/paperclip-runner";
 import { describe, expect, it, vi } from "vitest";
 import { heartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat.js";
@@ -31,7 +33,8 @@ vi.mock("../services/budget-reservations.js", async importOriginal => {
 
 const support = await getRecoveryPostgresSupport({});
 
-function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescriptorOnce?: { failed: boolean } } = {}):
+function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescriptorOnce?: { failed: boolean };
+  unretiredPredecessorOnce?: { failed: boolean; environmentId: string } } = {}):
   NonNullable<HeartbeatServiceOptions["nativeSessionBackendFactory"]> {
   return execution => {
     let identity: NativeRunIdentity;
@@ -70,6 +73,19 @@ function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescripto
         if (options.failDescriptorOnce && !options.failDescriptorOnce.failed) {
           options.failDescriptorOnce.failed = true;
           throw Object.assign(new Error("could not serialize access due to concurrent update"), { name: "PostgresError", code: "40001" });
+        }
+        const unretired = options.unretiredPredecessorOnce;
+        if (unretired && !unretired.failed) {
+          // Staging: this run resumed the task's reused sandbox, where
+          // the previous run's warm Runner could not be retired before any
+          // provider work. The executor reports that after its coordinator claim.
+          unretired.failed = true;
+          const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, execution.binding.runId));
+          await db.insert(environmentLeases).values({ companyId: run!.companyId, environmentId: unretired.environmentId,
+            issueId: execution.binding.issueId, heartbeatRunId: run!.id, provider: "daytona", providerLeaseId: "sandbox-reused",
+            leasePolicy: "reuse_by_environment", status: "active", metadata: { remoteCwd: "/workspace" } });
+          throw new NativePredecessorRetirementUnprovenError("previous-run", "sandbox-reused",
+            new Error("Controller journal drain timed out; preserve the session before replacing its writer."));
         }
         const [run] = await db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId }).from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, execution.binding.runId));
@@ -141,6 +157,47 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
     } finally {
       admissionFaults.remaining = 0;
+      await heartbeat.drainActiveRunExecutions();
+      await closeIdleWarmNativeSessionsForRestart();
+      await db.$client.end();
+    }
+  }, 90_000);
+
+  it("re-queues a run whose predecessor could not be retired onto a fresh sandbox without a Retry", async () => {
+    const { companyId } = fixture.current;
+    const db = createDb(fixture.current.temporary.connectionString, { maxConnections: 4 });
+    const [environment] = await db.insert(environments).values({ name: `reused-${randomUUID()}`, driver: "sandbox" }).returning();
+    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db,
+      { unretiredPredecessorOnce: { failed: false, environmentId: environment!.id } }) });
+    try {
+      const { issueId, runId } = await startTask(db, heartbeat);
+      const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(failed).toMatchObject({ status: "failed", runtimeMode: "native", errorCode: "adapter_failed",
+        resultJson: expect.objectContaining({ failureCause: "native_predecessor_retirement_unproven",
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          predecessorRetirementFallback: expect.objectContaining({ version: 1, providerWorkStarted: false,
+            predecessorRunId: "previous-run", replacedProviderLeaseIds: ["sandbox-reused"] }) }) });
+      // The reused sandbox is replaced at the next acquisition, not resumed.
+      const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.heartbeatRunId, runId),
+        eq(environmentLeases.providerLeaseId, "sandbox-reused")));
+      expect(lease?.metadata).toMatchObject({ replaceBeforeReuse: { schema: "paperclip.replace-before-reuse.v1", runId,
+        predecessorRunId: "previous-run" } });
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+        eq(activityLog.action, "environment.lease_replacement_requested")))).toHaveLength(1);
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId)));
+      expect(successors).toEqual([expect.objectContaining({ scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 1 })]);
+      expect(successors[0]!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0 });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).not.toBe("blocked");
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+
+      expect(await heartbeat.promoteDueScheduledRetries()).toMatchObject({ promoted: 1 });
+      await heartbeat.resumeQueuedRuns();
+      await waitForCondition("the retry to succeed", async () =>
+        (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successors[0]!.id)))[0]?.status === "succeeded");
+      await waitForCondition("the retry to settle", () => heartbeat.getTaskDrainStatus().quiescent);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+    } finally {
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();
       await db.$client.end();

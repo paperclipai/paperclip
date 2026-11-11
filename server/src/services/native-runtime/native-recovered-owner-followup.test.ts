@@ -94,7 +94,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     | "failed-turn-start" | "rejected-turn-start" | "indeterminate-turn-start" | "unknown-outcome-turn-start"
     | "unsuperseded-unknown-outcome-turn-start" | "failed-suspend" | "pending-attach" | "pending-tool-result" = "settled",
     options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode";
-      lifecycle?: "warm" } = {}) {
+      lifecycle?: "warm"; governedWait?: boolean } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue after recovery", assigneeAgentId: agentId, status: "in_progress" });
     const [row] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
@@ -174,7 +174,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const [prepared] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const [result] = await db.insert(nativeRunResults).values({ companyId, issueId, runId,
       completionContractId: prepared.completionContractId!, serverFingerprint: "fixture", schemaStatus: "accepted",
-      resultJson: {}, canonicalSha256: "fixture" }).returning();
+      // A turn parked on a request_human_input question commits this governed-wait result.
+      resultJson: options.governedWait ? { continuation: { kind: "response_wake", idempotencyKey: "interaction-response:question" },
+        artifacts: [{ kind: "issue_thread_interaction", ref: `interaction:${randomUUID()}` }] } : {},
+      canonicalSha256: "fixture" }).returning();
     await db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, runId));
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), runnerProfileJson: {
@@ -784,9 +787,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       outcome: stranded("journal_commands_unsettled(semantic_tool.result.pending)") },
     { control: "unanswered-tool", label: "ended on another sandbox", status: "expired", sameSandbox: false, recorded: true,
       outcome: stranded("journal_tool_input_unanswered") },
+    // Staging: the owner parked on a durable question, so that
+    // question's tool input is unanswered by design. Its Runner is gone.
+    { control: "unanswered-tool", governedWait: true, label: "ended on another sandbox after a governed-wait park",
+      status: "expired", sameSandbox: false, recorded: true, outcome: ADMITTED },
+    { control: "unanswered-tool", governedWait: true, label: "ended on this sandbox after a governed-wait park",
+      status: "expired", sameSandbox: true, recorded: true, outcome: stranded("journal_tool_input_unanswered") },
   ] as const)("retires a finished remote owner with an unacknowledged $control when its sandbox lease $label",
-    async ({ control, status, sameSandbox, recorded, outcome }) => {
-      const prior = await seedRecoveredPriorRun(control, { provider: "opencode" });
+    async ({ control, status, sameSandbox, recorded, outcome, ...rest }) => {
+      const governedWait = "governedWait" in rest && rest.governedWait === true;
+      const prior = await seedRecoveredPriorRun(control, { provider: "opencode", governedWait });
       const followUp = await admitFollowUp(prior);
       if (recorded) {
         await db.insert(environments).values({ id: followUp.environmentId, name: `ended-${followUp.environmentId}`, driver: "sandbox" });

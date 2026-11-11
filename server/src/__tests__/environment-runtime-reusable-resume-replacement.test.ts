@@ -250,6 +250,43 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "replacement", reason: "resume_failed" });
   });
 
+  // Staging: a run could not retire its predecessor's warm
+  // Runner on this sandbox, did no provider work, and asked for a fresh one.
+  async function markReplaceBeforeReuse(seeded: Awaited<ReturnType<typeof seed>>) {
+    await environmentService(db).updateLeaseMetadata(seeded.lease.id, { ...seeded.lease.metadata,
+      replaceBeforeReuse: { schema: "paperclip.replace-before-reuse.v1", runId: randomUUID(), predecessorRunId: randomUUID(),
+        recordedAt: new Date().toISOString() } });
+  }
+
+  it("replaces a resumable sandbox whose previous Runner could not be retired, without resuming it", async () => {
+    const seeded = await seed();
+    await markReplaceBeforeReuse(seeded);
+    const { call, runtime } = worker(seeded, async () => ({ providerLeaseId: seeded.providerLeaseId,
+      metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } }));
+    const acquired = await acquire(seeded, runtime);
+    expect(acquired.lease.providerLeaseId).toBe("replacement-sandbox");
+    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "replacement", reason: "resume_failed",
+      cause: "native_predecessor_retirement_unproven" });
+    // The new sandbox restores the saved session from the verified backup.
+    expect(acquired.lease.metadata?.nativeHarnessBackup).toMatchObject({ authorizedProviderLeaseId: seeded.providerLeaseId });
+    expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentResumeLease", expect.anything(), expect.anything());
+    // The old sandbox, with the Runner on it, is kept for the cleanup sweep.
+    await expect(environmentService(db).getLeaseById(seeded.lease.id)).resolves.toMatchObject({ status: "pending_cleanup" });
+  });
+
+  it.each([
+    ["unsaved work on the sandbox", { dirty: true }],
+    ["no verified harness backup", { backupStamp: false }],
+  ] as Array<[string, Shape]>)("resumes a sandbox marked for replacement as before when it holds %s", async (_label, shape) => {
+    const seeded = await seed(shape);
+    await markReplaceBeforeReuse(seeded);
+    const { runtime } = worker(seeded, async () => ({ providerLeaseId: seeded.providerLeaseId,
+      metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } }));
+    const acquired = await acquire(seeded, runtime);
+    expect(acquired.lease.providerLeaseId).toBe(seeded.providerLeaseId);
+    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "resumed" });
+  });
+
   it("retries a sandbox state change inside the run and resumes the same sandbox", async () => {
     const seeded = await seed();
     const { call, runtime } = worker(seeded, async (attempt) => {

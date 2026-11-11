@@ -5,7 +5,10 @@ import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
 import { isMultiServerFault, validateMultiServerOptions } from "./multi-server.js";
-import { parseK15HoldSeconds } from "./redeploy.js";
+import { parseK15DeployShape, parseK15HoldSeconds } from "./redeploy.js";
+import { validateRecoveryStep } from "./recovery-step-faults.js";
+import { parseLongTurnMinutes } from "./long-turn.js";
+import { isRewakeWorkload } from "./rewake.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
@@ -137,14 +140,18 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "rr-gap-seconds": { type: "string" },
       "rr-stop-on": { type: "string" },
       "k15-hold-seconds": { type: "string" },
+      "k15-overlap-seconds": { type: "string" },
+      "k15-fresh-home": { type: "boolean" },
       "tm1-hold-seconds": { type: "string" },
+      "fail-recovery-step": { type: "string" },
+      "long-turn-minutes": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "tm1-hold-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -186,23 +193,25 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const adapters = list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]);
   // `--faults` takes restart faults (K*), provider message faults (PV*, provider-faults.ts), the
-  // sandbox disk-full fault (DF1, disk-full-faults.ts) and session faults (SR*, session-faults.ts).
-  const allFaults = list<FaultKind | ProviderFaultKind | DiskFullFaultKind | SessionFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS, ...DISK_FULL_FAULT_KINDS, ...SESSION_FAULT_KINDS], "faults",
+  // sandbox disk-full fault (DF1, disk-full-faults.ts), session faults (SR*, session-faults.ts) and K0, cells with no fault.
+  const allFaults = list<FaultKind | ProviderFaultKind | DiskFullFaultKind | SessionFaultKind | "K0">(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS, ...DISK_FULL_FAULT_KINDS, ...SESSION_FAULT_KINDS, "K0"], "faults",
     stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]);
   const providerFaults = allFaults.filter(isProviderFault);
   const diskFullFaults = allFaults.filter(isDiskFullFault);
   const sessionFaults = allFaults.filter(isSessionFault);
+  const baseline = allFaults.includes("K0");
   const options: WaveOptions = {
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q4) and the contention run (L1) are opt-in: H1 needs a wave of its own.
     workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4"
-      && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
+      && !takesJourneyTriggers(id) && !isRewakeWorkload(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault) && !isSessionFault(fault)),
+    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault) && !isSessionFault(fault) && fault !== "K0"),
     ...(providerFaults.length ? { providerFaults } : {}),
     ...(diskFullFaults.length ? { diskFullFaults } : {}),
     ...(sessionFaults.length ? { sessionFaults } : {}),
+    ...(baseline ? { baseline: true } : {}),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -239,6 +248,11 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // The matrix planner builds its cells from restart and provider faults only; DF1 would silently drop out.
     if (values.matrix) throw new Error("The disk-full fault (DF1) is not a --matrix cell; run it as a planned wave");
   }
+  if (baseline && (stormMinutes || crashPoint)) throw new Error("--faults K0 plans cells with no fault; a storm or crash-point wave has its own faults");
+  Object.assign(options, validateRecoveryStep(options, values["fail-recovery-step"]));
+  Object.assign(options, parseLongTurnMinutes(values["long-turn-minutes"]));
+  // The matrix planner builds its own task plans; a long turn would silently drop out of them.
+  if (options.longTurnMinutes && values.matrix) throw new Error("--long-turn-minutes is not a --matrix option; run it as a planned wave");
   if (providerFaults.length) {
     if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
     if (env !== "local") throw new Error("Provider message faults (PV*) shim the local provider; run them with --env local");
@@ -282,6 +296,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (other.length) throw new Error(`Session faults (SR*) need ${SESSION_FAULT_WORKLOADS.join(", ")}; remove ${other.join(", ")} from --workloads`);
     // Only a retained warm owner can be superseded; a per-turn Runner exits after each turn.
     if (options.lifecycle !== "warm" && !options.daytonaWarm) throw new Error("Session faults (SR*) need a retained owner: add --lifecycle warm (or --daytona-warm)");
+    // SR1U arms its fault for the whole server and needs a reused sandbox to drop.
+    if (sessionFaults.includes("SR1U") && (env !== "daytona" || !options.daytonaWarm)) throw new Error("SR1U needs a reused sandbox: run it with --env daytona --daytona-warm");
+    if (sessionFaults.includes("SR1U") && sessionFaults.includes("SR1")) throw new Error("SR1U arms its fault for every task; run SR1 in a separate wave");
   }
   validateMultiServerOptions(options);
   // K15 emulates one deploy identity per generation; a second server beside it would run in the real host's process space.
@@ -291,6 +308,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"], values["tm1-hold-seconds"]));
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
   Object.assign(options, parseK15HoldSeconds(options, values["k15-hold-seconds"]));
+  Object.assign(options, parseK15DeployShape(options, values["k15-overlap-seconds"], values["k15-fresh-home"] === true));
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
