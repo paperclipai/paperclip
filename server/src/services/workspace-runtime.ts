@@ -4302,7 +4302,19 @@ export async function acquireGitWorktreeCleanupLock(worktreePath: string) {
     handle: fs.FileHandle;
     kind: "index" | "head" | "branch";
     lockPath: string;
+    createdDir: string | null;
   }> = [];
+
+  async function removeCreatedDirs(lockPath: string, createdDir: string) {
+    for (
+      let dir = path.dirname(lockPath);
+      dir === createdDir || dir.startsWith(`${createdDir}${path.sep}`);
+      dir = path.dirname(dir)
+    ) {
+      const removed = await fs.rmdir(dir).then(() => true, () => false);
+      if (!removed) return;
+    }
+  }
 
   async function releaseLocks(kind?: "branch") {
     for (let index = lockHandles.length - 1; index >= 0; index -= 1) {
@@ -4311,13 +4323,16 @@ export async function acquireGitWorktreeCleanupLock(worktreePath: string) {
       lockHandles.splice(index, 1);
       await lock.handle.close().catch(() => {});
       await fs.rm(lock.lockPath, { force: true }).catch(() => {});
+      if (lock.createdDir) await removeCreatedDirs(lock.lockPath, lock.createdDir);
     }
   }
 
   try {
     for (const lock of locks) {
+      const createdDir = await fs.mkdir(path.dirname(lock.lockPath), { recursive: true }) ?? null;
       lockHandles.push({
         ...lock,
+        createdDir,
         handle: await fs.open(lock.lockPath, "wx", 0o600),
       });
     }
