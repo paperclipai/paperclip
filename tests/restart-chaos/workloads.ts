@@ -43,6 +43,11 @@ const continueMarker = (nonce: string) => `CONTINUE-${nonce}`;
 const notesFile = (nonce: string) => `NOTES-${nonce}.md`;
 /** F1: the absolute symlink the agent creates and keeps in the repository root. */
 export const f1LinkName = (nonce: string) => `hosts-link-${nonce}`;
+/** T1: ticks of the long tool (2 s each) and the line the agent reports after it finished. */
+export const T1_TICKS = 50;
+export const t1Marker = (nonce: string) => `TICKS-${nonce}`;
+export const t1Command = (nonce: string) =>
+  `i=0; while [ $i -lt ${T1_TICKS} ]; do i=$((i+1)); echo tick-$i; sleep 2; done > ticks-${nonce}.txt; wc -l < ticks-${nonce}.txt`;
 /** F1: an `ls -l` line for that link: a symlink (`l` mode) naming the link and its absolute target. */
 export const f1LinkListing = (nonce: string) => new RegExp(`^l\\S*\\s.*\\s${f1LinkName(nonce)} -> /etc/hosts$`);
 const benchFile = (nonce: string) => `bench-result-${nonce}.txt`;
@@ -351,6 +356,31 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         // Proof the absolute link was in the workspace before the save-back: the agent's own `ls -l` output, saved
         // with the notes file. Best-effort against an agent that invents it; how the link itself is saved is not graded.
         { name: "link_listed", ok: f1LinkListing(nonce).test(lines[1] ?? ""), detail: JSON.stringify((lines[1] ?? "").slice(0, 160)) },
+      ]);
+    },
+  },
+  T1: {
+    // Staging class R (`runner_remote_process_identity_unavailable`): the controller went away mid-turn while a
+    // tool ran in the sandbox, and recovery 4–7 minutes later found the remote Runner gone. T1 keeps one shell
+    // tool running for about 100 s (short of provider shell-tool timeouts), so a fault in its window lands mid-tool.
+    id: "T1",
+    label: "Long shell tool in the agent's workspace",
+    usesRepository: false,
+    fireWindowMs: [35_000, 80_000],
+    budgetMs: 15 * 60_000,
+    title: nonce => `Chaos T1 long tool ${nonce}`,
+    description: nonce => [
+      "Run this exact shell command in your working directory as one tool call, in the foreground, and wait for it to finish",
+      `(about 100 seconds; do not run it in the background): \`${t1Command(nonce)}\``,
+      `Then save this issue's document with key \`brief\` (title "Brief"). Its first line is \`${t1Marker(nonce)}=<the number the command printed>\`.`,
+      "Do not create other files or tasks. When the document is saved, mark this task done.",
+    ].join("\n"),
+    collect: { documents: ["brief"], files: () => [], commands: [] },
+    grade(nonce, artifacts) {
+      const first = (artifacts.documents.brief ?? "").split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? "";
+      return result([
+        statusCheck(artifacts),
+        { name: "tool_finished", ok: first === `${t1Marker(nonce)}=${T1_TICKS}`, detail: JSON.stringify(first.slice(0, 120)) },
       ]);
     },
   },
