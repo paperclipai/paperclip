@@ -51,18 +51,19 @@ export async function verifyFileManifest(directory: string, files: readonly File
               || (file.mode !== undefined && Number(stat.mode & 0o555n) !== file.mode)))) return false;
           const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.mode}`;
           const previous = verifiedFiles.get(target);
-          if (previous?.signature === signature && previous.digest === file.sha256) return true;
+          if (process.platform !== "win32" && previous?.signature === signature && previous.digest === file.sha256) return true;
           const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
           try {
             const before = await handle.stat({ bigint: true });
-            if (before.ino !== stat.ino || before.ctimeNs !== stat.ctimeNs) return false;
+            if (before.ino !== stat.ino || before.dev !== stat.dev || before.size !== stat.size
+              || before.mtimeNs !== stat.mtimeNs || (process.platform !== "win32" && before.ctimeNs !== stat.ctimeNs)) return false;
             const hash = createHash("sha256");
             for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
             if (hash.digest("hex") !== file.sha256) return false;
             const after = await handle.stat({ bigint: true });
             if (after.ctimeNs !== before.ctimeNs || after.mtimeNs !== before.mtimeNs) return false;
             if (verifiedFiles.size >= MAX_VERIFIED_FILES) verifiedFiles.delete(verifiedFiles.keys().next().value!);
-            verifiedFiles.set(target, { signature, digest: file.sha256 });
+            if (process.platform !== "win32") verifiedFiles.set(target, { signature, digest: file.sha256 });
             return true;
           } finally { await handle.close(); }
         });

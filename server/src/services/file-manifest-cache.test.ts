@@ -21,3 +21,16 @@ it("verifies an executable file on the current filesystem and rejects changed co
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+it("verifies a freshly materialized package with many files", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-many-files-"));
+  try {
+    const content = "skill content\n";
+    const manifest = Array.from({ length: 240 }, (_, i) => ({ path: `file-${i}.md`, size: Buffer.byteLength(content),
+      executable: false, sha256: createHash("sha256").update(content).digest("hex") }));
+    for (const file of manifest) await fs.writeFile(path.join(root, file.path), content, { mode: 0o444 });
+    expect(await verifyFileManifest(root, manifest)).toBe(true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
