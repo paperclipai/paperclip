@@ -4695,7 +4695,18 @@ generation ends at once as
 `user_action_required`) and goes to the board. It is not retried on the automatic
 schedule, and it never falls back to the last save, so the run's unsaved files stay
 in the retained sandbox and the workspace keeps its previous saved version. The
-board's Retry saves again; once the save succeeds, the accepted Retry starts one run.
+board's Retry saves again. Once the save succeeds, the accepted Retry applies the
+run's saved accepted result and finishes the run and task from it, with no new
+agent turn and no provider spend. Retry admission waits (`finalizing_saved_result`)
+while any saved-work hold of that run is still saving, then preserved-result
+finalization coalesces the Retry into the source run (`finalize_result`, activity
+`issue.saved_result_finalization_resumed`). This applies to any accepted Retry
+(`evaluate`) of a terminal run whose coordinator still holds an accepted,
+succeeded result, whose saved-work recovery completed with a verified receipt,
+and which has no recorded Stop, newer run, current execution or other owner. A
+record that lacks any of these, including one written by an older server, keeps
+the previous behaviour: the Retry starts one run. If the save still finds the
+disk full, the hold rests again as `sandbox_disk_full` with its Retry.
 A reclaim whose outcome is unknown keeps the scheduled retry, because its journal
 resumes on the next attempt and can still free space.
 
