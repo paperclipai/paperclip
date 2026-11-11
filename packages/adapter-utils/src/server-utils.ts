@@ -4460,8 +4460,29 @@ export async function ensurePaperclipSkillSymlink(
     .stat(resolvedLinkedPath)
     .then(() => true)
     .catch(() => false);
-  if (linkedPathExists && !isOlderVersionOfSameSkill(resolvedLinkedPath, path.resolve(source))) {
+  const replacesOlderVersion =
+    linkedPathExists && isOlderVersionOfSameSkill(resolvedLinkedPath, path.resolve(source));
+  if (linkedPathExists && !replacesOlderVersion) {
     return "skipped";
+  }
+
+  if (replacesOlderVersion) {
+    // The old link is live and other runs may be reading it. Build the new link
+    // next to it and rename it over the old one, so the target never vanishes
+    // and parallel callers cannot fail with ENOENT or EEXIST.
+    const tempTarget = `${target}.relink-${process.pid}-${randomUUID()}`;
+    try {
+      await linkSkill(source, tempTarget);
+      await fs.rename(tempTarget, target);
+    } catch (error) {
+      await fs.unlink(tempTarget).catch(() => {});
+      const now = await fs.readlink(target).catch(() => null);
+      if (now && path.resolve(path.dirname(target), now) === path.resolve(source)) {
+        return "repaired";
+      }
+      throw error;
+    }
+    return "repaired";
   }
 
   await fs.unlink(target);

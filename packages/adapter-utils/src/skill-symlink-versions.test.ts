@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readlink, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readlink, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -28,6 +28,17 @@ describe("ensurePaperclipSkillSymlink with company skill versions", () => {
     await symlink(oldVersion, target);
     await expect(ensurePaperclipSkillSymlink(newVersion, target)).resolves.toBe("repaired");
     expect(await readlink(target)).toBe(newVersion);
+  });
+
+  it("handles parallel re-points of the same link without errors", async () => {
+    const { oldVersion, newVersion, target } = await setup();
+    await symlink(oldVersion, target);
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => ensurePaperclipSkillSymlink(newVersion, target)),
+    );
+    for (const result of results) expect(["repaired", "skipped"]).toContain(result);
+    expect(await readlink(target)).toBe(newVersion);
+    expect(await readdir(path.dirname(target))).toEqual([path.basename(target)]);
   });
 
   it("keeps a link that already targets the current version", async () => {
