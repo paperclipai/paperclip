@@ -4467,9 +4467,6 @@ export async function ensurePaperclipSkillSymlink(
   }
 
   if (replacesOlderVersion) {
-    // The old link is live and other runs may be reading it. Build the new link
-    // next to it and rename it over the old one, so the target never vanishes
-    // and parallel callers cannot fail with ENOENT or EEXIST.
     const tempTarget = `${target}.relink-${process.pid}-${randomUUID()}`;
     try {
       await linkSkill(source, tempTarget);
@@ -4490,12 +4487,6 @@ export async function ensurePaperclipSkillSymlink(
   return "repaired";
 }
 
-/**
- * Company skills are stored as `.../__versions__/<skillId>/<versionId>`. After a
- * skill edit, an existing link can still point to an older version folder that
- * still exists. That link belongs to the same skill, so it is safe to re-point.
- * A link to anything else (another skill, a foreign folder) is left alone.
- */
 function isOlderVersionOfSameSkill(linkedPath: string, source: string): boolean {
   if (linkedPath === source) return false;
   const skillDir = path.dirname(source);
