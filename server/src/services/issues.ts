@@ -2576,12 +2576,15 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
 
 /** An issue's own operation takes precedence over the legacy NULL fallback.
  * A later successful finalize clears either barrier. A successful operation
- * enclosed by its owning finalize is also saved, although it started later. */
+ * enclosed by its owning finalize is also saved, although it started later.
+ * A recovery operation is saved by the recovery's own finalize, which lists it
+ * in preservationOperationIds. Releases before this one wrote that finalize
+ * without a workspace, so a NULL workspace still settles its listed operation. */
 function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
   return sql`${workspaceId} is not null and exists (
     select 1 from (values (1)) seed(value)
     left join lateral (
-      select phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
+      select id, phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
       where blocker_operation.company_id = ${companyId}::uuid
         and blocker_operation.execution_workspace_id = ${workspaceId}
         and blocker_operation.issue_id = ${issueId}
@@ -2604,6 +2607,21 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
             and owning_finalize.phase = 'workspace_finalize' and owning_finalize.status = 'succeeded'
             and owning_finalize.started_at <= latest_blocker_operation.started_at
             and owning_finalize.finished_at >= latest_blocker_operation.finished_at
+        )
+      )
+      and not (
+        latest_blocker_operation.status = 'succeeded'
+        and exists (
+          select 1 from workspace_operations recovery_finalize
+          where recovery_finalize.company_id = ${companyId}::uuid
+            and recovery_finalize.issue_id = ${issueId}
+            and recovery_finalize.heartbeat_run_id = latest_blocker_operation.heartbeat_run_id
+            and recovery_finalize.phase = 'workspace_finalize' and recovery_finalize.status = 'succeeded'
+            and recovery_finalize.metadata->>'owningService' = 'workspace_recovery'
+            and (recovery_finalize.execution_workspace_id is null
+              or recovery_finalize.execution_workspace_id = ${workspaceId})
+            and jsonb_typeof(recovery_finalize.metadata->'preservationOperationIds') = 'array'
+            and recovery_finalize.metadata->'preservationOperationIds' @> jsonb_build_array(latest_blocker_operation.id::text)
         )
       )
   )`;
