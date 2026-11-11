@@ -4,9 +4,6 @@ import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 
-// OpenCode 1.18 connects each MCP server once per process. A single failed
-// initialize or tools/list leaves the Paperclip server "failed" for the whole
-// session, and the agent then answers without any Paperclip tools.
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -50,7 +47,6 @@ it("reconnects the Paperclip tools when OpenCode's first MCP connect fails", asy
 });
 
 it("restarts OpenCode when its Paperclip tools stay unavailable", async () => {
-  // Three failed connects exhaust the first process; the restarted one connects.
   const { session, error, diagnostics, connects } = await openWithConnectFailures("3");
   expect(error).toBeNull();
   expect(connects).toBe(4);
@@ -82,4 +78,29 @@ it("fails the session visibly instead of starting it without Paperclip tools", a
   const { session, error } = await openWithConnectFailures("always");
   expect(session).toBeNull();
   expect(error).toContain("paperclip_tools_unavailable: OpenCode could not load the Paperclip tools (failed: Failed to get tools)");
+});
+
+it("keeps the named failure when OpenCode's MCP status cannot be read", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opencode-paperclip-tools-"));
+  const workspace = await mkdtemp(join(tmpdir(), "opencode-paperclip-tools-ws-"));
+  roots.push(root, workspace);
+  const command = join(root, "fake-opencode.mjs");
+  await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), command);
+  await chmod(command, 0o755);
+  const driver = new OpenCodeServerDriver({
+    model: "openrouter/controlled-model",
+    runtimeDirectory: join(root, "runtime"),
+    command,
+    environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "controlled-fixture-key" },
+    fetch: async (input, init) => {
+      if (new URL(String(input)).pathname === "/mcp") throw new Error("socket hang up");
+      return fetch(input, init);
+    },
+  });
+  const error = await driver.openSession({
+    runId: "run-tools",
+    normalizedSessionId: "tools",
+    workingDirectory: workspace,
+  }).then(() => "session unexpectedly started", (cause: unknown) => String(cause));
+  expect(error).toContain("paperclip_tools_unavailable: OpenCode could not load the Paperclip tools (unreachable: OpenCode API /mcp request failed");
 });

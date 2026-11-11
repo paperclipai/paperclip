@@ -193,9 +193,6 @@ async function mcpRequest(method, params, signal) {
   return response.json();
 }
 
-// OpenCode 1.18 connects each MCP server once and keeps a failed status until
-// POST /mcp/:name/connect. Tests seed `fake-mcp-connect-failures` with how many
-// connects fail ("always" for every one) to reproduce a toolless session.
 let mcpStatus = null;
 async function connectPaperclipMcp() {
   const failuresPath = join(process.env.XDG_DATA_HOME, "fake-mcp-connect-failures");
