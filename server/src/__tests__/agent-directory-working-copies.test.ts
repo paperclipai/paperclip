@@ -25,8 +25,8 @@ import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-co
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
-import { AgentDirectoryReuseInvalidatedError, acquireAgentDirectoryOperationLock, agentDirectoryOperationLockTiming, agentDirectoryWorkingCopyService, withAgentDirectoryLockKeepalive } from "../services/agent-directory-working-copies.js";
-import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { AgentDirectoryReuseInvalidatedError, acquireAgentDirectoryOperationLock, agentDirectoryLockOwnerCheck, agentDirectoryOperationLockTiming, agentDirectoryWorkingCopyService, withAgentDirectoryLockKeepalive } from "../services/agent-directory-working-copies.js";
+import { parseDirectorySnapshot, withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 
@@ -1155,6 +1155,43 @@ describe("persistent agent directories", () => {
       return "saved";
     })).rejects.toThrow("Agent directory operation lock was lost");
     expect(settled).toBe(true);
+  });
+
+  it("does not save a checkpoint after its lock was lost and another owner saved newer files", async () => {
+    const copy = await run({ warm: true });
+    const store = agentFileStore(db);
+    const before = await store.read(companyId, agentId, entryFile, board());
+    await fs.writeFile(path.join(copy.localRoot, entryFile), "stale checkpoint");
+    const stale = createDb(external ?? database.connectionString);
+    let finish!: () => void;
+    const done = new Promise<void>(resolve => { finish = resolve; });
+    let check!: () => Promise<void>;
+    let acquired!: () => void;
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const held = stale.transaction(async tx => {
+      await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+      check = agentDirectoryLockOwnerCheck(tx as unknown as typeof db, new AbortController().signal);
+      acquired();
+      await done;
+    }).catch(() => undefined);
+    try {
+      await ready;
+      await check();
+      const [{ pid }] = await db.execute(sql`select pid from pg_locks where locktype = 'advisory' and granted
+        and objid = (hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0) & 4294967295)::bigint::oid limit 1`) as unknown as [{ pid: number }];
+      await db.execute(sql`select pg_terminate_backend(${pid})`);
+      const owner = await holdAgentDirectoryLock(false);
+      await store.write({ companyId, agentId, path: "memory.txt", bytes: Buffer.from("newer owner"), baseHash: null }, board());
+      await owner.release();
+      await expect(store.apply({ companyId, agentId, sourceDir: copy.localRoot, baseline: parseDirectorySnapshot(copy.receipt?.baseline)!, assertOwner: check }, {
+        type: "agent", companyId, agentId, runId: copy.runId, onBehalfOfUserId: userId })).rejects.toThrow("Agent directory operation lock was lost");
+      expect(await store.read(companyId, agentId, entryFile, board())).toEqual(before);
+      expect(await store.read(companyId, agentId, "memory.txt", board())).toEqual(Buffer.from("newer owner"));
+    } finally {
+      finish();
+      await held;
+      await stale.$client.end({ timeout: 1 });
+    }
   });
 
   it("retains remote cleanup across restart and failed retries until the original lease is cleaned", async () => {

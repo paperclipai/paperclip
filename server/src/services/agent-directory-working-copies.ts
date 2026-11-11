@@ -52,6 +52,13 @@ export async function acquireAgentDirectoryOperationLock(tx: Pick<Db, "execute">
   await tx.execute(sql`select set_config('lock_timeout', '0', true), set_config('statement_timeout', ${String(bound?.statement_timeout_ms ?? "0")}, true)`);
   return Number(bound?.idle_timeout_ms ?? ownerSilenceMs);
 }
+export function agentDirectoryLockOwnerCheck(lock: Pick<Db, "execute">, signal: AbortSignal): () => Promise<void> {
+  return async () => {
+    signal.throwIfAborted();
+    try { await lock.execute(sql`select 1`); } catch { throw conflict("Agent directory operation lock was lost"); }
+    signal.throwIfAborted();
+  };
+}
 export async function withAgentDirectoryLockKeepalive<T>(lock: Pick<Db, "execute">, idleTimeoutMs: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const owned = new AbortController();
   if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return work(owned.signal);
@@ -112,11 +119,12 @@ function actor(row: Copy): AuthorizationActor {
   return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
 }
 export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patchRow: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
-  const lockOwnership = new AsyncLocalStorage<AbortSignal>();
+  const lockOwnership = new AsyncLocalStorage<{ signal: AbortSignal; verify: () => Promise<void> }>();
   const patch = (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => {
-    lockOwnership.getStore()?.throwIfAborted();
+    lockOwnership.getStore()?.signal.throwIfAborted();
     return patchRow(row, values, condition);
   };
+  const assertOwner = async () => { await lockOwnership.getStore()?.verify(); };
   const store = agentFileStore(db);
   async function insertCopy(values: typeof copies.$inferInsert) {
     return db.transaction(async tx => {
@@ -490,10 +498,11 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         const nextHash = directorySnapshotSha256(snapshot);
         const changed = nextHash !== row.baseHash;
         const { storageWarning } = changed
-          ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest }, actor(row))
-          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => ({
-            storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null,
-          }));
+          ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest, assertOwner }, actor(row))
+          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => {
+            await assertOwner();
+            return { storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null };
+          });
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
           candidateHash: nextHash, errorCode: null, errorMessage: null, attempts: 0, nextAttemptAt: null,
           ...(stopped ? { processStoppedAt: new Date() } : {}),
@@ -548,7 +557,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         if (candidateHash === row.baseHash) {
           row = await patch(row, { state: "unchanged", errorCode: null, errorMessage: null, nextAttemptAt: null });
         } else {
-          ({ storageWarning } = await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: row.localRoot, baseline: baseline(row) }, actor(row)));
+          ({ storageWarning } = await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: row.localRoot, baseline: baseline(row), assertOwner }, actor(row)));
           row = await patch(row, { state: "saved", candidateHash, errorCode: null, errorMessage: null, nextAttemptAt: null });
         }
         row = await patch(row, { receipt: { ...row.receipt, storageWarning } });
@@ -726,7 +735,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
     return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
       const idleTimeoutMs = await acquireAgentDirectoryOperationLock(tx as unknown as Db, row.companyId, row.agentId);
-      return withAgentDirectoryLockKeepalive(tx as unknown as Db, idleTimeoutMs, signal => lockOwnership.run(signal, async () => {
+      return withAgentDirectoryLockKeepalive(tx as unknown as Db, idleTimeoutMs, signal => lockOwnership.run({ signal, verify: agentDirectoryLockOwnerCheck(tx as unknown as Db, signal) }, async () => {
         const result = await run();
         signal.throwIfAborted();
         return result;
