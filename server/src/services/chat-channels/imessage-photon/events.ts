@@ -736,7 +736,9 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
       throw new PhotonError("invalid_response", "Photon intake boundary is invalid");
     // A fulfilled no-effect admission still lets the ordinary external owner
     // durably checkpoint this sequence and the normal caller ACK its delivery.
-    if (occurredAt < intakeAfter) return;
+    // Membership is control state, not useful input. Replay it even across a
+    // pause boundary so removals and re-additions remain ordered and recoverable.
+    if (event.type !== "group.changed" && occurredAt < intakeAfter) return;
     const adapter = context.endpointRuntime!.getProviderAdapter();
     if (!(adapter instanceof PhotonChatAdapter))
       throw new Error("Photon adapter unavailable");

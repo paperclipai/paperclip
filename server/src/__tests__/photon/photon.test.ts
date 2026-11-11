@@ -303,6 +303,55 @@ describe("Photon publication receipts", () => {
 });
 
 describe("Photon durable event recovery", () => {
+  it("replays old membership controls while skipping old useful input and preserving its cursor", async () => {
+    const f = photonFixture();
+    const cutoff = Date.now();
+    const membership = (sequence: number, type: "participantRemoved" | "participantAdded"): LiveEvent => ({
+      type: "group.changed",
+      chatGuid: "iMessage;+;membership",
+      sequence,
+      occurredAt: new Date(cutoff - 1),
+      isFromMe: false,
+      change: { type, participant: { address: "+15555550100", service: "iMessage" } },
+    });
+    const admit = vi.fn();
+    const receiver = new PhotonReceiver({
+      client: f.adapter.client,
+      state: f.state,
+      lineId: "line",
+      intakeAfter: cutoff,
+      assertOwned: guard,
+      admit,
+      failure: recordedFailure,
+      catchUp: () => stream([
+        { ...photonEvent(10), occurredAt: new Date(cutoff - 1) },
+        membership(11, "participantRemoved"),
+        membership(12, "participantAdded"),
+        { ...photonEvent(13), occurredAt: new Date(cutoff) },
+        { type: "catchup.complete", headSequence: 13 },
+      ]),
+    });
+    try {
+      await receiver.catchUp();
+      expect(admit.mock.calls.map(([event]) => event.sequence), "membership controls must survive the useful-input cutoff").toEqual([11, 12, 13]);
+      expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 13 });
+      await receiver.catchUp();
+      expect(admit).toHaveBeenCalledTimes(3);
+      expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 13 });
+      const invalid = new PhotonReceiver({
+        client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: cutoff,
+        assertOwned: guard, admit, failure: recordedFailure,
+        catchUp: () => stream([
+          { ...membership(14, "participantAdded"), occurredAt: new Date(NaN) },
+          { type: "catchup.complete", headSequence: 14 },
+        ]),
+      });
+      try { await expect(invalid.catchUp()).rejects.toMatchObject({ code: "invalid_response" }); }
+      finally { await invalid.close(); }
+      expect(admit).toHaveBeenCalledTimes(3);
+      expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 13 });
+    } finally { await receiver.close(); }
+  });
   it("retries the original failure on the existing reader cadence without restarting stopped intake", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const f = photonFixture(), source = new Error("controlled catch-up failure"), reporting = new Error("controlled SQL failure");

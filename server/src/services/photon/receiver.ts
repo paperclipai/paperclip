@@ -188,7 +188,10 @@ export class PhotonReceiver {
               "invalid_response",
               "Photon event timestamp is invalid",
             );
-          if (occurredAt >= intakeAfter) await admit(event);
+          // Membership must reach the normal fenced control-state owner even
+          // when message/poll history predates the useful-intake boundary.
+          if (event.type === "group.changed" || occurredAt >= intakeAfter)
+            await admit(event);
         }
         // admission must durably store or classify even irrelevant events.
         if (!shared) await this.checkpoint(event.sequence);

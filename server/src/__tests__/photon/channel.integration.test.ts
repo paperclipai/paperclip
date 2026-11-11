@@ -681,6 +681,59 @@ describe("iMessage Photon channel control plane", () => {
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
   }, 30_000);
+  it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
+    const t = await setup();
+    await t.start();
+    await t.qualify();
+    const group = photonChat("iMessage;+;pause-membership", true);
+    t.chats.set(group.guid, group);
+    await t.deliver(photonEvent(3, group));
+    const resource = (await t.service.listResources(t.endpoint.id)).find(row => row.type === "group_chat")!;
+    expect(resource).toBeDefined();
+    await t.service.replaceResources(t.endpoint.id, [{ id: resource.id, enabled: true }], t.userId);
+    await t.deliver(photonEvent(4, group));
+    const membership = (sequence: number, type: "participantRemoved" | "participantAdded", occurredAt = new Date()): LiveEvent => ({
+      type: "group.changed", chatGuid: group.guid, sequence, occurredAt, isFromMe: false,
+      change: { type, participant: { address: "+15555550100", service: "iMessage" } },
+    });
+    await t.deliver(membership(5, "participantRemoved"));
+    const removed = (await t.service.listResources(t.endpoint.id)).find(row => row.id === resource.id)!;
+    expect(removed).toMatchObject({ enabled: true, availability: "unavailable", metadata: { photonRemoved: true } });
+    const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const readded = membership(6, "participantAdded", paused.updatedAt);
+    await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId);
+    const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    const cutoffValue = Reflect.get(resumed.setup, "photonIntakeAfter");
+    if (typeof cutoffValue !== "string") throw new Error("Missing normal resume cutoff");
+    const cutoff = Date.parse(cutoffValue);
+    expect(Number.isFinite(cutoff)).toBe(true);
+    expect(readded.occurredAt.getTime()).toBeLessThan(cutoff);
+    expect(Reflect.get(resumed.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+    expect(resumed.connectionId).toBe(before.connectionId);
+    expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+    const wakeups = t.wakeup.mock.calls.length;
+    const deliveries = await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id));
+    await t.deliver(readded);
+    const restored = (await t.service.listResources(t.endpoint.id)).find(row => row.id === resource.id)!;
+    expect(restored, "pause-window membership must clear the removed tombstone").toMatchObject({ enabled: true, availability: "available", metadata: { photonRemoved: false } });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+    expect(await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id))).toEqual(deliveries);
+    await t.deliver(readded);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+    await t.deliver({ ...photonEvent(7, group, "Fresh after membership restoration"), occurredAt: new Date(cutoff) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await t.deliver({ ...photonEvent(7, group, "Fresh after membership restoration"), occurredAt: new Date(cutoff) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await expect(t.callbacks().onPhotonEvent!(membership(8, "participantAdded", new Date(NaN))))
+      .rejects.toMatchObject({ code: "invalid_response" });
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    await expect(t.callbacks().onPhotonEvent!(membership(9, "participantAdded")))
+      .rejects.toThrow("Photon receiver no longer owns this endpoint");
+  }, 30_000);
   it("filters pause-window events through current Photon admission after a same-generation resume", async () => {
     const t = await setup();
     await t.start();
