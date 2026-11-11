@@ -2,19 +2,24 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
-import { beforeAll, expect, it } from "vitest";
+import { beforeAll, expect, it, vi } from "vitest";
 import { agentTaskSessions, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { DurablePrpControlPlane, inspectDurablePrpCheckpointHeader, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
-import { nativeRunnerCheckpointRegistration, loadNativeRunnerCheckpoint, readNativeGenericWarmPublication } from "./native-runner-checkpoint.js";
+import { nativeRunnerCheckpointRegistration, loadNativeRunnerCheckpoint, readNativeGenericWarmPublication, readNativePreparationPublication } from "./native-runner-checkpoint.js";
 import { readNativePreparationHandoffReadiness } from "./native-preparation-handoff.js";
-import { recordNativeRunnerLaunchIntent } from "./native-runner-launch-intent.js";
+import { recordNativeRunnerLaunchIntent, readNativeRunnerLaunchIntent } from "./native-runner-launch-intent.js";
+import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
+import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { restoreNativeWarmPreparationClaim } from "./native-warm-preparation-recovery.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
 import { hasLocalNativeControllerObligations } from "./native-controller-migration.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
+
+const ingress = vi.hoisted(() => ({ connect: vi.fn(() => ({ ready: Promise.resolve(), close: async () => {} })) }));
+vi.mock("../../realtime/runner-prp-outbound.js", () => ({ connectRunnerPrpIngress: ingress.connect }));
 
 describeEmbeddedPostgres("durable native preparation handoff", () => {
   const environment = nativeRestartFixture();
@@ -44,6 +49,106 @@ describeEmbeddedPostgres("durable native preparation handoff", () => {
       register: () => nativeRunnerCheckpointRegistration({ db: fixture.db,
         binding: { companyId: shared.companyId, issueId: fixture.issueId, runId: fixture.runId }, bootId })(core) };
   }
+
+  async function pluginLaunch(f: Awaited<ReturnType<typeof seed>>) {
+    await f.register();
+    f.core.persistPreparedLaunchConfiguration(f.identity, "prepared-configuration");
+    const template = { provider: { kind: "codex", cwd: "/workspace" }, authorizedTools: {} };
+    f.core.persistRunAttachTemplate(template);
+    f.core.queueCommand("run.prepare", template);
+    f.core.queueCommand("session.open", { reuse: "same_session" });
+    const ticket = f.core.issueBootstrapTicket(60_000);
+    await f.core.flushCheckpoint();
+    const operation = { kind: "submit" as const, preparedLaunchId: "prepared-configuration", projectIds: [], bootstrapTicket: ticket,
+      runner: { protocolMin: 3, protocolMax: 3, harness: "codex", runnerId: f.identity.runnerInstanceId,
+        leaseId: f.leaseId, runId: f.runId, sessionId: f.identity.normalizedSessionId,
+        turnId: f.identity.turnId, itemId: f.identity.itemId },
+      launch: { runnerVersion: "0.3.0", runnerDigest: `sha256:${"a".repeat(64)}`,
+        maxOutboxBytes: 262144, p0ReserveBytes: 65536, lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null } } };
+    const input = { ...f.scope, bootId: f.scope.controllerBootId, environmentLeaseId: f.leaseId,
+      taskId: `task-${f.leaseId}`, operation };
+    await recordNativeRunnerLaunchIntent(f.db, input);
+    return input;
+  }
+
+  it("replays the exact plugin launch after owner restore persists runner.drain before activation", async () => {
+    const f = await seed("PLUGIN-DRAIN-REPLAY"), launch = await pluginLaunch(f);
+    let recovered: DurablePrpControlPlane | undefined;
+    let registration: Awaited<ReturnType<NonNullable<ReturnType<typeof createPluginRunnerTaskOwner>["driver"]["controlPlaneRegistration"]>>> | undefined;
+    let physicalLaunches = 0;
+    const launchedTasks = new Set<string>();
+    const task = vi.fn(async (input: unknown, options?: { expectedTaskId?: string }) => {
+      const op = input as { kind: string };
+      if (op.kind === "submit" || op.kind === "connection") expect(options?.expectedTaskId).toBe(launch.taskId);
+      if (op.kind === "submit") {
+        expect(op).toEqual(launch.operation);
+        if (!launchedTasks.has(launch.taskId)) { launchedTasks.add(launch.taskId); physicalLaunches++; }
+        return { kind: "accepted", taskId: launch.taskId };
+      }
+      if (op.kind === "status") return { kind: "status", taskId: launch.taskId, phase: "running", executionStopped: false, sessionStateAvailable: false };
+      if (op.kind === "read_state") return { kind: "state", taskId: launch.taskId, state: { schema: "paperclip.runner.durable.state.v1", ...f.identity, lifecycle: "suspended" } };
+      if (op.kind === "connection") return { kind: "connection", taskId: launch.taskId, endpoint: {
+        kind: "authenticated_websocket", websocketUrl: "wss://fixture.example.test/connect", generation: "fixture", secretHeaders: [] } };
+      physicalLaunches++;
+      throw new Error("Unexpected physical task operation");
+    });
+    try {
+      await task(launch.operation, { expectedTaskId: launch.taskId });
+      await f.core.stop();
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(await claimNativeRestartRecoveries({ db: f.db, controller: shared.successor, restartKind: "hard", runIds: [f.runId] }))
+        .toEqual([expect.objectContaining({ kind: "reattach_remote_runner", controllerGeneration: 2 })]);
+      const durable = await loadNativeRunnerCheckpoint(f.db, f.scope);
+      const root = join(shared.runtimeRoot, "plugin-drain-recovered");
+      durable!.restoreSessionDirectory(root);
+      recovered = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: f.identity,
+        expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      await nativeRunnerCheckpointRegistration({ db: f.db, binding: f.scope, bootId: shared.successor.bootId })(recovered);
+      recovered.queueCommand("runner.drain", {});
+      await recovered.flushCheckpoint();
+      expect(await readNativePreparationPublication(f.db, f.scope)).toBeNull();
+      const before = (await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].runnerProfileJson;
+      const pending = await readNativeRunnerLaunchIntent(f.db, f.scope);
+      expect(pending).toMatchObject({ bootId: shared.successor.bootId, generation: 2, operation: launch.operation });
+      const owner = createPluginRunnerTaskOwner({ taskId: launch.taskId, task, projectIds: [], harness: "codex",
+        adoptIdentity: f.identity, pendingLaunch: pending!.operation,
+        onDispatched: operation => recordNativeRunnerLaunchIntent(f.db, { ...launch, bootId: shared.successor.bootId, operation }) });
+      registration = await owner.driver.controlPlaneRegistration!(recovered, f.identity);
+      registration.activate!();
+      await registration.ready!();
+      expect(task.mock.calls.filter(([op]) => (op as { kind: string }).kind === "submit")).toHaveLength(2);
+      expect(physicalLaunches).toBe(1);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].runnerProfileJson).toEqual(before);
+    } finally { await registration?.release?.("detach"); await recovered?.stop(); await f.core.stop(); }
+  });
+
+  it.each(["missing-intent", "changed-intent", "foreign-owner", "foreign-header", "malformed-config"])(
+    "does not authorize %s from an advanced plugin launch checkpoint", async kind => {
+      const f = await seed(`PLUGIN-DRAIN-${kind}`), launch = await pluginLaunch(f);
+      try {
+        f.core.queueCommand("runner.drain", {});
+        await f.core.flushCheckpoint();
+        if (kind === "missing-intent") await f.db.update(heartbeatRuns)
+          .set({ runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'nativeRunnerLaunchIntent'` }).where(eq(heartbeatRuns.id, f.runId));
+        if (kind === "changed-intent") launch.operation.preparedLaunchId = "foreign-configuration";
+        if (kind === "foreign-owner") await f.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID() }).where(eq(nativeRunFinalizations.runId, f.runId));
+        if (kind === "foreign-header" || kind === "malformed-config") {
+          const [header] = await f.db.select().from(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.runId, f.runId), eq(nativeRunnerCheckpoints.part, "header")));
+          const cipher = createLocalEncryptedCipher("write"), envelope = JSON.parse(cipher.decrypt(header.material));
+          const contents = JSON.parse(envelope.contents);
+          if (kind === "foreign-header") contents.state.identity.runnerInstanceId = randomUUID();
+          else contents.state.preparedLaunchConfigurations = [null];
+          await f.db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...envelope, contents: JSON.stringify(contents) })) })
+            .where(and(eq(nativeRunnerCheckpoints.runId, f.runId), eq(nativeRunnerCheckpoints.part, "header")));
+        }
+        const before = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+        const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+        await expect(recordNativeRunnerLaunchIntent(f.db, launch)).rejects.toThrow(kind === "foreign-owner"
+          ? "native_runner_checkpoint_owner_lost" : "native_runner_launch_authority_unproven");
+        expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual(before);
+        expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].runnerProfileJson).toEqual(run.runnerProfileJson);
+      } finally { await f.core.stop(); }
+    });
 
   it("publishes early preparation atomically and revokes the proof when work starts", async () => {
     const f = await seed("EARLY");
