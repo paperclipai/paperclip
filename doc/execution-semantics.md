@@ -3338,6 +3338,14 @@ run, it has a confirmed stop-and-retain receipt with state `stopped`, and no
 unsaved writer or pending native workspace export is bound to it. The backup
 stamp, single-owner, and later-provider-work checks above still apply.
 
+A run can also start while its terminal predecessor still holds the warm lease
+as `active`, because the predecessor releases the lease only after it saves its
+instruction and workspace files. Before it selects a lease, acquisition waits up
+to 20 seconds for that release when the matching lease belongs to a run that
+ended in the last two minutes. It then resumes the warm sandbox. A predecessor
+that is still running, or that ended earlier and never released its lease,
+causes no wait; that run gets a new sandbox as before.
+
 Reuse also skips a warm sandbox while its previous run's workspace export is
 still saving. A run that starts in that window gets a new sandbox, waits for
 the export, and realizes the saved files there. By the time it prepares the
