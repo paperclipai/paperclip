@@ -9,6 +9,13 @@
  * times each checkpoint save. It compares a baseline append module (FOR UPDATE)
  * with the current one (FOR NO KEY UPDATE), in alternating order.
  *
+ * Overlap is the normal controller order. The frame chain awaits each event's
+ * append (onCommittedEvent) and local commit, but not its checkpoint save: the
+ * ACK goes through #sendJson, which queues the save and does not block the
+ * next frame. Only semantic inputs and command results await the save. So the
+ * save for event N runs while event N+1 is appended. SERIAL=1 awaits every
+ * save before the next append, as a control without overlap.
+ *
  * HOLD_MS keeps each append transaction open that much longer. It stands in
  * for hosted round trips, which make the real append transaction last longer
  * than on loopback.
@@ -17,7 +24,7 @@
  *     > server/src/services/heartbeat-run-events.baseline.ts
  *   pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-run-event-checkpoint-lock.ts
  *
- * Optional: EVENTS (default 400 per pass), PASSES (4), HOLD_MS (5), EVENT_KIB (2).
+ * Optional: EVENTS (default 400 per pass), PASSES (4), HOLD_MS (5), EVENT_KIB (2), SERIAL (0).
  * Delete the baseline copy afterwards.
  */
 import assert from "node:assert/strict";
@@ -37,6 +44,7 @@ assert(existsSync(baselinePath), "Write the baseline module first (see the heade
 const baseline = await import(baselinePath) as typeof candidate;
 const size = (name: string, fallback: number) => Number(process.env[name] ?? fallback);
 const EVENTS = size("EVENTS", 400), PASSES = size("PASSES", 4), HOLD_MS = size("HOLD_MS", 5), EVENT_KIB = size("EVENT_KIB", 2);
+const SERIAL = process.env.SERIAL === "1";
 process.env.PAPERCLIP_SECRETS_MASTER_KEY ??= randomBytes(32).toString("base64");
 
 const keepAlive = setInterval(() => {}, 1_000);
@@ -90,6 +98,7 @@ try {
         await write(checkpoint(new Map(records), changed, false));
         saves.push(performance.now() - start);
       });
+      if (SERIAL) await tail;
     }
     await tail;
     const elapsed = performance.now() - started;
@@ -107,7 +116,7 @@ try {
   await pass("candidate"); // Warm caches and the prepared-statement path once.
   const results = [];
   for (let index = 0; index < PASSES; index++) results.push(await pass(index % 2 === 0 ? "baseline" : "candidate"));
-  console.log(JSON.stringify({ events: EVENTS, holdMs: HOLD_MS, eventKiB: EVENT_KIB, results }, null, 2));
+  console.log(JSON.stringify({ events: EVENTS, serial: SERIAL, holdMs: HOLD_MS, eventKiB: EVENT_KIB, results }, null, 2));
 } finally {
   clearInterval(keepAlive);
   await temporary.cleanup();
