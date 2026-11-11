@@ -346,7 +346,6 @@
   --dashboard-list-time-width: calc(var(--spacing) * 16);
   --dashboard-task-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) calc(var(--spacing) * 36) var(--dashboard-list-id-width) var(--dashboard-list-time-width);
   --dashboard-activity-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) var(--dashboard-list-id-width) var(--dashboard-list-time-width);
-  /* Agent graph canvas: edges, focus outline, selection box and the running-agent pulse. */
   --agent-graph-edge-stroke-width: 1.5;
   --agent-graph-focus-outline-width: 2px;
   --agent-graph-focus-outline-offset: 2px;
