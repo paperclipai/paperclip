@@ -7,16 +7,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BoardUi, UI_RETRY_BLOCKED_BY_MODAL, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, isRetryRequestFor } from "./board-ui.js";
 
 const retry = (issue: string) => `fetch('/api/issues/${issue}/retry',{method:'POST'})`;
-// A Radix modal hides the rest of the page from assistive technology and
-// disables pointer events outside itself, as the GitHub star prompt did.
 const modal = (buttons: string) => `<div role="dialog" data-state="open" aria-modal="true" style="position:fixed;inset:30%;background:#fff;z-index:2">
   <h2>You completed 5 tasks!</h2>${buttons}</div>`;
 const coveredRetry = (issue: string) => `<main aria-hidden="true">
   <div role="status">Couldn’t finish this attempt. <button onclick="${retry(issue)}">Retry</button></div></main>`;
 const closeModal = "document.querySelector('[role=dialog]').remove();document.querySelector('main').removeAttribute('aria-hidden')";
+const lateModal = `<div role="dialog" data-state="open" aria-modal="true" style="position:fixed;inset:0;background:#fff;z-index:2">
+  <h2>You completed 5 tasks!</h2><button onclick="this.parentElement.remove();document.querySelector('main').removeAttribute('aria-hidden')">Not now</button></div>`;
+const openLateModal = `document.querySelector('main').setAttribute('aria-hidden','true');document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(lateModal).replace(/"/g, "&quot;")})`;
 const pages: Record<string, string> = {
   "/issues/CHA-8": coveredRetry("i8") + modal(`<button onclick="${closeModal}">Not now</button>`),
   "/issues/CHA-9": coveredRetry("i9") + modal(`<span>No way out</span>`),
+  "/issues/CHA-11": `<main><div role="status">Couldn’t finish this attempt.
+    <button onmouseover="if (!window.prompted) { window.prompted = true; ${openLateModal} }" onclick="${retry("i11")}">Retry</button></div></main>`,
   "/issues/CHA-10": coveredRetry("i10") + modal(`<span>Press Escape</span>`)
     + `<script>document.addEventListener('keydown', event => { if (event.key === 'Escape') { ${closeModal} } })</script>`,
   "/issues/CHA-1": `<div role="status">Couldn’t finish this attempt. <button onclick="${retry("i1")}">Retry</button></div>`,
@@ -114,6 +117,14 @@ describe("BoardUi.clickRetry", () => {
         dismissedDialogs: [expect.stringContaining("You completed 5 tasks!")] });
     });
     expect(posts).toContain("/api/issues/i10/retry");
+  }, 60_000);
+
+  it("closes a prompt that opens after Retry appeared, then clicks Retry", async () => {
+    await withBoard(async board => {
+      expect(await board.clickRetry("CHA-11", "i11", 5_000, 1_500)).toMatchObject({ clicked: true, httpStatus: 202, accepted: true, error: null,
+        dismissedDialogs: [expect.stringContaining("You completed 5 tasks!")] });
+    });
+    expect(posts).toContain("/api/issues/i11/retry");
   }, 60_000);
 
   it("names a modal that keeps a visible Retry unreachable", async () => {

@@ -12,7 +12,6 @@ export interface UiRetryClick {
   error: string | null;
   bannerText: string | null;
   diagnostics?: { screenshot: string | null; dom: string | null } | null;
-  /** First line of each dialog closed because it covered the page. */
   dismissedDialogs?: string[];
 }
 
@@ -47,11 +46,6 @@ const DISMISS_BUTTON = /^(not now|no thanks|maybe later|dismiss)$/i;
 
 const blockingDialog = (page: Page) => page.locator(BLOCKING_DIALOG).filter({ visible: true }).first();
 
-/**
- * Closes an open modal that does not itself offer Retry: its "Not now"
- * button when it has one, otherwise Escape. Returns the dialog's first line,
- * or null when no such dialog is open or it would not close.
- */
 async function dismissBlockingDialog(page: Page): Promise<string | null> {
   const dialog = blockingDialog(page);
   if (!await dialog.isVisible().catch(() => false)) return null;
@@ -93,14 +87,20 @@ export async function clickRetryOnPage(page: Page, url: string, issueRefs: reado
   const reachable = page.getByRole("button", { name: "Retry", exact: true }).filter({ visible: true }).first();
   const dismissedDialogs: string[] = [];
   const dismissed = () => (dismissedDialogs.length ? { dismissedDialogs } : {});
+  const dismissDialogs = async () => {
+    const before = dismissedDialogs.length;
+    while (dismissedDialogs.length < MAX_DISMISSED_DIALOGS) {
+      const closed = await dismissBlockingDialog(page);
+      if (closed === null) break;
+      dismissedDialogs.push(closed);
+    }
+    return dismissedDialogs.length > before;
+  };
+  const blockedByModal = async () => await blockingDialog(page).isVisible().catch(() => false)
+    && await page.getByRole("button", { name: "Retry", exact: true, includeHidden: true }).filter({ visible: true }).count().catch(() => 0) > 0;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    // A modal (a promotional prompt, say) hides the rest of the page from
-    // the accessibility tree and from the pointer. Close it as a user would.
-    if (dismissedDialogs.length < MAX_DISMISSED_DIALOGS) {
-      const closed = await dismissBlockingDialog(page);
-      if (closed !== null) { dismissedDialogs.push(closed); continue; }
-    }
+    await dismissDialogs();
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     if (await reachable.waitFor({ state: "visible", timeout: Math.min(remaining, DIALOG_SCAN_MS) }).then(() => true, () => false)) break;
@@ -109,22 +109,28 @@ export async function clickRetryOnPage(page: Page, url: string, issueRefs: reado
     const bannerText = await banner();
     const diagnostics = diagnosticsDirectory
       ? await saveRetryMissingDiagnostics(page, diagnosticsDirectory, issueRefs[0] ?? "issue").catch(() => null) : undefined;
-    // A Retry the user can see but cannot reach sits behind a modal that would not close.
-    const blocked = await blockingDialog(page).isVisible().catch(() => false)
-      && await page.getByRole("button", { name: "Retry", exact: true, includeHidden: true }).filter({ visible: true }).count().catch(() => 0) > 0;
+    const blocked = await blockedByModal();
     return { clicked: false, httpStatus: null, accepted: null, error: blocked ? UI_RETRY_BLOCKED_BY_MODAL : UI_RETRY_BUTTON_MISSING, bannerText,
       ...(diagnostics !== undefined ? { diagnostics } : {}), ...dismissed() };
   }
   const bannerText = await banner();
   for (const button of await retryButtonsBannerFirst(page)) {
-    const response = page.waitForResponse(candidate => isRetryRequestFor(issueRefs, candidate.request().method(), candidate.url()),
-      { timeout: perButtonMs }).catch(() => null);
-    await button.click().catch(() => undefined);
-    const answered = await response;
-    if (!answered) continue;
-    const body = await answered.json().catch(() => null) as { accepted?: unknown } | null;
-    return { clicked: true, httpStatus: answered.status(), accepted: answered.ok() ? body?.accepted === true : false,
-      error: answered.ok() ? null : `retry request failed with ${answered.status()}`, bannerText, ...dismissed() };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await dismissDialogs();
+      const response = page.waitForResponse(candidate => isRetryRequestFor(issueRefs, candidate.request().method(), candidate.url()),
+        { timeout: perButtonMs }).catch(() => null);
+      await button.click({ timeout: perButtonMs }).catch(() => undefined);
+      const answered = await response;
+      if (answered) {
+        const body = await answered.json().catch(() => null) as { accepted?: unknown } | null;
+        return { clicked: true, httpStatus: answered.status(), accepted: answered.ok() ? body?.accepted === true : false,
+          error: answered.ok() ? null : `retry request failed with ${answered.status()}`, bannerText, ...dismissed() };
+      }
+      if (!await dismissDialogs()) break;
+    }
+  }
+  if (await blockedByModal()) {
+    return { clicked: false, httpStatus: null, accepted: null, error: UI_RETRY_BLOCKED_BY_MODAL, bannerText, ...dismissed() };
   }
   return { clicked: true, httpStatus: null, accepted: null, error: UI_RETRY_NO_REQUEST, bannerText, ...dismissed() };
 }
