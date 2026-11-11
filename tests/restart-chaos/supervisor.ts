@@ -681,10 +681,6 @@ export class ChaosSupervisor {
     throw new Error(`Second server did not report ready within ${READY_TIMEOUT_MS}ms`);
   }
 
-  /**
-   * K14: move the server from the older build to this checkout. Only the first K14 switches; a later
-   * one restarts the current build (recorded with `switched: false`).
-   */
   /** K15: move the next server to the next deploy generation (redeploy.ts). */
   private advanceDeploy(faultId: string): NonNullable<FaultReceipt["redeploy"]> {
     if (!this.redeploy || !this.environment) throw new Error("K15 needs a redeploy wave (ChaosSupervisor.create redeployWaveId)");
@@ -698,6 +694,10 @@ export class ChaosSupervisor {
     return receipt;
   }
 
+  /**
+   * K14: move the server from the older build to this checkout. Only the first K14 switches; a later
+   * one restarts the current build (recorded with `switched: false`).
+   */
   private async switchToCurrentBuild(faultId: string): Promise<NonNullable<FaultReceipt["upgrade"]>> {
     const fromRoot = this.serverRoot;
     const switched = fromRoot !== this.repositoryRoot;

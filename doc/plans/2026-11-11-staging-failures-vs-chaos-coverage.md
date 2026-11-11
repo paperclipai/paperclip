@@ -252,7 +252,7 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 
 | Scenario | Classes | Selector | Status |
 | --- | --- | --- | --- |
-| K15 redeploy into a new process space and deployment identity | R, P, L (and A with `--upgrade-from`) | `--faults K15` | Implemented, unit-tested. Three Daytona waves are recorded below. |
+| K15 redeploy into a new process space and deployment identity | R, P, L (and A with `--upgrade-from`) | `--faults K15` | Implemented, unit-tested. Five Daytona waves are recorded below. |
 | EP1 environment-provider 5xx window | E | — | Proposed |
 | DF1 sandbox disk full, SY1 symlink workload | F | — | Proposed |
 
@@ -266,11 +266,14 @@ All waves ran on Daytona image `ghcr.io/paperclipai/paperclip-daytona-runner@sha
 | `w-20261111T002313-s9301` | `--faults K15 --adapters opencode,claude --workloads A1,C1 --daytona-reuse-lease --concurrency 3 --tasks 6` | 5 of 6 pass. t05 (OpenCode, C1) failed R5 `silent_dead_run`: its run stayed `running` with no event, activity or start evidence for 183 s after the redeploy, then succeeded. No Retry was needed. |
 | `w-20261111T004241-s9301` (control) | the same seed and cells with `--faults K2` | 6 of 6 pass |
 | `w-20261111T005008-s9302` | `--faults K15 --triggers time,comment --adapters opencode,claude --workloads C1 --daytona-warm --concurrency 4 --tasks 4` | 4 of 4 pass |
+| `w-20261111T010000-s9303` | `--faults K15 --adapters opencode --workloads A1,C1 --daytona-reuse-lease --concurrency 4 --tasks 8` | 8 of 8 pass |
+| `w-20261111T011044-s9303` (control) | the same seed and cells with `--faults K2` | 8 of 8 pass |
 
 What this shows:
 
-- K15 changes the conditions recovery runs under. The 183 s silent OpenCode run occurred only under
-  K15, and not under K2 with the same seed. One sample is not a stable reproduction.
+- Under K15, 17 of 18 tasks passed. Under K2 with the same seeds, 14 of 14 passed. The one failure,
+  a 183 s silent OpenCode run after a redeploy, occurred only under K15. One failure in 18 is not a
+  stable reproduction.
 - The staging refusal codes of classes R and P did **not** reproduce on current master with K15
   alone. Examples are `identity_run_id` lease mismatch, `runner_remote_process_identity_unavailable`
   and `prior_owner_terminal_state_indeterminate`. Two explanations remain open:

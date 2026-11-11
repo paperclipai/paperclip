@@ -322,7 +322,7 @@ K15 emulates the container replacement without a container:
   service and volume.
 - Other faults in the same wave restart within the current generation, like a
   platform restart of the same deployment.
-- Identities derive from the wave id, so a replay sees the same ones.
+- Identities derive from the wave id; a replay uses the source wave id, so it sees the same ones.
 - Each K15 receipt records `redeploy` (both generations) in `faults.json`, and
   `redeploy_switched` in the timeline.
 

@@ -202,8 +202,8 @@ async function main(): Promise<number> {
   if (crashPoint && plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
     ...(plan.options.upgradeFrom ?? plan.options.serverFrom ? { upgradeFrom: plan.options.upgradeFrom ?? plan.options.serverFrom } : {}),
-    // K15: every server of the wave runs under an emulated deploy identity; a replay derives the same ones.
-    ...(redeployWave(plan) ? { redeployWaveId: plan.waveId } : {}) });
+    // K15: every server of the wave runs under an emulated deploy identity; a replay derives the source wave's ones.
+    ...(redeployWave(plan) ? { redeployWaveId: plan.replayOf?.waveId ?? plan.waveId } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
   // its own batch of tasks; the point is armed once the batch launched and the
   // server kills itself at its nth hit (restarted like K1). Invariants are

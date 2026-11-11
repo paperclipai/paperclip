@@ -17,7 +17,10 @@ import {
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
 } from "./types.js";
 
-/** A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`). */
+/**
+ * A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`),
+ * and K15, which changes the deploy identity of every later server (pass `--faults` to include it).
+ */
 export const STORM_DEFAULT_FAULTS: FaultKind[] = ["K1", "K2", "K4", "K6"];
 
 export const CREDENTIAL_FOR_ADAPTER: Record<AdapterId, "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"> = {
