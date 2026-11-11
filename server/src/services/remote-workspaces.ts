@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm, statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 import {
   companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
 } from "@paperclipai/db";
@@ -618,6 +619,7 @@ export async function prepareRemoteWorkspace(input: {
     return { workspace: savedWorkspace!, lease: savedLease! as EnvironmentLease, remoteRoot, reference: runReference };
   });
   target.remoteCwd = remoteRoot;
+  crashPoint("remote_workspace.prepare.after_publish_before_provision");
   if (restoredExport?.cleanupPending) await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, location: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location!, target,
     assertOwned: input.assertOwned ?? (async () => undefined) });
