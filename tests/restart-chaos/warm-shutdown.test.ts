@@ -35,6 +35,8 @@ describe("clean warm shutdown check", () => {
     const check = gradeWarmShutdown({ cleanup: clean,
       serverLog: "WARN: warm native session close did not settle; its Runner was stopped and the session discarded {}\n" });
     expect(check).toMatchObject({ verdict: "pass", idleCloseFailures: [expect.stringContaining("did not settle")] });
+    expect(gradeWarmShutdown({ cleanup: clean,
+      serverLog: "WARN: warm native session's sandbox was already destroyed; released its owner {}\n" }).idleCloseFailures).toHaveLength(1);
   });
 
   it("grades a warm local wave from the server log alone", () => {
