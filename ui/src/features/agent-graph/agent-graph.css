@@ -1,0 +1,64 @@
+.agent-graph .react-flow {
+  --xy-background-color: var(--background);
+  --xy-background-pattern-color: var(--border);
+  --xy-edge-stroke: var(--border);
+  --xy-edge-stroke-selected: var(--primary);
+  --xy-connectionline-stroke: var(--primary);
+  --xy-node-border-radius: var(--radius);
+  --xy-handle-background-color: var(--muted-foreground);
+  --xy-handle-border-color: var(--background);
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: var(--agent-graph-minimap-mask);
+  --xy-minimap-node-background-color: var(--muted-foreground);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-color-hover: var(--accent-foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-selection-background-color: var(--agent-graph-selection-background);
+  --xy-selection-border: var(--agent-graph-selection-border);
+  --xy-attribution-background-color: transparent;
+}
+
+.agent-graph .react-flow__edge.agent-graph-edge .react-flow__edge-path {
+  stroke-width: var(--agent-graph-edge-stroke-width);
+}
+
+.agent-graph .react-flow__edge.agent-graph-edge.animated .react-flow__edge-path {
+  stroke: var(--status-agent-running);
+}
+
+.agent-graph .react-flow__edge.agent-graph-edge-draft .react-flow__edge-path {
+  stroke-dasharray: 6 4;
+}
+
+.agent-graph .react-flow__node:focus-visible {
+  outline: var(--agent-graph-focus-outline-width) solid var(--ring);
+  outline-offset: var(--agent-graph-focus-outline-offset);
+  border-radius: var(--radius);
+}
+
+.agent-graph-node-live {
+  animation: agent-graph-live-pulse var(--motion-agent-graph-live-pulse) var(--motion-ease-agent-graph-live-pulse) infinite;
+}
+
+@keyframes agent-graph-live-pulse {
+  0%,
+  100% {
+    box-shadow: var(--shadow-agent-graph-live-rest);
+  }
+  50% {
+    box-shadow: var(--shadow-agent-graph-live-peak);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-graph-node-live {
+    animation: none;
+    box-shadow: var(--shadow-agent-graph-live-static);
+  }
+
+  .agent-graph .react-flow__edge.animated .react-flow__edge-path {
+    animation: none;
+  }
+}

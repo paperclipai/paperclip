@@ -25,6 +25,17 @@ Access the dashboard from the left sidebar after selecting a company. It refresh
 - **Budget utilization** — agents auto-pause at 100% budget. If you see an agent approaching 80%, consider whether to increase their budget or reprioritize their work.
 - **Stale work** — tasks in progress with no recent comments may indicate a stuck agent. Check the agent's run history for errors.
 
+## Customizable dashboard (experimental)
+
+Enable **Customizable Dashboard** in **Instance Settings > Experimental** to turn the dashboard cards into widgets that you can arrange. The layout is yours: each board user has their own layout per organization.
+
+- **Customize** opens edit mode. Drag a widget by its handle, or focus the handle and use the arrow keys. Change the width and height with the steppers or the corner handle. Remove a widget with **X**.
+- **Add widget** opens the catalog. Besides the standard cards it has **Live Runs**, **Agent Errors** and **Pending Approvals**.
+- **Restore default** returns to the standard dashboard.
+- On a narrow screen the widgets stack in one column.
+
+**Automatic widgets** react to what is happening. While runs are active, an agent is in error, or approvals wait for the board, the matching widget appears at the top and is marked "Shown automatically". It leaves when the condition ends. **Pin to dashboard** keeps it. If the widget is already on your dashboard, it gets a highlight instead. Turn each rule on or off under **Automatic widgets**.
+
 ## Dashboard API
 
 The dashboard data is also available via the API:

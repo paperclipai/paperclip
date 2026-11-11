@@ -107,6 +107,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
+    enableAgentGraph: false,
+    enableCustomizableDashboard: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
     enableBetaSkills: false,

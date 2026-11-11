@@ -2,6 +2,7 @@ import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { agentGraphLayoutSchema, dashboardLayoutSchema, uiLayoutSurfaceSchema } from "@paperclipai/shared";
 import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
@@ -1512,6 +1513,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PUT /api/companies/{companyId}/workspace-preferences/me",
   "GET /api/companies/{companyId}/primary-agent/me",
   "PUT /api/companies/{companyId}/primary-agent/me",
+  "GET /api/companies/{companyId}/ui-layouts/{surface}/me",
+  "PUT /api/companies/{companyId}/ui-layouts/{surface}/me",
+  "DELETE /api/companies/{companyId}/ui-layouts/{surface}/me",
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
@@ -7129,6 +7133,42 @@ for (const method of ["get", "put"] as const) {
       403: r.forbidden,
       404: r.notFound,
       ...(method === "put" ? { 422: r.unprocessable } : {}),
+    },
+  });
+}
+
+const uiLayoutDocumentSchema = z.union([agentGraphLayoutSchema, dashboardLayoutSchema]);
+
+const uiLayoutPreferenceResponse = z.object({
+  surface: uiLayoutSurfaceSchema,
+  schemaVersion: z.number().int().nullable(),
+  layout: uiLayoutDocumentSchema.nullable(),
+  updatedAt: z.string().datetime().nullable(),
+});
+
+const uiLayoutSummaries = {
+  get: "Get my layout for a company surface",
+  put: "Save my layout for a company surface",
+  delete: "Reset my layout for a company surface",
+} as const;
+
+for (const method of ["get", "put", "delete"] as const) {
+  registry.registerPath({
+    method,
+    path: "/api/companies/{companyId}/ui-layouts/{surface}/me",
+    tags: ["ui-layouts"],
+    summary: uiLayoutSummaries[method],
+    description: "Uses the authenticated board user's personal layout for one company surface (agent_graph or dashboard). Every active company member, viewers included, may read, save and reset their own layout only. Agent credentials cannot access it. A save validates the layout against the strict schema of the surface and rejects a serialized layout above 262,144 bytes. A reset removes the saved layout and returns layout null. The first save of a layout and a reset that removes one each write one company activity entry (ui_layout.created, ui_layout.reset) with the user id and the surface; later saves write none.",
+    request: {
+      params: z.object({ companyId: z.string(), surface: uiLayoutSurfaceSchema }),
+      ...(method === "put" ? { body: jsonBody(z.object({ layout: uiLayoutDocumentSchema }).strict()) } : {}),
+    },
+    responses: {
+      200: r.ok(uiLayoutPreferenceResponse),
+      ...(method === "put" ? { 400: r.badRequest } : {}),
+      401: r.unauthorized,
+      403: r.forbidden,
+      404: r.notFound,
     },
   });
 }

@@ -982,6 +982,7 @@ export type {
 } from "./user-profile.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type { SidebarOrderPreference } from "./sidebar-preferences.js";
+export type { UiLayoutPreference, UiLayoutSurface } from "./ui-layouts.js";
 export type {
   ResourceMembershipResourceType,
   ResourceMembershipState,

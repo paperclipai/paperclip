@@ -129,7 +129,8 @@
               "api/secrets",
               "api/tool-gateway-tokens",
               "api/activity",
-              "api/dashboard"
+              "api/dashboard",
+              "api/ui-layouts"
             ]
           }
         ]

@@ -230,6 +230,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
+  const enableAgentGraph = experimentalQuery.data?.enableAgentGraph === true;
+  const enableCustomizableDashboard = experimentalQuery.data?.enableCustomizableDashboard === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableBetaSkills = experimentalQuery.data?.enableBetaSkills === true;
@@ -307,6 +309,17 @@ export function InstanceExperimentalSettings() {
             Optional product features that are still being evaluated.
           </p>
         </div>
+
+        <ExperimentalToggleCard
+          title="Agent Graph"
+          description="Replace the static org chart with an editable graph canvas: drag, multi-select, auto-layout, sticky notes, copy and paste as hire drafts, and reporting-line changes."
+          checked={enableAgentGraph}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentGraph: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAgentGraph"
+          managed={managedKeys.enableAgentGraph}
+          ariaLabel="Toggle agent graph experimental setting"
+        />
 
         <ExperimentalToggleCard
           title="Assistant connections (MCP)"
@@ -401,6 +414,17 @@ export function InstanceExperimentalSettings() {
           settingKey="enableLegacyComposerSubmit"
           managed={managedKeys.enableLegacyComposerSubmit}
           ariaLabel="Toggle Command/Ctrl+Enter to submit"
+        />
+
+        <ExperimentalToggleCard
+          title="Customizable Dashboard"
+          description="Replace the fixed dashboard with a widget grid that each user can rearrange, resize and extend, with widgets that appear while runs are live or agents are in error."
+          checked={enableCustomizableDashboard}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableCustomizableDashboard: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableCustomizableDashboard"
+          managed={managedKeys.enableCustomizableDashboard}
+          ariaLabel="Toggle customizable dashboard experimental setting"
         />
 
         <ExperimentalToggleCard

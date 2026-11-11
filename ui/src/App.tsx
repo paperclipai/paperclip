@@ -39,6 +39,7 @@ import {
 } from "./lib/onboarding-route";
 import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 import { useCloudInstance } from "./hooks/useCloudInstance";
+import { useExperimentalFlag } from "./hooks/useExperimentalFlag";
 import { useStreamlinedUiEnabled } from "./hooks/useStreamlinedUiEnabled";
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
@@ -140,6 +141,13 @@ const ProductionRoutineDetail = lazy(() => import("./pages/RoutineDetail.product
 const ProductionCompanySkills = lazy(() => import("./pages/CompanySkills.production").then((module) => ({ default: module.CompanySkills })));
 const ProductionCompanyActivity = lazy(() => import("./pages/audit/CompanyActivity.production").then((module) => ({ default: module.CompanyActivity })));
 const ProductionOrgChart = lazy(() => import("./pages/OrgChart.production").then((module) => ({ default: module.OrgChart })));
+const AgentGraphPage = lazy(() => import("./features/agent-graph/AgentGraphPage").then((module) => ({ default: module.AgentGraphPage })));
+
+function OrgChartSurface() {
+  const agentGraph = useExperimentalFlag("enableAgentGraph");
+  if (!agentGraph.loaded) return <PaperclipLoading />;
+  return agentGraph.enabled ? <AgentGraphPage /> : <ProductionOrgChart />;
+}
 
 function ProductionSurface({ children }: { children: ReactNode }) {
   return <Suspense fallback={<PaperclipLoading />}>{children}</Suspense>;
@@ -279,7 +287,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route
         path="org"
-        element={streamlinedUiEnabled ? <Navigate to="/agents/all" replace /> : <ProductionSurface><ProductionOrgChart /></ProductionSurface>}
+        element={streamlinedUiEnabled ? <Navigate to="/agents/all" replace /> : <ProductionSurface><OrgChartSurface /></ProductionSurface>}
       />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       {AGENT_FILTER_TABS.map((tab) => (
