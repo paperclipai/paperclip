@@ -306,6 +306,18 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     expect(statuses.map((row) => row.status)).toEqual(["pending", "pending"]);
   });
 
+  it.each([DOTTA, null])("collects an addressed stale required request for its escalation queue (%s)", async (owner) => {
+    const { companyId, workerId } = await seedCompany();
+    if (owner) await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: owner, status: "active", membershipRole: "admin" });
+    await db.update(companies).set({ defaultDecisionOwnerUserId: owner }).where(eq(companies.id, companyId));
+    const issueId = await insertIssue({ companyId, createdByUserId: SCOTT });
+    const sourceId = await insertInteraction({ companyId, issueId, workerId, addresseeUserId: SCOTT, ageDays: 31,
+      kind: "request_item_verdicts", payload: { version: 1, prompt: "Review", items: [], toolAction: { id: "governed" } } });
+    const incoming = await list(companyId, DOTTA, owner ? "mine" : "company");
+    expect(find(incoming, sourceId)).toMatchObject({ required: true, audience: owner ? { kind: "user", userId: owner } : { kind: "company" } });
+    expect(find(await list(companyId, SCOTT, "mine"), sourceId)).toBeNull();
+  });
+
   it("labels cards on closed tasks stale", async () => {
     const { companyId, workerId } = await seedCompany();
     const doneTask = await insertIssue({ companyId, status: "done", createdByUserId: SCOTT });

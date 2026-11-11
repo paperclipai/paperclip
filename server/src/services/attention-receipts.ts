@@ -34,7 +34,7 @@ import {
   resolveIssueAudienceContextMap,
   type AttentionAudienceInput,
 } from "./attention.js";
-import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { approvalReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { budgetScopeName } from "./budgets.js";
 import { deferrableInteractionCondition } from "./issue-question-context.js";
 
@@ -324,7 +324,9 @@ export function attentionReceiptService(db: Db) {
       const keys = candidates.map((candidate) => attentionReceiptDismissalKey(candidate.id));
       const issueIds = [...new Set(candidates.map((candidate) => candidate.receipt.issueId).filter((id): id is string => Boolean(id)))];
       const readCondition = await issueReadSqlCondition(db, options.actor);
-      const [dismissedRows, issueRows, company] = await Promise.all([
+      const approvalIds = candidates.filter(candidate => candidate.receipt.sourceKind === "approval").map(candidate => candidate.receipt.sourceId);
+      const approvalRead = await approvalReadSqlCondition(db, options.actor);
+      const [dismissedRows, issueRows, company, approvalRows] = await Promise.all([
         db
           .select({ itemKey: inboxDismissals.itemKey })
           .from(inboxDismissals)
@@ -340,15 +342,20 @@ export function attentionReceiptService(db: Db) {
             .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds), readCondition))
           : Promise.resolve([]),
         db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).then((r) => r[0] ?? null),
+        approvalIds.length ? db.select({ id: approvals.id }).from(approvals).where(and(
+          eq(approvals.companyId, companyId), inArray(approvals.id, approvalIds), approvalRead,
+        )) : Promise.resolve([]),
       ]);
       const dismissed = new Set(dismissedRows.map((row) => row.itemKey));
       const readableIssues = new Map(issueRows.map((row) => [row.id, row]));
+      const readableApprovals = new Set(approvalRows.map(row => row.id));
       const prefix = company?.prefix ?? "PAP";
 
       const receipts: AttentionReceipt[] = [];
       for (const { id, createdAt, receipt } of candidates) {
         const dismissalKey = attentionReceiptDismissalKey(id);
         if (dismissed.has(dismissalKey)) continue;
+        if (receipt.sourceKind === "approval" && !readableApprovals.has(receipt.sourceId)) continue;
         const issueRow = receipt.issueId ? readableIssues.get(receipt.issueId) : null;
         // A task the person can no longer read takes its receipt with it.
         if (receipt.issueId && !issueRow) continue;

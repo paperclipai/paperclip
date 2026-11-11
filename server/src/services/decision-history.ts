@@ -2,7 +2,7 @@ import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, notInArray, or, 
 import { alias } from "drizzle-orm/pg-core";
 import { activityLog, agents, approvals, budgetIncidents, companies, decisions, decisionTargetIssues, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
 import { ATTENTION_RECEIPT_OUTCOME_TEXT, type DecisionHistoryAction, type DecisionHistoryItem, type DecisionHistoryPage, type DecisionHistoryQuery, type DecisionHistoryResultOutcome } from "@paperclipai/shared";
-import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { approvalReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { badRequest } from "../errors.js";
 import { firstApprovalIssueId } from "./approval-visibility.js";
 import { approvalTitle, MAX_INSTIGATOR_CHAIN_DEPTH } from "./attention.js";
@@ -413,7 +413,7 @@ export function decisionHistoryService(db: Db) {
         .from(approvals).leftJoin(issues, and(eq(issues.id, approvalIssueId), eq(issues.companyId, companyId)))
         .leftJoin(agents, and(eq(agents.id, approvals.requestedByAgentId), eq(agents.companyId, companyId)))
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, companyId)))
-        .where(and(eq(approvals.companyId, companyId), notInArray(approvals.status, ["pending"]),
+        .where(and(eq(approvals.companyId, companyId), await approvalReadSqlCondition(db, options.actor), notInArray(approvals.status, ["pending"]),
           or(sql`${approvalIssueId} is null`, and(isNotNull(issues.id), readable)),
           approvalOutcome, approvalScope,
           options.handledForMe ? handledForUserSourceCondition(companyId, options.userId, "approval", approvals.id) : undefined,
