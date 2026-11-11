@@ -782,6 +782,28 @@ export async function restoreRemoteWorkspaceDirectory(input: {
      await fs.rename(pending,fencePath);const directory=await fs.open(lockRoot,'r');try{await directory.sync();}finally{await directory.close();}}
     finally{await fs.rm(pending,{force:true});}
    }
+   // Only a restore of this root, under this lock, creates its staging folders
+   // and binds its archive staging to the root. While the lock is held, any
+   // such leftover is from an attempt that died, and its bytes are disposable:
+   // the saved version in control-plane storage is the source of truth.
+   stage='reclaim';const stagingRoot=path.dirname(archive),snapshotsRoot=path.dirname(stagingRoot);
+   const discard=async p=>{await open(p);await fs.rm(p,{recursive:true,force:true});};
+   for(const name of await fs.readdir(stagingRoot))
+    if(/^workspace\.pcws\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.consuming$/.test(name))await fs.rm(path.join(stagingRoot,name),{force:true});
+   const stagingPrefix=path.basename(root)+'.restoring-';
+   for(const name of await fs.readdir(path.dirname(root))){
+    if(!name.startsWith(stagingPrefix)||!/^[A-Za-z0-9]{6}$/.test(name.slice(stagingPrefix.length)))continue;
+    const s=await fs.lstat(path.join(path.dirname(root),name));if(s.isDirectory()&&!s.isSymbolicLink())await discard(path.join(path.dirname(root),name));}
+   for(const name of await fs.readdir(snapshotsRoot)){
+    if(name===path.basename(stagingRoot)||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(name))continue;
+    const directory=path.join(snapshotsRoot,name),s=await fs.lstat(directory);if(!s.isDirectory()||s.isSymbolicLink())continue;
+    const bound=await stat(path.join(directory,'restore-target.json'));if(!bound||!bound.isFile()||bound.nlink!==1||bound.size>16384)continue;
+    const value=await readJson(path.join(directory,'restore-target.json'),'unsafe_staging').catch(()=>null);
+    if(value?.schema==='paperclip.workspace-restore-staging.v1'&&value.root===root)await discard(directory);}
+   // Bind this attempt's staging only after the space is reclaimed.
+   const binding=path.join(stagingRoot,'restore-target.json'),bindingTemp=binding+'.'+crypto.randomUUID()+'.tmp';
+   try{await fs.writeFile(bindingTemp,JSON.stringify({schema:'paperclip.workspace-restore-staging.v1',root}),{flag:'wx',mode:0o600});
+    await fs.rename(bindingTemp,binding);}finally{await fs.rm(bindingTemp,{force:true});}
    stage='allocation';if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
    stage='inspect_root';const prior=await stat(root);if(prior)await directory(root);
    const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
@@ -807,9 +829,18 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    if(prior&&!retire&&allowEmpty!=='true')throw Error('occupied_root');
    stage='allocation';const retained=prior&&!retire?await allocation(root):[];
    if(!prior&&files.length)throw Error('allocation_missing');
-   stage='extract';const staged=await fs.mkdtemp(root+'.restoring-');
+   // The server proved this root's files are already in the saved lineage being
+   // restored, so they are removed before extraction instead of after it. Its
+   // receipt and runtime state stay, so an interrupted restore repeats this step.
+   if(retire){stage='reclaim_retired';const s=await fs.lstat(root);await fs.chmod(root,(s.mode&0o7777)|0o700);
+    for(const name of await fs.readdir(root))if(name!=='.paperclip-runtime')await discard(path.join(root,name));
+    if(await stat(path.join(root,'.paperclip-runtime','workspace-snapshots')))await discard(path.join(root,'.paperclip-runtime','workspace-snapshots'));}
+   stage='extract';const staging=await fs.mkdtemp(root+'.restoring-'),staged=path.join(staging,'tree');
+   // A private name keeps a later upload to the same path out of this extraction.
+   const consuming=archive+'.'+crypto.randomUUID()+'.consuming';
    try{
-    await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
+    await fs.rename(archive,consuming);
+    await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',consuming,staged,digest,'consume'],{maxBuffer:1048576});
     stage='write_receipt';const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
     for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
     await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify(completedReceipt(identity,digest,restorationEpoch)),{flag:'wx',mode:0o600});
@@ -821,9 +852,9 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(holding,root);throw e;}
     stage='cleanup_parked';if(prior&&!retire){await allocation(parked);await fs.rm(parked,{recursive:true});}
     await removeRetired();
-   }finally{await fs.rm(staged,{recursive:true,force:true});}
+   }finally{await fs.rm(consuming,{force:true});await open(staging).catch(()=>{});await fs.rm(staging,{recursive:true,force:true});}
    }finally{lock.close();}
-  })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
+  })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,diskFull(error)?Error('sandbox_disk_full'):error));process.exitCode=1});`;
   await measureRunPhase("workspace.snapshot.sandbox_extract", () => command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
     input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
     String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch)]));

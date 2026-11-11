@@ -1440,6 +1440,20 @@ folder), or an exhausted budget leaves a board-owned recovery action. Stranded-w
 recovery names this failure for the statuses it scans; for other statuses, such as
 a `blocked` task woken by a reply, the failure path records the action directly.
 
+A restore needs about one workspace of sandbox disk, not two. The uploaded
+archive is a disposable copy of a saved version that control-plane storage
+already holds, and the sandbox checks every file against that version's
+manifest. Extraction writes the files from the last to the first and shortens the
+archive behind each one, so the archive and the restored tree together need the
+workspace size plus the largest file. While it holds the root's restore lock, the
+restore also removes what an earlier attempt on that root left when it died: a
+`<root>.restoring-*` partial tree, an archive it was consuming, and archive staging
+that names the same root. Staging that an earlier release left without that name
+is kept. A sandbox that still cannot hold one copy fails with
+`reason=sandbox_disk_full` at the stage that ran out of space. A retry on the same
+disk would fail again, so it is not retried automatically. The board recovery
+action's Retry works once the sandbox has room for the workspace.
+
 A retained sandbox can still hold a workspace's earlier root after the workspace
 moved to another allocation, for example when child tasks that an older release
 bound to a parent's workspace saved newer work on their own sandboxes. When the parent wakes on its
@@ -1449,7 +1463,12 @@ recorded use of that root on this sandbox is an earlier epoch that ended in a
 quiesced, committed final save, and the folder carries a Paperclip preparation or
 restore receipt. Its files are then already part of the saved lineage being
 restored. Any other occupant (no receipt, a later unsaved use, or a sandbox that
-never saved that root) is still refused with `reason=occupied_root`. The replaced
+never saved that root) is still refused with `reason=occupied_root`, and none of
+its files are removed. After that proof, the root's files are removed before the
+saved version is extracted, so the old copy never shares the disk with the new
+one. Its receipt and `.paperclip-runtime` stay until the restored root is
+published, so a restore interrupted after the removal proves the same root again
+and finishes from the saved version. The replaced
 root's `.paperclip-runtime` state, such as a retained runner session, is never in
 a snapshot and belongs to the sandbox, so it moves into the restored root. Only the
 old preparation or restore receipt and export staging are dropped. A retained
