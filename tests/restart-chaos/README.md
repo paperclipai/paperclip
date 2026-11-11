@@ -535,11 +535,12 @@ method and status are written to `storage-proxy.json`.
 | ST5 | credentials rejected: every request answers 403 `ExpiredToken`, `InvalidAccessKeyId` or `SignatureDoesNotMatch` (seeded per window) |
 | ST5R | real key rotation: MinIO restarts with a new root key (old key revoked), and the server's credential source keeps serving the old key until the window ends |
 | ST7 | read-after-write lag: a `GET` or `HEAD` of an object answers 404 `NoSuchKey` for 5–30 s (seeded) after its `PUT` or multipart completion succeeded |
+| ST8 | provider-session backup throttle: the next 9–12 (seeded) `PUT`s of a native harness backup answer 503 `SlowDown`, more than one request's own throttled retries. This is the post-turn close checkpoint of a remote (Daytona) run, so use it with `--env daytona --storage s3` |
 
-With ST4 or ST7 in the wave, the harness audits the store when the wave ends (`storage-audit.json` and a
+With ST4, ST7 or ST8 in the wave, the harness audits the store when the wave ends (`storage-audit.json` and a
 `Storage audit` section in `SUMMARY.md`). It reads every committed workspace snapshot back from MinIO and checks
 its size and SHA-256 against the snapshot row, and after the server stops it lists incomplete multipart uploads
-under the wave's prefix. An orphaned upload, a committed snapshot that does not read back, a planned ST4 or ST7 fault
+under the wave's prefix. An orphaned upload, a committed snapshot that does not read back, a planned ST4, ST7 or ST8 fault
 that never changed a request, or a skipped snapshot check fails the wave. ST4 truncation forwards the first bytes
 of the part to MinIO before it cuts both connections.
 

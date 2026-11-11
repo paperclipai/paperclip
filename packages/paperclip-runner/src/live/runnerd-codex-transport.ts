@@ -1021,6 +1021,11 @@ function turnStartCommandResultValid(input: {
   );
 }
 
+type CloseCheckpointRetry = {
+  checkpoint: () => Promise<void> | void;
+  finish: (deadline: number) => Promise<void>;
+};
+
 async function releaseRunnerProcessOwnership(input: {
   runnerSettled: boolean;
   checkpoint:
@@ -4038,6 +4043,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #closedSignal: Promise<void>;
   #resolveClosedSignal!: () => void;
   #closePromise: Promise<void> | null = null;
+  #pendingCloseCheckpointRetry: CloseCheckpointRetry | null = null;
+  #failedCloseCheckpoint: CloseCheckpointRetry | null = null;
   #shutdownSettled = false;
   #probeRetirement: Promise<void> | null = null;
   readonly prepareConversationResume?: CodexAppServerTransport["prepareConversationResume"];
@@ -5288,8 +5295,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
       );
     }
+    const failedCheckpoint = this.#failedCloseCheckpoint;
+    if (failedCheckpoint && this.#closePromise) {
+      this.#failedCloseCheckpoint = null;
+      this.#closePromise = this.#retryFailedCloseCheckpoint(failedCheckpoint);
+    }
     this.#closePromise ??= this.#closeOnce();
     return this.#closePromise;
+  }
+
+  async #retryFailedCloseCheckpoint(failed: CloseCheckpointRetry): Promise<void> {
+    try {
+      await failed.checkpoint();
+    } catch (error) {
+      this.#failedCloseCheckpoint = failed;
+      throw error;
+    }
+    await failed.finish(Date.now() + runnerCloseGraceMs(this.options));
   }
 
   async settleCancelledTurn(input: { turnId: string; reason: string }) {
@@ -5424,6 +5446,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       catch (retirementError) {
         this.#diagnostic(`controller retirement after failed close is unconfirmed: ${String(retirementError)}`);
       }
+      this.#failedCloseCheckpoint = this.#pendingCloseCheckpointRetry;
+      this.#pendingCloseCheckpointRetry = null;
       throw error;
     }
   }
@@ -5633,16 +5657,63 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         (finalProviderState !== "unreadable" &&
           finalProviderState.pendingEventCount === 0 &&
           finalProviderState.providerSettled));
+    const finishClose = async (finishDeadline: number) => {
+      // A lost local runnerd cannot suspend, and its provider and tools were
+      // re-parented when it died. When runnerd's own lineage journal proves
+      // every one of them stopped, nothing owns the state root any more: the
+      // session ends as a crash stop, and recovery decides from the durable
+      // record how to continue. Anything less keeps the quarantine below.
+      const runnerLossReaped = suspensionRequired && !runnerSettled && preparationConfirmed
+        && !runnerSuspended && runnerLost
+        && await this.#reapLostLocalRunnerLineage(finishDeadline);
+      if (suspensionRequired && !runnerSettled && !runnerLossReaped) {
+        const settlement = {
+          runnerSuspended,
+          providerDrained,
+          suspensionState,
+          semanticTools: this.#core?.semanticToolSettlementDiagnostics(),
+          finalProviderState,
+        };
+        try {
+          this.options.onDiagnostic?.(`native_session_settlement_incomplete ${JSON.stringify(settlement)}`);
+        } catch {
+          // Keep the settlement failure authoritative if its observer fails.
+        }
+        // Sample after ingress retirement and its drain. A result observed before
+        // that barrier cannot rule out one last admitted tool callback.
+        throw new NativeSessionCloseUnrecoverableError(
+          settlement, this.#core?.semanticToolResultsSettled() === true,
+        );
+      }
+      if (!preparationConfirmed) {
+        throw new Error(`Native runner ${attachmentPending ? "attachment" : "startup"} cleanup is unconfirmed; recovery state retained.`);
+      }
+      this.#shutdownSettled = runnerSettled;
+      if (this.#ownsRoot && !adoptedRunner) {
+        rmSync(this.#root, { recursive: true, force: true });
+      }
+      this.#publish();
+    };
+    const checkpoint = adoptedRunner && !this.#adoptedRunnerAuthenticated
+      ? null
+      : this.#controlPlaneCheckpoint;
+    const release = this.#controlPlaneRelease;
+    let checkpointFailed = false;
+    let releaseFailed = false;
     try {
       await releaseRunnerProcessOwnership({
         runnerSettled,
         // An alive PID does not authorize controlling or replacing a runner
         // that never authenticated to this controller (for example after an
         // executable upgrade). Retain its prior checkpoint without rewriting it.
-        checkpoint:
-          adoptedRunner && !this.#adoptedRunnerAuthenticated
-            ? null
-            : this.#controlPlaneCheckpoint,
+        checkpoint: checkpoint && (async (settlement) => {
+          try {
+            await checkpoint(settlement);
+          } catch (error) {
+            checkpointFailed = true;
+            throw error;
+          }
+        }),
         forceKill: async () => {
           const handle = this.#handle;
           if (!handle || this.#evidence.runnerExited) return;
@@ -5656,49 +5727,30 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#evidence.runnerExitCode = result.code;
           this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
         },
-        release: this.#controlPlaneRelease,
+        release: release && (async () => {
+          try {
+            await release();
+          } catch (error) {
+            releaseFailed = true;
+            throw error;
+          }
+        }),
         retireController: () => this.#stopAndDrainAuthority(closeDeadline),
       });
+    } catch (error) {
+      if (checkpoint && checkpointFailed && !releaseFailed) {
+        this.#pendingCloseCheckpointRetry = {
+          checkpoint: () => checkpoint(runnerSettled ? "settled" : "unsettled"),
+          finish: finishClose,
+        };
+      }
+      throw error;
     } finally {
       await this.#core?.stop();
       this.#controlPlaneCheckpoint = null;
       this.#controlPlaneRelease = null;
     }
-    // A lost local runnerd cannot suspend, and its provider and tools were
-    // re-parented when it died. When runnerd's own lineage journal proves
-    // every one of them stopped, nothing owns the state root any more: the
-    // session ends as a crash stop, and recovery decides from the durable
-    // record how to continue. Anything less keeps the quarantine below.
-    const runnerLossReaped = suspensionRequired && !runnerSettled && preparationConfirmed
-      && !runnerSuspended && runnerLost
-      && await this.#reapLostLocalRunnerLineage(closeDeadline);
-    if (suspensionRequired && !runnerSettled && !runnerLossReaped) {
-      const settlement = {
-        runnerSuspended,
-        providerDrained,
-        suspensionState,
-        semanticTools: this.#core?.semanticToolSettlementDiagnostics(),
-        finalProviderState,
-      };
-      try {
-        this.options.onDiagnostic?.(`native_session_settlement_incomplete ${JSON.stringify(settlement)}`);
-      } catch {
-        // Keep the settlement failure authoritative if its observer fails.
-      }
-      // Sample after ingress retirement and its drain. A result observed before
-      // that barrier cannot rule out one last admitted tool callback.
-      throw new NativeSessionCloseUnrecoverableError(
-        settlement, this.#core?.semanticToolResultsSettled() === true,
-      );
-    }
-    if (!preparationConfirmed) {
-      throw new Error(`Native runner ${attachmentPending ? "attachment" : "startup"} cleanup is unconfirmed; recovery state retained.`);
-    }
-    this.#shutdownSettled = runnerSettled;
-    if (this.#ownsRoot && !adoptedRunner) {
-      rmSync(this.#root, { recursive: true, force: true });
-    }
-    this.#publish();
+    await finishClose(closeDeadline);
   }
 
   async #prepareOwnedProvider(
