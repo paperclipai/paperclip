@@ -8312,7 +8312,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ ||
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
-    sourceFailureCode === "native_provider_usage_limit";
+    sourceFailureCode === "native_provider_usage_limit" ||
+    sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -8353,6 +8354,33 @@ export function nativeSessionRecoveryProjection(input: {
   };
 }
 
+/**
+ * The Runner closed this run's provider session after a turn start whose prompt
+ * may have reached the provider. Every later same-run `turn.start` is refused
+ * the same way, and resending could duplicate the prompt, so the run stops and
+ * the board offers Retry (a new run with a fresh provider session). A start the
+ * Runner proved never dispatched is not classified and still retries.
+ */
+export const NATIVE_PROVIDER_SESSION_CLOSED = "native_provider_session_closed";
+export const NATIVE_PROVIDER_SESSION_CLOSED_ACTION =
+  "The provider session closed after a turn start that may have reached the provider, and this run cannot reopen it. Retry starts a new run with a fresh provider conversation and the saved task context.";
+const RUNNER_PROVIDER_SESSION_CLOSED = "provider_session_closed";
+
+/** Reads the Runner's closed class from an authenticated turn.start failure. */
+function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  const result = record(value.runnerCommandResult);
+  if (result.commandType === "turn.start" && record(result.result).classification === RUNNER_PROVIDER_SESSION_CLOSED) {
+    return true;
+  }
+  // The structured result can be lost when the failure is rewrapped; the
+  // authenticated command failure text carries the same closed class.
+  const message = error instanceof Error ? error.message : "";
+  if (/\bPRP command turn\.start failed: \{.*"classification":"provider_session_closed"/.test(message)) return true;
+  return runnerClosedTurnStartSession(value.cause, depth + 1);
+}
+
 export function nativeSessionFailureSourceCode(
   error: unknown,
 ):
@@ -8363,6 +8391,7 @@ export function nativeSessionFailureSourceCode(
   | typeof NATIVE_PROVIDER_SIDE_EFFECT_PENDING
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
+  | typeof NATIVE_PROVIDER_SESSION_CLOSED
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
@@ -8424,6 +8453,7 @@ export function nativeSessionFailureSourceCode(
     return error.failure.httpStatus === 401 || error.failure.httpStatus === 403
       ? "runner_ingress_access_rejected" : "runner_ingress_acquisition_failed";
   }
+  if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
   if (/classification=runtime_package_missing\)/.test(message))
     return "native_provider_runtime_missing";
@@ -12261,6 +12291,8 @@ async function executePaperclipNativeSessionAttempt(
                   ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
                   : sourceFailureCode === "native_provider_approval_required"
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
+                  : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
+                  ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
                   : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
@@ -12530,6 +12562,8 @@ async function executePaperclipNativeSessionAttempt(
               ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
               : sourceFailureCode === "native_provider_approval_required"
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
+              : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
+              ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? nativeCleanupRefusalAction(completedTurnCleanup)
               : sourceFailureCode === "runner_ingress_access_rejected"

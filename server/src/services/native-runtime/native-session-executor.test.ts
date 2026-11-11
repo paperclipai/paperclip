@@ -429,6 +429,7 @@ import {
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
+  NATIVE_PROVIDER_SESSION_CLOSED,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -13974,6 +13975,52 @@ describe("native session bounded recovery", () => {
     });
     // Only the typed runner class is deterministic; the same text stays retryable.
     expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
+  });
+
+  // Chaos w-20261111T011704-s9107/t05: after a cut-off ACPX turn start the
+  // Runner saved the session closed; three same-run resumes each got the same
+  // refusal before the board offered Retry.
+  describe("a turn start the Runner refused because this run's session is closed", () => {
+    const turnStartFailure = (result: Record<string, unknown>) => {
+      const commandResult = { commandId: "command_lab_1", commandType: "turn.start", controllerSeq: 10, result, status: "failed" };
+      return Object.defineProperty(new Error(`PRP command turn.start failed: ${JSON.stringify(commandResult)}`),
+        "runnerCommandResult", { value: commandResult, enumerable: false });
+    };
+    const closed = (message: string) => turnStartFailure({ code: "command_execution_failed", message,
+      classification: "provider_session_closed" });
+
+    it.each(["ACPX session is not open", "ACPX turn start failed closed: ACPX sidecar request timed out at turn.start"])(
+      "stops on the first refusal and hands the run to the board: %s", (message) => {
+        const code = nativeSessionFailureSourceCode(closed(message));
+        expect(code).toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+        const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+        expect(disposition).toEqual({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_SESSION_CLOSED, nextAttemptAt: null });
+        expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+          issueStatus: "blocked", recoveryOwner: { kind: "board" },
+        });
+        // A rewrapped failure keeps the class through its authenticated text.
+        expect(nativeSessionFailureSourceCode(new Error(closed(message).message))).toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+        expect(nativeSessionFailureSourceCode(Object.assign(new Error("native session failed"), { cause: closed(message) })))
+          .toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+      });
+
+    it("keeps retrying a start the Runner proved never reached the provider", () => {
+      const failure = turnStartFailure({ code: "command_execution_failed",
+        message: "ACPX turn start failed before its prompt reached the provider: ACPX sidecar request timed out at turn.start" });
+      expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
+      expect(nativeSessionFailureDisposition(1, new Date(), "native_session_interrupted").phase).toBe("retryable_failure");
+    });
+
+    it("keeps today's same-run retries for an unclassified refusal from an older Runner", () => {
+      // An older Runner sends the same text for a session that can reopen after
+      // a restart (provider exit not yet proven), so the text alone proves nothing.
+      const failure = turnStartFailure({ code: "command_execution_failed", message: "ACPX session is not open" });
+      expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
+      // Another command's class is not a turn-start refusal.
+      const other = Object.defineProperty(new Error("PRP command session.open failed"), "runnerCommandResult",
+        { value: { commandType: "session.open", result: { classification: "provider_session_closed" } }, enumerable: false });
+      expect(nativeSessionFailureSourceCode(other)).not.toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+    });
   });
 
   it("stops same-run retries for an operator while a saved side-effecting call has no result", () => {
