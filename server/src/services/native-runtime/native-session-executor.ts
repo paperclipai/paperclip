@@ -6171,7 +6171,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         claim: input.restartRecovery, target: input.runnerExecutionTarget, identity,
         runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
         providerAttempt: input.restartRecovery.providerAttempt,
-        providerStateFilename: runnerProviderStateFilename(input.execution),
+        providerStateFilename: settledReadyProviderCheckpointFilename(input.execution),
       });
       return;
     }
@@ -7446,6 +7446,23 @@ function canonicalJson(value: unknown): string {
     return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
+}
+
+/** Only these provider checkpoints record pendingEvents and the active turn in
+ * the shape isIdleProviderCheckpoint reads. Dot, Grok Bot and Muse use another
+ * layout, so a settled `ready` cut for them stays fail-closed. */
+function settledReadyProviderCheckpointFilename(execution: NativeExecutionInput): string | undefined {
+  switch (execution.provider.kind) {
+    case "cursor_cloud":
+    case "codex":
+    case "opencode":
+    case "acpx":
+    case "claude_managed":
+    case "aws_agentcore":
+      return runnerProviderStateFilename(execution);
+    default:
+      return undefined;
+  }
 }
 
 function runnerProviderStateFilename(execution: NativeExecutionInput): string {
@@ -15188,7 +15205,7 @@ async function prepareRemoteExternalRunner({ input, target, runner, root, identi
     ? await verifyRemoteRunnerOrSettledExit({ claim: input.restartRecovery, target, identity: { ...identity },
         runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
         providerAttempt: input.restartRecovery.providerAttempt,
-        providerStateFilename: runnerProviderStateFilename(input.execution) }) : undefined;
+        providerStateFilename: settledReadyProviderCheckpointFilename(input.execution) }) : undefined;
   if (adoptExistingRunner) { spawned(); identityReady(); }
   const launch = createRemoteRunnerProcessLauncher({ target, runner, remoteBinary,
     processIdentityPath: posix.join(runnerStateDirectory, "runner-process.identity"), stateDirectory: runnerStateDirectory,
@@ -17091,6 +17108,7 @@ async function createRunnerdBackendWithinSessionClaim(
           runId: input.execution.binding.runId,
           normalizedSessionId: nativeSessionKey(input.execution),
           providerAttempt: input.restartRecovery.providerAttempt,
+          providerStateFilename: settledReadyProviderCheckpointFilename(input.execution),
         })
       : target.kind === "local" && localRecoveryProcess
         ? {

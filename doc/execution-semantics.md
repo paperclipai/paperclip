@@ -5542,7 +5542,10 @@ stopped source checkpoint. The journal stays `ready` while a turn runs, so the
 remote sandbox fallback also reads the provider checkpoint. It admits the cut
 only when that checkpoint has no active, ambiguous or unconfirmed turn, no
 undelivered or queued provider event and no pending tool or runtime request. An
-unreadable or unknown checkpoint keeps recovery fail-closed.
+unreadable or unknown checkpoint keeps recovery fail-closed. This applies to
+Codex, OpenCode, Cursor Cloud, ACPX, Claude Managed and AWS AgentCore
+checkpoints. Dot, Grok Bot and Muse checkpoints use a different layout, so a
+`ready` cut for those providers stays fail-closed.
 The final admitted provider attempt may use this path; attempts above the limit
 cannot. Process verification and the final state read share one recovery
 deadline. A timeout, command failure, transport failure or invalid saved JSON on
