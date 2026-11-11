@@ -200,20 +200,6 @@ export function processStartsDefinitelyDiffer(
   return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) >= PROCESS_START_PRECISION_MS;
 }
 
-/** True only with proof, in this process's own PID space, that the recorded
- * server process has exited. Another space, an unreadable space, this server,
- * or an ambiguous live PID returns false. */
-export async function controllerProcessExited(controller: ControllerProcess): Promise<boolean> {
-  if (controller.bootId === bootId || hostHash === UNKNOWN_PROCESS_SPACE || controller.hostHash !== hostHash) return false;
-  if (!processExists(controller.pid)) return true;
-  // Without a recorded start time a live PID can never prove exit; skip the probe.
-  if (!Number.isFinite(Date.parse(controller.processStartedAt ?? ""))) return false;
-  // The PID now belongs to a live process, possibly this restarted server.
-  // Only a definitely different start time proves the recorded process is gone.
-  const observed = await observedProcessStartedAt(controller.pid);
-  return observed !== null && processStartsDefinitelyDiffer(controller.processStartedAt, new Date(observed));
-}
-
 /** This process's PID-space hash. An unreadable space is stored as
  * "unknown", which `sameProcessSpace` never accepts. */
 export function currentProcessSpaceHash(): string {
