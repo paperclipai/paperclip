@@ -4,7 +4,7 @@ import { constants as fsConstants, createReadStream, createWriteStream, promises
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { Transform } from "node:stream";
+import { pipeline, Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
@@ -727,36 +727,49 @@ async function streamSshToLocalFile(input: {
 
     let sshStderr = "";
     let settled = false;
+    let sshClosed = false;
+    let streamFinished = false;
+
+    const settle = () => {
+      if (settled || !sshClosed || !streamFinished) return;
+      settled = true;
+      resolve();
+    };
 
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
       ssh.kill("SIGTERM");
+      ssh.stdout.destroy();
+      input.progress?.counter.destroy();
       sink.destroy();
       reject(error);
     };
 
+    const onStreamFinished = (error: NodeJS.ErrnoException | null) => {
+      if (error) {
+        fail(error);
+        return;
+      }
+      streamFinished = true;
+      settle();
+    };
     if (input.progress) {
-      input.progress.counter.on("error", fail);
-      ssh.stdout?.pipe(input.progress.counter).pipe(sink);
+      pipeline(ssh.stdout, input.progress.counter, sink, onStreamFinished);
     } else {
-      ssh.stdout?.pipe(sink);
+      pipeline(ssh.stdout, sink, onStreamFinished);
     }
     ssh.stderr?.on("data", (chunk) => {
       sshStderr += String(chunk);
     });
     ssh.on("error", fail);
-    sink.on("error", fail);
     ssh.on("close", (code) => {
-      sink.end(() => {
-        if (settled) return;
-        settled = true;
-        if ((code ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
-          return;
-        }
-        resolve();
-      });
+      if ((code ?? 0) !== 0) {
+        fail(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+        return;
+      }
+      sshClosed = true;
+      settle();
     });
   }).finally(auth.cleanup);
 }
