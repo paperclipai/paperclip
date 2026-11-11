@@ -13,7 +13,9 @@ import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "../native-lo
 
 const MAX_UPGRADE_RUNS = 1_000;
 const POST_RESULT_INSPECTION_BUDGET_MS = 2_000;
-type Counters = { activeRuns: number; pendingWakes: number; draining: boolean };
+/** `unsavedWakes`: pending wakes whose wake and run have not committed. A caller
+ * that does not report it leaves every pending wake unsaved. */
+type Counters = { activeRuns: number; pendingWakes: number; unsavedWakes?: number; draining: boolean };
 /** `restartable`: the row and its events show no launched agent work, so a replacement
  * server starts the same work again. It is weaker than `recoverable` and never implies it. */
 type Candidate = { id: string; recoverable: boolean; restartable?: boolean; retainedUnowned?: boolean };
@@ -141,14 +143,20 @@ export function summarizeUpgradeReadiness(input: {
   // Additive verdict for a graceful server replacement. It separates work a swap would
   // lose from work that is only in flight, and leaves the version 1 fields above as they were.
   // - Restartable runs have launched no agent work; restart recovery starts them again.
-  // - Pending wakes are admissions in flight in this process. A graceful shutdown waits
-  //   for them to commit as queued runs, which the next server dispatches at startup.
+  // - Pending wakes are admissions in flight in this process. A saved one has committed
+  //   its queued run, which the next server dispatches at startup. An unsaved one exists
+  //   only in memory: shutdown waits a bounded time for it, so it can be lost and blocks.
   // - Everything else without recovery evidence, including an execution this report
   //   could not observe, would lose work and blocks.
   const restartableRuns = executions.filter(row => row.restartable === true && !eligible.has(row.id)).length;
   const handoffBlockingRuns = blockingRuns - restartableRuns;
-  const handoff = { version: 1 as const, ready: !draining && !truncated && handoffBlockingRuns === 0,
-    recoverableRuns, restartableRuns, blockingRuns: handoffBlockingRuns, pendingWakes };
+  const unsavedWakes = Math.max(...[input.before, input.after].map(counters => {
+    const unsaved = counters.unsavedWakes ?? counters.pendingWakes;
+    return Number.isSafeInteger(unsaved) && unsaved >= 0 && unsaved <= counters.pendingWakes ? unsaved : counters.pendingWakes;
+  }));
+  const handoff = { version: 1 as const,
+    ready: !draining && !truncated && handoffBlockingRuns === 0 && unsavedWakes === 0,
+    recoverableRuns, restartableRuns, blockingRuns: handoffBlockingRuns, pendingWakes, unsavedWakes };
   return { version: 1 as const, observedAt: new Date().toISOString(), controllerBootId: input.controllerBootId,
     ready: !draining && !truncated && blockingRuns === 0 && pendingWakes === 0,
     activeRuns, recoverableRuns, blockingRuns, retainedBlockedRuns: retained.length, pendingWakes, draining, truncated,

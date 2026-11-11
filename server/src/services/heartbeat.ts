@@ -105,6 +105,7 @@ import {
   shouldQueueFollowupForRunningIssueWake,
   DEFERRED_WAKE_CONTEXT_KEY,
   createHeartbeatQueue,
+  unsavedWakeAdmissionCount,
 } from "./heartbeat/queue.js";
 export {
   shouldDeferFollowupWakeForSameIssue,
@@ -4521,7 +4522,8 @@ export function heartbeatService(
     stopTaskDrain,
     getTaskDrainStatus,
     prepareIdleWarmNativeSessionsForSleep,
-    readUpgradeReadiness: () => readUpgradeReadiness(db, { activeRunIds: activeRunExecutions, counters: getTaskDrainStatus }),
+    readUpgradeReadiness: () => readUpgradeReadiness(db, { activeRunIds: activeRunExecutions,
+      counters: () => ({ ...getTaskDrainStatus(), unsavedWakes: unsavedWakeAdmissionCount() }) }),
     computeTaskDrain,
     applyTaskDrain,
 

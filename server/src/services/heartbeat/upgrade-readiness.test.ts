@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, environmentLeases, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, environmentLeases, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -49,18 +49,32 @@ describe("upgrade readiness", () => {
     }
   });
   describe("handoff verdict", () => {
-    const busy = (rows: Parameters<typeof summarizeUpgradeReadiness>[0]["rows"], pendingWakes = 0) => report({ rows,
-      activeRunIds: rows.map(row => row.id), before: { ...idle, activeRuns: rows.length, pendingWakes },
-      after: { ...idle, activeRuns: rows.length, pendingWakes } });
+    const busy = (rows: Parameters<typeof summarizeUpgradeReadiness>[0]["rows"], pendingWakes = 0, unsavedWakes = 0) => report({ rows,
+      activeRunIds: rows.map(row => row.id), before: { ...idle, activeRuns: rows.length, pendingWakes, unsavedWakes },
+      after: { ...idle, activeRuns: rows.length, pendingWakes, unsavedWakes } });
     it("agrees with the version 1 verdict when every execution is recoverable", () => {
       expect(busy([{ id: "a", recoverable: true }, { id: "b", recoverable: true }])).toMatchObject({ version: 1, ready: true,
-        blockingRuns: 0, handoff: { version: 1, ready: true, recoverableRuns: 2, restartableRuns: 0, blockingRuns: 0, pendingWakes: 0 } });
+        blockingRuns: 0, handoff: { version: 1, ready: true, recoverableRuns: 2, restartableRuns: 0, blockingRuns: 0, pendingWakes: 0, unsavedWakes: 0 } });
     });
-    it("is ready with unlaunched runs and pending admissions, and leaves the version 1 fields unchanged", () => {
+    it("is ready with unlaunched runs and saved pending wakes, and leaves the version 1 fields unchanged", () => {
       const rows = [{ id: "live", recoverable: true }, { id: "preparing", recoverable: false, restartable: true },
         { id: "launching", recoverable: false, restartable: true }];
       expect(busy(rows, 2)).toMatchObject({ version: 1, ready: false, activeRuns: 3, recoverableRuns: 1, blockingRuns: 2,
-        pendingWakes: 2, handoff: { version: 1, ready: true, recoverableRuns: 1, restartableRuns: 2, blockingRuns: 0, pendingWakes: 2 } });
+        pendingWakes: 2, handoff: { version: 1, ready: true, recoverableRuns: 1, restartableRuns: 2, blockingRuns: 0, pendingWakes: 2, unsavedWakes: 0 } });
+    });
+    it("is not ready while a pending wake has not saved its wake and run", () => {
+      const rows = [{ id: "live", recoverable: true }];
+      expect(busy(rows, 2, 1).handoff).toMatchObject({ ready: false, blockingRuns: 0, pendingWakes: 2, unsavedWakes: 1 });
+      // Seen in either read of the counters.
+      expect(report({ rows, activeRunIds: ["live"], before: { ...idle, activeRuns: 1, pendingWakes: 1, unsavedWakes: 1 },
+        after: { ...idle, activeRuns: 1 } }).handoff).toMatchObject({ ready: false, unsavedWakes: 1 });
+    });
+    it("treats every pending wake as unsaved without a valid saved count", () => {
+      const rows = [{ id: "live", recoverable: true }];
+      for (const unsavedWakes of [undefined, -1, 3, 0.5, Number.NaN]) {
+        expect(report({ rows, activeRunIds: ["live"], before: { ...idle, activeRuns: 1, pendingWakes: 2, unsavedWakes },
+          after: { ...idle, activeRuns: 1 } }).handoff, String(unsavedWakes)).toMatchObject({ ready: false, pendingWakes: 2, unsavedWakes: 2 });
+      }
     });
     it("is not ready while a started execution has no recovery evidence", () => {
       const rows = [{ id: "live", recoverable: true }, { id: "preparing", recoverable: false, restartable: true },
@@ -313,7 +327,7 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     const claimed = { controllerBootId: owner.bootId, leaseOwner: "controller-lease", controllerGeneration: 1,
       leaseExpiresAt: new Date(Date.now() + 60_000), phase: "observed", failureCode: null };
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, ...claimed });
-    const input = { activeRunIds: new Set([runId]), counters: () => ({ ...idle, activeRuns: 1, pendingWakes: 1 }) };
+    const input = { activeRunIds: new Set([runId]), counters: () => ({ ...idle, activeRuns: 1, pendingWakes: 1, unsavedWakes: 0 }) };
     const restartable = { ready: false, activeRuns: 1, recoverableRuns: 0, blockingRuns: 1, pendingWakes: 1,
       handoff: { version: 1, ready: true, recoverableRuns: 0, restartableRuns: 1, blockingRuns: 0, pendingWakes: 1 } };
     const blocking = { ready: false, blockingRuns: 1, handoff: { ready: false, restartableRuns: 0, blockingRuns: 1 } };
@@ -361,6 +375,35 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
       await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
     }
   });
+  it("blocks the handoff while a wake admission waits on the agent lock with nothing saved", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Unsaved wake", issuePrefix: `W${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Unsaved wake", role: "engineer", adapterType: "process",
+      status: "idle", adapterConfig: { command: "true" } });
+    const { heartbeatService } = await import("../heartbeat.js");
+    const heartbeat = heartbeatService(db);
+    const saved = () => db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    const lock = await db.$client.reserve();
+    let wake: Promise<unknown> | undefined;
+    try {
+      await lock.unsafe("begin");
+      await lock.unsafe(`select id from agents where id = '${agentId}' for update`);
+      wake = heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual",
+        requestedByActorType: "user", requestedByActorId: "readiness-user" });
+      await vi.waitFor(async () => {
+        const locks = await db.execute(sql`select 1 from pg_stat_activity where wait_event_type = 'Lock' and query like '%from agents where id =%for update%'`);
+        expect(locks.length).toBeGreaterThan(0);
+      }, { timeout: 20_000, interval: 100 });
+      expect(await saved()).toEqual([]);
+      expect((await heartbeat.readUpgradeReadiness()).handoff).toMatchObject({ ready: false, pendingWakes: 1, unsavedWakes: 1 });
+    } finally {
+      await lock.unsafe("rollback"); lock.release();
+      await wake;
+      await heartbeat.drainActiveRunExecutions();
+    }
+    expect(await saved()).toHaveLength(1);
+    expect((await heartbeat.readUpgradeReadiness()).handoff).toMatchObject({ pendingWakes: 0, unsavedWakes: 0 });
+  }, 60_000);
   it("cancels a locked probe within its SQL budget and releases its connection", async () => {
     const probeDb = createDb(database.connectionString, { maxConnections: 1 });
     const lock = await db.$client.reserve();

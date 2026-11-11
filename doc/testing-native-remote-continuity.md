@@ -187,7 +187,8 @@ from work that is only in flight:
 | `restartableRuns` | Runs marked `running` that have launched no agent work. Restart recovery starts the same work again without a Retry. |
 | `blockingRuns` | Executions that are neither. A swap would interrupt started agent work that no successor can adopt. |
 | `pendingWakes` | Same count as the top level, reported for information. It does not affect `handoff.ready`. |
-| `ready` | `true` when the instance is not draining, the census is complete and `handoff.blockingRuns` is 0. |
+| `unsavedWakes` | The pending wakes that have not committed their wake request and queued run. They exist only in this process, so a swap can lose them. |
+| `ready` | `true` when the instance is not draining, the census is complete, and `handoff.blockingRuns` and `handoff.unsavedWakes` are 0. |
 
 A run is restartable only when all of this holds: the agent uses the
 `paperclip_runner` adapter; the run has no process identity, no provider session
@@ -201,10 +202,12 @@ carry a previous provider session, local adapters and legacy runs with a child
 process stay blocking. An execution the census could not observe also blocks.
 
 `pendingWakes` counts wake admissions in flight inside this process, not queue
-rows. A graceful shutdown waits up to 30 seconds for them to commit as queued
-runs, and the next server dispatches queued runs at startup. A process killed
-without that shutdown can lose an admission that had not yet committed, so
-`handoff.ready` is a verdict for a graceful replacement only.
+rows. An admission commits its wake request and its queued run in one
+transaction; after that it only dispatches saved rows, and the next server
+dispatches queued runs at startup. Before that commit, for example while it
+waits on the agent row lock, nothing is saved. Shutdown waits at most 30 seconds
+for in-flight admissions and then exits, so an unsaved admission can be lost.
+`handoff.unsavedWakes` counts those and keeps `handoff.ready` false.
 A positive report alone does not prove hosted upgrade continuity.
 
 Retain Postgres and the instance secret encryption key across deployments. The
