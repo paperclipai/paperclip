@@ -15,7 +15,7 @@ import { WORKLOAD_TRIGGERS } from "./journeys.js";
 import { withProviderFaultRules } from "./provider-faults.js";
 import { createRng, k4HoldRange, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
-import { classRHoldMs, isClassRFault } from "./class-r.js";
+import { CR5_FIRE_WINDOW_MS, classRHoldMs, isClassRFault } from "./class-r.js";
 import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
 import { isRepeatedRestartFault, planRestartSteps } from "./repeated-restarts.js";
 import { workloadDefinitions } from "./workloads.js";
@@ -50,7 +50,7 @@ export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" 
   return matrixCells(options).map((cell, index) => {
     const definition = workloadDefinitions[cell.workload];
     const [fireMin, fireMax] = definition.fireWindowMs;
-    const drawn = rng.int(fireMin, fireMax);
+    const drawn = cell.fault === "CR5" ? rng.int(...CR5_FIRE_WINDOW_MS) : rng.int(fireMin, fireMax);
     return {
       taskId: `t${String(index + 1).padStart(2, "0")}`,
       index,

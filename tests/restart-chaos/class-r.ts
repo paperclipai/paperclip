@@ -13,6 +13,11 @@
  *   the provider is killed right after the controller stopped.
  * - CR3: the server's Daytona plugin worker is stopped (SIGSTOP) for `--cr3-stall-seconds` (default 45 s,
  *   more than 40), so every plugin RPC, `environmentExecute` included, stalls with no deploy.
+ * - CR4: a K1 restart (SIGKILL, no hold); as soon as the replacement is healthy its Daytona plugin worker is
+ *   stopped for the same stall, so the run's reattachment reads (saved state, identity marker, process check)
+ *   stall while the run recovers.
+ * - CR5: the CR3 stall, fired a few seconds after the task is assigned, so it covers the run's launch: the
+ *   runnerd launch call and its identity read. The stall is not meant to cross the T1 tool loop.
  *
  * Every CR cell also captures the sandbox side (daytona-runner-logs.ts, extended probe): just before the fault,
  * right after the stop, before the next deploy starts, every few seconds for the first minutes after the
@@ -26,7 +31,7 @@
 import type { AdapterId, FaultKind, FaultReceipt, WaveOptions } from "./types.js";
 import { ProcessFreezer, descendantPids, readProcessTable, type ProcessRow } from "./time-faults.js";
 
-export const CLASS_R_FAULT_KINDS = ["CR1", "CR2", "CR3"] as const;
+export const CLASS_R_FAULT_KINDS = ["CR1", "CR2", "CR3", "CR4", "CR5"] as const;
 export type ClassRFaultKind = (typeof CLASS_R_FAULT_KINDS)[number];
 
 export function isClassRFault(kind: string): kind is ClassRFaultKind {
@@ -38,6 +43,11 @@ export const CR1_DEFAULT_HOLD_SECONDS = 360;
 /** Staging's ninth run stalled one plugin RPC for more than 40 s. */
 export const CR3_DEFAULT_STALL_SECONDS = 45;
 export const CR3_MIN_STALL_SECONDS = 41;
+export const PLUGIN_STALL_FAULT_KINDS = ["CR3", "CR4", "CR5"] as const;
+export function isPluginStallFault(kind: string): boolean {
+  return (PLUGIN_STALL_FAULT_KINDS as readonly string[]).includes(kind);
+}
+export const CR5_FIRE_WINDOW_MS: readonly [number, number] = [3_000, 8_000];
 /** The controller-outage cap (tests/runner-e2e/controller-outage.ts), as for K15. */
 export const CLASS_R_MAX_HOLD_SECONDS = 600;
 
@@ -59,18 +69,19 @@ export function parseClassROptions(options: Pick<WaveOptions, "env" | "faults" |
   const kinds = options.faults.filter(isClassRFault);
   const given = { CR1: values.cr1, CR2: values.cr2, CR3: values.cr3 } as const;
   const flags = { CR1: "cr1-hold-seconds", CR2: "cr2-hold-seconds", CR3: "cr3-stall-seconds" } as const;
-  for (const kind of CLASS_R_FAULT_KINDS) {
+  for (const kind of ["CR1", "CR2"] as const) {
     if (given[kind] !== undefined && !kinds.includes(kind)) throw new Error(`--${flags[kind]} sets ${kind}; add ${kind} to --faults`);
   }
+  if (given.CR3 !== undefined && !kinds.some(isPluginStallFault)) throw new Error(`--${flags.CR3} sets CR3-CR5; add CR3, CR4 or CR5 to --faults`);
   if (!kinds.length) return {};
-  if (options.env !== "daytona") throw new Error("Class R faults (CR1-CR3) act on the remote Daytona sandbox; run them with --env daytona");
-  if (options.stormMinutes) throw new Error("Class R faults (CR1-CR3) are planned per task; do not combine them with --storm-minutes");
-  if (options.crashPoint) throw new Error("Class R faults (CR1-CR3) do not combine with --crash-point");
-  if (options.faults.some(kind => kind.startsWith("MS"))) throw new Error("Class R faults (CR1-CR3) do not combine with MS1-MS3");
+  if (options.env !== "daytona") throw new Error("Class R faults (CR1-CR5) act on the remote Daytona sandbox; run them with --env daytona");
+  if (options.stormMinutes) throw new Error("Class R faults (CR1-CR5) are planned per task; do not combine them with --storm-minutes");
+  if (options.crashPoint) throw new Error("Class R faults (CR1-CR5) do not combine with --crash-point");
+  if (options.faults.some(kind => kind.startsWith("MS"))) throw new Error("Class R faults (CR1-CR5) do not combine with MS1-MS3");
   return {
     ...(kinds.includes("CR1") ? { cr1HoldMs: parseRange(values.cr1 ?? String(CR1_DEFAULT_HOLD_SECONDS), flags.CR1, 0, CLASS_R_MAX_HOLD_SECONDS) } : {}),
     ...(kinds.includes("CR2") ? { cr2HoldMs: parseRange(values.cr2 ?? "0", flags.CR2, 0, CLASS_R_MAX_HOLD_SECONDS) } : {}),
-    ...(kinds.includes("CR3") ? { cr3StallMs: parseRange(values.cr3 ?? String(CR3_DEFAULT_STALL_SECONDS), flags.CR3, CR3_MIN_STALL_SECONDS, CLASS_R_MAX_HOLD_SECONDS) } : {}),
+    ...(kinds.some(isPluginStallFault) ? { cr3StallMs: parseRange(values.cr3 ?? String(CR3_DEFAULT_STALL_SECONDS), flags.CR3, CR3_MIN_STALL_SECONDS, CLASS_R_MAX_HOLD_SECONDS) } : {}),
   };
 }
 
@@ -79,7 +90,7 @@ export function classRHoldMs(kind: FaultKind, options: Pick<WaveOptions, "cr1Hol
   int: (min: number, max: number) => number): number {
   const range = kind === "CR1" ? options.cr1HoldMs ?? [CR1_DEFAULT_HOLD_SECONDS * 1000, CR1_DEFAULT_HOLD_SECONDS * 1000]
     : kind === "CR2" ? options.cr2HoldMs ?? [0, 0]
-      : kind === "CR3" ? options.cr3StallMs ?? [CR3_DEFAULT_STALL_SECONDS * 1000, CR3_DEFAULT_STALL_SECONDS * 1000] : null;
+      : isPluginStallFault(kind) ? options.cr3StallMs ?? [CR3_DEFAULT_STALL_SECONDS * 1000, CR3_DEFAULT_STALL_SECONDS * 1000] : null;
   if (!range) return 0;
   return range[0] === range[1] ? range[0] : int(range[0], range[1]);
 }
@@ -187,19 +198,26 @@ export interface PluginStallRecord {
 export async function runPluginStall(input: {
   serverPid: number; holdMs: number; cancelled: () => boolean; record: (event: string, data: Record<string, unknown>) => void;
   freezer?: Pick<ProcessFreezer, "freeze" | "thaw">; table?: () => ProcessRow[]; sleep?: (ms: number) => Promise<void>;
+  findWorkerWithinMs?: number;
 }): Promise<PluginStallRecord> {
   const stall: PluginStallRecord = { workerPid: null, command: null, frozenPids: [], frozenAt: null, thawedAt: null, error: null };
-  const rows = (input.table ?? readProcessTable)();
-  const worker = findDaytonaPluginWorker(rows, input.serverPid, root => descendantPids(root, rows));
-  if (!worker) return { ...stall, error: "CR3 found no single Daytona plugin worker under the server" };
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  const searchUntil = Date.now() + (input.findWorkerWithinMs ?? 0);
+  let worker: { pid: number; command: string } | null = null;
+  for (;;) {
+    const rows = (input.table ?? readProcessTable)();
+    worker = findDaytonaPluginWorker(rows, input.serverPid, root => descendantPids(root, rows));
+    if (worker || Date.now() >= searchUntil || input.cancelled()) break;
+    await sleep(250);
+  }
+  if (!worker) return { ...stall, error: "The plugin stall found no single Daytona plugin worker under the server" };
   stall.workerPid = worker.pid;
   stall.command = worker.command;
   const freezer = input.freezer ?? new ProcessFreezer();
-  const sleep = input.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
   try {
     stall.frozenPids = freezer.freeze(worker.pid, true);
     if (!stall.frozenPids.includes(worker.pid)) {
-      stall.error = `CR3 could not stop the Daytona plugin worker ${worker.pid}`;
+      stall.error = `The plugin stall could not stop the Daytona plugin worker ${worker.pid}`;
       return stall;
     }
     stall.frozenAt = Date.now();
@@ -269,7 +287,7 @@ export function withClassRCheck<T extends { verdict: "pass" | "fail"; checks: Ar
     ok &&= kills.length > 0 && kills.every(kill => (kill?.killedPids.length ?? 0) > 0 && kill?.error === null);
     detail += `; killed ${kills.map(kill => kill?.killedPids.join("+") || `none(${kill?.error ?? "?"})`).join(",")}`;
   }
-  if (plan.fault === "CR3") {
+  if (isPluginStallFault(plan.fault)) {
     const stalls = own.map(fault => fault.classR?.pluginStall);
     ok &&= stalls.length > 0 && stalls.every(stall => stall?.frozenAt != null && stall.thawedAt != null);
     detail += `; stalled ${stalls.map(stall => stall?.frozenAt != null && stall.thawedAt != null ? `${stall.thawedAt - stall.frozenAt}ms` : `no(${stall?.error ?? "?"})`).join(",")}`;

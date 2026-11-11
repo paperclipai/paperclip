@@ -57,8 +57,9 @@ export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SI
   // MS1 leaves the primary alone; MS2 freezes it; MS3 stops it gracefully (multi-server.ts).
   MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM",
   // CR1 stops the server like K15; CR2 signals only the sandbox's provider (SIGTERM to the server with a hold);
-  // CR3 stops the Daytona plugin worker, not the server (class-r.ts).
-  CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP" };
+  // CR3 and CR5 stop the Daytona plugin worker, not the server; CR4 kills the server as K1 does, then stops the
+  // replacement's plugin worker (class-r.ts).
+  CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP", CR4: "SIGKILL", CR5: "SIGSTOP" };
 
 /** The checkout's commit, for the K14 receipt. */
 function checkoutSha(root: string): string | null {
@@ -520,7 +521,7 @@ export class ChaosSupervisor {
       else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
       // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
       else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
-      else if (kind === "CR3") {
+      else if (kind === "CR3" || kind === "CR5") {
         // The server keeps running; its Daytona plugin worker is stopped for the hold (class-r.ts).
         const stall = await runPluginStall({ serverPid: previous.pid, holdMs, cancelled: () => this.shuttingDown,
           record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
@@ -538,7 +539,7 @@ export class ChaosSupervisor {
       else outage = await replaceController({
         requestId: `chaos-${receipt.faultId}-${requestedBy}`,
         previousPid: previous.pid,
-        outage: { signal: receipt.signal === "SIGTERM" ? "SIGTERM" : "SIGKILL", holdMs },
+        outage: { signal: receipt.signal === "SIGTERM" ? "SIGTERM" : "SIGKILL", holdMs: kind === "CR4" ? 0 : holdMs },
         // A K4 hold may outlast the Runner's 7-minute reconnect grace on
         // purpose (--k4-hold-max-seconds); the replacement still gets the
         // normal startup allowance after the hold.
@@ -588,6 +589,12 @@ export class ChaosSupervisor {
             return;
           }
           receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases);
+          if (kind === "CR4") {
+            const stall = await runPluginStall({ serverPid: replacement.pid!, holdMs, cancelled: () => this.shuttingDown,
+              findWorkerWithinMs: 60_000, record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
+            receipt.classR!.pluginStall = stall;
+            if (stall.error) throw new Error(stall.error);
+          }
         },
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },

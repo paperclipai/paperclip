@@ -425,7 +425,7 @@ for a while after the new one was up. Plain K15 restarts on the same instance ho
 Pass is the usual grade: no Retry (R3), no stuck record (R6), and the oracle. Staging's terminal errors here
 were `ENOENT` on a runtime asset, `Agent directory operation is already active` after a 9.5-minute
 `controller_lease_held` wait.
-### Staging class R cells (CR1–CR3, `class-r.ts`)
+### Staging class R cells (CR1–CR5, `class-r.ts`)
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
@@ -447,6 +447,8 @@ and the R1–R6 grading rules already exist.
 | CR1 | The K15 redeploy: SIGTERM, then a held outage, then the next deploy generation. | `--cr1-hold-seconds <n>` or `<min>-<max>`, 0–600. Default 360. |
 | CR2 | SIGKILL of the provider process only, inside the task's sandbox. The Runner stays alive. | `--cr2-hold-seconds <n>`, 0–600. Default 0: the controller stays up. With a hold, a K15 redeploy holds the controller down, and the kill happens right after the stop. |
 | CR3 | SIGSTOP of the server's Daytona plugin worker and its children. Every plugin RPC, including `environmentExecute`, stalls. There is no deploy. | `--cr3-stall-seconds <n>`, 41–600. Default 45. |
+| CR4 | A K1 restart (SIGKILL, no hold). When the replacement is healthy, its Daytona plugin worker is stopped for the CR3 stall. The run's reattachment reads stall while the run recovers: the saved state, the identity marker and the process check. | `--cr3-stall-seconds <n>`. |
+| CR5 | The CR3 stall, fired 3–8 s after the task is assigned. It covers the run's launch: the runnerd launch call and the identity read. It does not need to cross the T1 tool loop. | `--cr3-stall-seconds <n>`. |
 
 - CR2 kills only the processes under the run's `paperclip-runnerd` whose arguments match the adapter's
   provider command. For Claude (ACPX) that is `--output-format stream-json`. For OpenCode it is
@@ -456,8 +458,10 @@ and the R1–R6 grading rules already exist.
 - The run id comes from the task's last sample before the fault. Each kill's output is saved to
   `daytona-runner/provider-kill-<task>-<ms>.json`.
 - Each CR task must pass `class_r_fault_applied`. The fault must not have failed, CR2 must have killed a
-  provider process, and CR3's stall must have ended. A cell whose fault never applied tested nothing.
-- Use T1, so that the fault lands while a tool runs, as it did on staging. Use `--concurrency 1` for CR3,
+  provider process, and the CR3, CR4 or CR5 stall must have ended. A cell whose fault never applied tested
+  nothing.
+- Use T1, so that the fault lands while a tool runs, as it did on staging. CR5 is the exception: it lands at
+  launch, so T1's `fault_crossed_tool` check does not apply to it. Use `--concurrency 1` for CR3–CR5,
   because the stall hits every task's plugin RPCs.
 
 **Sandbox capture.** Every Daytona wave, not only a CR wave, runs the class R probe (`CLASS_R_PROBE`) in
