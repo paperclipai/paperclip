@@ -58,7 +58,7 @@ function resolveStoredLayout(raw: unknown): DashboardLayout | null {
 }
 
 export function DashboardGrid({ companyId }: { companyId: string }) {
-  const { stored, isLoaded, save, reset, resetting, saveState, saveError, retrySave, blocked, loadError, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, reset, resetting, saveState, saveError, retrySave, blocked, loadError, allowOverwrite, retryLoad, owner } = useUiLayout({
     companyId,
     surface: "dashboard",
     resolve: resolveStoredLayout,
@@ -71,16 +71,19 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
   const columns = useDashboardColumns();
 
   const wasBlocked = useRef(false);
+  const loadedOwner = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isLoaded) return;
     const recovered = wasBlocked.current && blocked === null && stored !== null;
     wasBlocked.current = blocked !== null;
-    if (layoutRef.current && !recovered) return;
+    const ownerChanged = loadedOwner.current !== null && loadedOwner.current !== owner;
+    loadedOwner.current = owner;
+    if (layoutRef.current && !recovered && !ownerChanged) return;
     const initial = stored ?? defaultLayout;
     layoutRef.current = initial;
     setLayout(initial);
-  }, [isLoaded, stored, blocked, defaultLayout]);
+  }, [isLoaded, stored, blocked, defaultLayout, owner]);
 
   const update = useCallback(
     (change: (current: DashboardLayout) => DashboardLayout) => {
@@ -141,7 +144,7 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
         error={loadError}
         subject="dashboard"
         onRetry={retryLoad}
-        onOverwrite={allowOverwrite}
+        onOverwrite={() => allowOverwrite(layoutRef.current ?? undefined)}
         saveError={saveError}
         onRetrySave={retrySave}
       />

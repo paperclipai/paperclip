@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_LAYOUT_SAVE_DEBOUNCE_MS } from "@/hooks/useUiLayout";
+import { queryKeys } from "@/lib/queryKeys";
 
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
 
@@ -57,6 +58,7 @@ beforeEach(() => {
   }));
   uiLayoutsApi.reset.mockResolvedValue({ surface: "dashboard", schemaVersion: null, layout: null, updatedAt: null });
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -243,11 +245,31 @@ describe("DashboardGrid", () => {
     expect(uiLayoutsApi.save).not.toHaveBeenCalled();
 
     await act(async () => button("Replace saved layout", host).click());
+    await settle();
     expect(host.textContent).not.toContain("cannot be read");
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2].widgets).toEqual([{ instanceId: "recent-tasks", widgetId: "recent-tasks", w: 2, h: 2 }]);
     await act(async () => button("Increase Recent Tasks width", host).click());
     await waitForSave();
-    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
-    expect(uiLayoutsApi.save.mock.calls[0]![2].widgets).toEqual([{ instanceId: "recent-tasks", widgetId: "recent-tasks", w: 3, h: 2 }]);
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]![2].widgets).toEqual([{ instanceId: "recent-tasks", widgetId: "recent-tasks", w: 3, h: 2 }]);
+  });
+
+  it("shows the layout of the new account after the session changes", async () => {
+    const stored = (widgetId: string) => ({
+      surface: "dashboard", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, contextualRules: {}, widgets: [{ instanceId: widgetId, widgetId, w: 2, h: 2 }] },
+    });
+    uiLayoutsApi.get.mockResolvedValueOnce(stored("recent-tasks")).mockResolvedValueOnce(stored("metric-agents"));
+    await render();
+    expect(widgetIds()).toEqual(["recent-tasks"]);
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    });
+    await settle();
+    expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    expect(widgetIds()).toEqual(["metric-agents"]);
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
   });
 
   it("sends one save at a time and lets the latest layout win when a save is slow", async () => {
