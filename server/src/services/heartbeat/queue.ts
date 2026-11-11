@@ -3692,6 +3692,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             queuedCommentRequestId: opts.queuedCommentRequestId,
             taskRetryRequestId: opts.taskRetryRequestId,
             ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
+            interactionPayload: payload,
             dryRun: true,
             onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
           })) && (executionBlocker || (continuationBlocked && !verifiedConversationReset))) return deferBlockedExecution(continuationHold());
@@ -4553,6 +4554,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             queuedCommentRequestId: opts.queuedCommentRequestId,
             taskRetryRequestId: opts.taskRetryRequestId,
             ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
+            interactionPayload: payload,
             onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
           });
           if (!explicitContinuation && (executionBlocker || (continuationBlocked && !verifiedConversationReset)) && !ownsReconstructionContinuation)

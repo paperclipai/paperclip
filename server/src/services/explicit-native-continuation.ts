@@ -141,6 +141,8 @@ export async function admitExplicitNativeContinuation(input: {
   /** Internal delivery of an unconsumed, user-authored saved queue entry. */
   queuedCommentRequestId?: string;
   durableChatRequest?: DurableChatWakeupRequest;
+  /** The wake payload; a user's resolution of a pending decision carries its interaction here. */
+  interactionPayload?: unknown;
   dryRun?: boolean;
   onBlocked?: (reason: string, message: string) => void;
 }): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string; taskRetryRequestId?: string; queuedCommentInterruptId?: string; readiness?: ContinuationReadiness } | null> {
@@ -149,7 +151,15 @@ export async function admitExplicitNativeContinuation(input: {
   if (input.actorType !== "user" || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
-  if (!retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId && (!commentId || !z.string().guid().safeParse(commentId).success ||
+  // A held task with a pending decision waits for that decision ("decision_pending"
+  // below). The person's own answer to it is therefore the explicit user input
+  // that continues the task, like a new message; it never replays the failed run.
+  const decisionResponse = !retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId &&
+    !input.queuedCommentRequestId && !commentId && input.reason === "issue_commented" && input.interactionPayload
+    ? await readQueuedInteractionResponse(db, companyId, issueId, input.interactionPayload) : null;
+  const decided = decisionResponse && decisionResponse.comment.authorType === "user" &&
+    decisionResponse.comment.authorUserId === actorId && !decisionResponse.toolActionOutcome ? decisionResponse : null;
+  if (!retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId && !decided && (!commentId || !z.string().guid().safeParse(commentId).success ||
       !isUserCommentContinuationReason(input.reason))) return null;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -172,7 +182,7 @@ export async function admitExplicitNativeContinuation(input: {
     sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt'->>'actorId' = ${actorId}`,
   )) : [];
   const response = interruptQueue
-    ? await readQueuedInteractionResponse(db, companyId, issueId, interruptQueue.payload) : null;
+    ? await readQueuedInteractionResponse(db, companyId, issueId, interruptQueue.payload) : decided;
   const queuedInterrupt = Boolean(interruptQueue && (response || (commentId &&
     queuedCommentIdsFromWakePayload(interruptQueue.payload).includes(commentId))));
   if (input.queuedCommentInterruptId && !queuedInterrupt) return null;
@@ -311,7 +321,10 @@ export async function admitExplicitNativeContinuation(input: {
     eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, companyId),
   )).where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.issueId, issueId),
     inArray(approvals.status, ["pending", "revision_requested"]))).limit(1);
-  if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
+  // A person's Retry is itself the decision to continue: an open question stays
+  // on the task for the new run to see and its answer still wakes the agent.
+  // Approvals keep gating every continuation.
+  if ((pendingInteraction && !taskRetry) || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
   if (!sourceChecks.length) return null;
 
   const sources: Run[] = [];
