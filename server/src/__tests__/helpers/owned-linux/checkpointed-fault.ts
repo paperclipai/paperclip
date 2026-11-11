@@ -3,6 +3,7 @@ import path from "node:path";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { environmentLeases, type Db } from "@paperclipai/db";
 import type { PluginWorkerManager } from "../../../services/plugin-worker-manager.js";
 import { nativeProviderRecoveryEvidence } from "../../../services/native-runtime/native-session-executor.js";
@@ -40,13 +41,46 @@ export async function stopCheckpointedOwnedRun(input: { db: Db; workerManager: P
   await writeFile(faultFile, JSON.stringify({ status: "stop_intent", ...intent }), { flag: "wx", mode: 0o600 });
   // Real verified SDK owner terminates the exact container, then joins actual
   // WSS/relay close events. DB lease/Native failure state remain normal owners'.
-  const termination = z.object({ providerLeaseId: z.literal(id), state: z.literal("stopped") }).strict().parse(
-    await input.workerManager.call(pluginId, "environmentStopLease", {
+  const stopStarted = performance.now();
+  let stage: "stop_rpc" | "validate_stop_result" | "persist_stop_receipt" = "stop_rpc";
+  try {
+    const stopped = await input.workerManager.call(pluginId, "environmentStopLease", {
       driverKey: "dot-linux-qualification", config: { qualificationId: "dot-owned-linux" },
       companyId: input.companyId, environmentId: input.environmentId, providerLeaseId: id,
       resourceDisposition: "stop_and_retain", leaseMetadata: lease.metadata ?? undefined,
-    }));
-  const receipt = { status: "stopped", ...intent, termination };
-  await writeFile(faultFile, JSON.stringify(receipt), { mode: 0o600 });
-  return receipt;
+    });
+    stage = "validate_stop_result";
+    const termination = z.object({ providerLeaseId: z.literal(id), state: z.literal("stopped") }).strict().parse(stopped);
+    const receipt = { status: "stopped", ...intent, termination };
+    stage = "persist_stop_receipt";
+    await writeFile(faultFile, JSON.stringify(receipt), { mode: 0o600 });
+    return receipt;
+  } catch (primary) {
+    // One failure-only, credential-free witness. It never proves termination,
+    // changes the stop result, retries a call, or replaces the original error.
+    const allowedFailures = new Set([
+      "owned_ingress_closure_unknown_retained", "owned_stop_unknown_retained",
+      "owned_stop_not_observed_retained", "owned_calls_or_outcomes_unknown_retained",
+      "owned_resource_retiring", "owned_provider_closing", "owned_linux_shutdown_failed_retained",
+    ]);
+    const fixedFailure = primary instanceof Error && allowedFailures.has(primary.message)
+      ? primary.message : "unclassified";
+    const exception = primary instanceof JsonRpcCallError
+      ? primary.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT ? "rpc_timeout"
+        : primary.code === PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE ? "rpc_worker_unavailable" : "rpc_error"
+      : primary instanceof z.ZodError ? "result_schema" : primary instanceof Error ? "error" : "non_error";
+    const osCode = z.object({ code: z.enum([
+      "EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "EROFS", "ENOSPC", "EEXIST", "EINVAL", "EMFILE", "ENFILE",
+    ]) }).safeParse(primary);
+    try {
+      await writeFile(path.join(root, "first-stop-failure.json"), JSON.stringify({
+        version: 1, stage, exception, fixedFailure, osCode: osCode.success ? osCode.data.code : "none",
+        elapsedMs: Math.max(0, performance.now() - stopStarted), originalFailureRethrown: true,
+        noRawErrorOrPayload: true, noAdditionalObservationCalls: true,
+      }) + "\n", { flag: "wx", mode: 0o600 });
+    } catch {
+      process.stderr.write("owned_stop_failure_witness_unwritten\n");
+    }
+    throw primary;
+  }
 }
