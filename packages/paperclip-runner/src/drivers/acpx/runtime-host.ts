@@ -1,4 +1,5 @@
 import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
+import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
@@ -143,6 +144,8 @@ export interface AcpxRuntimeTurnInput {
   onPlanProposal?: (proposal: AcpxPlanProposal) => void;
   /** Receives the typed AIR failure behind ACPX's generic terminal error. */
   onTerminalSessionFailure?: (failure: AcpxTerminalSessionFailure) => void;
+  /** Records the turn start and the prompt dispatch durably (turn-dispatch-journal.ts). */
+  dispatchJournal?: AcpxTurnDispatchJournal;
 }
 
 export interface AcpxRuntimeTurn {
@@ -933,6 +936,7 @@ export class AcpxRuntimeHost {
       ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
       ...(input.onPlanProposal ? { onPlanProposal: input.onPlanProposal } : {}),
       ...(input.onTerminalSessionFailure ? { onTerminalSessionFailure: input.onTerminalSessionFailure } : {}),
+      ...(input.dispatchJournal ? { dispatchJournal: input.dispatchJournal } : {}),
     });
     this.#activeTurn = turn;
     const managed = withAcpxTurnCancellation(turn, reason => this.close({ reason }), ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS);

@@ -22,6 +22,7 @@ use crate::acpx_provider_session::{
     PiThinkingLevel,
 };
 use crate::acpx_sidecar_transport::AcpxSidecarTransportConfig;
+use crate::acpx_turn_dispatch::{read_turn_dispatch_journal, TurnDispatchEvidence};
 #[cfg(test)]
 use crate::durable::QualifiedLaunchArtifact;
 use crate::durable::{
@@ -1299,6 +1300,66 @@ impl AcpxCommandExecutor {
         self.save_state()
     }
 
+    /// A turn start that failed without a definite answer (a lost or late
+    /// reply, an exited or frozen sidecar) leaves the prompt's fate unknown:
+    /// resending could duplicate it and continuing could lose it. Once the
+    /// sidecar and provider are proven gone, the sidecar's dispatch journal
+    /// can prove that the prompt never left. Then the session is saved
+    /// reopenable with no active turn, so the run's next `turn.start` sends
+    /// the prompt once. Returns false, changing nothing, without that proof.
+    fn reopen_after_undispatched_turn_start(
+        &mut self,
+        turn_id: &str,
+    ) -> Result<bool, DurableRunnerError> {
+        let session_identity = self
+            .session
+            .as_ref()
+            .map(|session| session.identity().clone());
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        let Some(identity) = state.identity.clone() else {
+            return Ok(false);
+        };
+        if session_identity.as_ref() != Some(&identity)
+            || state.lifecycle != "turn_starting"
+            || state.active_turn_id.as_deref() != Some(turn_id)
+            || state.provider_exit_unconfirmed
+            || !state.pending_runtime_requests.is_empty()
+            || state.semantic_result.is_some()
+            || !state
+                .pending_events
+                .iter()
+                .all(|event| event.event_type == "session.resumed")
+            || !(state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+        {
+            return Ok(false);
+        }
+        // The saved state still says `turn_starting` until a proof settles it,
+        // so a Runner killed during this wait restores through the same check.
+        self.session = None;
+        let Ok(_provider_lifetime_fence) =
+            await_provider_lifetime_fence(identity.provider_lifetime_fence_candidates)
+        else {
+            return Ok(false);
+        };
+        let runtime_directory = state.descriptor.runtime_directory.clone();
+        if read_turn_dispatch_journal(&runtime_directory, turn_id)
+            != TurnDispatchEvidence::NotDispatched
+        {
+            return Ok(false);
+        }
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available after an undispatched turn start");
+        state.lifecycle = "prepared".to_owned();
+        state.active_turn_id = None;
+        self.context.provider_turn_id = None;
+        self.save_state()?;
+        Ok(true)
+    }
+
     /// Restores the conversation of a turn that was active when the runner
     /// died, without inventing its outcome. The original provider lifetime
     /// must have lost its fence quorum first, so no second provider can act on
@@ -1326,11 +1387,29 @@ impl AcpxCommandExecutor {
         {
             return Ok(false);
         }
-        match await_provider_lifetime_fence(identity.provider_lifetime_fence_candidates) {
-            // Release the quorum so the restored provider can inherit it.
-            Ok(listeners) => drop(listeners),
-            Err(_) => return Ok(false),
-        }
+        // A Runner killed while the start was in flight saved `turn_starting`.
+        // When the sidecar's journal proves the prompt never left, no
+        // provider turn exists: restore the session idle so the run's next
+        // turn.start sends the prompt once, instead of a continuation that
+        // would lose it.
+        let start_turn_id = (state.lifecycle == "turn_starting")
+            .then(|| previous_turn.clone())
+            .flatten();
+        let runtime_directory = state.descriptor.runtime_directory.clone();
+        let undispatched =
+            match await_provider_lifetime_fence(identity.provider_lifetime_fence_candidates) {
+                // Read the journal while the quorum proves the sidecar is gone,
+                // then release it so the restored provider can inherit it.
+                Ok(listeners) => {
+                    let undispatched = start_turn_id.is_some_and(|turn_id| {
+                        read_turn_dispatch_journal(&runtime_directory, &turn_id)
+                            == TurnDispatchEvidence::NotDispatched
+                    });
+                    drop(listeners);
+                    undispatched
+                }
+                Err(_) => return Ok(false),
+            };
         let Ok(session) = self.start_session(true) else {
             return Ok(false);
         };
@@ -1353,6 +1432,12 @@ impl AcpxCommandExecutor {
             priority: EventPriority::P0,
             payload: session_event_payload(&state.descriptor, &identity, process_id, turn_controls),
         })?;
+        if undispatched {
+            self.recovery_pending_effects = None;
+            self.session = Some(session);
+            self.save_state()?;
+            return Ok(true);
+        }
         state.push(NormalizedProviderEvent {
             event_type: "turn.failed".to_owned(),
             priority: EventPriority::P0,
@@ -2103,6 +2188,13 @@ impl AcpxCommandExecutor {
                     })
                 })
                 .cloned();
+            if rejected_checkpoint.is_none()
+                && self.reopen_after_undispatched_turn_start(&provider_turn_id)?
+            {
+                return Err(DurableRunnerError::invalid(format!(
+                    "ACPX turn start failed before its prompt reached the provider: {error}"
+                )));
+            }
             let state = self
                 .state
                 .as_mut()
