@@ -2835,6 +2835,46 @@ describeEmbeddedPostgres("attention service", () => {
       expect(row?.whyNow).toContain(`its monitor is next due ${dueAt.toISOString()}`);
     });
 
+    it("shows no card, title or unblock step to a viewer who cannot read the terminal blocker", async () => {
+      const { companyId } = await seedCompany("ATH");
+      const pausedId = await insertPausedAgent(companyId);
+      const privateId = randomUUID();
+      await insertIssue({
+        id: privateId,
+        companyId,
+        identifier: "ATH-1",
+        title: "Confidential blocker",
+        status: "blocked",
+        assigneeAgentId: pausedId,
+        unblockDescriptor: { owner: { agentId: pausedId }, action: "Confidential unblock step" },
+        blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1),
+        blockedOwnerNotifiedAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 2),
+        visibility: "private",
+        privacyRootIssueId: privateId,
+        responsibleUserId: "private-owner",
+      });
+      const visibleId = await insertIssue({ companyId, identifier: "ATH-2", title: "Visible dependant", status: "blocked" });
+      await db.insert(issueRelations).values({ companyId, issueId: privateId, relatedIssueId: visibleId, type: "blocks" });
+
+      const boardFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+      expect(boardFeed.items.find((item) => item.dedupKey === `blocker:${privateId}`)?.whyNow)
+        .toContain("Confidential unblock step");
+
+      const actor = {
+        type: "board" as const,
+        source: "session" as const,
+        userId: "non-member",
+        companyIds: [companyId],
+        isInstanceAdmin: false,
+      };
+      const feed = await attentionService(db).list(companyId, { userId: actor.userId, actor });
+      const serialized = JSON.stringify(feed);
+      expect(feed.items.some((item) => item.dedupKey === `blocker:${privateId}`)).toBe(false);
+      expect(serialized).not.toContain("Confidential blocker");
+      expect(serialized).not.toContain("Confidential unblock step");
+      expect(serialized).not.toContain(privateId);
+    });
+
     it("counts the blocked parents of a stalled review child and names its owner", async () => {
       const { companyId, workerId } = await seedCompany("ATS");
       const rootId = await insertIssue({ companyId, identifier: "ATS-1", title: "Root", status: "blocked" });
