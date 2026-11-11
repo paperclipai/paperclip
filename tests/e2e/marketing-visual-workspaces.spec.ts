@@ -20,7 +20,8 @@ test("graph notes and dashboard layouts persist in their workspace", async ({ pa
       expect(agent.ok()).toBe(true);
     }
     const [a, b] = workspaces;
-    await page.goto(`/${a.issuePrefix}/org`);
+    await page.goto(`/${a.issuePrefix}/agents/all`);
+    await page.getByRole("button", { name: "Org chart view", exact: true }).click();
     await expect(page.getByTestId("agent-graph-node")).toHaveCount(1);
     await page.getByRole("button", { name: "Add note", exact: true }).click();
     await page.getByLabel("Note text").fill("Brief exclusivo do workspace A");
@@ -29,7 +30,9 @@ test("graph notes and dashboard layouts persist in their workspace", async ({ pa
       .toBe("Brief exclusivo do workspace A");
     await page.reload();
     await expect(page.getByLabel("Note text")).toHaveValue("Brief exclusivo do workspace A");
-    await page.goto(`/${b.issuePrefix}/org`);
+    await page.goto(`/${b.issuePrefix}/agents/all`);
+    const orgView = page.getByRole("button", { name: "Org chart view", exact: true });
+    if (await orgView.getAttribute("aria-pressed") !== "true") await orgView.click();
     await expect(page.getByTestId("agent-graph-node")).toHaveCount(1);
     await expect(page.getByLabel("Note text")).toHaveCount(0);
 

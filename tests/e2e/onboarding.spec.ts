@@ -16,6 +16,11 @@ test.describe("Marketing workspace onboarding", () => {
       expect(response.ok()).toBe(true);
       expect(await response.json()).toEqual([]);
     }
+    // An empty marketing workspace must remain usable without a forced wizard.
+    await page.goto(`/${workspace.issuePrefix}/dashboard`);
+    await expect(page.getByRole("button", { name: "Create one here", exact: true })).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.goto(`/${workspace.issuePrefix}/agents/new`);
     await page.getByLabel("Nome do agente", { exact: true }).fill("Sofia");
     await expect(page.getByRole("button", { name: "Choose adapter", exact: true })).toBeDisabled();
     await page.getByLabel("Tipo de agente", { exact: true }).click();

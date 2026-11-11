@@ -13,6 +13,8 @@ de testes aprovados.
   interno `company` para manter compatibilidade com o Paperclip.
 - O workspace novo começa vazio. O usuário escolhe um dos 12 tipos de marketing,
   revisa responsabilidades e depois configura runtime, conta e modelo do agente.
+- O dashboard permanece acessível com a equipe vazia; a criação de agentes
+  começa por uma ação explícita, sem reabrir automaticamente o assistente.
 - O cadastro fica pausado por configuração, sem heartbeat. Links diretos e a
   contratação pelo grafo passam pela mesma revisão do perfil.
 - Duplicar um agente no grafo pode sugerir nome, perfil, gestor e modelo. Isso não

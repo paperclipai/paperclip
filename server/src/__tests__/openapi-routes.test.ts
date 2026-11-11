@@ -103,7 +103,6 @@ const apiPrefixes: Record<string, string> = {
   "ui-layouts.ts": "/api",
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
-  "ui-layouts.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
