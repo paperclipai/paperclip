@@ -1790,9 +1790,31 @@ reconciler lists them as `native_completed_turn_cleanup_hold`. Once it proves
 the controller that closed the session gone (its in-process cleanup gate went
 with it), it settles each such hold as `restored` and removes its replay block.
 A hold that still protects files that are not verified as saved stays for
-workspace recovery. Settling starts no turn: the task keeps its own state (for
-example, waiting on a child task) and continues through normal admission when
-that wait ends. Saved user input is resumed through the ordinary resume path.
+workspace recovery. Settling starts no turn by itself. Saved user input is
+resumed through the ordinary resume path.
+
+The run's failure usually also set the task's Blocked status. In the same
+transaction, the reconciler decides that status once and records the decision on
+the settled holds (`completedTurnCleanupSettlement.blockedStatus`):
+
+- `released`: a settled hold still owns the Blocked status
+  (`holdOwnsBlockedStatus`: its `nativeFailureBlock` names the current status
+  version), the run's agent is still the assignee, and the task has no
+  unfinished blocker task. The task moves to `todo`, and that hold records one
+  durable continuation (`continuationDelivery: "pending"`). The
+  execution-continuation worker delivers it once, as a fresh session, through
+  normal admission. When saved user input waits for the task, that input owns
+  the continuation and no second one is recorded.
+- `dependency_wait`: the task also waits on an unfinished blocker task. It stays
+  Blocked, and the blocker's completion wakes it.
+- `not_owned`: a newer decision owns the Blocked status, or the task changed
+  hands. The status is kept and nothing starts.
+
+Holds that an earlier release settled without this decision are listed again
+while their task is still Blocked, so such tasks continue on the first pass
+after deploy, without a migration. A task never rests Blocked with no blocker,
+no recovery action and no next action because its quarantined run's cleanup
+settled.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
@@ -3406,7 +3428,23 @@ have no recovery receipt. When its saved reference names the exact snapshot
 that its own succeeded `remote_workspace_restore` loaded, at the same epoch, it
 left no unsaved files. A later continuation into another workspace skips that
 source instead of failing with `remote_workspace_recovery_receipt_invalid`. A
-source that saved any other snapshot still needs the canonical receipt.
+source that saved any other snapshot still needs the canonical receipt to be
+attached.
+
+A predecessor whose recovery receipt cannot be verified never stops a
+continuation or a Retry. Examples are a receipt on a run reference that was
+never saved, a receipt from another epoch or for another run, a saved
+reference without a receipt, a reference that the current release cannot read,
+and a receipt whose snapshot is gone. Preparation then attaches nothing from
+that source. The run starts from its workspace's newest verified save, as a run
+without a predecessor does. Preparation logs the skip with the code
+`remote_workspace_recovery_receipt_invalid` and a reason. The source keeps its
+saved snapshot, restore hold, receipts and recovery action, so workspace
+recovery can still settle it. A recovered copy that is already in the workspace
+but cannot be verified is not published again. Its files stay where they are.
+Before this rule, the refusal could not change the saved state, so every Retry
+failed in the same way. Rows that earlier releases saved follow the same rule
+with no migration. A foreign writer and a failed snapshot read still refuse.
 
 A queued turn for the same task that never started is not a workspace writer for
 automatic recovery. The hold gates its dispatch until the recovery receipt is
