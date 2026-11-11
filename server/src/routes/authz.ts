@@ -73,6 +73,9 @@ const BOARD_CONTROL_PAGES: Array<[RegExp, (match: RegExpExecArray, req: Request)
     return tab ? [`the agent's ${tab[0]}`, `/<prefix>/agents/${match[1]}/${tab[1]}`] : ["the agent's profile", `/<prefix>/agents/${match[1]}`];
   }],
   [/^\/companies\/[^/]+(?:\/(?:archive|branding|settings))?\/?$/, () => ["company settings", "/<prefix>/company/settings"]],
+  // An operator can hide the Experimental page, so link it only while it is visible.
+  [/^\/instance\/settings\/experimental\/?$/, () => getHiddenSettings().has("instance.experimental")
+    ? null : ["Experimental settings", "/<prefix>/company/settings/instance/experimental"]],
 ];
 
 // Plugin management pages. A plugin id or key segment opens that plugin's settings

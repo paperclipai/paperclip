@@ -202,7 +202,22 @@ describeEmbeddedPostgres("cases routes", () => {
     }).returning();
     const http = request(app(boardActor));
 
-    await http.get(`/api/companies/${company.id}/cases`).expect(403);
+    const denied = await http.get(`/api/companies/${company.id}/cases`).expect(403);
+    // The denial is final and names the page where an instance admin turns Cases on.
+    expect(denied.body).toMatchObject({ error: "Cases are disabled", code: "cases_disabled" });
+    expect(denied.body.remediation).toContain("[Experimental settings](/<prefix>/company/settings/instance/experimental)");
+    expect(denied.body.remediation).toContain("Agent credentials cannot change that setting");
+    // Hiding only the Cases switch keeps the page, so the denial must not send the person there.
+    const previousHidden = process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental.enableCases";
+    try {
+      const hiddenDenial = await http.get(`/api/companies/${company.id}/cases`).expect(403);
+      expect(hiddenDenial.body.remediation).toContain("An instance operator controls it.");
+      expect(hiddenDenial.body.remediation).not.toContain("/instance/experimental");
+    } finally {
+      if (previousHidden === undefined) delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+      else process.env.PAPERCLIP_HIDDEN_SETTINGS = previousHidden;
+    }
     await http.get(`/api/companies/${company.id}/cases/types`).expect(403);
     await http.post(`/api/companies/${company.id}/cases`).send({ caseType: "bug", title: "Bug" }).expect(403);
     await http.get(`/api/cases/${caseRow!.id}`).expect(403);
