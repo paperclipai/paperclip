@@ -1,3 +1,4 @@
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { isOpenRouterUrl, openRouterAttributionHeaders } from "@paperclipai/adapter-utils/openrouter-attribution";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -21,6 +22,51 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Stable per-server key for the run's OpenCode `mcp` block. */
+function runtimeMcpServerKey(server: AdapterRuntimeMcpServer): string {
+  const name = server.name.trim() || "server";
+  return name.startsWith("paperclip-") ? name : `paperclip-${name}`;
+}
+
+function buildRuntimeMcpConfig(
+  servers: AdapterRuntimeMcpServer[],
+  notes: string[],
+): Record<string, unknown> {
+  const usedNames = new Set<string>();
+  const entries: Record<string, unknown> = {};
+  let skipped = 0;
+  for (const server of servers) {
+    if (!server.url?.trim() || !server.token?.trim()) {
+      skipped += 1;
+      continue;
+    }
+    const baseName = runtimeMcpServerKey(server);
+    let name = baseName;
+    if (usedNames.has(name)) name = `${baseName}-${server.connectionId.slice(0, 8)}`;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `${baseName}-${server.connectionId.slice(0, 8)}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    entries[name] = {
+      type: "remote",
+      url: server.url,
+      enabled: true,
+      headers: { Authorization: `Bearer ${server.token}` },
+    };
+  }
+  if (Object.keys(entries).length > 0) {
+    notes.push(
+      `Injected ${Object.keys(entries).length} Paperclip-managed MCP server(s) into the per-run OpenCode config: ${Object.keys(entries).join(", ")}.`,
+    );
+  }
+  if (skipped > 0) {
+    notes.push(`Skipped ${skipped} Paperclip-managed MCP server(s) with a missing url or token.`);
+  }
+  return entries;
 }
 
 // Recursively replace {env:VAR} placeholders with the resolved value. Used to bake
@@ -109,6 +155,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
   sandboxToolOomPreference?: boolean;
+  runtimeMcpServers?: AdapterRuntimeMcpServer[];
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
 
@@ -229,7 +276,25 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+
+  // Deliver Paperclip-managed MCP servers (for example the Basic Memory
+  // connection granted to this agent) through the per-run config home. These
+  // entries carry short-lived bearer tokens, so they must never land in the
+  // shared XDG config or in a persisted project config.
+  const runtimeMcpServers = input.runtimeMcpServers ?? [];
+  if (runtimeMcpServers.length > 0) {
+    const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
+    const managedMcp = buildRuntimeMcpConfig(runtimeMcpServers, notes);
+    if (Object.keys(managedMcp).length > 0) {
+      nextConfig.mcp = { ...existingMcp, ...managedMcp };
+    }
+  }
+
+  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  // The file may already exist from the copied source config, in which case the
+  // create-time mode above is ignored. Tokens can live in this file, so tighten
+  // it explicitly on every write.
+  await fs.chmod(runtimeConfigPath, 0o600);
   if (input.sandboxToolOomPreference) {
     try {
       await installSandboxToolMemoryPreference(runtimeConfigDir);
