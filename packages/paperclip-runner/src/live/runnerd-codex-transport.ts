@@ -4064,6 +4064,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
   readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
+  /** Clock of the startup or recovery admission in progress, if any. */
+  #admissionClock: RunnerStallLedger | null = null;
   #startupSteps: {
     begin(name: RunnerdStartupStep["name"]): void;
     /** Move on only from the named open step (later reconnects are not startup milestones). */
@@ -5967,7 +5969,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #start(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const work = () => this.#withStartupSteps("bootstrap", () => this.#startWork(params));
+    const work = () => this.#withAdmissionClock(() => this.#withStartupSteps("bootstrap", () => this.#startWork(params)));
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.cold_start", work) : work();
   }
 
@@ -6219,8 +6221,40 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   async #resume(): Promise<void> {
-    const work = () => this.#withStartupSteps("resume", () => this.#resumeWork());
+    const work = () => this.#withAdmissionClock(() => this.#withStartupSteps("resume", () => this.#resumeWork()));
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.resume", work) : work();
+  }
+
+  /**
+   * One stopped-time clock per admission; a nested startup keeps the outer one.
+   * It covers the Runner command barriers and the provider-identity wait. The
+   * warm-transition and source-attachment reconnect polls keep their own
+   * wall-clock grace deadlines.
+   */
+  async #withAdmissionClock<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#admissionClock !== null) return work();
+    const clock = new RunnerStallLedger();
+    const stopWatching = clock.watch();
+    this.#admissionClock = clock;
+    try {
+      return await work();
+    } finally {
+      stopWatching();
+      if (this.#admissionClock === clock) this.#admissionClock = null;
+    }
+  }
+
+  /** Wall time, or the admission clock while a startup or recovery runs. */
+  #waitNow(): number {
+    return this.#admissionClock?.now() ?? Date.now();
+  }
+
+  /** Moves a wall-clock deadline onto the admission clock, without the stops already credited. */
+  #onWaitClock(wallDeadline: number): number {
+    const clock = this.#admissionClock;
+    if (clock === null) return wallDeadline;
+    clock.now();
+    return wallDeadline - clock.creditedMs;
   }
 
   async #resumeWork(): Promise<void> {
@@ -6943,7 +6977,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#assertStartupOpen();
     const admissionDeadline = this.#sourceAttachmentDeadline === null
       ? this.#coldAdmissionDeadline(adoptedRunner === undefined)
-      : Math.min(Date.now() + 30_000, this.#sourceAttachmentDeadline);
+      : Math.min(this.#waitNow() + 30_000, this.#onWaitClock(this.#sourceAttachmentDeadline));
     // An adopted runner is already live: no launch step (a launch span means a fresh process).
     if (adoptedRunner) this.#startupSteps?.end();
     else this.#startupSteps?.begin("runner.process.launch");
@@ -7690,21 +7724,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #coldAdmissionDeadline(coldProcess = true): number | undefined {
     const timeout = coldAdmissionTimeoutMs(this.options.provider, this.options.acpxAgent, coldProcess);
     // Preserve the existing independent waits for other providers and live adoption.
-    return timeout === 60_000 ? Date.now() + timeout : undefined;
+    return timeout === 60_000 ? this.#waitNow() + timeout : undefined;
   }
 
   async #waitForProviderIdentity(
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
   ): Promise<void> {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.provider_identity", () => this.#waitForProviderIdentityWork(expectedEventType, deadline)) : this.#waitForProviderIdentityWork(expectedEventType, deadline);
   }
 
   async #waitForProviderIdentityWork(
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
   ): Promise<void> {
-    while (Date.now() < deadline) {
+    while (this.#waitNow() < deadline) {
       this.#throwIfFailed();
       if (this.#closed) throw new Error("runnerd transport closed during provider startup");
       this.#pumpEvents();
@@ -7728,7 +7762,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #waitCommand(
     type: string,
     commandId?: string,
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
     abortOnClose = false,
   ): Promise<void> {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.command_ack", () => this.#waitCommandWork(type, commandId, deadline, abortOnClose)) : this.#waitCommandWork(type, commandId, deadline, abortOnClose);
@@ -7737,12 +7771,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #waitCommandWork(
     type: string,
     commandId?: string,
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
     abortOnClose = false,
   ): Promise<void> {
     await waitForRunnerCommand({
       type,
       deadline,
+      clock: this.#admissionClock,
       abortOnClose,
       isClosed: () => this.#closed,
       throwIfFailed: () => this.#throwIfFailed(),
@@ -9165,10 +9200,61 @@ function closedAcpxRejection(message: unknown): string | null {
     ? message : null;
 }
 
+/**
+ * A gap this long between two observations by a running process (its poll
+ * loops sleep 10 ms, its ticker 1 s) means the process was not running:
+ * SIGSTOP, host sleep, or a whole-process stall.
+ */
+export const RUNNER_STALL_THRESHOLD_MS = 5_000;
+const RUNNER_STALL_TICK_MS = 1_000;
+
+/**
+ * The clock for one startup or recovery admission. Time this process spends
+ * stopped is not waiting time: the Runner it waits on is usually stopped with
+ * it (same host sleep or process tree), and could not answer. The wall clock
+ * still passes the deadline, so a thaw used to report a timeout before either
+ * process ran (chaos t01: "runner.drain timed out" 45 s into a 30 s wait that
+ * held a 44 s freeze).
+ *
+ * `now()` is wall time minus the stopped time observed since the ledger
+ * started. Poll loops and a 1 s ticker share one last-observation time, so a
+ * stop is credited once, wherever the process was when it stopped (a poll
+ * loop, a checkpoint flush, a spawn). Only the part of a gap beyond the
+ * threshold is credited, so a slow but running process still reaches its
+ * deadlines. Deadlines compared with `now()` must be taken from `now()`.
+ */
+export class RunnerStallLedger {
+  #creditedMs = 0;
+  #last: number;
+  constructor(private readonly wallNow: () => number = Date.now) {
+    this.#last = wallNow();
+  }
+
+  get creditedMs(): number {
+    return this.#creditedMs;
+  }
+
+  now(): number {
+    const at = this.wallNow();
+    if (at - this.#last > RUNNER_STALL_THRESHOLD_MS) this.#creditedMs += at - this.#last - RUNNER_STALL_THRESHOLD_MS;
+    this.#last = Math.max(this.#last, at);
+    return at - this.#creditedMs;
+  }
+
+  /** Observes stops between poll loops; runs only while its admission runs. */
+  watch(): () => void {
+    const ticker = setInterval(() => this.now(), RUNNER_STALL_TICK_MS);
+    ticker.unref?.();
+    return () => clearInterval(ticker);
+  }
+}
+
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
 export async function waitForRunnerCommand(input: {
   type: string;
   deadline: number;
+  /** Startup or recovery admission clock; `deadline` was taken from it. */
+  clock?: RunnerStallLedger | null;
   abortOnClose: boolean;
   isClosed: () => boolean;
   throwIfFailed: () => void;
@@ -9176,7 +9262,8 @@ export async function waitForRunnerCommand(input: {
   runnerHasExited: () => Promise<boolean>;
   failureCode: () => string;
 }): Promise<void> {
-  while (Date.now() < input.deadline) {
+  const now = () => input.clock ? input.clock.now() : Date.now();
+  while (now() < input.deadline) {
     input.throwIfFailed();
     if (input.abortOnClose && input.isClosed()) {
       throw new Error(`runnerd transport closed while waiting for ${input.type}`);
