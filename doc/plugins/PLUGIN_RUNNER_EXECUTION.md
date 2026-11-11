@@ -261,6 +261,24 @@ Provider upgrades, activation, company re-enablement, and finalization settlemen
 wake cleanup transactionally. No table, independent timer, or background scan of
 all remote PR refs is required.
 
+### Asynchronous workspace preparation
+
+A provider can implement `onWorkspacePrepare` alongside `onWorkspaceOperation`.
+Core calls the optional method with `phase: "submit"` and a short submission
+deadline. A provider that cannot prepare asynchronously returns
+`{ kind: "unsupported" }` before starting work, so Core can use the original
+operation. Otherwise the provider returns the completed result or a
+`{ kind: "pending", deadline }` receipt. The provider sets and enforces that
+operation deadline. Replayed submission must not duplicate an active prepare.
+
+Core sends `phase: "poll"` with the same operation identity and the deadline
+from the receipt. The provider returns the same receipt while work is pending
+and the usual scoped `prepared` result after success. Core rejects late results
+and stops polling when the deadline expires. Each submission and poll has a
+short transport bound independent of the operation deadline. A fresh workspace
+with recovery snapshots can return `ready_to_finish` after checkout to request
+a separate `phase: "finish"` call for recovery, under the original deadline.
+
 ### Workspace operation failures
 
 Core separates a failed `workspaceOperation` call by what it knows about the
@@ -274,7 +292,7 @@ outcome:
 | The provider threw any other error | `Workspace storage provider reported a failure; retry the same workspace` | Unchanged setup failure. |
 
 To report a reason, throw `PluginWorkspaceOperationError` from
-`onWorkspaceOperation`, or any error with an own `workspaceFailureReason`
+`onWorkspaceOperation` or `onWorkspacePrepare`, or any error with an own `workspaceFailureReason`
 property. The reason must come from `WORKSPACE_OPERATION_FAILURE_REASONS`:
 
 | Reason | Retrying the same workspace can help |
