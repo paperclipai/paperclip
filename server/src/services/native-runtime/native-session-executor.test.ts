@@ -2536,7 +2536,9 @@ describe("remote provider pack manifest", () => {
         expect(providerArtifactStorage.retainNativeProviderArtifacts).toHaveBeenCalledWith(expect.objectContaining({
           owner: expect.objectContaining({ runId: remoteExecution.binding.runId }), source: expect.objectContaining({ manifest: installed, launchRoot, accountUid: 1000 }) }));
         if (inspectionReset) inspectionResets = 1;
+        // Each case starts with no recorded mark or clear calls.
         providerStateUnsaved.mark.mockClear();
+        providerStateUnsaved.clear.mockClear();
         if (provider === "opencode-new-durable-store-failed" || provider === "opencode-new-durable-publish-failed") {
           await expect(driver.mock.calls.at(-1)![0].checkpoint!("settled")).rejects.toThrow();
           // Only a backup that was never stored makes the next run start fresh.
