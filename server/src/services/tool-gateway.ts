@@ -226,7 +226,11 @@ let cachedResultPromptInjectionMode: "block" | "ignore" | undefined;
 
 function resolveResultPromptInjectionMode(): "block" | "ignore" {
   if (cachedResultPromptInjectionMode === undefined) {
-    cachedResultPromptInjectionMode = readConfigFile()?.tools?.resultPromptInjectionMode ?? "block";
+    try {
+      cachedResultPromptInjectionMode = readConfigFile()?.tools?.resultPromptInjectionMode ?? "block";
+    } catch {
+      cachedResultPromptInjectionMode = "block";
+    }
   }
   return cachedResultPromptInjectionMode;
 }
