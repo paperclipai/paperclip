@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { companyPoolSourceAgent } from "./company-pool-execution.js";
 import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
-import { buildCodexExecArgs } from "../../../../packages/adapters/codex-local/src/server/codex-args.js";
+import { buildCodexExecArgs } from "@paperclipai/adapter-codex-local/server";
 import { applyAiConnectionRouterTaskSettings, assertPoolAdapterPolicyCompatible } from "../ai-connection-router.js";
 
 const agent = {
