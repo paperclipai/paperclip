@@ -27,10 +27,15 @@ export function assertPhotonExternalBinding(identity: PhotonExternalIdentity, bi
     binding.instanceId, binding.companyId, binding.endpointId, binding.connectionId, binding.runtimeGeneration, binding.credentialFingerprint,
   ])}`) throw new Error("Photon external owner identity changed");
 }
+export const photonResourceDescriptorSchema = z.object({ id: z.string().uuid(), controller: z.unknown(),
+  leaseDigest: z.string().regex(/^[a-f0-9]{64}$/), closed: z.boolean() }).strict();
+export type PhotonResourceDescriptor = z.infer<typeof photonResourceDescriptorSchema>;
 export const photonExternalStateSchema = z.object({
   version: z.literal(1), identity: photonExternalIdentitySchema,
   handoffId: z.string().uuid(), localResourceId: z.string().uuid().nullable(),
-  localResource: z.object({ id: z.string().uuid(), controller: z.unknown(), leaseDigest: z.string().regex(/^[a-f0-9]{64}$/), closed: z.boolean() }).strict().optional(),
+  localResource: photonResourceDescriptorSchema.optional(),
+  /** Separate exact useful Runtime allocation; never the original receiver PID. */
+  senderResource: photonResourceDescriptorSchema.optional(),
   localResourceDebt: z.object({ attempts: sequence.positive(), nextAttemptAt: z.string().datetime().nullable() }).strict().optional(),
   localClosureConfirmed: z.literal(true).optional(),
   businessHandoff: z.object({ sequence: sequence.nullable(), leaseDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
@@ -52,6 +57,9 @@ export function readPhotonExternalState(value: unknown): PhotonExternalState | n
     || state.localClosureConfirmed === true && state.localResource && state.localResource.closed !== true)
     throw new Error("Photon physical close receipt and original descriptor disagree");
   if (state.localResource && state.localResource.id !== state.localResourceId) throw new Error("Photon resource descriptor identity changed");
+  if (state.senderResource?.id === state.localResourceId) throw new Error("Photon sender cannot reuse receiver resource identity");
+  if (state.phase === "retired" && state.senderResource && !state.senderResource.closed)
+    throw new Error("Photon sender must physically settle before retirement completes");
   if (state.businessHandoff && (state.initialSequence !== null && (state.businessHandoff.sequence === null || state.businessHandoff.sequence < state.initialSequence)
     || state.acceptedSequence !== null && state.businessHandoff.sequence !== null && state.acceptedSequence < state.businessHandoff.sequence))
     throw new Error("Photon current business admission prefix regressed");

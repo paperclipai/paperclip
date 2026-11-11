@@ -1,5 +1,6 @@
 import { photonResourceProcessEnded } from "../../services/chat-channels/imessage-photon/resource-process.js";
 import type { ProcessProbe } from "../../services/owner-proof.js";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { ChatSdkStatePersistence, ChatSdkStateRecord } from "../../services/chat-sdk-state.js";
@@ -68,7 +69,7 @@ function fixture() {
       if (operation.kind === "retire") return { binding: retained.binding, pending: true };
       return { binding: retained.binding, handoffId: retained.handoffId, phase: retirement };
     } };
-  const create = (selectedResources = resources) => createPhotonExternalOwner({ store, broker, resources: selectedResources, notify: () => {}, now: () => new Date("2099-01-01T00:00:00.000Z") });
+  const create = (selectedResources = resources, processProbe?: ProcessProbe) => createPhotonExternalOwner({ store, broker, resources: selectedResources, processProbe, notify: () => {}, now: () => new Date("2099-01-01T00:00:00.000Z") });
   const reconcile = () => create().reconcile({ identity, config, lease: { token: currentLease }, localResourceId: resourceId });
   return { state, store, resources, resourceId, resource, requests, create, reconcile, read,
     loseReply: () => { lostEnrollment = true; }, loseCloseCommit: () => { loseCloseCommit = true; }, revoke: () => { allowed = false; }, replaceGeneration: () => { currentGeneration++; }, replaceLease: () => { currentLease = "next-lease"; },
@@ -268,4 +269,94 @@ it("absent Cloud port cannot activate business and retirement retains authority 
   const held=await f.read();expect(held).toMatchObject({phase:"retiring",failure:{code:"authority",nextAttemptAt:null}});
   expect(held?.binding).toEqual(original.binding);expect(held?.acceptedSequence).toBe(original.acceptedSequence);
   expect(held?.localResourceId).toBe(original.localResourceId);expect(f.requests).toHaveLength(count);
+
+});
+
+  it("accepted delivery preserves separately owned useful sender close debt without a second admission", async () => {
+    const f = fixture(), original = await f.reconcile(), event = delivery(original); let admitted = 0;
+    const failure = { code: "sender_close" as const, attempts: 2, nextAttemptAt: "2099-01-01T00:00:00.000Z" };
+    await f.create().dispatch({ identity, lease: { token: "lease" }, delivery: event, admit: async () => {
+      admitted++;
+      const current = await f.read(); if (!current) throw new Error("actual admission owner absent");
+      await f.store.retained(current, value => ({ ...value, failure }));
+    } });
+    expect(await f.read(), "accepted delivery must preserve independently persisted sender-close responsibility")
+      .toMatchObject({ phase: "external", pending: null, acceptedSequence: 3, failure });
+    expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 3 });
+    await f.create().dispatch({ identity, lease: { token: "lease" }, delivery: event, admit: async () => { admitted++; } });
+    expect(admitted).toBe(1); expect((await f.read())?.failure).toEqual(failure);
+  });
+
+
+describe("Photon distinct useful Runtime allocation (controlled process/resource ports, not OS proof)", () => {
+  const senderController = { bootId: "sender-boot", hostHash: "f".repeat(32), pid: 56789, processStartedAt: "2090-02-01T00:00:00.000Z" };
+  const descriptor = () => ({ id: randomUUID(), controller: senderController, leaseDigest: photonHash("lease"), closed: false });
+  const probe = (overrides: Partial<ProcessProbe> = {}): ProcessProbe => ({ bootId: "new-boot", host: "current-host", processSpace: senderController.hostHash,
+    pidExists: () => false, processGroupExists: () => false, readStartedAt: async () => null, ...overrides });
+  it("persists exact sender birth before allocation and refuses stale current authority or receiver identity reuse", async () => {
+    const f = fixture(); await f.reconcile(); const resource = descriptor();
+    await f.create().reserveSender(identity, { token: "lease" }, resource);
+    let constructed = 0;
+    expect((await f.read())?.senderResource).toEqual(resource); // BEFORE this controlled resource is born.
+    const runtime = {}; constructed++; f.resources.attach(resource.id, runtime, async () => {});
+    expect(constructed).toBe(1);
+    const f2 = fixture(); await f2.reconcile();
+    await expect(f2.create().reserveSender(identity, { token: "wrong-lease" }, descriptor())).rejects.toThrow("descriptor");
+    await expect(f2.create().reserveSender(identity, { token: "wrong-lease" }, { ...descriptor(), leaseDigest: photonHash("wrong-lease") })).rejects.toThrow("authority");
+    await expect(f2.create().reserveSender({ ...identity, companyId: "foreign" }, { token: "lease" }, descriptor())).rejects.toThrow("authority");
+    await expect(f2.create().reserveSender(identity, { token: "lease" }, { ...descriptor(), id: f2.resourceId })).rejects.toThrow("distinct");
+    expect((await f2.read())?.senderResource).toBeUndefined();
+  });
+  it("failed same sender close retains ownership and blocks a new allocation until actual retry joins", async () => {
+    const f = fixture(); await f.reconcile(); const resource = descriptor(), runtime = {}; let fails = true, closes = 0;
+    let current = await f.create().reserveSender(identity, { token: "lease" }, resource);
+    f.resources.attach(resource.id, runtime, async () => { closes++; if (fails) throw new Error("controlled sender close failure"); });
+    current = await f.store.retained(current, value => ({ ...value, failure: { code: "sender_close", attempts: 1, nextAttemptAt: "2099-01-01T00:00:00.000Z" } }));
+    await expect(f.create().repairSender(current)).rejects.toThrow("controlled sender close failure");
+    await expect(f.create().reserveSender(identity, { token: "lease" }, descriptor())).rejects.toThrow("controlled sender close failure");
+    expect((await f.read())?.senderResource).toEqual(resource); expect((await f.read())?.failure?.code).toBe("sender_close");
+    fails = false; const repaired = await f.create().repairSender((await f.read())!);
+    expect(repaired.closed).toBe(true); expect(repaired.state.senderResource).toEqual({ ...resource, closed: true });
+    expect(repaired.state.failure).toBeNull(); expect(repaired.state.acceptedSequence).toBe(current.acceptedSequence);
+    const newer = await f.create().reserveSender(identity, { token: "lease" }, descriptor());
+    await expect(f.create().confirmSenderClosed(repaired.state, resource.id)).rejects.toThrow("owner changed");
+    expect((await f.read())?.senderResource).toEqual(newer.senderResource); expect(closes).toBe(3);
+  });
+  it("reconstruction uses the useful sender's own dead or reused birth and normal retirement preserves accepted custody", async () => {
+    for (const reused of [false, true]) {
+      const f = fixture(); await f.reconcile(); const resource = descriptor();
+      const allocated = await f.create().reserveSender(identity, { token: "lease" }, resource);
+      const failed = await f.store.retained(allocated, value => ({ ...value, failure: { code: "sender_close", attempts: 1, nextAttemptAt: null } }));
+      // Original receiver belongs to a DIFFERENT still-alive process; only B's
+      // exact saved sender birth can prove this allocation's physical lifetime.
+      await f.state.update(PHOTON_EXTERNAL_STATE, () => ({ ...failed, localResource: { id: f.resourceId,
+        controller: { ...senderController, pid: 45678 }, leaseDigest: photonHash("lease"), closed: true } }));
+      const receiverAndSenderProbe = probe({ pidExists: pid => pid === 45678 || reused,
+        readStartedAt: async pid => pid === 45678 ? new Date(senderController.processStartedAt) : new Date("2090-02-01T00:00:03.000Z") });
+      const reconstructed = f.create(new PhotonLocalResources(), receiverAndSenderProbe);
+      const repaired = await reconstructed.repairSender((await f.read())!);
+      expect(repaired.closed).toBe(true); expect(repaired.state.senderResource).toEqual({ ...resource, closed: true });
+      expect(repaired.state.failure).toBeNull(); expect(repaired.state.pending).toEqual(failed.pending);
+      expect(repaired.state.acceptedSequence).toBe(failed.acceptedSequence);
+      f.finishRetirement(); await reconstructed.retire(repaired.state);
+      expect((await f.read())?.phase).toBe("retired");
+    }
+  });
+  it("alive, foreign, unknown birth and legacy opaque sender debt cannot authorize close or replacement", async () => {
+    for (const denied of ["alive", "foreign", "unknown-birth", "legacy"] as const) {
+      const f = fixture(); await f.reconcile(); const resource = descriptor();
+      let current = denied === "legacy" ? (await f.read())! : await f.create().reserveSender(identity, { token: "lease" }, resource);
+      current = await f.store.retained(current, value => ({ ...value, failure: { code: "sender_close", attempts: 1, nextAttemptAt: null } }));
+      const source = probe({ processSpace: denied === "foreign" ? "different-space" : senderController.hostHash,
+        pidExists: () => { if (denied === "foreign") throw new Error("foreign PID must never be probed"); return true; },
+        readStartedAt: async () => denied === "unknown-birth" ? null : new Date(senderController.processStartedAt) });
+      const reconstructed = f.create(new PhotonLocalResources(), source);
+      expect((await reconstructed.repairSender(current)).closed).toBe(false);
+      await expect(reconstructed.reserveSender(identity, { token: "lease" }, descriptor())).rejects.toThrow("closure remains unknown");
+      expect((await f.read())?.senderResource).toEqual(current.senderResource);
+      await expect(reconstructed.retire((await f.read())!)).rejects.toThrow("closure remains unknown");
+      expect(await f.read()).toMatchObject({ phase: "retiring", failure: { code: "sender_close", nextAttemptAt: null } });
+      expect(f.requests.filter(request => request.kind === "retire")).toHaveLength(0);
+    }
+  });
 });

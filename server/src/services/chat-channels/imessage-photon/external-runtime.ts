@@ -18,6 +18,7 @@ import { currentControllerProcess, UNKNOWN_PROCESS_SPACE } from "../../controlle
 import { randomUUID, createHash } from "node:crypto";
 
 export type PhotonCloudDelivery = { id: string; event: string; createdAt: string; installationId: string | null; bindingIds: readonly string[]; payload: Record<string, unknown> };
+export type PhotonSenderAllocation = { readonly resourceId: string; readonly handoffId: string; readonly identity: Readonly<PhotonExternalIdentity> };
 type Ingress = (event: PhotonCloudDelivery) => Promise<void>;
 const ingress = new WeakMap<Db, Ingress>();
 export async function dispatchPhotonCloudEvent(db: Db, event: PhotonCloudDelivery) {
@@ -98,7 +99,10 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       connectionId: record.endpoint.connectionId, runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject };
     const prior = await store.read(identity);
     if (prior && prior.phase !== "retired") {
-      if (prior.phase === "external") return null; // Normal lazy useful sender; no receiver allocation.
+      if (prior.phase === "external") {
+        if (!await selected(record)) throw conflict("Photon prior external owner must retire before a replacement runtime");
+        return null; // Exact current external placement uses its separate sender descriptor.
+      }
       options.notify(record.endpoint.id);
       throw conflict("Photon original handoff must recover before a replacement receiver allocation");
     }
@@ -110,6 +114,72 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).prepare({
       identity, lease, config, localResourceId: id, localResource: { id, controller, leaseDigest: photonHash(lease.token), closed: false } });
     return id;
+  }
+  async function reserveSenderRuntime(record: EndpointRecord, context: RuntimeContext, lease?: { token: string }): Promise<PhotonSenderAllocation> {
+    const retained = await selected(record), broker = options.broker();
+    if (!retained || !broker) throw new Error("Photon sender has no current external placement");
+    if (context.generation !== retained.identity.runtimeGeneration || context.credentialFingerprint !== retained.identity.credentialReferences)
+      throw new Error("Photon sender runtime context changed before allocation");
+    const controller = await currentControllerProcess();
+    if (controller.hostHash === UNKNOWN_PROCESS_SPACE || !controller.processStartedAt)
+      throw conflict("Photon sender allocation requires actual process birth and namespace");
+    const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
+    const allocation: { intended: { id: string; leaseDigest: string } | null } = { intended: null };
+    const reserve = async (owned: { token: string }) => {
+      const id = randomUUID();
+      allocation.intended = { id, leaseDigest: photonHash(owned.token) };
+      const reserved = await owner.reserveSender(retained.identity, owned, { id, controller, leaseDigest: allocation.intended.leaseDigest, closed: false });
+      return { resourceId: id, handoffId: reserved.handoffId, identity: { ...reserved.identity } };
+    };
+    try { return await (lease ? reserve(lease) : options.withReceiverLease(record, reserve)); }
+    catch (primary) {
+      // This function has not returned to runtime.replaceEndpoint, so no sender
+      // object can have been constructed. Join a failed finite-lease cleanup
+      // without orphaning that exact never-born allocation intent.
+      const intended = allocation.intended;
+      if (intended) try {
+        // Even a lost reservation-commit reply can be matched to the nonce and
+        // birth this exact caller generated BEFORE that write. Never backfill.
+        const neverBorn = await store.read(retained.identity);
+        if (neverBorn?.senderResource?.id === intended.id
+          && neverBorn.senderResource.leaseDigest === intended.leaseDigest
+          && isDeepStrictEqual(neverBorn.senderResource.controller, controller))
+          await owner.confirmSenderClosed(neverBorn, intended.id);
+      } catch (cleanup) { throw new AggregateError([primary, cleanup], "Photon sender reservation and never-born cleanup failed"); }
+      throw primary;
+    }
+  }
+  function attachSenderRuntime(id: string, runtime: ChatEndpointRuntime): void {
+    resources.attach(id, runtime, () => runtime.shutdown());
+  }
+  async function senderRuntimeClosed(allocation: PhotonSenderAllocation, context: RuntimeContext): Promise<void> {
+    const { resourceId, identity, handoffId } = allocation;
+    if (!context.endpointRuntime || !resources.owns(resourceId, context.endpointRuntime)
+      || options.context(context.endpointRuntime) !== context
+      || context.endpointRuntime.companyId !== identity.companyId || context.endpointRuntime.endpointId !== identity.endpointId
+      || context.generation !== identity.runtimeGeneration || context.credentialFingerprint !== identity.credentialReferences)
+      throw new Error("Photon sender close has no exact runtime owner");
+    // Physical cleanup belongs to the captured allocation, not the current
+    // business endpoint/agent/connection inner join, which removal may delete.
+    const sameAllocation = (value: Awaited<ReturnType<typeof store.read>>) => value !== null
+      && value.handoffId === handoffId && isDeepStrictEqual(value.identity, identity) && value.senderResource?.id === resourceId;
+    const retained = await store.read(identity);
+    // Invoked only AFTER this exact old Runtime joined all physical resources.
+    // Absence/newer ownership permits no mutation, not a forged close receipt.
+    if (!retained || !sameAllocation(retained)) return;
+    try {
+      await createPhotonExternalOwner({ store, broker: options.broker(), resources, notify: value => options.notify(value.endpointId) })
+        .confirmSenderClosed(retained, resourceId);
+    } catch (primary) {
+      // Endpoint/company deletion can cascade the row between read and CAS.
+      // Keep errors for the SAME extant allocation; do not poison old cleanup
+      // because a deleted or newer allocation can no longer receive its write.
+      let latest: Awaited<ReturnType<typeof store.read>>;
+      try { latest = await store.read(identity); }
+      catch (cleanup) { throw new AggregateError([primary, cleanup], "Photon sender close persistence and scope recheck failed"); }
+      if (!sameAllocation(latest)) return;
+      throw primary;
+    }
   }
   function attachLocalRuntime(id: string, runtime: ChatEndpointRuntime): void {
     resources.attach(id, runtime, () => runtime.shutdown());
@@ -127,7 +197,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         || !isDeepStrictEqual(previous.identity, identity) || !await store.inspect(identity)
         || broker && (previous.binding.instanceId !== broker.instanceIdentity().instanceId
           || previous.binding.environment !== broker.instanceIdentity().environment))) {
-        await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).retire(previous);
+        await retire(id);
         return;
       }
       if (!identity || !broker) {
@@ -153,7 +223,16 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         }
         const adapter = options.currentRuntime(id)?.getProviderAdapter();
         if (adapter instanceof PhotonChatAdapter) await adapter.drainUsefulClient();
-        else if (external.failure?.code === "sender_close" && !await options.removeRuntime(id)) throw new Error("Photon original sender physical closure is unknown");
+        else if (external.failure?.code === "sender_close") {
+          const removed = await options.removeRuntime(id);
+          const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
+          const sender = await owner.repairSender(external); external = sender.state;
+          if (!sender.closed && !removed) {
+            await store.retained(external, value => ({ ...value, failure: value.failure?.code === "sender_close" ? { ...value.failure, nextAttemptAt: null } : value.failure }));
+            options.notify(id);
+            throw new Error("Photon original sender physical closure is unknown");
+          }
+        }
         if (external.failure?.code === "sender_close") await store.retained(external, value => ({ ...value, failure: null }));
         return;
       }
@@ -210,21 +289,48 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       await options.release(lease); context.discordGatewayOwned = false;
     }
   };
-  async function senderDebt(id: string) {
+  async function senderDebt(id: string, context?: RuntimeContext) {
     const record = await options.endpointRecord(id);
     if (!record) throw new Error("Photon sender debt has no retained endpoint");
-    const external = await placement(record);
-    if (!external) throw new Error("Photon sender debt has no exact retained owner");
+    const runtime = options.currentRuntime(id);
+    context ??= runtime ? options.context(runtime) : undefined;
+    const external = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
+    // Debt is cleanup authority for the exact original runtime, including after
+    // pause/archive fences business and the registry moves it to retiring.
+    if (!external || !["external", "retiring"].includes(external.phase)
+      || !context?.endpointRuntime || options.context(context.endpointRuntime) !== context
+      || external.identity.runtimeGeneration !== context.generation
+      || external.identity.credentialReferences !== context.credentialFingerprint
+      || external.senderResource && !resources.owns(external.senderResource.id, context.endpointRuntime))
+      throw new Error("Photon sender debt has no exact retained owner");
     await store.retained(external, value => ({ ...value, failure: { code: "sender_close", attempts: (value.failure?.attempts ?? 0) + 1, nextAttemptAt: new Date().toISOString() } }));
     options.notify(id);
   }
   async function retire(id: string) {
     const record = await options.endpointRecord(id), broker = options.broker();
-    if (!record || !broker) return;
-    const subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject;
-    if (!subject) return;
-    const retained = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
-    if (retained && retained.phase !== "retired") await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).retire(retained);
+    if (!record || record.endpoint.provider !== "imessage-photon") return;
+    let retained = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
+    if (!retained || retained.phase === "retired") return;
+    if (retained.phase !== "retiring") retained = await store.retained(retained, value => ({ ...value,
+      phase: "retiring", failure: value.failure?.code === "sender_close" ? value.failure : null }));
+    // Join the normal registry's current OR retained failed runtime first. A
+    // missing runtime is never proof of a separately recorded sender close.
+    const removed = await options.removeRuntime(id);
+    const latest = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
+    if (!latest || latest.handoffId !== retained.handoffId || !isDeepStrictEqual(latest.binding, retained.binding))
+      throw new Error("Photon retirement owner changed while joining its runtime");
+    retained = latest;
+    if (retained.failure?.code === "sender_close") {
+      const sender = await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).repairSender(retained);
+      retained = sender.state;
+      if (!sender.closed && !removed) {
+        await store.retained(retained, value => ({ ...value, failure: value.failure?.code === "sender_close" ? { ...value.failure, nextAttemptAt: null } : value.failure }));
+        options.notify(id);
+        throw new Error("Photon original sender physical closure is unknown");
+      }
+      if (retained.failure?.code === "sender_close") retained = await store.retained(retained, value => ({ ...value, failure: null }));
+    }
+    await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).retire(retained);
   }
   async function retained(scope?: { kind: "endpoint" | "connection" | "company"; id: string }) {
     const values = [];
@@ -301,7 +407,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     return { actionId, state: "scheduled" as const };
   }
   ingress.set(db, receive);
-  return { reserveLocalRuntime, attachLocalRuntime, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === receive) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
+  return { reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === receive) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
 }
 
 /** Called by normal configuration SQL with its actual authorized actor. Existing

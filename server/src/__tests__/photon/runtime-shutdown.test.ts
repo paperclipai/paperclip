@@ -109,3 +109,32 @@ it("saved Photon attachments use the external useful owner and retain failed clo
     try { await runtime.shutdown(); } finally { vi.restoreAllMocks(); }
   }
 });
+
+
+it("sender close receipt failure keeps the actual normal SDK Runtime retired until its durable completion callback retries", async () => {
+  // Real Chat4.39/Runtime/registry lifecycle. Only the final persistence callback
+  // has a controlled lost-reply fault; this is not real SQL or physical proof.
+  const adapters: PhotonChatAdapter[] = [];
+  vi.spyOn(PhotonChatAdapter.prototype, "initialize").mockImplementation(async function(this: PhotonChatAdapter) { adapters.push(this); });
+  vi.spyOn(PhotonReceiver.prototype, "start").mockImplementation(() => undefined);
+  vi.spyOn(PhotonReceiver.prototype, "close").mockResolvedValue(undefined);
+  const registry = createChatSdkRuntime(), lostReply = new Error("controlled sender receipt commit reply lost");
+  let callbacks = 0, allowReply = false;
+  const runtime = await registry.replaceEndpoint({ companyId: "company", endpointId: "sender-receipt", logger: "silent", persistence: memoryPersistence(),
+    providerConfig: { provider: "imessage-photon", userName: "Agent", intakeAfter: 0,
+      credentials: { allocation: "dedicated", projectId: "project", projectSecret: "controlled-project-secret", lineId: "line", phoneNumber: "+15555550100" } },
+    callbacks: { onMessage: async () => {}, onPhotonEvent: async () => {}, onPhotonAssertOwned: async () => {}, onPhotonCheckpoint: async () => {}, onPhotonFailure: async () => {},
+      onPhotonSenderRuntimeClosed: async () => { callbacks++; if (!allowReply) throw lostReply; } } });
+  try {
+    await runtime.initialize(); const adapter = adapters[0]; if (!adapter) throw new Error("normal Photon adapter absent");
+    const close = vi.spyOn(adapter.client, "close");
+    await expect(registry.removeEndpoint("sender-receipt")).rejects.toBe(lostReply);
+    expect(callbacks).toBe(1); expect(close).toHaveBeenCalledTimes(1);
+    expect(registry.hasUnsettledLifecycle()).toBe(true); expect(registry.get("sender-receipt")).toBeNull();
+    await expect(runtime.initialize()).rejects.toThrow("retired");
+    allowReply = true;
+    await expect(registry.removeEndpoint("sender-receipt")).resolves.toBe(true);
+    expect(callbacks).toBe(2); expect(close).toHaveBeenCalledTimes(1);
+    expect(registry.hasUnsettledLifecycle()).toBe(false);
+  } finally { allowReply = true; try { await registry.shutdown(); } finally { vi.restoreAllMocks(); } }
+});

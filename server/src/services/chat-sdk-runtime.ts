@@ -471,6 +471,8 @@ export interface DiscordGatewayCallbackEvent extends ChatSdkCallbackEvent<Discor
 export interface ChatSdkRuntimeCallbacks {
   /** Photon leaf validates committed external custody. Absence keeps local intake. */
   onPhotonUsefulClientDebt?(): Promise<void>;
+  /** Exact sender allocation receipt, after all normal physical joins succeed. */
+  onPhotonSenderRuntimeClosed?(): Promise<void>;
   onPhotonIntakePlacement?(): Promise<{ kind: "local" } | { kind: "cloud"; bindingId: string }>;
 
   onPhotonEvent?(event: PhotonEvent): Promise<void>;
@@ -3175,6 +3177,7 @@ export class ChatSdkEndpointRuntime {
       }
       if (failures.length === 1) throw failures[0];
       if (failures.length) throw new AggregateError(failures, "Chat SDK runtime shutdown remains incomplete");
+      if (this.adapter instanceof PhotonChatAdapter) await this.runtimeOptions.callbacks.onPhotonSenderRuntimeClosed?.();
       this.shutdownCompleted = true;
     })();
     this.shutdownTask = task;

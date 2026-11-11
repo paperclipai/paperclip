@@ -8828,20 +8828,31 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
       const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
       let reads: ReturnType<typeof vi.spyOn> | undefined;
+      let writes: ReturnType<typeof vi.spyOn> | undefined;
+      let replacements: ReturnType<typeof vi.spyOn> | undefined;
       try {
         await f.configure(); await f.service.registerReceiverWork(coordinator, () => true).ready;
         await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
         const owned = f.runtime.get(f.endpoint.id)!;
         reads = vi.spyOn(db, "select");
+        replacements = vi.spyOn(f.runtime, "replaceEndpoint");
         await db.transaction(async tx => {
           await notifyChatCompanyConfiguration(tx, f.fixture.companyId);
           await tx.delete(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
         });
         await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
         expect(owned.shutdown).toHaveBeenCalledOnce();
-        expect(reads).toHaveBeenCalledOnce(); expect(onError).not.toHaveBeenCalled();
+        expect(reads.mock.calls.length).toBeGreaterThan(0); expect(onError).not.toHaveBeenCalled();
+        // The refresh also reconstructs retained Photon obligations. Protect the
+        // actual contract: once settled, no receiver rediscovery or SQL recurs.
+        const settledReads = reads.mock.calls.length;
+        writes = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(reads).toHaveBeenCalledTimes(settledReads); expect(writes).not.toHaveBeenCalled();
+        expect(replacements).not.toHaveBeenCalled(); expect(owned.shutdown).toHaveBeenCalledOnce();
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(onError).not.toHaveBeenCalled();
       } finally {
-        reads?.mockRestore(); await coordinator.stop(); vi.useRealTimers(); await f.service.shutdown();
+        reads?.mockRestore(); writes?.mockRestore(); replacements?.mockRestore(); await coordinator.stop(); vi.useRealTimers(); await f.service.shutdown();
         await db.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, f.endpoint.id));
       }
     });

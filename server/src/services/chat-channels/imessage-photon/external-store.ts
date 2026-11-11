@@ -85,6 +85,12 @@ export function createPhotonExternalStore(db: Db) {
               current.localResource ? { ...current.localResource, closed: false } : undefined)
             || current.localResource?.closed === true && next.localResource?.closed !== true)
             throw new Error("Photon retained cleanup cannot rewrite business or allocation identity");
+          // Cleanup may confirm the SAME sender only. New allocation identity
+          // is installed exclusively through current company/credential/lease CAS.
+          if (!isDeepStrictEqual(next.senderResource ? { ...next.senderResource, closed: false } : undefined,
+              current.senderResource ? { ...current.senderResource, closed: false } : undefined)
+            || current.senderResource?.closed === true && next.senderResource?.closed !== true)
+            throw new Error("Photon retained cleanup cannot replace sender ownership");
           const parsed = readPhotonExternalState(next);
           if (!parsed) throw new Error("Photon retained result disappeared");
           return parsed;
