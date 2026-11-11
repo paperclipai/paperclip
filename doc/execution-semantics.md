@@ -1712,9 +1712,14 @@ provider turn or its last provider turn is settled. Activity records the request
 as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
 recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
 server requested gets no second automatic attempt. A system wake (for example a
-monitor or an automatic assignment) continues this way only when its run recorded
-no turn event and no tool event at all, and only under the run's responsible user;
-nothing such a run did can be repeated. Other system wakes and runs with an
+monitor or an automatic assignment) continues this way only with a positive
+record that no turn was ever issued: the refused reattachment proved the Runner
+process gone, and the run's controller journal, which records each turn command
+before it is sent, holds no turn command and no turn event
+(`providerTurnIssued: false` on `native.remote_runner_recovery_failed`). The run
+must also have no turn or tool event, and the Retry runs under the run's
+responsible user. Missing events alone never qualify, because a turn can reach
+the provider before its events are stored. Other system wakes and runs with an
 in-flight provider turn do not continue automatically. For these failed runs, a
 recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only

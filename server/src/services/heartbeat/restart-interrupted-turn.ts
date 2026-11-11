@@ -40,11 +40,23 @@ export function isProvenTurnSettlement(event: { eventType: string; payload: unkn
 const PROVIDER_TURN_ACTIVITY_EVENTS = [...TURN_STARTED_EVENTS, ...TURN_SETTLED_EVENTS,
   "tool.execution.started", "tool.execution.completed"];
 
-async function hasProviderTurnActivity(db: Db, run: { companyId: string; id: string }) {
-  const [event] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+/**
+ * The run's last refused reattachment proved its Runner process gone and its
+ * controller journal proved that no turn command was ever issued
+ * (`providerTurnIssued: false`, recorded by the executor). No turn or tool
+ * event may exist either.
+ */
+async function hasProvenNoProviderTurn(db: Db, run: { companyId: string; id: string }) {
+  const [activity] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     inArray(heartbeatRunEvents.eventType, PROVIDER_TURN_ACTIVITY_EVENTS))).limit(1);
-  return Boolean(event);
+  if (activity) return false;
+  const [refusal] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.eventType, "native.remote_runner_recovery_failed"),
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  const proof = asRecord(asRecord(refusal?.payload).remoteRunnerRecovery);
+  return proof.stage === "process_verification" && proof.reason === "process_not_running" && proof.providerTurnIssued === false;
 }
 
 /** Automatic continuation is requested at most once per chain of runs. */
@@ -59,8 +71,8 @@ type Outcome = { requested: true; requestId: string } | { requested: false; reas
  * under the requesting user's authority. Only when the run's user input was not
  * yet acted on, or its last provider turn is settled; an in-flight turn's
  * outcome is unknown, so it keeps the visible Retry. A system wake continues
- * this way only when its run recorded no turn or tool event at all, under the
- * run's responsible user. Admission keeps every gate,
+ * this way only when the controller journal proved that no turn was ever
+ * issued, under the run's responsible user. Admission keeps every gate,
  * including stop proof and saved-work recovery before the next turn.
  */
 export async function requestRestartInterruptedTurnRetry(db: Db, claim: NativeRestartRecoveryClaim): Promise<Outcome> {
@@ -89,9 +101,11 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
   let actorId = userActorId;
   if (!userActorId) {
     // System wakes keep their policy (only a new user turn continues them),
-    // except when the run never started a provider turn: nothing it did can be
-    // repeated, so the Retry runs once under the run's responsible user.
-    if (!wake || reason === "task_retry" || !run.responsibleUserId || await hasProviderTurnActivity(db, run))
+    // except when the controller journal positively proves that no turn was
+    // ever issued: nothing the run did can be repeated, so the Retry runs once
+    // under the run's responsible user. Missing events alone prove nothing,
+    // because a turn can reach the provider before its events are stored.
+    if (!wake || reason === "task_retry" || !run.responsibleUserId || !await hasProvenNoProviderTurn(db, run))
       return { requested: false, reason: "not_user_request" };
     actorId = run.responsibleUserId;
   } else if (reason === "task_retry") {
