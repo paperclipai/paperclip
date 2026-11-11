@@ -1,6 +1,6 @@
 {
-  "id": "e2a678da-05cc-4316-a40e-d85a69be01e3",
-  "prevId": "aaf06ddb-56bd-4455-b2d1-fdb0254445e7",
+  "id": "aaa7ecab-43e7-41e4-9f93-2bf7ba3c7865",
+  "prevId": "c06d4653-b3df-4e3e-bbf9-6de9b37cf806",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6233,7 +6233,7 @@
           "name": "issuer",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "account_id": {
           "name": "account_id",
@@ -6309,11 +6309,11 @@
         }
       },
       "indexes": {
-        "account_issuer_account_id_uq": {
-          "name": "account_issuer_account_id_uq",
+        "account_provider_account_id_uq": {
+          "name": "account_provider_account_id_uq",
           "columns": [
             {
-              "expression": "issuer",
+              "expression": "provider_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -51034,6 +51034,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "target_date": {
           "name": "target_date",
           "type": "date",
@@ -51055,12 +51061,6 @@
         "env": {
           "name": "env",
           "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
@@ -62996,6 +62996,12 @@
           "notNull": true,
           "default": false
         },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -65163,6 +65169,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "dot_device_cutover": {
+          "name": "dot_device_cutover",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",
