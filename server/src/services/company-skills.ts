@@ -2568,7 +2568,14 @@ function pushFinding(
   findings.push({ code, severity, message, path: filePath });
 }
 
-async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint = true): Promise<CompanySkillAuditResult> {
+/**
+ * Decides whether an administrator accepted an overridable finding for the
+ * exact file bytes. Only codes listed in SKILL_SECURITY_OVERRIDABLE_CODES reach
+ * this callback; credential exfiltration and structural findings never do.
+ */
+export type SkillSecurityFindingAcceptor = (filePath: string, sha256: string, code: string) => boolean;
+
+async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint = true, accept?: SkillSecurityFindingAcceptor): Promise<CompanySkillAuditResult> {
   const skillDir = normalizeSkillDirectory(skill);
   const scannedAt = new Date().toISOString();
   const originHash = asString(getSkillMeta(skill).originHash);
@@ -2649,7 +2656,12 @@ async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint =
 
     const text = file.bytes.toString("utf8");
     if (remoteExecPattern.test(text) || (file.kind === "script" && shellEvalPattern.test(text))) {
-      pushFinding(findings, "remote_fetch_exec", "error", "Remote-fetch or dynamic execution pattern is not allowed.", file.path);
+      if (accept?.(file.path, sha256Buffer(file.bytes), "remote_fetch_exec")) {
+        // Accepted findings stay visible; they only stop blocking inclusion.
+        pushFinding(findings, "remote_fetch_exec", "warning", "Remote-fetch or dynamic execution pattern was accepted by an administrator.", file.path);
+      } else {
+        pushFinding(findings, "remote_fetch_exec", "error", "Remote-fetch or dynamic execution pattern is not allowed.", file.path);
+      }
     }
     if (secretExfilPattern.test(text)) {
       pushFinding(findings, "secret_exfiltration", "error", "Secret exfiltration pattern is not allowed.", file.path);
@@ -2692,7 +2704,7 @@ async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint =
 }
 
 /** Audit downloaded packages before they become installed company content. */
-export async function auditSkillSnapshot(files: CompanySkillVersionFileInventoryEntry[], requireEntrypoint = true) {
+export async function auditSkillSnapshot(files: CompanySkillVersionFileInventoryEntry[], requireEntrypoint = true, accept?: SkillSecurityFindingAcceptor) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-audit-"));
   try {
     for (const file of files) {
@@ -2701,7 +2713,7 @@ export async function auditSkillSnapshot(files: CompanySkillVersionFileInventory
       await fs.writeFile(target, skillFileBytes(file), { mode: 0o600 });
     }
     const result = await auditInstalledSkillBytes({ sourceType: "local_path", sourceLocator: root,
-      fileInventory: files, metadata: null } as unknown as CompanySkill, requireEntrypoint);
+      fileInventory: files, metadata: null } as unknown as CompanySkill, requireEntrypoint, accept);
     return result.findings;
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 }

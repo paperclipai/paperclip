@@ -274,6 +274,25 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     }
   }
 
+  /**
+   * Accepting a flagged file is a company-administrator decision. Agents,
+   * operators, and unattended refreshes can never approve one; the company
+   * skill policy can restrict administrators further.
+   */
+  async function assertCanOverrideSkillSecurity(req: Request, companyId: string, resource: SkillPolicyEvaluationResource) {
+    if (req.actor.type !== "board") {
+      throw forbidden("Only company administrators can include files that the security check flagged.", { code: "skill_security_override_denied" });
+    }
+    assertCompanyAccess(req, companyId);
+    const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
+    const admin = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
+      || (membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole)));
+    if (!admin) {
+      throw forbidden("Only company administrators can include files that the security check flagged.", { code: "skill_security_override_denied" });
+    }
+    await assertCanMutateCompanySkills(req, companyId, "skills.override_security", resource);
+  }
+
   function publishCommittedActivity(publication: ActivityPublication) {
     try { publishActivity(publication); }
     catch { logger.warn({ companyId: publication.companyId }, "Committed skill activity notification failed"); }
@@ -363,6 +382,9 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
       setup: { userId: setup.refreshUserId, agentId: setup.refreshAgentId, localTrusted: setup.refreshLocalTrusted },
       read: connectionId => skillSourceGitHubReader(db, companyId, req.actor, connectionId),
       authorize: (action, resource) => assertCanMutateCompanySkills(req, companyId, action, resource),
+      authorizeSecurityOverride: (resource) => assertCanOverrideSkillSecurity(req, companyId, {
+        sourceType: "git", sourceLocator: normalizeSkillPolicySourceLocator(resource.sourceLocator),
+      }),
       audit: async (tx, sourceId, action, details) => {
         const { publication } = await persistActivity(tx as unknown as Db, { ...actor, companyId, action, entityType: "company_skill_source", entityId: sourceId, details });
         publications.push(publication);

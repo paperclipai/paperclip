@@ -27,6 +27,7 @@ import { SkillImportProgress, type FoundSkill } from './skills/SkillImportProgre
 import { SkillPackagePreview } from './skills/SkillPackagePreview';
 import { SkillSourceTree, type SkillTreeCandidate } from './skills/SkillSourceTree';
 import { SkillImportWarnings, skillImportWarnings } from './skills/SkillImportWarnings';
+import { SkillSecurityReview, emptySkillSecurityTrust, skillSecurityOverrideRequest, type SkillSecurityTrust } from './skills/SkillSecurityReview';
 import { timeAgo } from '@/lib/timeAgo';
 import { skillRoute } from '@/lib/company-skill-routes';
 import { consumeSkillSourceReturn, rememberSkillSourceReturn } from '@/lib/skill-source-connect-return';
@@ -257,6 +258,8 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   const [discovery, setDiscovery] = useState<SkillSourceDiscovery | null>(!source && draft.packageMode === 'skills' ? null : draft.discovery ?? null);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(draft.selectedPaths ?? (source ? source.entries.filter(entry => entry.selection !== 'excluded').map(entry => entry.path) : [])));
   const [excludedFolders, setExcludedFolders] = useState<string[]>(draft.excludedFolders ?? source?.excludedFolders ?? []);
+  // Trust is a deliberate decision for one reviewed scan; it is never restored from a draft.
+  const [securityTrust, setSecurityTrust] = useState<SkillSecurityTrust>(emptySkillSecurityTrust);
   const repositories = useQuery({ queryKey: queryKeys.skillSources.repositories(companyId), queryFn: () => skillSourcesApi.repositories(companyId), refetchOnMount: 'always' });
   const repositoriesView = useQueryView(repositories);
   const repositoriesLoading = repositories.isPending || repositoriesView.kind === 'reconnecting';
@@ -296,12 +299,13 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
     return { discovery: result, connectionId: result.connectionId === undefined ? availableConnectionId : result.connectionId, controller };
   }, onSuccess: result => {
     if (result.controller.signal.aborted || scanController.current !== result.controller) return;
-    setDiscovery(result.discovery); setPackageMode(result.discovery.packageMode ?? packageMode); setConnectionId(result.connectionId);
+    setDiscovery(result.discovery); setPackageMode(result.discovery.packageMode ?? packageMode); setConnectionId(result.connectionId); setSecurityTrust(emptySkillSecurityTrust);
     if (!source) { setSelected(new Set(result.discovery.candidates.map(candidate => candidate.path))); setExcludedFolders([]); }
   } });
+  const securityOverride = discovery?.canOverrideSecurity ? skillSecurityOverrideRequest(securityTrust, discovery.commitSha, discovery.securityFindings) : null;
   const save = useMutation({ mutationFn: () => source
-    ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, packageMode, selectedPaths: [...selected], excludedFolders, connectionId: sourceConnectionId })
-    : skillSourcesApi.create(companyId, { repositoryUrl: discovery!.repositoryUrl, trackingRef: discovery!.trackingRef, commitSha: discovery!.commitSha, packageMode, connectionId, selectedPaths: [...selected], excludedFolders }),
+    ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, packageMode, selectedPaths: [...selected], excludedFolders, connectionId: sourceConnectionId, ...(securityOverride ? { securityOverride } : {}) })
+    : skillSourcesApi.create(companyId, { repositoryUrl: discovery!.repositoryUrl, trackingRef: discovery!.trackingRef, commitSha: discovery!.commitSha, packageMode, connectionId, selectedPaths: [...selected], excludedFolders, ...(securityOverride ? { securityOverride } : {}) }),
     onSuccess: async result => { sessionStorage.removeItem(draftKey); await onSaved(result); },
   });
   const candidates: SkillTreeCandidate[] = discovery?.candidates ?? (source ? source.entries.map(entry => ({ ...entry,
@@ -315,7 +319,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   const busy = scan.isPending || save.isPending;
   const error = (scan.error?.name === 'AbortError' ? null : scan.error) ?? save.error;
   function stopScan() { scanController.current?.abort(); scanController.current = null; scan.reset(); setProgress(null); setFound([]); }
-  function clearScan() { setDiscovery(null); scan.reset(); save.reset(); }
+  function clearScan() { setDiscovery(null); setSecurityTrust(emptySkillSecurityTrust); scan.reset(); save.reset(); }
   function dismiss() { stopScan(); sessionStorage.removeItem(draftKey); onClose(); }
   return <Dialog open onOpenChange={open => { if (!open && !save.isPending) dismiss(); }}><DialogContent className="flex max-h-(--sz-calc-18) flex-col overflow-hidden p-4 sm:max-w-2xl sm:p-6" aria-describedby={source ? 'source-description' : undefined}>
     <DialogHeader className="shrink-0 flex-row items-start justify-between gap-3 pr-6">
@@ -372,6 +376,8 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
           {candidates[0] && <Button variant="outline" size="sm" onClick={() => setPreview({ skill: candidates[0]!, repository: true })}><FileText className="size-4" />View {repositoryPackage?.files.length ?? 0} {repositoryPackage?.files.length === 1 ? 'file' : 'files'}</Button>}
         </> : null}
         {selectionTree}
+        <SkillSecurityReview findings={discovery?.securityFindings} repository={discovery?.fullName ?? source?.fullName ?? ''} commitSha={discovery?.commitSha}
+          canOverride={Boolean(discovery?.canOverrideSecurity)} value={securityTrust} onChange={setSecurityTrust} disabled={busy} recorded={source?.securityOverride} />
         <SkillImportWarnings warnings={warnings} />
       </div>}
       {error && <p role="alert" className="text-sm text-destructive">{describeError(error).body}{' '}<Link onClick={rememberReturn} to={connectHref} className="underline">Connect a GitHub account</Link></p>}
@@ -381,7 +387,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
     </div>
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border pt-4">
         <Button variant="ghost" disabled={save.isPending} onClick={() => { if (scan.isPending) stopScan(); else if (discovery && !source) clearScan(); else dismiss(); }}>{scan.isPending ? 'Cancel scan' : discovery && !source ? 'Back' : 'Cancel'}</Button>
-        {ready ? <Button disabled={busy || (!source && packageMode === 'skills' && selectedCount === 0)} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : source ? 'Save selection' : packageMode === 'repository' ? 'Import repository' : `Import ${selectedCount} ${selectedCount === 1 ? "skill" : "skills"}`}</Button>
+        {ready ? <Button disabled={busy || securityOverride === undefined || (!source && packageMode === 'skills' && selectedCount === 0)} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : source ? 'Save selection' : packageMode === 'repository' ? 'Import repository' : `Import ${selectedCount} ${selectedCount === 1 ? "skill" : "skills"}`}</Button>
           : <Button disabled={busy || repositories.isPending || !repositoryUrl.trim()} onClick={() => scan.mutate(packageMode)}>{scan.isPending ? 'Scanning…' : 'Find skills'}</Button>}
       </footer>
     {preview && <SkillPackagePreview key={`${packageMode}:${preview.repository}:${preview.skill.path}:${preview.filePath ?? ''}`} companyId={companyId}

@@ -357,6 +357,42 @@ describe('GitHub skill source import', () => {
     await act(async () => button('Import repository').click());
     expect(skillSourcesApi.create).toHaveBeenCalledWith('company-1', expect.objectContaining({ packageMode: 'repository', selectedPaths: ['skills/main/SKILL.md'] }));
   });
+  it('lets an administrator trust flagged files with a reason while real risks stay blocked', async () => {
+    const commitSha = 'c'.repeat(40);
+    const flagged = { path: 'hooks/install.sh', code: 'remote_fetch_exec', message: 'Remote-fetch or dynamic execution pattern is not allowed.', sha256: 'd'.repeat(64), overridable: true };
+    const leak = { path: 'scripts/leak.sh', code: 'secret_exfiltration', message: 'Secret exfiltration pattern is not allowed.', sha256: 'e'.repeat(64), overridable: false };
+    sessionStorage.setItem('paperclip.skill-source-draft:company-1:new', JSON.stringify({ packageMode: 'repository', selectedPaths: ['skills/main/SKILL.md'],
+      discovery: { ...discovery, commitSha, packageMode: 'repository', canOverrideSecurity: true, securityFindings: [flagged, leak],
+        repositoryPackage: { files: [], requirements: null, error: null, warnings: [] },
+        candidates: [{ path: 'skills/main/SKILL.md', name: 'Main', description: null, fileCount: 1, error: null, warnings: [] }] } }));
+    vi.mocked(skillSourcesApi.create).mockImplementation(() => new Promise(() => {}));
+    await mount();
+    expect(document.body.textContent).toContain('Always blocked');
+    expect(document.body.textContent).toContain('scripts/leak.sh');
+    const trust = document.querySelector<HTMLButtonElement>('section[aria-label="Security review"] button[role="checkbox"]')!;
+    await act(async () => trust.click());
+    expect(button('Import repository').disabled).toBe(true);
+    await act(async () => {
+      const element = document.querySelector<HTMLTextAreaElement>('section[aria-label="Security review"] textarea')!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(element, 'Maintained by our platform team.');
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(button('Import repository').disabled).toBe(false);
+    await act(async () => button('Import repository').click());
+    expect(skillSourcesApi.create).toHaveBeenCalledWith('company-1', expect.objectContaining({ securityOverride: {
+      commitSha, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: flagged.path, sha256: flagged.sha256 }],
+    } }));
+  });
+  it('explains that only administrators can include flagged files', async () => {
+    sessionStorage.setItem('paperclip.skill-source-draft:company-1:new', JSON.stringify({ packageMode: 'repository', selectedPaths: ['skills/main/SKILL.md'],
+      discovery: { ...discovery, packageMode: 'repository', canOverrideSecurity: false,
+        securityFindings: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', message: 'Flagged.', sha256: 'd'.repeat(64), overridable: true }],
+        repositoryPackage: { files: [], requirements: null, error: null, warnings: [] },
+        candidates: [{ path: 'skills/main/SKILL.md', name: 'Main', description: null, fileCount: 1, error: null, warnings: [] }] } }));
+    await mount();
+    expect(document.body.textContent).toContain('Only a company administrator can include these files.');
+    expect(document.querySelector('section[aria-label="Security review"] button[role="checkbox"]')).toBeNull();
+  });
   it('uses repository packaging when returning to an old individual-import draft', async () => {
     sessionStorage.setItem('paperclip.skill-source-draft:company-1:new', JSON.stringify({ packageMode: 'skills', repositoryUrl: discovery.repositoryUrl }));
     const candidate = { path: 'skills/main/SKILL.md', name: 'Main', description: 'A useful skill', error: null, fileCount: 1, warnings: [],

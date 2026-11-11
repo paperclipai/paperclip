@@ -7,6 +7,8 @@ import { assertSkillSnapshotPath, snapshotFile, skillFileBytes, MAX_SKILL_SNAPSH
 import { indexSkillPackagePaths, inspectSkillPackage } from './skill-package-inspection.js';
 import { auditSkillSnapshot, classifyInventoryKind } from './company-skills.js';
 import { skillRepositoryDependencies } from './skill-repository-dependencies.js';
+import { mergeSecurityFindings, securityFindingsFor, securityOverrideAcceptor, skillRelativeToRepositoryPath } from './skill-security-overrides.js';
+import type { SkillSourceSecurityOverride, SkillSecurityOverrideRequest } from '@paperclipai/shared';
 
 import type { GitSkillSnapshot, GitSkillSnapshotOptions, GitSkillTreeEntry as TreeEntry } from './skill-source-git-snapshot.js';
 
@@ -24,6 +26,12 @@ const MAX_SCAN_BYTES = MAX_SKILL_SNAPSHOT_BYTES;
 const MAX_SCAN_PACKAGES = 1_000;
 const MAX_SCAN_FILES = MAX_SKILL_SNAPSHOT_FILES;
 
+/** Skill-relative audit paths to repository paths; the entrypoint keeps its original casing. */
+function skillRepositoryPath(dir: string, entrypoint: string) {
+  const relative = skillRelativeToRepositoryPath(dir);
+  return (filePath: string) => filePath === 'SKILL.md' ? entrypoint : relative(filePath);
+}
+
 export function parseSkillRepository(url: string) {
   const parsed = parseGitHubSkillRepositoryUrl(url);
   if (!parsed) throw unprocessable('Enter an HTTPS GitHub repository or branch URL without credentials.');
@@ -36,6 +44,12 @@ export interface SkillScanOptions {
   /** Discovery needs audited manifests, not the full contents retained for import. */
   retainFiles?: boolean;
   repositorySubset?: boolean;
+  /**
+   * Administrator overrides to apply at the scanned commit. They only let
+   * overridable findings stop blocking file inclusion; they are verified
+   * against exact file hashes and never cover credential or path findings.
+   */
+  securityOverrides?: Array<SkillSourceSecurityOverride | SkillSecurityOverrideRequest | null | undefined>;
 }
 
 type SkillScanInput = { packageMode?: 'skills' | 'repository'; repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
@@ -196,6 +210,8 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       return bytes;
     };
     const skills: DiscoveredSkill[] = [];
+    const accepts = (toRepositoryPath?: (filePath: string) => string) => securityOverrideAcceptor(options.securityOverrides ?? [], commit.sha, toRepositoryPath);
+    const securityFindings: NonNullable<ScannedSkillSource['securityFindings']> = [];
     Object.assign(progress, { phase: 'checking', totalSkills: selectedRoots.length, currentPath: null });
     await report();
     for (const root of selectedRoots) {
@@ -224,7 +240,9 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       if (markdown?.encoding === 'base64') error = 'SKILL.md must contain UTF-8 text.';
       const name = typeof frontmatter.name === 'string' && frontmatter.name.trim() ? frontmatter.name.trim() : path.posix.basename(dir) || repo.full_name;
       const description = typeof frontmatter.description === 'string' ? frontmatter.description : null;
-      const findings = !error ? await auditSkillSnapshot(files) : [];
+      const toRepositoryPath = skillRepositoryPath(dir, root.path);
+      const findings = !error ? await auditSkillSnapshot(files, true, accepts(toRepositoryPath)) : [];
+      if (input.packageMode !== 'repository') securityFindings.push(...securityFindingsFor(findings, files, toRepositoryPath));
       error ??= findings.filter(f => f.severity === 'error').map(f => `${f.path ?? root.path}: ${f.message}`).join(' ') || null;
       const inspection = { ...inspectSkillPackage(root.path, files, repositoryPaths, frontmatter, findings), commitSha: commit.sha };
       inspection.warnings.push(...fileWarnings);
@@ -258,7 +276,8 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
         progress.checkedFiles++;
         await report();
       }
-      const findings = await auditSkillSnapshot(repositoryFiles, false);
+      const findings = await auditSkillSnapshot(repositoryFiles, false, accepts());
+      securityFindings.push(...securityFindingsFor(findings, repositoryFiles));
       const unsafe = findings.filter(f => f.severity === 'error' && ['remote_fetch_exec', 'secret_exfiltration'].includes(f.code));
       if (unsafe.some(f => !f.path)) throw unprocessable('Repository audit could not identify an unsafe file.');
       const omitted = new Map(unsafe.map(f => [f.path!, `${f.path} — ${f.message} File not included.`]));
@@ -282,7 +301,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
             });
             const markdown = supported.find(file => file.path === 'SKILL.md');
             const frontmatter = markdown && markdown.encoding !== 'base64' ? parseFrontmatterMarkdown(markdown.content).frontmatter : {};
-            const remainingFindings = await auditSkillSnapshot(supported);
+            const remainingFindings = await auditSkillSnapshot(supported, true, accepts(repositoryPath));
             skill.error = rootsByDirectory.get(dir)!.length > 1 ? 'Multiple SKILL.md entrypoints share this package directory.'
               : remainingFindings.filter(f => f.severity === 'error').map(f => `${f.path}: ${f.message}`).join(' ') || null;
             const fileWarnings = skill.inspection.warnings.filter(warning => warning.includes('not included') || warning.includes('couldn’t be included'));
@@ -301,7 +320,8 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       ...(input.packageMode ? { packageMode: input.packageMode } : {}), ...(repositoryPackage ? { repositoryPackage } : {}),
       ...(repositoryFiles && options.retainFiles !== false ? { repositoryFiles } : {}),
       connectionId: providerRead.connectionId ?? null, repositoryId: String(repo.id), repositoryUrl: `https://github.com/${repo.full_name.toLowerCase()}`, fullName: repo.full_name, trackingRef, commitSha: commit.sha,
-      defaultBranch: repo.default_branch, candidates: skills.map(({ files: _files, ...candidate }) => candidate), warnings, skills };
+      defaultBranch: repo.default_branch, candidates: skills.map(({ files: _files, ...candidate }) => candidate), warnings, skills,
+      securityFindings: mergeSecurityFindings(securityFindings) };
   } finally { await snapshot.release(); }
 }
 

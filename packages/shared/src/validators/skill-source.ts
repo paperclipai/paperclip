@@ -13,10 +13,19 @@ export const skillSourcePreviewSchema = skillSourceDiscoverySchema.extend({
   skillPath: repoPath.refine(value => /(^|\/)skill\.md$/i.test(value), 'Invalid skill entrypoint'),
   filePath: repoPath.refine(value => value.length > 0, 'A file path is required'),
 });
+const sha = z.string().regex(/^[a-f0-9]{40}$/i);
+export const skillSecurityOverrideSchema = z.object({
+  commitSha: sha,
+  files: z.array(z.object({ path: repoPath.refine(value => value.length > 0, 'A file path is required'), sha256: z.string().regex(/^[a-f0-9]{64}$/i) })).min(1).max(1000)
+    .refine(files => new Set(files.map(file => file.path)).size === files.length, 'Each file can be approved once.'),
+  reason: z.string().trim().min(10, 'Explain why this repository is trusted.').max(2000),
+  trustFutureUpdates: z.boolean().default(false),
+});
 export const skillSourceCreateSchema = skillSourceDiscoverySchema.extend({
   commitSha: z.string().regex(/^[a-f0-9]{40}$/i),
   selectedPaths: z.array(repoPath).max(10000),
   excludedFolders: z.array(repoPath).max(10000).default([]),
+  securityOverride: skillSecurityOverrideSchema.optional(),
 });
 export const skillSourceSelectionSchema = z.object({
   packageMode: z.enum(['skills', 'repository']).optional(),
@@ -24,6 +33,7 @@ export const skillSourceSelectionSchema = z.object({
   selectedPaths: z.array(repoPath).max(10000),
   excludedFolders: z.array(repoPath).max(10000),
   connectionId: z.string().uuid().nullable().optional(),
+  securityOverride: skillSecurityOverrideSchema.optional(),
 });
 export const skillSourceSettingsSchema = z.object({
   revision: z.number().int().nonnegative(),

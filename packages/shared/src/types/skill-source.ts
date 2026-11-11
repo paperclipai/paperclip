@@ -1,6 +1,51 @@
 import type { CompanySkill } from './company-skill.js';
 
 export type SkillSourcePackageMode = 'skills' | 'repository';
+
+/**
+ * Audit codes an administrator may accept for one repository commit. They flag
+ * suspicious patterns (for example `eval` or `curl | sh` in instructions), not
+ * confirmed harm. Every other blocking code, such as credential exfiltration,
+ * path traversal, or symlinks, can never be overridden.
+ */
+export const SKILL_SECURITY_OVERRIDABLE_CODES = ['remote_fetch_exec'] as const;
+export type SkillSecurityOverridableCode = typeof SKILL_SECURITY_OVERRIDABLE_CODES[number];
+export function isSkillSecurityOverridableCode(code: string): code is SkillSecurityOverridableCode {
+  return (SKILL_SECURITY_OVERRIDABLE_CODES as readonly string[]).includes(code);
+}
+
+/** A file a repository scan left out because of a blocking audit finding. */
+export interface SkillSecurityFinding {
+  /** Repository-relative path. */
+  path: string;
+  code: string;
+  message: string;
+  /** SHA-256 of the exact file bytes at the scanned commit. */
+  sha256: string;
+  /** False for real risks (for example credential exfiltration); those always stay blocked. */
+  overridable: boolean;
+  /** True when a recorded administrator override already includes this file. */
+  accepted?: boolean;
+}
+
+/** An administrator's request to include flagged files from one reviewed commit. */
+export interface SkillSecurityOverrideRequest {
+  commitSha: string;
+  files: Array<{ path: string; sha256: string }>;
+  reason: string;
+  /** Opt-in: keep trusting these paths in later commits, even when their content changes. */
+  trustFutureUpdates: boolean;
+}
+
+/** The recorded override a source applies on refresh. Grants file inclusion only, never execution. */
+export interface SkillSourceSecurityOverride {
+  commitSha: string;
+  files: Array<{ path: string; code: string; sha256: string }>;
+  reason: string;
+  trustFutureUpdates: boolean;
+  approvedByUserId: string | null;
+  approvedAt: string;
+}
 export interface SkillRepositoryPackage {
   files: SkillPackageFile[];
   requirements: string | null;
@@ -103,6 +148,7 @@ export interface SkillSource {
   lastScanCommit: string | null;
   lastError: string | null;
   repairAction?: 'connection' | 'branch' | 'retry' | null;
+  securityOverride?: SkillSourceSecurityOverride | null;
   entries: SkillSourceEntry[];
 }
 export interface SkillSourceSettingsRequest {
@@ -160,6 +206,10 @@ export interface SkillSourceDiscovery {
   commitSha: string;
   candidates: SkillSourceCandidate[];
   warnings: string[];
+  /** Files left out by blocking audit findings at this commit; omitted by older servers. */
+  securityFindings?: SkillSecurityFinding[];
+  /** Whether this caller may approve a security override; omitted by older servers. */
+  canOverrideSecurity?: boolean;
 }
 /** Live scan metadata only. A complete event is required before selections can be imported. */
 export interface SkillSourceScanProgress {
@@ -185,6 +235,7 @@ export interface SkillSourceCreateRequest extends SkillSourceDiscoveryRequest {
   commitSha: string;
   selectedPaths: string[];
   excludedFolders?: string[];
+  securityOverride?: SkillSecurityOverrideRequest;
 }
 export interface SkillSourceSelectionRequest {
   packageMode?: SkillSourcePackageMode;
@@ -192,6 +243,7 @@ export interface SkillSourceSelectionRequest {
   selectedPaths: string[];
   excludedFolders: string[];
   connectionId?: string | null;
+  securityOverride?: SkillSecurityOverrideRequest;
 }
 export interface SkillSourceRefreshResult {
   source: SkillSource;
