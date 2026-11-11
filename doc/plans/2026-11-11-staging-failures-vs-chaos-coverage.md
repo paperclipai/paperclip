@@ -28,6 +28,9 @@ add so it would.
 
 ## Method and sources (read-only)
 
+Task labels `T01`–`T60` stand in for staging task identifiers, which are instance-local. The census
+owner keeps the mapping outside the repository.
+
 - Staging API, GET only, with the operator's existing CLI token loaded into a child process:
   - `/api/health`;
   - `/api/companies/:id/heartbeat-runs` (company and per agent);
@@ -35,7 +38,7 @@ add so it would.
   - `/api/heartbeat-runs/:id/events`;
   - `/api/issues/:id`, `/runs`, `/activity` and `/recovery-actions`.
   
-  One company exists (`PAP`). There were 1917 runs in the window.
+  One company exists. There were 1917 runs in the window.
 - Deploy and restart times: every run record carries `controllerProcess`, with `processStartedAt`,
   `bootId` and the Railway `deploymentId`. The timeline below is built from those fields.
   GitHub has no staging deployment records, because staging deploys from Railway.
@@ -46,7 +49,7 @@ add so it would.
 
 - **Sentry and Honeycomb:** no read credentials for staging were available. The only keys are
   ingest/test-config keys. Sentry triage was not run.
-- **Ponytail runs:** runs from 2026-11-09 00:00–14:52Z are missing. That agent made more than
+- **a PR-review agent runs:** runs from 2026-11-09 00:00–14:52Z are missing. That agent made more than
   1000 runs in the window, and the run list caps at 1000 with no cursor. Other agents are complete.
 - **Commit per deploy:** Railway deployment IDs do not map to git SHAs through the API. Only the
   current SHA (`358977454b`, #20649) is visible. "Fixed on master" therefore means "a merged PR
@@ -62,7 +65,7 @@ blocked at census time.
 
 | Class | Runs | Share | Tasks | Blocked now | Mechanism (root) | Fixed on master? | Why the harness missed it | Proposed scenario |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| W: wake loop on a held shared workspace | 103 | 37% | 4 | 1 | A parent shares a legacy execution workspace with a child that stranded a writer hold on Nov 5. The new stall-wake feature (#20098) woke the parent every 10 min. Each wake failed setup with no backoff. PAP-2153 had 99 runs from 07:27 to 15:53Z. | **Fixed:** #20273, #20295, #20314 | Fresh database every wave, so there was no legacy shared-workspace state. The feature landed between waves. U2 would have caught the loop. | None (fixed). If needed: K14 from a pre-2026-11-07 build with M1. |
+| W: wake loop on a held shared workspace | 103 | 37% | 4 | 1 | A parent shares a legacy execution workspace with a child that stranded a writer hold on Nov 5. The new stall-wake feature (#20098) woke the parent every 10 min. Each wake failed setup with no backoff. T01 had 99 runs from 07:27 to 15:53Z. | **Fixed:** #20273, #20295, #20314 | Fresh database every wave, so there was no legacy shared-workspace state. The feature landed between waves. U2 would have caught the loop. | None (fixed). If needed: K14 from a pre-2026-11-07 build with M1. |
 | R: remote recovery refuses after a deploy | 34 | 12% | 32 | **24** | After a deploy, the new controller cannot prove that the prior owner stopped. The cause is a different process space or a reused-sandbox runner identity from another run. Codes include `runner_remote_process_identity_unavailable` (9), `native_remote_recovery_lease_mismatch …identity_run_id` (8), `prior_owner_terminal_state_indeterminate` (6), `cleanup_quarantined` (4) and `missing_evidence` (3). 27 of 34 failed within 10 min of a process start. | **Partly fixed:** #20639, #20631, #20666, #20662 and #20650 address parts. `identity_unavailable` and `lease_mismatch` have no fix. | Harness restarts keep the same process space, so PID proofs succeed. There were no OpenCode cells on Daytona (19 of 34 are OpenCode). Reusable sandboxes are not in the matrix. | **K15 redeploy**: SIGTERM, then a replacement in a new process space with a new deployment identity (implemented). Run on Daytona with `--adapters opencode --daytona-reuse-lease`. |
 | F: finalization and workspace save-back | 24 | 9% | 15 | 8 | A saved result cannot be copied back or restored. Causes: sandbox disk full (ENOSPC in 2 runs), unsafe symlink in the archive, `recovery_receipt_invalid` (7), a stuck "Recovering saved work…" phase (8) and an exhausted finalization budget (3). | **Partly fixed:** #20666 (receipt), #20578 (re-finalize). Nothing for disk full or symlinks. | Workloads write small files. They never fill the sandbox disk and never create symlinks. ST faults hit S3, not the sandbox disk. | **DF1 sandbox disk full** and an **SY1 symlink** workload (proposed, not built). |
 | E: Daytona capacity outage | 18 | 7% | 13 | 4 | Daytona returned HTTP 502 and the worker hit SIGKILL from 16:36 to 17:02Z on Nov 10. Reusable sandbox resume failed, plus a git clone network failure. | **Mostly recovers:** 8 tasks recovered automatically and bounded retry works. 4 tasks still blocked. | The harness has no environment-provider fault. All faults hit the control plane or S3. | **EP1 environment provider 5xx window** (proposed, not built). |
@@ -92,10 +95,10 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 
 ### W: wake loop on a held shared workspace (103 runs, fixed)
 
-- Examples: PAP-2153 (99 runs), PAP-3367, PAP-3644 and PAP-3885.
+- Examples: T01 (99 runs), T02, T03 and T04.
 - Timeline:
-  1. On Nov 5, child PAP-2160 failed setup (`workspace_busy`, then `setup_failed`). Its parent
-     PAP-2153 shared the workspace, a pre-2026-11-07 policy.
+  1. On Nov 5, child T05 failed setup (`workspace_busy`, then `setup_failed`). Its parent
+     T01 shared the workspace, a pre-2026-11-07 policy.
   2. On Nov 9, #20098 ("wake the parent once when a child stalls") reached staging. At 07:27Z the
      parent began to be woken about every 10 min by `issue.blocker_stalled_wake`.
   3. Every wake failed with `The workspace still has an unfinished writer or save operation.`
@@ -120,11 +123,11 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 ### R: remote native recovery refuses after a deploy (34 runs, 24 tasks blocked)
 
 - Examples:
-  - PAP-4146, PAP-4017, PAP-3772 and PAP-2100 (`lease_mismatch identity_run_id`);
-  - PAP-4083, PAP-3906, PAP-4023 and PAP-3938 (`identity_unavailable`);
-  - PAP-4241, PAP-4196, PAP-3443 and PAP-3969 (`prior_owner_terminal_state_indeterminate`, with
+  - T06, T07, T08 and T09 (`lease_mismatch identity_run_id`);
+  - T10, T11, T12 and T13 (`identity_unavailable`);
+  - T14, T15, T16 and T17 (`prior_owner_terminal_state_indeterminate`, with
     `retirement_refused=journal_commands_unsettled(run.attach.pending | semantic_tool.result.pending)`);
-  - PAP-4238 and PAP-3797 (`cleanup_quarantined`).
+  - T18 and T19 (`cleanup_quarantined`).
 - Mechanism:
   - `controllerProcessExited` and `sameProcessSpace` return false whenever the recorded `hostHash`
     differs. Every Railway deploy changes the `hostHash`.
@@ -155,12 +158,12 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 ### F: finalization and workspace save-back (24 runs, 8 tasks blocked)
 
 - Examples:
-  - PAP-4253 (`sync_out_retry_exhausted` from disk full, then the finalization budget, three times);
-  - PAP-3808 (`remote_workspace_archive_unsafe_symlink`);
-  - PAP-3881, PAP-4187 and PAP-4236 (`remote_workspace_recovery_receipt_invalid`);
-  - PAP-4016 and PAP-4083 ("Recovering saved work…" phase cancelled with
+  - T20 (`sync_out_retry_exhausted` from disk full, then the finalization budget, three times);
+  - T21 (`remote_workspace_archive_unsafe_symlink`);
+  - T22, T23 and T24 (`remote_workspace_recovery_receipt_invalid`);
+  - T25 and T10 ("Recovering saved work…" phase cancelled with
     `execution_reconciliation_required`);
-  - PAP-3640, PAP-3641 and PAP-3645 (07:26Z on Nov 9, right after a deploy).
+  - T26, T27 and T28 (07:26Z on Nov 9, right after a deploy).
 - Fixed: #20666 (skip unverifiable recovery sources) covers `receipt_invalid`, which last occurred
   at 22:35Z, before that fix was deployed. Disk-full and symlink save-back have no fix and no
   scenario.
@@ -176,8 +179,8 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
   - `Worker process exited (code=null, signal=SIGKILL)` (3);
   - `Reusable sandbox lease … could not be resumed (cause=provider_error | transport_timeout)` (3).
 - Plus one `git=network` clone failure and one Daytona rate-limit failure.
-- Bounded retry recovered 8 of 13 tasks. 4 remain blocked (PAP-4182, PAP-4209, PAP-4211 and
-  PAP-4218 are examples).
+- Bounded retry recovered 8 of 13 tasks. 4 remain blocked (T29, T30, T31 and
+  T32 are examples).
 - Fix #20626 (retry and replace a reusable sandbox that will not resume) shipped before the outage.
   Its effect at this scale is not verified.
 - Why the harness missed it: **missing fault type.** There is no environment-provider fault. All
@@ -187,15 +190,15 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 ### U: provider usage limit (17 runs)
 
 - `provider_limit_wait` (10) is the designed wait.
-- The ACPX "terminal limit failure" (7, Sentry Bot) fails the run. It should wait. This is a product
+- The ACPX "terminal limit failure" (7, an error-triage agent) fails the run. It should wait. This is a product
   classification gap in the ACPX limit mapping.
 
 ### P: provider session resume after a deploy (16 runs, 11 tasks blocked)
 
 - Examples:
-  - PAP-1064, PAP-3940, PAP-3957 and PAP-4016 (`PRP provider resume state is unavailable`);
-  - PAP-3883, PAP-4303, PAP-220 and PAP-2580 (`runner_harness_state_mismatch …`);
-  - PAP-3756 (`run.attach provider_side_effect_pending`).
+  - T33, T34, T35 and T25 (`PRP provider resume state is unavailable`);
+  - T36, T37, T38 and T39 (`runner_harness_state_mismatch …`);
+  - T40 (`run.attach provider_side_effect_pending`).
 - Last occurrence: 2026-11-10T21:06Z.
 - #20627 (restore a warm backup when its source sandbox is idle) covers `backup_without_reusable_lease`
   and `resumed_unavailable`. `resume state is unavailable` and `provider_identity_incomplete` have no
@@ -206,33 +209,33 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 ### O: other (13 runs)
 
 - Not deploy-correlated.
-- `native_run_failed` without a classified provider error appeared on PAP-4106, PAP-4149 and
-  PAP-4242. Those runs reached `run.result.accepted` after two `turn.failed` events.
-- ACPX `session.open` was rejected on PAP-839 and PAP-4313.
+- `native_run_failed` without a classified provider error appeared on T41, T42 and
+  T43. Those runs reached `run.result.accepted` after two `turn.failed` events.
+- ACPX `session.open` was rejected on T44 and T45.
 - These are product triage items, not chaos gaps.
 
 ### B: authorization or binding readiness (13 runs)
 
-- `reviewed_chat_execution_binding_not_authorized`: 7 runs on Ponytail (PAP-4209 and PAP-4244).
+- `reviewed_chat_execution_binding_not_authorized`: 7 runs on a PR-review agent (T30 and T46).
 - A credential not shared with the responsible user.
-- Skill package uploads still in flight (PAP-4020).
+- Skill package uploads still in flight (T47).
 - These are product authorization and readiness checks. They are outside the restart-chaos domain.
 
 ### L: legacy runtime lost across a deploy (12 runs)
 
 - Examples:
-  - `process_lost` on PAP-3640, PAP-3641 and PAP-3642 (07:11Z on Nov 9, three minutes after a
+  - `process_lost` on T26, T27 and T48 (07:11Z on Nov 9, three minutes after a
     deploy);
-  - `Legacy controller lease lost` on PAP-4038, PAP-4067, PAP-4077 and PAP-4085 (08:14–08:19Z on
+  - `Legacy controller lease lost` on T49, T50, T51 and T52 (08:14–08:19Z on
     Nov 10, 20 minutes after a deploy).
 - 7 of 12 tasks recovered.
 - The matrix has no legacy adapter cell. K15 could run one, but this was not done in this pass.
 
 ### A: artifact incompatible after an upgrade (8 runs)
 
-- Examples: PAP-4006 and PAP-4024 (`OpenCode executable is missing from the provider pack`), PAP-3771
-  (`ACPX launch profile omitted …`), PAP-3786, PAP-3854 and PAP-4154
-  (`native_provider_artifacts_admission_unverified`), and PAP-4197 (`runner_revision_mismatch`).
+- Examples: T53 and T54 (`OpenCode executable is missing from the provider pack`), T55
+  (`ACPX launch profile omitted …`), T56, T57 and T58
+  (`native_provider_artifacts_admission_unverified`), and T59 (`runner_revision_mismatch`).
 - Mechanism: a sandbox prepared and admitted by older code is resumed by newer code that expects
   new launch-profile fields or provider-pack contents.
 - Why the harness missed it: Daytona waves refuse to run unless the runner content ID equals the
@@ -241,7 +244,7 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 
 ### V: runner event commit stall (7 runs, likely fixed)
 
-- Examples: PAP-3877 and PAP-3881 (Nov 9, 20:49–23:55Z).
+- Examples: T60 and T22 (Nov 9, 20:49–23:55Z).
 - #20385 (usage receipt stalls during streamed run updates) merged at 23:35Z, and the class has not
   occurred since.
 
