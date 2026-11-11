@@ -15,6 +15,15 @@ import {
   type IssueReadVisibilityFixture,
 } from "./helpers/issue-read-visibility-fixture.js";
 
+/** Actors that the company gate rejects before any task is read. The routes answer every other actor with 200. */
+const REJECTED_BY_COMPANY_GATE: Partial<Record<IssueReadVisibilityActorName, 401 | 403>> = {
+  "board without membership": 403,
+  "agent run for owner, membership read from the database": 403,
+  "agent run for a user without membership": 403,
+  "agent of another company": 403,
+  "unauthenticated": 401,
+};
+
 /** The statement one task-privacy check per task sends. */
 const PER_TASK_PRIVACY_STATEMENT = /^select "id" from "issues" where \("issues"\."id" = \$1 and "issues"\."company_id" = \$2 and exists/;
 
@@ -135,16 +144,15 @@ describeEmbeddedPostgres("batched task read filtering", () => {
     const rows = await rowsFor(f.companyIssueIds.filter((id) => id !== f.hiddenId));
     const decisions = await decideEachTask(actor, rows);
     const expected = rows.filter((_, index) => decisions[index]!.allowed).map((row) => row.id);
-    if (result.status !== 200) {
-      // The company gate rejects the actor before any task is read.
-      expect([401, 403]).toContain(result.status);
+    const rejected = REJECTED_BY_COMPANY_GATE[name];
+    expect(result.status).toBe(rejected ?? 200);
+    if (rejected) {
       for (const id of f.allIds) expect(result.body).not.toContain(id);
       return;
     }
     expect(result.ids).toEqual(f.allIds.filter((id) => expected.includes(id)));
-    for (const id of [...f.unreadablePrivateIds, ...f.foreignIds, ...f.missingIds, f.hiddenId]) {
-      if (!expected.includes(id)) expect(result.ids).not.toContain(id);
-    }
+    expect(result.ids.length).toBeGreaterThan(0);
+    for (const id of [...f.foreignIds, ...f.missingIds, f.hiddenId]) expect(result.ids).not.toContain(id);
   });
 
   it.each([
