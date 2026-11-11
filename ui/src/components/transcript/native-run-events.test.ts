@@ -1524,9 +1524,6 @@ describe("edit diffs", () => {
 });
 
 describe("assistant progress messages that share one streamed item", () => {
-  // The runner streams a whole provider turn under one assistant item, so each
-  // progress message in the turn carries the same itemId and is told apart only
-  // by the provider's own message id.
   const ITEM = "acpx-assistant-turn-1";
   const delta = (seq: number, messageId: string, text: string) =>
     itemEvent(seq, "item.delta", ITEM, {
@@ -1556,8 +1553,6 @@ describe("assistant progress messages that share one streamed item", () => {
     }).flatMap((item) => (item.kind === "message" ? [item.text] : []));
 
   it("starts each provider message on a new paragraph in the conversation-only view", () => {
-    // The conversation view returns only the text deltas, without the tool
-    // calls that normally sit between the messages.
     expect(messages([
       delta(1, "msg_a", "Reading the cor"),
       delta(2, "msg_a", "p lists."),
