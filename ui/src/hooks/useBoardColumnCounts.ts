@@ -1,6 +1,6 @@
 import { useQueries } from "@tanstack/react-query";
 import type { IssueDisplayStatus } from "@paperclipai/shared";
-import { issuesApi, type IssueListFilters } from "../api/issues";
+import { issuesApi, type IssueCountFilters } from "../api/issues";
 import type { IssueFilterState } from "../lib/issue-filters";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -13,7 +13,7 @@ export function useBoardColumnCounts({
 }: {
   companyId: string | null | undefined;
   enabled: boolean;
-  filters: IssueListFilters;
+  filters: IssueCountFilters;
   viewState: IssueFilterState;
   statuses: readonly IssueDisplayStatus[];
   columnPageLengths: (number | undefined)[];
@@ -33,13 +33,13 @@ export function useBoardColumnCounts({
   });
   const columnCounts = Object.fromEntries(statuses.flatMap((status, index) => {
     if (!includesStatus(status)) return [[status, 0]];
-    const query = queries[index];
-    const count = query?.isError ? undefined : query?.data?.count;
+    // A failed refetch keeps the last server total; only a missing total falls back to a lower bound.
+    const count = queries[index]?.data?.count;
     return canCount && count !== undefined ? [[status, count]] : [];
   })) as Partial<Record<IssueDisplayStatus, number>>;
   return {
     columnCounts,
     cappedStatuses: statuses.filter((status, index) => enabled && includesStatus(status) && columnPageLengths[index] === cardLimit),
-    hasError: canCount && queries.some((query, index) => includesStatus(statuses[index]!) && query.isError),
+    hasError: canCount && queries.some((query, index) => includesStatus(statuses[index]!) && query.data === undefined && query.isError),
   };
 }
