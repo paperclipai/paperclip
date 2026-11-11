@@ -13,7 +13,7 @@ describe("executionRecoverySettlementNote", () => {
     const note = executionRecoverySettlementNote({ current: true, cause: "native_restart_recovery_blocked",
       workspaceRestoreFailed: false, trigger: "same_run_retry" });
     expect(note).not.toContain("server restart");
-    expect(note).toContain("Automatic retry stopped");
+    expect(note).toContain("Automatic retry of this run stopped");
   });
 
   it("keeps the workspace repair note for other holds with a restore failure", () => {

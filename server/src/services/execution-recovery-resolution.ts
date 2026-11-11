@@ -51,7 +51,7 @@ export function executionRecoverySettlementNote(input: {
 }): string {
   if (!input.current) return "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
   if (input.cause === "native_restart_recovery_blocked" && input.trigger === "same_run_retry") {
-    return "Automatic retry stopped because Paperclip could not verify that the previous attempt's runner had stopped. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+    return "Automatic retry of this run stopped. Saved work is preserved; actions with unverified outcomes will not be repeated.";
   }
   if (input.cause === "native_restart_recovery_blocked") {
     return "Automatic recovery stopped after a server restart because the previous execution could not be verified. Saved work is preserved; actions with unverified outcomes will not be repeated.";

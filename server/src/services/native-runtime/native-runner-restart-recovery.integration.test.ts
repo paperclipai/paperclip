@@ -3164,7 +3164,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const fixture = await seedExitedRemoteRunner("SAME-RUN-RETRY-HOLD", {
       originalFailureCode: "provider_session_open_rejected" }, 1);
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard",
-      trigger: "same_run_retry", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      runIds: [fixture.runId] })).toEqual([expect.objectContaining({
       kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" })]);
     const [action] = await fixture.db.select().from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
@@ -3173,7 +3173,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const note = executionRecoverySettlementNote({ current: true, cause: action.cause,
       workspaceRestoreFailed: false, trigger: action.evidence.trigger });
     expect(note).not.toContain("server restart");
-    expect(note).toContain("Automatic retry stopped");
+    expect(note).toContain("Automatic retry of this run stopped");
   });
 
   it.each<[string, Parameters<typeof seedUnlaunchedRemoteClaim>[1], { kind: string; reason: string }]>([
