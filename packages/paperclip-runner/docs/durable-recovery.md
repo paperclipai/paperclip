@@ -143,6 +143,14 @@ which proves that the sidecar and the provider are gone.
   no file (an older sidecar) proves nothing. The earlier behavior applies
   unchanged: a failed start closes the session, and a killed Runner uses
   lost-turn recovery.
+- A session this run closed cannot reopen for the same run. The failed start,
+  and every later `turn.start` of the run, fail with the closed class
+  `provider_session_closed` in the command result. The controller records
+  `native_provider_session_closed`, stops same-run retries, and the board offers
+  Retry at once. Retry starts a new run with a fresh provider conversation and
+  the saved task context. An older Runner sends the same text without the class; the
+  controller then keeps its bounded same-run retries, because the same text
+  also covers a session that can reopen after a restart.
 
 Until a proof settles it, the saved session stays `turn_starting`, so a Runner
 killed during the proof restores through the same check. The cut-off command is
@@ -219,6 +227,16 @@ protected launch argument fails with the closed classification
 controller never opens a replacement session after either class, whatever the
 checkpoint's recovery policy, and stops the run for an operator.
 
+A remote session whose saved working directory is not the run's assigned
+workspace root (its workspace epoch was abandoned, so the saved version was
+restored into a new root) cannot resume there. The driver declines it before
+any Runner or provider process starts. An idle session reports
+`provider_state_incompatible`: a replacement opens in the assigned root when the
+checkpoint allows it, and otherwise the run fails with
+`native_provider_state_incompatible`. A session with an unfinished provider turn
+or a pending runtime request reports `provider_side_effect_pending` and stops
+for an operator, whatever its recovery policy.
+
 A restart can kill the runner after it journaled a run's own cold `run.attach`
 and before the attachment finished. The restored runner settles that command as
 `execution_indeterminate` and never executes it again. When the journal shows no
@@ -232,6 +250,25 @@ runtime-request event is committed.
 Attaching starts no turn, and the runner admits the new command only for a
 settled session, so the run continues instead of failing on the old command.
 Warm transitions and staged attachments keep their exact replay paths.
+
+A restart can kill the runner inside `runner.suspend` in the same way. The
+next runner replays it from the welcome as `execution_indeterminate`, sends it
+as `failed`, and still treats it as terminal: it records `suspended` and exits
+once the controller acknowledges the result. The controller therefore keeps the
+terminal fence for that result (it lifts the fence only for a suspension the
+runner refused), and its acknowledgement names the runner's journal status
+`indeterminate`. Current runners accept either `indeterminate` or `failed`; older
+runners accept only `indeterminate` and otherwise exit with "terminal command
+result acknowledgement changed its durable identity".
+
+That runner exits before it accepts any command of the new attempt. During
+startup, the controller restarts it in place once, so the attempt continues.
+It does this only when the runner's durable journal proves the exit: its last
+command is exactly the suspend that an earlier attempt journaled, the
+controller has settled that suspend, the runner rests `suspended` with no
+terminal or provider cleanup fence, and no command of this attempt has a
+result. The runner file is read only after such an exit. Any other exit keeps
+its earlier failure.
 
 A kill during that attachment's provider launch can also leave a `spawned`
 startup fence over a `prepared` state that holds a saved thread. The next runner

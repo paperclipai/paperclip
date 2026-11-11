@@ -55,7 +55,7 @@ import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
-import { nativeRecoveryClaimRelinquished, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
+import { nativeRecoveryClaimRelinquished, ownNativeExecutionLeaseLapsed, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
@@ -2041,6 +2041,11 @@ export function heartbeatService(
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
     let restartClaimLapsed = false;
+    // The executor detached for "the next controller" because its own lease
+    // lapsed (for example after a stall), with no shutdown or hot-restart
+    // handoff. The next controller is this process: recover the run here once
+    // the executor has exited. A shutdown detach leaves it to the next server.
+    let detachedWithoutHandoff = false;
     const shutdownHandedOff = watchShutdownHandoff(run.id);
     let nativeOwnershipHeld = false;
     let nativeStartupCleanupScheduled = false;
@@ -3707,6 +3712,8 @@ export function heartbeatService(
         }
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
+          detachedWithoutHandoff = !shutdownHandedOff() && await ownNativeExecutionLeaseLapsed(db, run)
+            .catch(() => false);
           return;
         }
         if (err instanceof NativeRunnerOwnershipUnverifiedError) {
@@ -4168,7 +4175,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
-        if (restartClaimLapsed) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
+        if (restartClaimLapsed || detachedWithoutHandoff) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
         // It is never retained beyond the active execution's cleanup.

@@ -390,7 +390,11 @@ vi.mock("../issue-recovery-actions.js", () => ({
 
 vi.mock("./native-codex-runner.js", () => ({
   resolvePaperclipRunnerBinary: state.resolveRunnerBinary,
+  resolvePaperclipRunnerBinaryAsync: async (...args: unknown[]) => state.resolveRunnerBinary(...(args as [])),
   resolveRemotePaperclipRunnerBinary: state.resolveRemoteRunnerBinary,
+  // Resolves through the (mocked) vendor bundle, like the production checks.
+  verifiedBundledRemoteRunnerBinary: async () =>
+    (await import("../../vendor/paperclip-runner/index.js")).bundledRemoteRunnerBinary(),
 }));
 
 import {
@@ -398,6 +402,7 @@ import {
   buildNativeProviderEnvironment,
   resolveNativeProviderEnvironment,
   buildNativeHarnessBackupManifest,
+  buildNativeHarnessBackupManifestStreamed,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
   claimWarmNativeInstructionCopy,
@@ -429,6 +434,7 @@ import {
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
+  NATIVE_PROVIDER_SESSION_CLOSED,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -447,6 +453,7 @@ import {
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
   readRemoteProviderPackManifest,
+  verifyRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
   resolveRemoteProviderPackSource,
   readBundledRemoteProviderPackManifest,
@@ -473,6 +480,7 @@ import {
   remoteProviderStateUnreadable,
   retryTransientRemoteCheckpointRead,
   verifyNativeHarnessBackup,
+  verifyNativeHarnessBackupStreamed,
   shouldRestoreNativeHarnessBackupIntoSandbox,
   remoteProviderStateNeverOpened,
 } from "./native-session-executor.js";
@@ -2919,6 +2927,8 @@ describe("remote provider pack manifest", () => {
     Object.assign(payload, { providers: { cursor } });
     await writeManifest();
     expect(readRemoteProviderPackManifest(root).payload.providers?.cursor?.version).toBe(QUALIFIED_ACPX_PROFILES.cursor.agentServerVersion);
+    // The run path streams the same checks off the event loop.
+    await expect(verifyRemoteProviderPackManifest(root)).resolves.toEqual(readRemoteProviderPackManifest(root));
     const releaseMetadata = await mkdtemp(join(tmpdir(), "paperclip-image-identity-"));
     const manifestPath = join(releaseMetadata, "provider-pack.json");
     await cp(join(root, "provider-pack.json"), manifestPath);
@@ -2943,6 +2953,7 @@ describe("remote provider pack manifest", () => {
     await rm(releaseMetadata, { recursive: true, force: true });
     await writeFile(join(root, cursorPath, "runtime"), "substitute Cursor runtime");
     expect(() => readRemoteProviderPackManifest(root)).toThrow("asset tree digest mismatch");
+    await expect(verifyRemoteProviderPackManifest(root)).rejects.toThrow("asset tree digest mismatch");
     await writeFile(join(root, cursorPath, "runtime"), "pinned Cursor runtime");
     const kimiPath = "provider-assets/kimi/linux-x64";
     await mkdir(join(root, kimiPath), { recursive: true });
@@ -3506,7 +3517,22 @@ describe("verified native harness backups", () => {
         sourceProviderLeaseId: "sandbox-1",
         completedAt: "2026-08-26T00:00:00.000Z",
       });
+      // The run path builds and verifies the same manifest by streaming.
+      await expect(buildNativeHarnessBackupManifestStreamed({
+        backupRoot: current,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+        completedAt: "2026-08-26T00:00:00.000Z",
+      })).resolves.toEqual(manifest);
       await writeFile(join(current, "manifest.json"), JSON.stringify(manifest));
+      await expect(verifyNativeHarnessBackupStreamed({ root, execution: backupExecution, runnerInstanceId: "runner-1" }))
+        .resolves.toEqual(verifyNativeHarnessBackup({ root, execution: backupExecution, runnerInstanceId: "runner-1" }));
 
       expect(
         verifyNativeHarnessBackup({
@@ -3552,6 +3578,8 @@ describe("verified native harness backups", () => {
           runnerInstanceId: "runner-1",
         }),
       ).toBeNull();
+      await expect(verifyNativeHarnessBackupStreamed({ root, execution: backupExecution, runnerInstanceId: "runner-1" }))
+        .resolves.toBeNull();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -13974,6 +14002,52 @@ describe("native session bounded recovery", () => {
     });
     // Only the typed runner class is deterministic; the same text stays retryable.
     expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
+  });
+
+  // Chaos w-20261111T011704-s9107/t05: after a cut-off ACPX turn start the
+  // Runner saved the session closed; three same-run resumes each got the same
+  // refusal before the board offered Retry.
+  describe("a turn start the Runner refused because this run's session is closed", () => {
+    const turnStartFailure = (result: Record<string, unknown>) => {
+      const commandResult = { commandId: "command_lab_1", commandType: "turn.start", controllerSeq: 10, result, status: "failed" };
+      return Object.defineProperty(new Error(`PRP command turn.start failed: ${JSON.stringify(commandResult)}`),
+        "runnerCommandResult", { value: commandResult, enumerable: false });
+    };
+    const closed = (message: string) => turnStartFailure({ code: "command_execution_failed", message,
+      classification: "provider_session_closed" });
+
+    it.each(["ACPX session is not open", "ACPX turn start failed closed: ACPX sidecar request timed out at turn.start"])(
+      "stops on the first refusal and hands the run to the board: %s", (message) => {
+        const code = nativeSessionFailureSourceCode(closed(message));
+        expect(code).toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+        const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+        expect(disposition).toEqual({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_SESSION_CLOSED, nextAttemptAt: null });
+        expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+          issueStatus: "blocked", recoveryOwner: { kind: "board" },
+        });
+        // A rewrapped failure keeps the class through its authenticated text.
+        expect(nativeSessionFailureSourceCode(new Error(closed(message).message))).toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+        expect(nativeSessionFailureSourceCode(Object.assign(new Error("native session failed"), { cause: closed(message) })))
+          .toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+      });
+
+    it("keeps retrying a start the Runner proved never reached the provider", () => {
+      const failure = turnStartFailure({ code: "command_execution_failed",
+        message: "ACPX turn start failed before its prompt reached the provider: ACPX sidecar request timed out at turn.start" });
+      expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
+      expect(nativeSessionFailureDisposition(1, new Date(), "native_session_interrupted").phase).toBe("retryable_failure");
+    });
+
+    it("keeps today's same-run retries for an unclassified refusal from an older Runner", () => {
+      // An older Runner sends the same text for a session that can reopen after
+      // a restart (provider exit not yet proven), so the text alone proves nothing.
+      const failure = turnStartFailure({ code: "command_execution_failed", message: "ACPX session is not open" });
+      expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
+      // Another command's class is not a turn-start refusal.
+      const other = Object.defineProperty(new Error("PRP command session.open failed"), "runnerCommandResult",
+        { value: { commandType: "session.open", result: { classification: "provider_session_closed" } }, enumerable: false });
+      expect(nativeSessionFailureSourceCode(other)).not.toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+    });
   });
 
   it("stops same-run retries for an operator while a saved side-effecting call has no result", () => {

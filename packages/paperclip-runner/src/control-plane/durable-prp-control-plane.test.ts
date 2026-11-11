@@ -5377,6 +5377,54 @@ describe("DurablePrpControlPlane", () => {
     }
   });
 
+  it("acknowledges an indeterminate suspension in the Runner's journal status and keeps its fence", async () => {
+    // A runnerd killed inside runner.suspend journals it as indeterminate. The
+    // next runnerd replays it from the welcome as `failed` with
+    // execution_indeterminate and then exits as suspended. Shipped Runners
+    // compare the acknowledgement with their journal status and exited with
+    // "terminal command result acknowledgement changed its durable identity".
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-indeterminate-suspend-"));
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    try {
+      await controlPlane.start();
+      const stale = controlPlane.queueCommand("runner.suspend", {}, "command-suspend-stale");
+      const next = controlPlane.queueCommand("session.snapshot", {}, "command-snapshot-next");
+      const client = await authenticate(controlPlane, controlPlane.issueBootstrapTicket());
+      sendSecure(client!, {
+        protocol: "paperclip.runner", version: 1, kind: "command_result",
+        payload: {
+          commandId: stale.commandId, commandType: stale.type, controllerSeq: stale.controllerSeq,
+          status: "failed",
+          result: {
+            code: "execution_indeterminate",
+            message: "runner recovered after journaling this command; it will not execute twice",
+          },
+        },
+      });
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command_result_ack",
+        payload: {
+          commandId: "command-suspend-stale",
+          commandType: "runner.suspend",
+          controllerSeq: stale.controllerSeq,
+          status: "indeterminate",
+        },
+      });
+      expect(controlPlane.getCommand(stale.commandId)?.status).toBe("failed");
+      // The Runner is leaving as suspended; nothing may follow on this connection.
+      expect(controlPlane.store.state.commandDeliveryCounts[next.commandId]).toBeUndefined();
+      client?.socket.destroy();
+    } finally {
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("acknowledges terminal command results after persisting them", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-terminal-ack-"));
     const controlPlane = new DurablePrpControlPlane({

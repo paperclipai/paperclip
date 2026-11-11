@@ -337,6 +337,58 @@ Limits:
 - Combine K15 with `--adapters opencode` and `--daytona-reuse-lease` or
   `--daytona-warm` to match staging's workload mix.
 
+### Long mid-tool redeploy (`--k15-hold-seconds`, T1, Runner logs)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters opencode --workloads T1 --faults K15 --k15-hold-seconds 240-480 --concurrency 2 --tasks 4 --seed 9310
+```
+
+A staging deploy usually lands mid-turn and keeps the server down for 4–7
+minutes. In staging class R, recovery then found the remote Runner gone
+(`runner_remote_process_identity_unavailable`).
+
+- **`--k15-hold-seconds <n>` or `<min>-<max>`** (0–600 s) seeds each K15's
+  outage. The server stops with SIGTERM and stays down for the hold. Then the
+  next deploy generation starts. Without the option, a K15 restarts at once.
+  The range is drawn only for K15 cells, so other seeds keep their plans.
+- **T1** (opt-in workload) has the agent run one shell command in the
+  foreground for about 100 s (50 ticks of 2 s). The command prints the loop's
+  own clock window. The agent then saves `brief`, whose first line is
+  `TICKS-<nonce>=50 start=<epoch s> end=<epoch s>`. Its fault window (35–80 s
+  after launch) aims to land while the tool runs in the sandbox, and stays short
+  of provider shell-tool timeouts.
+
+  The `fault_crossed_tool` check (skipped for `K0` baselines and provider faults;
+  a storm task counts the storm's faults) fails the task unless one of its own faults
+  started inside the reported window, with 5 s of clock slack. A fault that hit
+  preparation, with the loop run afterwards, tested nothing mid-tool, as a
+  provider-fault task whose fault never applied.
+- **Runner evidence:** on a Daytona K15 wave, the harness captures every
+  started sandbox of the wave three times:
+  - right after the server stopped (`<fault>-stopped`);
+  - after the hold, just before the next deploy starts (`<fault>-before_start`);
+  - at wave end (`wave-end`).
+  
+  Each capture is written to `results/<wave>/daytona-runner/<label>/<sandbox>.txt`,
+  with an `index.json`, and to `runner_logs_captured` in the timeline.
+  `daytona-runner-logs.ts` runs one fixed, read-only probe through the Daytona
+  toolbox. It reads:
+  - every process (`ps`), so a running tool shows as a child of the Runner;
+  - memory, disk, and OOM lines from `dmesg`;
+  - the tail of every `runnerd.stderr.log`, `runner-process.identity` and
+    `runner-state.json`.
+
+  The probe never stops, starts or deletes a sandbox. It only touches sandboxes
+  that carry the wave's company and environment labels. Known secret values are
+  redacted. A failed capture is recorded and does not fail the wave.
+
+  The whole capture (client, listing and every probe) has one 45 s deadline.
+  The capture runs while the server is down, so a slow Daytona API adds at most
+  that much to the outage. A capture that hits the deadline is recorded as
+  `deadlineExceeded`, and the restart continues. A probe that answers after the
+  deadline writes nothing, because its evidence is from after the outage window.
+
 ## Absolute symlink in the workspace (F1)
 
 ```sh
@@ -511,7 +563,10 @@ windows are written to `storage-faults.json` and removed from the speed grade li
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
 R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as
-`ui_retry_no_request`. Crash-point waves serve no UI and click Retry through the API.
+`ui_retry_no_request`. Before it looks for Retry, the harness closes any open modal that covers the page
+("Not now", else Escape) and records it in the attempt's `dismissedDialogs`. A visible Retry that stays
+unreachable behind a modal that will not close fails as `ui_retry_blocked_by_modal`. Crash-point waves
+serve no UI and click Retry through the API.
 
 ## Daytona (`--env daytona`)
 
@@ -842,7 +897,25 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
 # The aged wait: an approval left pending for a day across a restart.
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
   --adapters codex --workloads G1 --faults TM3 --triggers approval --concurrency 2 --tasks 2 --seed 302
+# Staging's 100 s event-loop stall: TM1 on Daytona, stalled during workspace preparation or mid-tool.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters codex,claude,opencode --workloads A1,T1 --faults TM1 --tm1-hold-seconds 70-120 --storage s3 \
+  --concurrency 3 --tasks 6 --seed 303
 ```
+
+TM1 also runs on `--env daytona`. It stalls only the control plane, with no
+restart and no new deployment identity. The remote Runner keeps working while
+every controller lease of the stalled process lapses. This is staging's class L:
+a server stall of about 100 s at 08:19Z on Nov 10.
+
+`--tm1-hold-seconds <n>` or `<min>-<max>` (10–600 s) replaces TM1's default
+95–150 s range. It uses the same single draw, so seeds keep their cells.
+
+To stall a run while it is still `preparing`, use `--fault-after-seconds`, as in
+`--fault-after-seconds 10 --storage s3`. A stall while preparing needs a
+preparation that outlasts the fault time, such as a remote workspace restore.
+
+TM2 and TM3 age the wave database and freeze local runners, so they stay local.
 
 The fourth fault family. Every other wave is minutes long on a fresh instance, so nothing time-bound
 expires. A time fault makes deadlines lapse during a run or across a restart. No product code changes.
@@ -1061,7 +1134,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `grader.ts` | Pure R1–R6 grading over the samples, plus the universal checks. |
 | `universal.ts`, `universal-audit.ts` | U1–U4 on every task, and their audit over saved waves. |
 | `contention.ts` | L1 workload, its accounting oracle and the `--db-pressure` writers. |
-| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, with their T-oracles. |
+| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, T1 long shell tool, with their T-oracles. |
 | `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
@@ -1071,7 +1144,8 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
 | `multi-server.ts` | MS1–MS3: the second server's steps, the seeded holds, and the cross-server invariant over the wave database. |
 | `repeated-restarts.ts` | RR1–RR3: seeded restart steps, `--rr-gap-seconds`, and the stop-and-replace loop the supervisor runs. |
-| `redeploy.ts`, `redeploy-preload.mjs` | K15: per-generation emulated host name and Railway deployment identity, and the preload that applies the host name. |
+| `redeploy.ts`, `redeploy-preload.mjs` | K15: per-generation emulated host name and Railway deployment identity, the preload that applies the host name, and `--k15-hold-seconds`. |
+| `daytona-runner-logs.ts` | K15 on Daytona: read-only capture of each wave sandbox's Runner stderr log, identity, state and process, memory and OOM evidence. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
 ## Output (gitignored)
