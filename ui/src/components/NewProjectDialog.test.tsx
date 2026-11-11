@@ -131,6 +131,13 @@ describe("project environment selection", () => {
     expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "ssh" }));
   });
 
+  it("never offers a single storage option, even when the default is unavailable", async () => {
+    vi.mocked(projectsApi.environmentOptions).mockResolvedValue({ groups: [groups[1]], defaultEnvironmentId: null, error: "Default is unavailable" });
+    await renderForm();
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector("#project-environment")).toBeNull();
+  });
+
   it("blocks submission while discovery is pending", async () => {
     let resolve!: (value: Awaited<ReturnType<typeof projectsApi.environmentOptions>>) => void;
     vi.mocked(projectsApi.environmentOptions).mockReturnValue(new Promise(value => { resolve = value; }));

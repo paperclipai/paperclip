@@ -69,7 +69,7 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
           </div>
         </div>
         <div role="region" aria-label="Source repositories" tabIndex={0} className="min-h-0 overflow-y-auto overscroll-contain px-5 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
-          {options && (options.groups.length > 1 || (options.error && options.groups.length > 0)) && <div className="mb-4 space-y-2">
+          {options && options.groups.length > 1 && <div className="mb-4 space-y-2">
             <label htmlFor="project-environment" className="text-sm font-medium">Available in</label>
             <NativeSelect id="project-environment" value={selectedGroup?.environments[0].id ?? ""} disabled={create.isPending}
               onChange={event => setSelectedEnvironmentId(event.target.value)}>
