@@ -7,7 +7,7 @@ function valid() {
       installedFromCatalog: true, missingId: "qa", workingId: "coder", expectedMembers: 2, memberIdsBefore: ["coder", "qa"], workingRevisionIdsBefore: ["revision"], workingRevisionIdsAfter: ["revision"],
       initialProbes: [{ agentId: "qa", status: "fail", testedAt: "2026-10-26T10:00:00Z", checks: [{ code: "codex_auth", level: "error" }] }, { agentId: "coder", status: "pass", testedAt: "2026-10-26T10:00:00Z", checks: [] }],
       afterProbes: [{ agentId: "qa", status: "pass", testedAt: "2026-10-26T10:05:01Z", checks: [] }, { agentId: "coder", status: "pass", testedAt: "2026-10-26T10:05:02Z", checks: [] }],
-      repairVerifiedAfter: Date.parse("2026-10-26T10:05:00Z"), initialMemberNamed: true, initialHandoffSupported: true, repairConfirmed: true, repairChannel: "human-board-configuration", workingHashBefore: "same-config", workingHashAfter: "same-config", memberIdsPreserved: true, initialRunId: "initial", noPrematureWholeTeamClaim: true,
+      repairVerifiedAfter: Date.parse("2026-10-26T10:05:00Z"), initialHandoffSupported: true, repairConfirmed: true, repairChannel: "human-board-configuration", workingHashBefore: "same-config", workingHashAfter: "same-config", memberIdsPreserved: true, initialRunId: "initial",
     } };
 }
 describe("installed team per-member readiness oracle", () => {
@@ -28,9 +28,16 @@ describe("installed team per-member readiness oracle", () => {
       (o: ReturnType<typeof valid>) => { o.state.initialProbes[0]!.agentId = "other-member"; },
       (o: ReturnType<typeof valid>) => { o.state.workingHashAfter = "changed-working-account"; },
       (o: ReturnType<typeof valid>) => { o.state.workingRevisionIdsAfter = ["masked-env-change"]; },
-      (o: ReturnType<typeof valid>) => { o.state.noPrematureWholeTeamClaim = false; },
+      (o: ReturnType<typeof valid>) => { o.state.initialHandoffSupported = false; },
+      (o: ReturnType<typeof valid>) => { o.phaseReplies[1]!.body = "  "; },
+      (o: ReturnType<typeof valid>) => { o.runs[1]!.status = "failed"; },
       (o: ReturnType<typeof valid>) => { o.phaseReplies[1]!.runId = "initial"; },
     ]) { const o = valid(); change(o); expect(definition.grade(o).passed).toBe(false); }
+  });
+  it("grades the followup structurally, not by its wording", () => {
+    for (const body of ["Both QA and the senior coder pass their own checks now.", "Fertig: alle Mitglieder bestehen ihre Prüfung."]) {
+      const o = valid(); o.phaseReplies[1]!.body = body; o.reply = body; expect(definition.grade(o).passed).toBe(true);
+    }
   });
   it("missing observations cannot pass", () => { expect(definition.grade(undefined).passed).toBe(false); expect(definition.grade({ reply: "Everyone is ready." }).passed).toBe(false); });
 });

@@ -51,6 +51,12 @@ it("retains no provider messages or session fields in the precondition witness",
     expect(Object.keys((f.evidence.mock.calls[0]![1] as { initialProbes: object[] }).initialProbes[0]!).sort()).toEqual(["agentId", "checks", "status", "testedAt"]);
   } finally { await definition.cleanup!(f.ctx, state ?? {}); }
 });
+it("names each member's observed readiness when the split does not form", async () => {
+  // The recorded failure: the provider 401 surfaced as a generic probe error.
+  const f = setupFixture({ status: "fail", testedAt: authWarning.testedAt, checks: [{ code: "opencode_cwd_valid", level: "info" }, { code: "opencode_hello_probe_failed", level: "error" }] });
+  await expect(teamConfigureExternalCases[0]!.setup(f.ctx)).rejects.toThrow(
+    "Observed: qa (expected missing account): fail [opencode_hello_probe_failed:error]; coder (expected ready): pass");
+});
 it.each(["generic warning", "timeout", "model", "wrong level", "other error", "working warning", "working error"])("actual setup rejects %s and retains only closed probe fields before refusing", async fault => {
   const missing = structuredClone(authWarning), working: Probe = { status: "pass", testedAt: authWarning.testedAt, checks: [] };
   if (fault === "generic warning") missing.checks[0]!.code = "opencode_hello_probe_unexpected_output";
