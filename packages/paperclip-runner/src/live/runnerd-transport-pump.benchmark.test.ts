@@ -79,8 +79,8 @@ it.skipIf(!enabled).each(["file", "external"] as const)(
             return probe.registration();
           },
         });
-        await bundle.transport.request("thread/start", { cwd: root, model: "fixture-no-model", dynamicTools: [] });
         open.push({ bundle, probe: () => probe! });
+        await bundle.transport.request("thread/start", { cwd: root, model: "fixture-no-model", dynamicTools: [] });
       }
 
       // Idle: every session is open and connected, and no event arrives.
