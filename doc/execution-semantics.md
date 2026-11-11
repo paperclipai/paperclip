@@ -3074,8 +3074,11 @@ the same Retry the user would click: admission keeps every gate (stop proof,
 saved-work recovery and action reconciliation), so it never starts work a
 user's Retry could not. The request is idempotent per run, and at most three
 automatic Retries follow one another without a successful run between them.
-A hold whose reset is unknown, unbounded, more than a day in the past, or that
-has no accountable user keeps its visible Retry, and its message says why. The
+A hold whose reset is more than eight days out (for example a monthly limit)
+still names its reset but leaves the Retry to the user. A hold whose reset is
+unknown, more than a day in the past, or that has no accountable user keeps its
+visible Retry, and its message says why. A connected chat conversation's Retry
+is prepared through the chat service, as a user's is. The
 reset deadline is rebuilt from the active holds at startup, so holds saved by an
 earlier release are covered too.
 
