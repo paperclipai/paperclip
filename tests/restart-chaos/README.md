@@ -1139,6 +1139,14 @@ only once is never reached with `nth` 2 or more, and the task fails `recovery_st
 2026-11-11 an A1 task with K2 on Daytona never reached `directory-lock`: pick a workload whose recovery
 collects remote agent files.
 
+`runnerd-start:1` with K1 (seed 5303) found the recovery-chain gap on 2026-11-11: the first recovery
+attempt (`resume_dead_runner`) failed its spawn, which persisted a scheduled same-run resume. The second
+attempt then refused to continue the interrupted turn (`local_stop_unverified`: the newest launch request
+had no process identity and no stop receipt), so the restored session reported
+`provider_turn_lost_on_restore` and the run ended `native_provider_terminal_failed`. A scheduled resume now
+proves on this host that the failed launch left no runner and no runner state, records that stop, and
+continues the turn. The cell passes only when the task finishes with no failed attempt.
+
 Every task the armed fault crossed gets two more checks: `recovery_step_failed_once` (the receipt in
 `recovery-step-receipts.jsonl`; a step never reached tested nothing) and `no_failed_attempt`. The fault's
 receipt in `faults.json` names the armed step (`recoveryStep`).
