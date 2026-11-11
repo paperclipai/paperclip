@@ -33,6 +33,18 @@ async function chooseStatus(page: Page, status: "Todo" | "Done") {
   // (gha-42937394973: the exact-name locator never resolved while the menu showed "Todo".)
   await page.getByRole("button").filter({ visible: true, hasText: new RegExp(`^\\s*${status}\\s*$`) }).first().click();
 }
+type RunLike = { id: string; agentId?: string | null; status: string; contextSnapshot?: Record<string, unknown> | null };
+/**
+ * A comment on a dependency-blocked task wakes its assignee in the product's bounded interaction mode so it can
+ * answer or triage while the blocker holds (server/src/services/heartbeat/queue.ts, `dependencyBlockedInteraction`).
+ * Such a run is not admission of the blocked work. It counts as one only when the server stamped it as a blocked
+ * interaction on this Website task, naming the Design blocker, and it settled successfully.
+ */
+export function isBlockedInteractionRun(run: RunLike, task: { id: string }, design: { id: string }, workerId: string) {
+  const context = run.contextSnapshot ?? {};
+  return run.agentId === workerId && run.status === "succeeded" && context.dependencyBlockedInteraction === true && context.issueId === task.id
+    && Array.isArray(context.unresolvedBlockerIssueIds) && context.unresolvedBlockerIssueIds.includes(design.id);
+}
 export function gradeDesignDependency(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-dependency-and-native-admission-evidence", !!o, "The saved dependency, real unfinished prerequisite and later eligible native result must be independently read."); if (!o) return c.result();
@@ -42,12 +54,15 @@ export function gradeDesignDependency(value: unknown) {
     && o.activity.some(row => row.action === "issue.blockers_updated" && row.entityId === task.id && row.agentId === o.leadId
       && (row.details?.addedBlockedByIssueIds as string[] | undefined)?.includes(design.id)),
   "The CEO actually installs the Design edge on the intended Website task; a comment alone is insufficient.");
+  const interactionIds = Array.isArray(s.preApprovalInteractionRunIds) ? s.preApprovalInteractionRunIds as string[] : [];
+  const interactions = o.runs.filter(row => interactionIds.includes(row.id)), work = o.runs.filter(row => !interactionIds.includes(row.id));
   c.add("blocked-ordinary-admission-and-usable-ui", s.blockerVisible === true && s.noWorkerBeforeApproval === true && s.attemptedBeforeApproval === true
-    && [200, 422, 409].includes(Number(s.beforeApprovalStatus)),
-  "Ordinary human start is attempted while Design is unfinished, but no Website native run is admitted; the task UI exposes the exact blocker.");
+    && [200, 422, 409].includes(Number(s.beforeApprovalStatus)) && s.noWebsiteResultBeforeApproval === true
+    && interactions.length === interactionIds.length && interactions.every(row => isBlockedInteractionRun(row, task, design, (s.worker as Entity).id)),
+  "Ordinary human start is attempted while Design is unfinished, but no Website work is admitted (a server-marked blocked-interaction reply to a comment is allowed) and nothing is saved on Website; the task UI exposes the exact blocker.");
   c.add("one-eligible-worker-after-real-human-approval", s.humanApprovedDesign === true && s.workerAdmissionAfterApproval === true && finished?.status === "done"
     && finished.assigneeAgentId === (s.worker as Entity).id && o.tasks.length === 2 && s.actualWebsiteResult === true
-    && o.runs.length === 3 && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.worker as Entity).id).length === 1,
+    && work.length === 3 && o.runs.every(row => row.status === "succeeded") && work.filter(row => row.agentId === (s.worker as Entity).id).length === 1,
   "After actual human Design completion clears the prerequisite, ordinary admission runs Morgan once and produces the genuine saved Website result.");
   // The saved edge, admission and document prove the outcome; a person reads the replies for meaning.
   c.add("later-own-phase-reports-actual-result", s.finalReplyAttributed === true && String(s.finalReply ?? "").trim().length > 0 && s.finalReadTaskState === true,
@@ -63,12 +78,20 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     description: `Implement the approved Design as a small website plan. Once eligible, read the actual Design task and save a task document with the exact reference ${marker}, accessible labels and a clear primary action, then finish normally. Do not deploy, create other tasks or invent approval.` });
   return { worker, task, design, marker };
 }, gradeDesignDependency, {
-  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v7",
+  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v8",
   sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
-    await pollUntil({ label: "Saved dependency and canonical reply before human approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
+    // The CEO may tell Morgan about the gate in a Website comment; the product then wakes Morgan in its bounded
+    // blocked-interaction mode (gha-43069861174). Wait for that reply to settle too, and reject any other run.
+    const workerId = (state.worker as Entity).id, websiteTask = state.task as Entity, gate = state.design as Entity;
+    const settled = await pollUntil({ label: "Saved dependency and canonical reply before human approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
-      accept: v => chatCatalogNativePhaseIsTimely(ctx) && v.source?.conversationState === "waiting" && v.runs.length === 1 && v.runs[0]?.status === "succeeded" });
+      accept: v => chatCatalogNativePhaseIsTimely(ctx) && v.source?.conversationState === "waiting" && v.runs.filter(row => row.agentId !== workerId).length === 1
+        && v.runs.every(row => row.status === "succeeded") && v.runs.filter(row => row.agentId === workerId).every(row => isBlockedInteractionRun(row, websiteTask, gate, workerId)),
+      reject: v => v.runs.filter(row => row.agentId !== workerId).length > 1 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status))
+        || v.runs.some(row => row.agentId === workerId && !isBlockedInteractionRun(row, websiteTask, gate, workerId) && row.status !== "queued" && row.status !== "running")
+        ? "Work was admitted on Website, or a pre-approval run failed or duplicated, before Design approval" : undefined });
+    state.preApprovalInteractionRunIds = settled.runs.filter(row => row.agentId === workerId).map(row => row.id);
     state.queryReply = (await observeRuntime(ctx, state)).reply;
     const source = ctx.input.page.url(), task = state.task as Entity, design = state.design as Entity, websiteRoot = `/api/issues/${task.id}`;
     state.waitingTask = await ctx.input.api.get<Issue>(websiteRoot);
@@ -91,7 +114,9 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     // Reload and independent reads observe the real admission gate, rather
     // than setting a run's blocked status or pretending the worker executed.
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
-    state.noWorkerBeforeApproval = (await ctx.allRuns()).every(row => row.agentId !== (state.worker as Entity).id);
+    state.noWorkerBeforeApproval = (await ctx.allRuns()).every(row => row.agentId !== workerId || (state.preApprovalInteractionRunIds as string[]).includes(row.id));
+    state.noWebsiteResultBeforeApproval = (await ctx.input.api.get<Entity[]>(`${websiteRoot}/documents`)).length === 0
+      && !["in_progress", "in_review", "done"].includes((await ctx.input.api.get<Issue>(websiteRoot)).status);
     await ctx.input.capture("actual-design-dependency-wait", "Website retains its actual Design blocker before human approval", "runtime-design-blocker.png");
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${design.identifier ?? design.id}`, { waitUntil: "domcontentloaded" });
     await chooseStatus(ctx.input.page, "Done");
@@ -103,11 +128,12 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
       await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
       await chooseStatus(ctx.input.page, "Todo");
     }
+    const interactionCount = (state.preApprovalInteractionRunIds as string[]).length;
     const result = await pollUntil({ label: "One ordinary Website admission after Design approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 240_000),
       load: async () => ({ runs: await ctx.allRuns(), task: await ctx.input.api.get<Issue>(websiteRoot) }),
-      accept: v => chatCatalogNativePhaseIsTimely(ctx) && v.runs.length === 2 && v.runs.every(row => row.status === "succeeded") && v.task.status === "done",
-      reject: v => v.runs.length > 2 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Eligible Website admission failed or duplicated native work" : undefined });
-    const worker = result.runs.find(row => row.agentId === (state.worker as Entity).id)!;
+      accept: v => chatCatalogNativePhaseIsTimely(ctx) && v.runs.length === 2 + interactionCount && v.runs.every(row => row.status === "succeeded") && v.task.status === "done",
+      reject: v => v.runs.length > 2 + interactionCount || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Eligible Website admission failed or duplicated native work" : undefined });
+    const worker = result.runs.find(row => row.agentId === workerId && !(state.preApprovalInteractionRunIds as string[]).includes(row.id))!;
     const designActivity = await ctx.input.api.get<Entity[]>(`/api/issues/${design.id}/activity`);
     const approval = designActivity.find(row => row.action === "issue.updated" && row.actorType === "user" && row.details?.status === "done");
     const workerDetail = await ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${worker.id}`);
@@ -117,7 +143,7 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     await sendChatMessage(ctx.input.page, followup, chatCatalogNativePhaseRemainingBudget(ctx));
     const final = await pollUntil({ label: "Own native reply reporting actual post-approval Website outcome", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
-      accept: v => chatCatalogNativePhaseIsTimely(ctx) && v.source?.conversationState === "waiting" && v.runs.length === 3 && v.runs.every(row => row.status === "succeeded") });
+      accept: v => chatCatalogNativePhaseIsTimely(ctx) && v.source?.conversationState === "waiting" && v.runs.length === 3 + interactionCount && v.runs.every(row => row.status === "succeeded") });
     const run = final.runs.find(row => !result.runs.some(prior => prior.id === row.id))!, comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
     const human = comments.filter(row => !row.authorAgentId && row.body === followup), replies = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === run.id);
     const detail = await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`);
