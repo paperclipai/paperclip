@@ -24,7 +24,7 @@ import { needsCredentialRotation, startCredentialRotation, type CredentialRotati
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
-import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
@@ -134,8 +134,14 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
   ensureDaytonaPlugin(timeline);
-  if (plan.options.daytonaSandboxImage) timeline.add("daytona_pack_mismatch", { controllerImage: image,
-    sandboxImage: plan.options.daytonaSandboxImage, controllerProviderPackDigest: artifacts.providerPackDigest });
+  if (plan.options.daytonaSandboxImage) {
+    // Prove the sandbox image's preinstalled pack differs, so every fresh sandbox must upload the controller's.
+    const sandbox = await prepareDaytonaImageArtifacts({ image: plan.options.daytonaSandboxImage, cacheRoot: defaultDaytonaImageCacheRoot(),
+      log: line => console.info(`[daytona-image] ${line}`) });
+    assertProviderPackMismatch(artifacts, sandbox);
+    timeline.add("daytona_pack_mismatch", { controllerImage: image, sandboxImage: sandbox.image,
+      controllerProviderPackDigest: artifacts.providerPackDigest, sandboxProviderPackDigest: sandbox.providerPackDigest });
+  }
   timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
     taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
   return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
