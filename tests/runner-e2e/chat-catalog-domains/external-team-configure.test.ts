@@ -46,7 +46,7 @@ describe("installed team per-member readiness oracle", () => {
 const cardPayload = { version: 1, prompt: "Bind?", secretProposal: { version: 1, proposalId: "proposal", sourceSecretLabel: "OpenRouter", configPath: "env.OPENROUTER_API_KEY", targetAgentId: "qa", targetAgentName: "QA", justification: "x", expiresAt: "2026-12-01T00:00:00Z" } };
 function card(overrides: Record<string, unknown> = {}) {
   return { id: "card", companyId: "company", issueId: "source", kind: "request_confirmation", status: "pending", sourceRunId: "initial", createdByAgentId: "ceo", createdByUserId: null, addresseeAgentId: null,
-    resolvedByUserId: null, resolvedByAgentId: null, requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", idempotencyKey: "secret-proposal:proposal", payload: structuredClone(cardPayload), ...overrides };
+    resolvedByUserId: null as string | null, resolvedByAgentId: null as string | null, requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", idempotencyKey: "secret-proposal:proposal", payload: structuredClone(cardPayload), ...overrides };
 }
 function proposal(overrides: Record<string, unknown> = {}) {
   return { id: "proposal", companyId: "company", kind: "binding", status: "pending", secretId: "openrouter-secret", secretProposalId: null, targetType: "agent", target: { id: "qa" },
@@ -84,7 +84,7 @@ describe("governed binding approval path", () => {
     for (const change of [
       (o: ReturnType<typeof bindingValid>) => { o.interactions[0]!.payload.secretProposal.targetAgentId = "coder"; },
       (o: ReturnType<typeof bindingValid>) => { o.state.missingBindingRef = { type: "secret_ref", secretId: "other-secret" }; },
-      (o: ReturnType<typeof bindingValid>) => { o.interactions[0]!.resolvedByAgentId = "ceo" as never; },
+      (o: ReturnType<typeof bindingValid>) => { o.interactions[0]!.resolvedByAgentId = "ceo"; },
       (o: ReturnType<typeof bindingValid>) => { o.interactions[0]!.resolvedByUserId = "someone-else"; },
       (o: ReturnType<typeof bindingValid>) => { o.interactions = []; },
       (o: ReturnType<typeof bindingValid>) => { o.state.bindingApproval = undefined as never; o.state.initialHandoffSupported = false; },
