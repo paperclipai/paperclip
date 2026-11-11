@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +30,11 @@ const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modu
 const MAX_SNAPSHOT_FILES = 2_000;
 
 /** Relative paths of workspace files, excluding VCS and cache directories. */
+
+export function stableRequestId(key: string): string {
+  const hex = createHash("sha256").update(key).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${(8 + (Number.parseInt(hex[16]!, 16) & 3)).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 export async function listWorkspaceFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   const walk = async (relative: string) => {
@@ -255,6 +260,7 @@ export class TaskObserver {
     for (;;) {
       try {
         await this.api.patch(`/api/issues/${this.record.issueId}`, { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id });
+        await this.postStartComment();
         break;
       } catch (error) {
         const transient = error instanceof ChaosApiError && (error.status === null || error.status >= 500);
@@ -272,6 +278,14 @@ export class TaskObserver {
     this.timeline.add("task_released", { taskId: this.plan.taskId, issueId: this.record.issueId });
   }
 
+  private async postStartComment(): Promise<void> {
+    if (!this.definition.startComment || !this.record.issueId) return;
+    const body = this.definition.startComment(this.plan.nonce);
+    const existing = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/comments`);
+    if (existing.some(comment => comment.body === body)) return;
+    await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body, clientRequestId: stableRequestId(`start-${this.plan.taskId}-${this.plan.nonce}`) });
+  }
+
   async launch(options: { assign?: boolean } = {}): Promise<void> {
     const definition = this.definition;
     const assign = options.assign !== false;
@@ -282,13 +296,14 @@ export class TaskObserver {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
         description: definition.description(this.plan.nonce, this.workloadAgents()),
-        status: "todo",
+        status: definition.startComment ? "backlog" : "todo",
         priority: "medium",
         ...(assign ? { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id } : {}),
         ...(definition.usesRepository ? { projectId: this.lab.projectId } : {}),
       });
       this.record.issueId = String(issue.id);
       this.record.identifier = issue.identifier ?? null;
+      if (assign) await this.postStartComment();
       // K14: which build launched the task, so a replay starts it on the same one.
       if (this.supervisor.serverBuild) this.record.serverBuildAtLaunch = this.supervisor.serverBuild;
       this.record.createdAt = Date.now();

@@ -254,12 +254,12 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       const pid = handle!.child.pid;
       const { heartbeatService } = await import("../heartbeat.js");
       expect(await heartbeatService(db).prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true }))
-        .toEqual({ closed: 0, busy: 0, failed: 0 });
+        .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
       expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
       if (adopted) {
         if (restart) {
-          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
-          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0 });
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
         } else await new Promise(done => setTimeout(done, 5_200));
         expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
         expect(await proof()).toMatchObject({ source: releases[0], taskId });

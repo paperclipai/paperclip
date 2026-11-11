@@ -55,6 +55,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
+const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -71,7 +72,8 @@ function didAutomaticRecoveryFail(
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
-  return latestRetryReason === expectedRetryReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
+  return (latestRetryReason === expectedRetryReason || latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
+    && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
 }
 
 function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | null {
@@ -626,6 +628,7 @@ async function runReleaseRecoveryTail(
         run,
         expectedRetryReason,
       ),
+      automaticRecoveryRetryableBeforeProviderWork: run.retryableBeforeProviderWork === true,
       sourceRequiresExplicitRecovery,
     },
     shared: {
@@ -720,6 +723,7 @@ async function runReleaseRecoveryTail(
     retryReason,
     source: recoverySource,
     retryOfRunId: run.id,
+    ...(run.executionRetryAccounting ? { executionRetryAccounting: run.executionRetryAccounting } : {}),
   };
 
   const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(
