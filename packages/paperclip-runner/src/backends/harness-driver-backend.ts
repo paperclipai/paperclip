@@ -917,7 +917,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   close(input: { reason: string }) {
-    return this.#session.close(input);
+    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#explicitlyCancelled });
   }
 }
 
