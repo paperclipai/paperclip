@@ -60,6 +60,7 @@ import { listIssueStatusBlockerAttention } from "../services/issue-status-presen
 import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { listCaseTaskDocuments } from "../services/case-task-documents.js";
 import { authorizeCaseCreation, authorizeCaseMutation } from "../services/case-mutation-authorization.js";
+import { assertCaseStatusWriteAuthority } from "../services/case-handoffs.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -694,7 +695,8 @@ export function caseRoutes(db: Db, storage: StorageService) {
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
-        await authorizeCaseMutation(tx as unknown as Db, req.actor, existing.id, companyId);
+        const current = await authorizeCaseMutation(tx as unknown as Db, req.actor, existing.id, companyId);
+        await assertCaseStatusWriteAuthority(tx as unknown as Db, req.actor, current, body.status);
         if (body.projectId) await retainCaseAccessSource(tx, {
           companyId, caseId: existing.id, sourceKind: "project", sourceId: body.projectId,
         });
@@ -1592,6 +1594,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     const nextLabelIds = body.labelIds ?? body.labels;
 
     const updated = await mutateCase(req, caseRow, async (tx, currentCase) => {
+      await assertCaseStatusWriteAuthority(tx as unknown as Db, req.actor, currentCase, body.status);
       await assertProjectBelongsToCompany(tx, { companyId: caseRow.companyId, projectId: body.projectId ?? null });
       if (body.projectId) {
         if (!(await authorizationService(tx).decide({ actor: req.actor, action: "project:read", resource: {
