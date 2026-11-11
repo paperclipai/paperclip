@@ -41,9 +41,9 @@ const record = (value: unknown): Record<string, unknown> =>
 type TerminalCallScope = {
   terminalSourceEventId?: string | null;
   turnId?: string | null;
-  acknowledged?: ReadonlySet<string>;
+  refusals?: ReadonlyMap<string, readonly string[]>;
 };
-type ToolCallState = { name: string; returned: boolean; seen: boolean };
+type ToolCallState = { name: string; returned: boolean; seen: boolean; named: boolean };
 
 /** Names of calls that returned before the terminal call but that the agent had not yet seen. */
 export function unseenReturnedToolCalls(
@@ -56,7 +56,7 @@ export function unseenReturnedToolCalls(
 
 function unseenReturnedCalls(events: readonly CommittedEvent[], commands: readonly Command[], input: TerminalCallScope) {
   return [...earlierToolCalls(events, commands, input)]
-    .filter(([id, call]) => call.returned && !call.seen && !input.acknowledged?.has(id));
+    .filter(([, call]) => call.returned && !call.seen && !call.named);
 }
 
 /**
@@ -99,8 +99,14 @@ function earlierToolCalls(
     if ((type === "tool.execution.started" || type === "tool.execution.completed") && payload.transport === "dynamic") {
       const id = typeof payload.executionId === "string" ? payload.executionId : null;
       if (!id) continue;
-      const call = calls.get(id) ?? { name: typeof payload.name === "string" ? payload.name : "tool", returned: false, seen: false };
-      if (type === "tool.execution.completed") call.seen = true;
+      const call = calls.get(id) ?? { name: typeof payload.name === "string" ? payload.name : "tool", returned: false, seen: false, named: false };
+      if (type === "tool.execution.completed") {
+        call.seen = true;
+        for (const named of input.refusals?.get(id) ?? []) {
+          const earlier = calls.get(named);
+          if (earlier) earlier.named = true;
+        }
+      }
       calls.set(id, call);
       continue;
     }

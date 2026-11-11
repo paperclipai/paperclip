@@ -1516,7 +1516,7 @@ it("refuses a finish once for a returned call that never reaches the agent, then
       inputDigest: "sha256:search", result: { tools: [] }, isError: false }, "command_tool_unseen_once_search", true);
     const finish = (n: number) => {
       const sourceEventId = commit("tool.execution.started", { executionId: `exec-finish-${n}`, transport: "dynamic", name: "paperclip_finish", status: "running" });
-      return callbacks.onSemanticToolInput!({ callId: `finish-call-${n}`, operationId: "paperclip_finish",
+      return callbacks.onSemanticToolInput!({ callId: `exec-finish-${n}`, operationId: "paperclip_finish",
         input: { summary: "Done" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
     };
     expect(await finish(1)).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results" } } });

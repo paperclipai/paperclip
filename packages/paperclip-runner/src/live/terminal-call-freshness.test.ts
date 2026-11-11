@@ -56,7 +56,7 @@ it("forgets calls of a provider turn lost on restore once a new turn starts (res
 describe("a call whose result never reaches the agent (two staging Codex runs, 2026-11-11)", () => {
   const commands = [{ type: "semantic_tool.result", payload: { callId: "s", operationId: "paperclip_search_assigned_tools" } }];
 
-  it("names the returned call once; a later finish is judged without it", async () => {
+  it("names the returned call once; a finish decided after that refusal is judged without it", async () => {
     const first = started("f1", "paperclip_finish");
     const second = started("f2", "paperclip_finish");
     const events = [
@@ -66,11 +66,19 @@ describe("a call whose result never reaches the agent (two staging Codex runs, 2
     ];
     const refused = await settleEarlierToolCalls(() => ({ events, commands }), { terminalSourceEventId: first.sourceEventId, turnId: "turn-1" });
     expect(refused).toEqual({ unseen: ["paperclip_search_assigned_tools"], unseenCallIds: ["s"], pending: [] });
-    const acknowledged = new Set(refused!.unseenCallIds);
+    const refusals = new Map([["f1", refused!.unseenCallIds]]);
     expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1" }))
       .toEqual(["paperclip_search_assigned_tools"]);
-    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1", acknowledged }))
+    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1", refusals }))
       .toEqual([]);
+  });
+
+  it("still refuses a terminal call queued before the agent received the refusal", () => {
+    const second = started("f2", "paperclip_block");
+    const events = [event("turn.started", {}), started("s", "paperclip_search_assigned_tools"), started("f1", "paperclip_finish"),
+      second, completed("f1", "paperclip_finish")];
+    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1",
+      refusals: new Map([["f1", ["s"]]]) })).toEqual(["paperclip_search_assigned_tools"]);
   });
 
   it("still refuses for a write that was pending at the earlier refusal and returned unseen during the next wait", async () => {
@@ -81,10 +89,10 @@ describe("a call whose result never reaches the agent (two staging Codex runs, 2
     const first = await settleEarlierToolCalls(() => ({ events, commands: writeCommands }),
       { terminalSourceEventId: events[2]!.sourceEventId, turnId: "turn-1" }, { timeoutMs: 20, pollMs: 5 });
     expect(first).toMatchObject({ unseen: [], unseenCallIds: [], pending: ["write_document"] });
-    const acknowledged = new Set(first!.unseenCallIds);
+    const refusals = new Map([["f1", first!.unseenCallIds]]);
     setTimeout(() => writeCommands.push({ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }), 20);
     const next = await settleEarlierToolCalls(() => ({ events, commands: writeCommands }),
-      { terminalSourceEventId: second.sourceEventId, turnId: "turn-1", acknowledged }, { timeoutMs: 5_000, pollMs: 5 });
+      { terminalSourceEventId: second.sourceEventId, turnId: "turn-1", refusals }, { timeoutMs: 5_000, pollMs: 5 });
     expect(next).toEqual({ unseen: ["write_document"], unseenCallIds: ["w"], pending: [] });
   });
 });
