@@ -20,7 +20,7 @@ let stage:"first-select"|"retry-select"|undefined;
 const send=(event:Record<string,unknown>)=>{if(!process.connected)throw new Error("owned_child_ipc_disconnected");process.send!(event);};
 const restoreCA=beginOwnedPrivateCA({pem:await readFile(input.linuxInput.caBundle,"utf8"),SHA256:input.linuxInput.caSHA256});
 let ports:Awaited<ReturnType<typeof installDotChildPorts>>;
-try{ports=await installDotChildPorts({...input,deviceStage:()=>stage,emit:send});}
+try{ports=await installDotChildPorts({...input,deviceStage:()=>stage,emit:send,probeWitnessRoot:input.linuxInput.providerRoot});}
 catch(primary){try{restoreCA();}catch(cleanup){throw new AggregateError([primary,cleanup],"owned_dot_child_port_setup_failed");}throw primary;}
 let owner:Awaited<ReturnType<typeof import("./normal-app-generation.js")["startNormalDotAppGeneration"]>>|undefined;
 let shutting:Promise<void>|undefined;

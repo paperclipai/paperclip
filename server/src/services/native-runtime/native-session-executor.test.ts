@@ -1,3 +1,5 @@
+import { EnvironmentResourceStoppedError } from "../environment-resource-observation.js";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { activeNativeExecutionRunIds } from "./native-active-runs.js";
@@ -1229,6 +1231,44 @@ describe("remote runner launch fingerprint compatibility", () => {
 });
 
 describe("remote runner process supervision", () => {
+  it.each(["exact", "foreign"] as const)("joins only exact positively stopped remote resource evidence (%s)", async binding => {
+    vi.useFakeTimers();
+    try {
+    const resource = { leaseId: "lease", environmentId: "environment", providerLeaseId: "resource" };
+    const stopped = new EnvironmentResourceStoppedError({ ...resource, leaseId: binding === "exact" ? "lease" : "foreign" }, "stopped", new Error("transport"));
+    let nonce = "";
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "2026-09-06T00:00:00.000Z" };
+    const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>(async request => {
+      const label = request.args?.[2];
+      if (label === "paperclip-runner-launch") { nonce = request.args?.[4] ?? ""; return ok; }
+      if (label === "paperclip-runner-process-identity") return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+      if (label === "paperclip-runner-monitor") throw stopped;
+      throw new Error("unexpected_controlled_command");
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace",
+        sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "resource" } },
+      runner: { execute }, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {} });
+    const settled = handle.completion.then(result => ({ result }), error => ({ error }));
+    await vi.runAllTimersAsync();
+    const outcome = await settled;
+    const monitors = execute.mock.calls.filter(([request]) => request.args?.[2] === "paperclip-runner-monitor");
+    if (binding === "exact") {
+      expect(outcome).toEqual({ result: { code: null, signal: null, stdout: "", stderr: "runner_remote_resource_stopped" } });
+      expect(handle.isExitConfirmed?.()).toBe(true);
+      expect(handle.child.exitCode).toBeNull();
+      expect(monitors).toHaveLength(1);
+    } else {
+      expect(outcome).toEqual({ error: stopped });
+      expect(handle.isExitConfirmed?.()).toBe(false);
+      expect(monitors.length).toBeGreaterThan(1);
+    }
+    expect(execute.mock.calls.every(([request]) => ["paperclip-runner-launch", "paperclip-runner-process-identity", "paperclip-runner-monitor"].includes(request.args?.[2] ?? ""))).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["staging", "dispatch trace"])("retains cancellation during %s without a launch RPC", async (boundary) => {
     let enter!: () => void;
     let release!: () => void;

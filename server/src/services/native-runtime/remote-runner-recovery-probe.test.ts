@@ -1,3 +1,4 @@
+import { EnvironmentResourceStoppedError } from "../environment-resource-observation.js";
 import { afterEach, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
@@ -87,4 +88,33 @@ it("returns a definitive ownership conflict without retrying it", async () => {
     readOnly: true, deadline: Date.now() + 30_000,
   })).toBe(conflict);
   expect(execute).toHaveBeenCalledTimes(1);
+});
+
+const resource = { leaseId: "lease", environmentId: "environment", providerLeaseId: "resource" };
+it("does not retry positive exact stopped-namespace evidence on a read-only process probe", async () => {
+  const stopped = new EnvironmentResourceStoppedError(resource, "stopped", new Error("transport"));
+  const execute = vi.fn().mockRejectedValue(stopped);
+  const result = await readRemoteRunnerRecoveryProbe({
+    runner: { execute }, request: { command: "sh" }, stage: "process_verification",
+    readOnly: true, deadline: Date.now() + 30_000, resource,
+  }).catch(error => error);
+  expect(result).toBe(stopped);
+  expect(execute).toHaveBeenCalledOnce();
+});
+
+it.each(["foreign", "missing", "other_stage"] as const)("keeps ordinary bounded retries for %s proof", async negative => {
+  vi.useFakeTimers();
+  const stopped = new EnvironmentResourceStoppedError(resource, "stopped", new Error("transport"));
+  const execute = vi.fn().mockRejectedValue(stopped);
+  const startedAt = Date.now();
+  const result = readRemoteRunnerRecoveryProbe({
+    runner: { execute }, request: { command: "sh" },
+    stage: negative === "other_stage" ? "identity_marker" : "process_verification",
+    readOnly: true, deadline: startedAt + 1000,
+    resource: negative === "missing" ? undefined : { ...resource, leaseId: negative === "foreign" ? "foreign" : "lease" },
+  }).catch(error => error);
+  await vi.runAllTimersAsync();
+  expect(await result).toBe(stopped);
+  expect(execute.mock.calls.length).toBeGreaterThan(1);
+  expect(Date.now() - startedAt).toBeLessThanOrEqual(1000);
 });

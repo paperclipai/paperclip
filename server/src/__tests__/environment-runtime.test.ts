@@ -220,7 +220,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   beforeEach(async () => {
     orphanCleanupSpoolDir = await mkdtemp(path.join(os.tmpdir(), "orphan-cleanup-spool-"));
     process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR = orphanCleanupSpoolDir;
-    db = createDb(connectionString);
+    db = createDb(connectionString, { maxConnections: 4 });
     runtime = environmentRuntimeService(db);
   });
 
@@ -2918,6 +2918,69 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await insertSandboxProviderPlugin(pluginId);
     return { companyId, environment, runId, pluginId };
   }
+
+  it("observes exact stopped plugin resources without converting unknown transport failures", async () => {
+    const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();
+    const transportError = new Error("controlled_provider_transport_failed");
+    let inspection: { providerLeaseId: string; state: "active" | "stopped" | "destroyed" | "unknown" } | undefined;
+    let inspectionFails = false;
+    let executeCalls = 0;
+    let inspectionCalls = 0;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn(() => ({ supportedMethods: [
+        "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease", "environmentInspectLease",
+      ] })),
+      call: vi.fn(async (id: string, method: string, params: unknown, timeoutMs: number) => {
+        expect(id).toBe(pluginId);
+        if (method === "environmentAcquireLease") return {
+          providerLeaseId: "controlled-resource",
+          metadata: { provider: "fake-plugin", image: "fake:test", timeoutMs: 1234, reuseLease: false, remoteCwd: "/workspace" },
+        };
+        if (method === "environmentExecute") { executeCalls += 1; throw transportError; }
+        if (method === "environmentInspectLease") {
+          inspectionCalls += 1;
+          expect(params).toMatchObject({
+            driverKey: "fake-plugin", companyId, environmentId: environment.id,
+            providerLeaseId: "controlled-resource", config: { image: "fake:test", timeoutMs: 1234, reuseLease: false },
+          });
+          expect(timeoutMs).toBeGreaterThan(0);
+          expect(timeoutMs).toBeLessThanOrEqual(1000);
+          if (inspectionFails) throw new Error("controlled_inspection_failed");
+          return inspection;
+        }
+        throw new Error("unexpected_controlled_plugin_method");
+      }),
+    } as unknown as PluginWorkerManager;
+    const controlled = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const acquired = await controlled.acquireRunLease({
+      companyId, environment, issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null,
+    });
+    const command = () => controlled.execute({
+      environment, lease: acquired.lease, command: "controlled-no-process", cwd: "/workspace", env: {}, timeoutMs: 1000,
+    }).catch((error: unknown) => error);
+    for (const state of ["active", "unknown"] as const) {
+      inspection = { providerLeaseId: "controlled-resource", state };
+      expect(await command()).toBe(transportError);
+    }
+    inspection = { providerLeaseId: "foreign-resource", state: "stopped" };
+    expect(await command()).toBe(transportError);
+    inspection = undefined;
+    expect(await command()).toBe(transportError);
+    inspectionFails = true;
+    expect(await command()).toBe(transportError);
+    inspectionFails = false;
+    for (const state of ["stopped", "destroyed"] as const) {
+      inspection = { providerLeaseId: "controlled-resource", state };
+      const failed = await command();
+      // These guards run before the old-runtime causal RED oracle.
+      expect(executeCalls).toBe(state === "stopped" ? 6 : 7);
+      expect(acquired.lease.providerLeaseId).toBe("controlled-resource");
+      expect(failed).toMatchObject({ code: "environment_resource_stopped", state, cause: transportError });
+    }
+    expect(inspectionCalls).toBe(7);
+    expect((await environmentService(db).getLeaseById(acquired.lease.id))?.status).toBe("active");
+  });
 
   it("runs a plugin-backed lease release under the run-time exec parent, so the teardown span keeps a valid traceparent", async () => {
     const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();

@@ -759,6 +759,38 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       }catch{process.stderr.write("owned_checkpoint_frontier_witness_unwritten\n");}
       throw primary;
     }
+    const preFaultAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId));
+    expect(preFaultAssignments).toHaveLength(1);
+    let assignment=preFaultAssignments[0];
+    expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId,runId:failedRunId,status:"offered"});
+    const preFaultRead=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});
+    expect(preFaultRead.status).toBe(200);expect(preFaultRead.body.result.isError).toBe(false);
+    const operation=async(name:"paperclip_dot_accept"|"paperclip_dot_tool"|"paperclip_dot_finish",input:Record<string,unknown>,requestId=randomUUID(),expectedStatus:"completed"|"rejected"="completed")=>{
+      const action=({paperclip_dot_accept:"accept",paperclip_dot_tool:"tool",paperclip_dot_finish:"finish"} as const)[name];
+      const expectedOutcome=expectedStatus==="rejected"?"rejected":action==="accept"?"accepted":"completed";
+      const sent=await tool(raw,name,{assignmentId:assignment.id,requestId,...input});expect(sent.status,JSON.stringify(sent.body)).toBe(200);expect(sent.body.result.isError,JSON.stringify(sent.body)).toBe(false);
+      let receipt:Record<string,unknown>|undefined;
+      await vi.waitFor(async()=>{
+        const polled=await tool(raw,"paperclip_dot_operation_status",{assignmentId:assignment.id,requestId});expect(polled.status,JSON.stringify(polled.body)).toBe(200);expect(polled.body.result.isError,JSON.stringify(polled.body)).toBe(false);
+        receipt=polled.body.result.structuredContent.result;expect(receipt?.status,JSON.stringify({name,requestId,receipt})).toBe(expectedOutcome);
+        const rows=await db.select().from(dotRunnerOperations).where(eq(dotRunnerOperations.requestId,requestId));expect(rows).toHaveLength(1);const journal=rows[0];
+        expect(journal).toMatchObject({companyId,assignmentId:assignment.id,requestId,status:expectedStatus,digest:externalOperationDigest(action,input)});
+        expect(journal.command).toEqual({bindingId:assignment.bindingId,bindingGeneration:assignment.bindingGeneration,runId,normalizedSessionId:assignment.normalizedSessionId,turnId:assignment.turnId,assignmentRevision:assignment.revision,requestId,action,input,digest:externalOperationDigest(action,input)});
+        expect(journal.outcome).toEqual(receipt);if(expectedStatus==="completed")expect(journal.sourceEventId).not.toBeNull();
+        if(action==="accept"&&expectedStatus==="completed"){
+          const [accepted]=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id));
+          expect(accepted).toMatchObject({companyId,agentId,bindingId:assignment.bindingId,bindingGeneration:assignment.bindingGeneration,runId,status:"accepted"});expect(accepted.acceptedAt).toBeInstanceOf(Date);
+        }
+      },{timeout:10_000,interval:50});return{requestId,receipt:receipt!};
+    };
+    // Exercise the original permission rejection at the actual pre-accept
+    // frontier. No useful operation is admitted before the owned fault.
+    const deniedId=randomUUID();const denied=await operation("paperclip_dot_tool",{name:"write_document",arguments:{key:"before-accept",title:"Forbidden",body:"must not exist",baseRevisionId:null,idempotencyKey:deniedId}},deniedId,"rejected");expect(denied.receipt).toMatchObject({status:"rejected"});expect(await documentService(db).getIssueDocumentByKey(task.id,"before-accept")).toBeNull();
+    const preFaultAcceptId=randomUUID();
+    const preFaultAccept=await operation("paperclip_dot_accept",{},preFaultAcceptId);
+    const preFaultAcceptReplay=await operation("paperclip_dot_accept",{},preFaultAcceptId);
+    expect(preFaultAcceptReplay.receipt).toEqual(preFaultAccept.receipt);
+    expect(await documentService(db).getIssueDocumentByKey(task.id,"report")).toBeNull();
     if(!childControl)throw new Error("Missing actual installed child provider owner");
     const fault=z.object({status:z.literal("stopped"),runId:z.literal(failedRunId),providerLeaseId:z.string(),containerId:z.string(),
       kernel:z.object({pid:z.number().int().positive(),fingerprint:z.string()}).passthrough(),checkpoint:z.object({recoveryMode:z.literal("exact_checkpoint_resume")}).passthrough(),
@@ -766,9 +798,13 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       .parse((await childControl.request({command:"stop-checkpointed",runId:failedRunId,environmentId:environment.body.id},childDeadline())).result);
     expect(fault.termination).toEqual({providerLeaseId:fault.providerLeaseId,state:"stopped"});
     let failureEpisode:Record<string,unknown>|undefined;
+    const historyObservationStartedAt=Date.now();
+    let lastHistoryObservation:{observedAt:number;historyCount:number;retryableCount:number}|undefined;
+    try {
     await vi.waitFor(async()=>{
       const [owner]=await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId,failedRunId));
       const episodes=owner?.recoveryHistory.filter(row=>row.disposition==="retryable_failure")??[];
+      lastHistoryObservation={observedAt:Date.now(),historyCount:Math.min(owner?.recoveryHistory.length??0,21),retryableCount:Math.min(episodes.length,21)};
       expect(episodes).toHaveLength(1);failureEpisode=episodes[0];
       expect(failureEpisode).toMatchObject({checkpointExists:true,providerSessionEstablished:true});
       // Observe the actual native settlement category; never substitute the
@@ -777,6 +813,18 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         "provider_stdout_closed","provider_process_output_closed"]).toContain(failureEpisode.reason);
       expect(Date.parse(String(failureEpisode.at))).toBeGreaterThan(0);
     },{timeout:30_000,interval:50});
+    } catch(primary) {
+      // Failure-only timestamps/counts from the SAME existing wait callback.
+      // No extra SQL, child request, retry, identity or provider observation.
+      try {
+        const destination=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
+        if(!destination||!path.isAbsolute(destination))throw new Error("private_witness_destination_required");
+        await writeFile(destination+".recovery-history-frontier.json",JSON.stringify({version:1,
+          historyObservationStartedAt,caughtAt:Date.now(),lastHistoryObservation,
+          noAdditionalCalls:true,originalFailureRethrown:true})+"\n",{flag:"wx",mode:0o600});
+      }catch{process.stderr.write("owned_recovery_history_witness_unwritten\n");}
+      throw primary;
+    }
     expect(await documentService(db).getIssueDocumentByKey(task.id,"report")).toBeNull();
     const failedAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId));
     expect(failedAssignments).toHaveLength(1);
@@ -805,28 +853,9 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId))).toHaveLength(1);
     },{timeout:30_000,interval:50});
     const successorAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId));
-    const assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
+    assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
     expect(["offered","accepted"]).toContain(assignment.status);
     const assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});expect(assigned.body.result.isError,JSON.stringify(assigned.body)).toBe(false);
-    const operation=async(name:"paperclip_dot_accept"|"paperclip_dot_tool"|"paperclip_dot_finish",input:Record<string,unknown>,requestId=randomUUID(),expectedStatus:"completed"|"rejected"="completed")=>{
-      const action=({paperclip_dot_accept:"accept",paperclip_dot_tool:"tool",paperclip_dot_finish:"finish"} as const)[name];
-      const expectedOutcome=expectedStatus==="rejected"?"rejected":action==="accept"?"accepted":"completed";
-      const sent=await tool(raw,name,{assignmentId:assignment.id,requestId,...input});expect(sent.status,JSON.stringify(sent.body)).toBe(200);expect(sent.body.result.isError,JSON.stringify(sent.body)).toBe(false);
-      let receipt:Record<string,unknown>|undefined;
-      await vi.waitFor(async()=>{
-        const polled=await tool(raw,"paperclip_dot_operation_status",{assignmentId:assignment.id,requestId});expect(polled.status,JSON.stringify(polled.body)).toBe(200);expect(polled.body.result.isError,JSON.stringify(polled.body)).toBe(false);
-        receipt=polled.body.result.structuredContent.result;expect(receipt?.status,JSON.stringify({name,requestId,receipt})).toBe(expectedOutcome);
-        const rows=await db.select().from(dotRunnerOperations).where(eq(dotRunnerOperations.requestId,requestId));expect(rows).toHaveLength(1);const journal=rows[0];
-        expect(journal).toMatchObject({companyId,assignmentId:assignment.id,requestId,status:expectedStatus,digest:externalOperationDigest(action,input)});
-        expect(journal.command).toEqual({bindingId:assignment.bindingId,bindingGeneration:assignment.bindingGeneration,runId,normalizedSessionId:assignment.normalizedSessionId,turnId:assignment.turnId,assignmentRevision:assignment.revision,requestId,action,input,digest:externalOperationDigest(action,input)});
-        expect(journal.outcome).toEqual(receipt);if(expectedStatus==="completed")expect(journal.sourceEventId).not.toBeNull();
-        if(action==="accept"&&expectedStatus==="completed"){
-          const [accepted]=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id));
-          expect(accepted).toMatchObject({companyId,agentId,bindingId:assignment.bindingId,bindingGeneration:assignment.bindingGeneration,runId,status:"accepted"});expect(accepted.acceptedAt).toBeInstanceOf(Date);
-        }
-      },{timeout:10_000,interval:50});return{requestId,receipt:receipt!};
-    };
-    const deniedId=randomUUID();const denied=await operation("paperclip_dot_tool",{name:"write_document",arguments:{key:"before-accept",title:"Forbidden",body:"must not exist",baseRevisionId:null,idempotencyKey:deniedId}},deniedId,"rejected");expect(denied.receipt).toMatchObject({status:"rejected"});expect(await documentService(db).getIssueDocumentByKey(task.id,"before-accept")).toBeNull();
     await operation("paperclip_dot_accept",{});expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id)))[0].status).toBe("accepted");
     const writeId=randomUUID(),writeArgs={name:"write_document",arguments:{key:"report",title:"Arithmetic",body:"17 + 25 = 42.",baseRevisionId:null,idempotencyKey:writeId}};
     const written=await operation("paperclip_dot_tool",writeArgs,writeId);expect(written.receipt).toMatchObject({status:"completed",isError:false});expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");

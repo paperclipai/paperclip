@@ -1,3 +1,4 @@
+import { observeStoppedExecutionResource } from "./environment-resource-observation.js";
 import { readPluginLoginCredential } from "./plugin-login-credential.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller.js";
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
@@ -649,7 +650,7 @@ export interface EnvironmentDriverRunnerIngressInput
 
 export interface EnvironmentRuntimeDriver {
   readonly driver: string;
-  inspectLeaseResource?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<PluginEnvironmentLeaseObservation | undefined>;
+  inspectLeaseResource?(input: { environment: Environment | null; lease: EnvironmentLease; deadline?: number }): Promise<PluginEnvironmentLeaseObservation | undefined>;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
   releaseRunLease(input: EnvironmentDriverReleaseInput): Promise<EnvironmentLease | null>;
   resumeRunLease?(input: EnvironmentDriverResumeInput): Promise<PluginEnvironmentLease | EnvironmentLease | null>;
@@ -2338,7 +2339,7 @@ function createSandboxEnvironmentDriver(
       });
     },
 
-    async inspectLeaseResource({ lease }) {
+    async inspectLeaseResource({ lease, deadline }) {
       const provider = lease.provider;
       const config = sandboxConfigFromLeaseMetadataLoose(lease);
       if (!provider || isBuiltinSandboxProvider(provider) || !config || config.provider !== provider ||
@@ -2353,11 +2354,13 @@ function createSandboxEnvironmentDriver(
         resolved.resolved.driver.configSchema as Record<string, unknown> | undefined,
         { issueId: lease.issueId, heartbeatRunId: lease.heartbeatRunId });
       if (!resolvedConfig) return undefined;
+      const timeoutMs = deadline === undefined ? 15_000 : Math.min(15_000, Math.floor(deadline - performance.now()));
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 1) return undefined;
       return await pluginWorkerManager.call(pluginId, "environmentInspectLease", {
         driverKey: provider, companyId: lease.companyId, environmentId: lease.environmentId,
         issueId: lease.issueId, config: stripSandboxProviderEnvelope(resolvedConfig as SandboxEnvironmentConfig),
         providerLeaseId: lease.providerLeaseId, leaseMetadata: lease.metadata ?? {},
-      }, 15_000);
+      }, timeoutMs);
     },
 
     async retryPendingSandboxTeardown(input) {
@@ -4532,7 +4535,22 @@ export function environmentRuntimeService(
       if (!driver.execute) {
         throw new Error(`Environment driver "${driver.driver}" does not support command execution.`);
       }
-      return await driver.execute(input);
+      const deadline = typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
+        ? performance.now() + input.timeoutMs : null;
+      try {
+        return await driver.execute(input);
+      } catch (originalError) {
+        if (deadline !== null && driver.inspectLeaseResource) {
+          const stopped = await observeStoppedExecutionResource({ expected: input.lease, originalError, deadline,
+            readCurrentLease: () => environmentsSvc.getLeaseById(input.lease.id),
+            // Use the driver's existing historical-credential observation port,
+            // not the failed-ephemeral-cleanup-only public dispatcher.
+            inspect: (lease, timeoutMs) => driver.inspectLeaseResource!({ environment: input.environment, lease, deadline: Math.min(deadline, performance.now() + timeoutMs) }),
+          });
+          if (stopped) throw stopped;
+        }
+        throw originalError;
+      }
     },
 
     supportsSync(input: EnvironmentDriverLeaseInput): boolean {

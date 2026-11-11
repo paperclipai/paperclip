@@ -1,3 +1,4 @@
+import { EnvironmentResourceStoppedError } from "../environment-resource-observation.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
@@ -14633,8 +14634,15 @@ export function createRemoteRunnerProcessLauncher(input: {
       });
 
       while (true) {
-        const observed = await readRemoteRunnerRecoveryProbe({
+        const resource = input.target.transport === "sandbox" && input.target.leaseId && input.target.environmentId &&
+          input.target.sandboxLeaseAcquisition?.providerLeaseId
+          ? { leaseId: input.target.leaseId, environmentId: input.target.environmentId,
+              providerLeaseId: input.target.sandboxLeaseAcquisition.providerLeaseId } : undefined;
+        let observed: Awaited<ReturnType<typeof readRemoteRunnerRecoveryProbe>>;
+        try {
+          observed = await readRemoteRunnerRecoveryProbe({
           runner,
+          resource,
           stage: "process_verification",
           deadline: Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS,
           readOnly: true,
@@ -14653,6 +14661,14 @@ export function createRemoteRunnerProcessLauncher(input: {
             bypassSession: true,
           },
         });
+        } catch (error) {
+          if (!(error instanceof EnvironmentResourceStoppedError) || !error.matches(resource)) throw error;
+          // The verified provider observed the whole owned namespace stopped.
+          // The individual exit code/signal remain unknown; do not invent 45.
+          exitConfirmed = true;
+          child.exitCode = null;
+          return { code: null, signal: null, stdout: "", stderr: "runner_remote_resource_stopped" };
+        }
         if (observed.exitCode === 0 && !observed.timedOut) {
           await new Promise<void>((resolve) =>
             setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),

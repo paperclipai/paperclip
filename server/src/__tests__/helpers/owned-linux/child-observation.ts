@@ -3,6 +3,8 @@
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import { request } from "node:http";
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 
 export async function installDotChildPorts(input: {
@@ -10,6 +12,7 @@ export async function installDotChildPorts(input: {
   callbackPublicOrigin: string; callbackLoopback: string;
   deviceStage: () => "first-select"|"retry-select"|undefined;
   emit: (event: Record<string,unknown>) => void;
+  probeWitnessRoot: string;
 }) {
   const actual=await import("@paperclipai/db");
   const database={queries:0,clients:0,opened:0,closed:0,dedicated:0,listeners:0};
@@ -32,6 +35,37 @@ export async function installDotChildPorts(input: {
       return{listen:listener.listen,async close(){await listener.close();if(!closed){closed=true;database.listeners--;}}};},
   }});
   assert.equal((await import("@paperclipai/db")).createDb,createDb,"Child DB observer did not bind actual module graph");
+  // Observe the same normal read-only probe promise. No input, runner,
+  // request, timeout, retry, return value or rejection is changed.
+  assert(path.isAbsolute(input.probeWitnessRoot));
+  const probeModule=await import("../../../services/native-runtime/remote-runner-recovery-probe.js");
+  const {readRemoteRunnerRecoveryError}=await import("../../../services/native-runtime/remote-runner-recovery-diagnostics.js");
+  const probeCounts={started:0,settled:0,pending:0,rejected:0,overflow:0,witnessWriteFailures:0};
+  const probeStages={runner_state:0,identity_marker:0,process_verification:0};
+  const readProbe:typeof probeModule.readRemoteRunnerRecoveryProbe=probe=>{
+    const startedAt=Date.now(),startedMonotonic=performance.now();
+    probeCounts.started++;probeCounts.pending++;probeStages[probe.stage]++;
+    const promise=probeModule.readRemoteRunnerRecoveryProbe(probe);
+    void promise.then(()=>{probeCounts.settled++;},async error=>{
+      probeCounts.settled++;probeCounts.rejected++;
+      const diagnostic=readRemoteRunnerRecoveryError(error);
+      if(probeCounts.rejected>32){probeCounts.overflow++;return;}
+      const fixedMessages=new Set(["owned_resource_retiring","owned_execution_resource_inactive","owned_provider_closing"]);
+      const fixedMessage=error instanceof Error&&fixedMessages.has(error.message)?error.message:"unclassified";
+      try {
+        await writeFile(path.join(input.probeWitnessRoot,"first-native-probe-failure.json"),JSON.stringify({version:1,
+          stage:probe.stage,readOnly:probe.readOnly,startedAt,failedAt:Date.now(),elapsedMs:Math.max(0,performance.now()-startedMonotonic),
+          reason:diagnostic?.reason??"unclassified",fixedMessage,counts:{...probeCounts},stageCounts:{...probeStages},
+          noRawPayload:true,noAdditionalCalls:true,originalPromiseReturned:true})+"\n",{flag:"wx",mode:0o600});
+      }catch(witnessError){
+        if(!(witnessError instanceof Error&&"code" in witnessError&&witnessError.code==="EEXIST"))probeCounts.witnessWriteFailures++;
+      }
+    }).catch(()=>{probeCounts.witnessWriteFailures++;}).finally(()=>{probeCounts.pending--;});
+    return promise;
+  };
+  mock.module(new URL("../../../services/native-runtime/remote-runner-recovery-probe.ts",import.meta.url).href,
+    {namedExports:{...probeModule,readRemoteRunnerRecoveryProbe:readProbe}});
+  assert.equal((await import("../../../services/native-runtime/remote-runner-recovery-probe.js")).readRemoteRunnerRecoveryProbe,readProbe);
   let authorityRequests=0,callbackRequests=0,unexpectedEventRequests=0,eventFactoryOwners=0,deviceRegistrations=0,authenticateCalls=0,observerPending=0,observerFailures=0,overflow=0,events=0;
   const emit=(event:Record<string,unknown>)=>{if(events++>=32){overflow++;return;}input.emit(event);};
   const originalFetch=globalThis.fetch;
@@ -90,6 +124,6 @@ export async function installDotChildPorts(input: {
         eventFactoryOwners++;return eventModule.createPublicMcpEvents(db,oauth,dispatch,{...options,fetch:eventFetch});}
       return eventModule.createPublicMcpEvents(...args);
     }}});
-  return{snapshot:()=>({...database,connections:connections.size,eventFactoryOwners,authorityRequests,callbackRequests,unexpectedEventRequests,deviceRegistrations,authenticateCalls,observerPending,observerFailures,overflow}),
+  return{snapshot:()=>({...database,connections:connections.size,eventFactoryOwners,authorityRequests,callbackRequests,unexpectedEventRequests,deviceRegistrations,authenticateCalls,observerPending,observerFailures,overflow,probeObservation:{...probeCounts,stages:{...probeStages}}}),
     restore(){globalThis.fetch=originalFetch;mock.restoreAll();}};
 }

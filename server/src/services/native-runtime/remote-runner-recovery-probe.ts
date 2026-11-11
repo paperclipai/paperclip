@@ -1,3 +1,4 @@
+import { EnvironmentResourceStoppedError, type ObservedResourceBinding } from "../environment-resource-observation.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
   attachRemoteRunnerRecoveryDiagnostic,
@@ -13,6 +14,7 @@ export async function readRemoteRunnerRecoveryProbe(input: {
   stage: RemoteRunnerRecoveryDiagnostic["stage"];
   deadline: number;
   readOnly: boolean;
+  resource?: ObservedResourceBinding;
 }) {
   let lastError: unknown = new RemoteRunnerRecoveryError({
     stage: input.stage, reason: "probe_timeout",
@@ -31,6 +33,10 @@ export async function readRemoteRunnerRecoveryProbe(input: {
       if (!result.timedOut) return result;
       lastError = new RemoteRunnerRecoveryError({ stage: input.stage, reason: "probe_timeout" });
     } catch (error) {
+      // A positive observation of this exact namespace is not a transient
+      // transport outage. Never infer this from a message or an unknown state.
+      if (input.readOnly && input.stage === "process_verification" &&
+          error instanceof EnvironmentResourceStoppedError && error.matches(input.resource)) throw error;
       lastError = attachRemoteRunnerRecoveryDiagnostic(error, {
         stage: input.stage, reason: "probe_transport_failed",
       });
