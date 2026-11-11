@@ -262,6 +262,46 @@ describe.skipIf(!support.supported)("chat wake batches stay within one conversat
     expect(queuedRun!.contextSnapshot).toMatchObject({ wakeCommentIds: [earlier, reply], chatConversationId: f.conversationId });
   });
 
+  function releaseIssue() {
+    return createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, {
+        resolveResponsibleUserId: async () => f.userId,
+        getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+        resolveSessionBeforeForWakeup: async () => null,
+      } as never),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} } as never,
+    });
+  }
+
+  // An older merged wake can be left with only the other conversation's
+  // messages (its own message was discarded). An interrupt names the wake by
+  // id, so the wake keeps its id and runs as plain saved messages.
+  it("keeps an interrupted wake's id when all of its messages belong to another conversation", async () => {
+    const earlier = await message(otherConversationId);
+    const savedId = await saveUndelivered([earlier]);
+    const [savedWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, savedId));
+    const payload = savedWake!.payload as Record<string, unknown>;
+    await db.update(agentWakeupRequests).set({ payload: { ...payload, mutation: "chat_message_received",
+      [CONTEXT_KEY]: { ...(payload[CONTEXT_KEY] as Record<string, unknown>), source: "chat:slack",
+        wakeReason: "External chat message received", chatConversationId: f.conversationId } } })
+      .where(eq(agentWakeupRequests.id, savedId));
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
+      resultJson: { queuedCommentInterruptQueueId: savedId, executionCancellation: { state: "acknowledged" },
+        conversationContinuation: "continue_conversation_v1" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+
+    const result = await releaseIssue()({ companyId: f.companyId, runId: f.runId, now: new Date() });
+
+    expect(result.outcome.kind).toBe("promoted");
+    const promoted = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0]!.wakeupRequestId).toBe(savedId);
+    expect(promoted[0]!.contextSnapshot).toMatchObject({ wakeCommentIds: [earlier], source: "issue.comment" });
+    expect(promoted[0]!.contextSnapshot?.chatConversationId).toBeUndefined();
+    expect(await deferredWakes()).toEqual([]);
+  });
+
   // A wake that older code already merged across two conversations. Release
   // splits it: the other conversation's messages run first as plain saved
   // messages, then the recorded conversation runs with its own messages.
@@ -278,14 +318,7 @@ describe.skipIf(!support.supported)("chat wake batches stay within one conversat
     // This is the shape that failed on staging.
     await expect(attest(merged)).rejects.toThrow("paperclip_runner_chat_attachment_binding_denied");
 
-    const release = createReleaseIssueExecution({
-      issueLock: createPostgresWakeQueueAdapter(db, {
-        resolveResponsibleUserId: async () => f.userId,
-        getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
-        resolveSessionBeforeForWakeup: async () => null,
-      } as never),
-      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} } as never,
-    });
+    const release = releaseIssue();
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
     const first = await release({ companyId: f.companyId, runId: f.runId, now: new Date() });
     expect(first.outcome.kind).toBe("promoted");

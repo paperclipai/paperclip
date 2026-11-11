@@ -12,6 +12,11 @@ import { withQueuedCommentIdsInWakePayload } from "../../../services/issue-queue
 // belong to no conversation and batch as before.
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const CHAT_CONVERSATION_ID_KEY = "chatConversationId";
+
+function record(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
 const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 /**
@@ -58,8 +63,10 @@ export async function otherConversationCommentIds(
  * Upgrade repair for a deferred chat wake that older code merged across two
  * conversations. The messages of other conversations move to their own plain
  * saved wake (the shape the work-intent outbox writes), ordered just before
- * this wake so they keep their place. This wake keeps its recorded
- * conversation and the rest of its messages. No message is dropped.
+ * this wake so they keep their place. This wake keeps its id, its recorded
+ * conversation and the rest of its messages. When no message of its own
+ * conversation is left, the wake keeps its id and becomes a plain saved wake.
+ * No message is dropped.
  * Returns true when the wake changed and must be read again.
  */
 export async function splitOtherConversationMessages(
@@ -73,12 +80,22 @@ export async function splitOtherConversationMessages(
   if (moved.length === 0) return false;
   const kept = input.queuedCommentIds.filter((id) => !moved.includes(id));
   const now = new Date();
-  const updated = await tx.update(agentWakeupRequests).set(kept.length > 0
-    ? { payload: withQueuedCommentIdsInWakePayload(input.payload, kept), updatedAt: now }
-    : { status: "cancelled", finishedAt: now, updatedAt: now,
-        error: "Queued messages moved to a wake of their own conversation" })
-    .where(and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, row.id),
-      eq(agentWakeupRequests.status, "deferred_issue_execution")))
+  const deferred = and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, row.id),
+    eq(agentWakeupRequests.status, "deferred_issue_execution"));
+  if (kept.length === 0) {
+    // Every message belongs to another conversation. Keep the wake and its id
+    // (an interrupt names the wake by id) and drop only its chat binding, so
+    // it runs as plain saved messages.
+    const { [CHAT_CONVERSATION_ID_KEY]: _dropped, ...context } = record(input.payload[DEFERRED_WAKE_CONTEXT_KEY]);
+    await tx.update(agentWakeupRequests).set({ updatedAt: now,
+      payload: withQueuedCommentIdsInWakePayload({ ...input.payload, mutation: "comment",
+        [DEFERRED_WAKE_CONTEXT_KEY]: { ...context, source: "issue.comment", wakeReason: "issue_commented" } }, moved) })
+      .where(deferred);
+    return true;
+  }
+  const updated = await tx.update(agentWakeupRequests)
+    .set({ payload: withQueuedCommentIdsInWakePayload(input.payload, kept), updatedAt: now })
+    .where(deferred)
     .returning({ id: agentWakeupRequests.id });
   // Another writer already moved the wake on; its messages stay where they are.
   if (updated.length === 0) return true;
