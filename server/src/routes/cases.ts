@@ -700,15 +700,16 @@ export function caseRoutes(db: Db, storage: StorageService) {
         if (body.projectId) await retainCaseAccessSource(tx, {
           companyId, caseId: existing.id, sourceKind: "project", sourceId: body.projectId,
         });
-        const status = body.status ?? existing.status;
+        // Fall back to the locked row so a concurrent close or reopen is not undone.
+        const status = body.status ?? current.status;
         const [updated] = await tx.update(cases).set({
-          projectId: body.projectId ?? existing.projectId,
+          projectId: body.projectId ?? current.projectId,
           title: body.title,
-          summary: body.summary ?? existing.summary,
+          summary: body.summary ?? current.summary,
           status,
-          fields: body.fields ?? existing.fields,
-          parentCaseId: body.parentCaseId ?? existing.parentCaseId,
-          completedAt: completedAtForStatus(status, existing.completedAt),
+          fields: body.fields ?? current.fields,
+          parentCaseId: body.parentCaseId ?? current.parentCaseId,
+          completedAt: completedAtForStatus(status, current.completedAt),
           updatedAt: now,
         }).where(eq(cases.id, existing.id)).returning();
         await insertCaseEvent(tx, {

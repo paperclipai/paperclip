@@ -513,7 +513,7 @@ describeEmbeddedPostgres("cases routes", () => {
 
     for (const status of ["done", "cancelled"] as const) {
       const denied = await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status }).expect(403);
-      expect(denied.body.error).toBe(`Agents may complete only their own case work. ${owner.name} (agent ${owner.id}) owns primary task ${primary!.identifier}. To close the case, hand it to that agent with handoff_case and closure instructions; that agent records the terminal handoff.`);
+      expect(denied.body.error).toBe(`Agents may complete only their own case work. ${owner.name} (agent ${owner.id}) owns primary task ${primary!.identifier} and records the terminal handoff. Ask that agent on ${primary!.identifier} to close the case.`);
     }
     const upsert = await otherHttp
       .post(`/api/companies/${company.id}/cases`)
@@ -535,6 +535,13 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(reopen.body.error).toMatch(/^Agents may complete only their own case work\. /);
 
     await request(app(boardActor)).patch(`/api/cases/${caseRow!.id}`).send({ status: "done" }).expect(200);
+    expect(await readCase()).toMatchObject({ status: "done", completedAt: expect.any(Date) });
+
+    // An upsert without status keeps the locked row's status and completion.
+    await otherHttp
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "customer", key: "accepted-fix", title: "Accepted checkout fix" })
+      .expect(200);
     expect(await readCase()).toMatchObject({ status: "done", completedAt: expect.any(Date) });
   });
 
