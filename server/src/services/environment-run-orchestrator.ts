@@ -24,7 +24,7 @@ import type {
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
 } from "@paperclipai/shared";
-import { environmentService } from "./environments.js";
+import { ExecutionWorkspaceLeaseConflictError, environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -58,6 +58,7 @@ export type EnvironmentErrorCode =
   | "unsupported_adapter_environment"
   | "probe_failed"
   | "lease_acquire_failed"
+  | "execution_workspace_lease_conflict"
   | "workspace_realization_failed"
   | "transport_resolution_failed"
   | "lease_release_failed"
@@ -207,6 +208,17 @@ export function environmentRunOrchestrator(
     try {
       return await environmentRuntime.acquireRunLease(input);
     } catch (err) {
+      // Workspace contention is not a lease-subsystem failure: another run is
+      // holding a single-branch checkout and this run must wait for it rather
+      // than check its own branch out on top (LAC-6296). Keep the distinct code
+      // so the park names the holder instead of reading as a generic failure.
+      if (err instanceof ExecutionWorkspaceLeaseConflictError) {
+        throw new EnvironmentRunError("execution_workspace_lease_conflict", err.message, {
+          environmentId: input.environment.id,
+          driver: input.environment.driver,
+          cause: err,
+        });
+      }
       throw new EnvironmentRunError(
         "lease_acquire_failed",
         `Failed to acquire lease for environment "${input.environment.name}" (${input.environment.driver}): ${err instanceof Error ? err.message : String(err)}`,

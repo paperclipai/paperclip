@@ -7,6 +7,7 @@ import {
   environmentLeases,
   environments,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issues,
   projects,
@@ -28,6 +29,44 @@ import {
   type UpdateEnvironment,
 } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { executionWorkspaceRequiresExclusiveLease } from "./execution-workspace-policy.js";
+
+/**
+ * Raised when a run asks for a single-branch execution workspace that another
+ * run already holds an `active` lease on. See LAC-6296: before this guard,
+ * `acquireLease` was an unconditional insert, so two runs could hold one git
+ * worktree and the collision was only legible from the lease table afterwards.
+ */
+export class ExecutionWorkspaceLeaseConflictError extends Error {
+  readonly code = "execution_workspace_lease_conflict";
+  readonly executionWorkspaceId: string;
+  readonly conflictingLeaseId: string;
+  readonly conflictingHeartbeatRunId: string | null;
+  readonly conflictingIssueId: string | null;
+
+  constructor(input: {
+    executionWorkspaceId: string;
+    workspaceName: string | null;
+    conflictingLeaseId: string;
+    conflictingHeartbeatRunId: string | null;
+    conflictingIssueId: string | null;
+  }) {
+    super(
+      `Execution workspace ${input.workspaceName ? `"${input.workspaceName}" ` : ""}(${input.executionWorkspaceId}) is a single-branch checkout already held by run ${input.conflictingHeartbeatRunId ?? "unknown"}${
+        input.conflictingIssueId ? ` on issue ${input.conflictingIssueId}` : ""
+      } under lease ${input.conflictingLeaseId}. Two runs cannot share one worktree.`,
+    );
+    this.name = "ExecutionWorkspaceLeaseConflictError";
+    this.executionWorkspaceId = input.executionWorkspaceId;
+    this.conflictingLeaseId = input.conflictingLeaseId;
+    this.conflictingHeartbeatRunId = input.conflictingHeartbeatRunId;
+    this.conflictingIssueId = input.conflictingIssueId;
+  }
+}
+
+/** Run statuses that still own whatever they acquired. Matches the existing
+ *  live-run predicates in routines/task-watchdogs/heartbeat. */
+const LIVE_HEARTBEAT_RUN_STATUSES: readonly string[] = ["queued", "running", "scheduled_retry"];
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -608,34 +647,101 @@ export function environmentService(db: Db) {
       metadata?: Record<string, unknown> | null;
     }): Promise<EnvironmentLease> => {
       const now = new Date();
-      const row = await db
-        .insert(environmentLeases)
-        .values({
-          companyId: input.companyId,
-          environmentId: input.environmentId,
-          executionWorkspaceId: input.executionWorkspaceId ?? null,
-          issueId: input.issueId ?? null,
-          heartbeatRunId: input.heartbeatRunId ?? null,
-          status: "active",
-          leasePolicy: input.leasePolicy ?? "ephemeral",
-          provider: input.provider ?? null,
-          providerLeaseId: input.providerLeaseId ?? null,
-          acquiredAt: now,
-          lastUsedAt: now,
-          expiresAt: input.expiresAt ?? null,
-          releasedAt: null,
-          failureReason: null,
-          cleanupStatus: null,
-          metadata: input.metadata ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!row) {
-        throw new Error("Failed to acquire environment lease");
-      }
-      return toEnvironmentLease(row);
+      const executionWorkspaceId = input.executionWorkspaceId ?? null;
+      const heartbeatRunId = input.heartbeatRunId ?? null;
+
+      return await db.transaction(async (tx) => {
+        // A single-branch workspace is one directory with one checked-out HEAD.
+        // Lock the workspace row before reading its active leases so two
+        // contending runs serialize here instead of both inserting (LAC-6296).
+        if (executionWorkspaceId) {
+          const workspace = await tx
+            .select({
+              id: executionWorkspaces.id,
+              name: executionWorkspaces.name,
+              mode: executionWorkspaces.mode,
+              strategyType: executionWorkspaces.strategyType,
+              providerType: executionWorkspaces.providerType,
+            })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, executionWorkspaceId))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+
+          if (workspace && executionWorkspaceRequiresExclusiveLease(workspace)) {
+            const activeLeases = await tx
+              .select({
+                id: environmentLeases.id,
+                heartbeatRunId: environmentLeases.heartbeatRunId,
+                issueId: environmentLeases.issueId,
+                holderRunStatus: heartbeatRuns.status,
+              })
+              .from(environmentLeases)
+              .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
+              .where(
+                and(
+                  eq(environmentLeases.executionWorkspaceId, executionWorkspaceId),
+                  eq(environmentLeases.status, "active"),
+                ),
+              );
+
+            const heldByAnotherRun = activeLeases.find((lease) => {
+              // The holding run may re-acquire its own workspace.
+              if (heartbeatRunId !== null && lease.heartbeatRunId === heartbeatRunId) return false;
+              // A lease left `active` by a run that is no longer live is a leak,
+              // not a holder. Treating it as one would wedge the workspace for
+              // every later run, which is worse than the collision this guards.
+              if (
+                lease.heartbeatRunId !== null &&
+                !LIVE_HEARTBEAT_RUN_STATUSES.includes(lease.holderRunStatus ?? "")
+              ) {
+                return false;
+              }
+              // Anything else - including an acquisition that cannot name its
+              // own run - is refused.
+              return true;
+            });
+            if (heldByAnotherRun) {
+              throw new ExecutionWorkspaceLeaseConflictError({
+                executionWorkspaceId,
+                workspaceName: workspace.name ?? null,
+                conflictingLeaseId: heldByAnotherRun.id,
+                conflictingHeartbeatRunId: heldByAnotherRun.heartbeatRunId ?? null,
+                conflictingIssueId: heldByAnotherRun.issueId ?? null,
+              });
+            }
+          }
+        }
+
+        const row = await tx
+          .insert(environmentLeases)
+          .values({
+            companyId: input.companyId,
+            environmentId: input.environmentId,
+            executionWorkspaceId,
+            issueId: input.issueId ?? null,
+            heartbeatRunId,
+            status: "active",
+            leasePolicy: input.leasePolicy ?? "ephemeral",
+            provider: input.provider ?? null,
+            providerLeaseId: input.providerLeaseId ?? null,
+            acquiredAt: now,
+            lastUsedAt: now,
+            expiresAt: input.expiresAt ?? null,
+            releasedAt: null,
+            failureReason: null,
+            cleanupStatus: null,
+            metadata: input.metadata ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!row) {
+          throw new Error("Failed to acquire environment lease");
+        }
+        return toEnvironmentLease(row);
+      });
     },
 
     releaseLease: async (
