@@ -41,18 +41,7 @@ import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
-import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, findDaytonaPluginWorker, isClassRFault, type PluginStallRecord, type ProviderKillRecord } from "./class-r.js";
-import { descendantPids, readProcessTable } from "./time-faults.js";
-
-/** Class R hooks (main.ts sets them on CR waves): sandbox captures and CR2's provider kill. None may throw. */
-export interface ClassRHooks {
-  /** Captures every wave sandbox under `label`; returns the label for the receipt. */
-  capture(label: string, deadlineMs?: number): Promise<string>;
-  /** CR2: SIGKILL the provider process of the task's current run inside its sandbox. */
-  killProvider(requestedBy: string): Promise<ProviderKillRecord>;
-  /** After the controller is ready again: keep capturing through the window staging failed in. */
-  watchAfterReady(receipt: FaultReceipt): void;
-}
+import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -527,7 +516,16 @@ export class ChaosSupervisor {
       else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
       // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
       else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
-      else if (kind === "CR3") await this.stallPluginWorker(previous, holdMs, receipt);
+      else if (kind === "CR3") {
+        // The server keeps running; its Daytona plugin worker is stopped for the hold (class-r.ts).
+        const stall = await runPluginStall({ serverPid: previous.pid, holdMs, cancelled: () => this.shuttingDown,
+          record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
+        receipt.classR!.pluginStall = stall;
+        receipt.stoppedAt = stall.frozenAt;
+        receipt.restartedAt = stall.thawedAt;
+        if (stall.error) throw new Error(stall.error);
+        receipt.healthyAt = await this.waitForHealth(previous, receipt.phases);
+      }
       else if (kind === "CR2" && !redeploys) {
         // The controller stays up: only the provider inside the task's sandbox dies.
         receipt.classR!.providerKill = await this.classR!.killProvider(requestedBy);
@@ -628,38 +626,6 @@ export class ChaosSupervisor {
    * while they are stopped. Both continue the same processes after the hold: no restart. A server that exits
    * on its own after it is continued (a lost-lease self-fence) is recorded and replaced, and the tasks are graded.
    */
-  /**
-   * CR3: the server keeps running, but its Daytona plugin worker (and anything under it) is stopped for the hold,
-   * so every plugin RPC, `environmentExecute` included, stalls. The worker is continued afterwards; a worker the
-   * server replaced meanwhile is recorded by the next capture.
-   */
-  private async stallPluginWorker(server: ChildProcess, holdMs: number, receipt: FaultReceipt): Promise<void> {
-    const stall: PluginStallRecord = { workerPid: null, command: null, frozenPids: [], frozenAt: null, thawedAt: null, error: null };
-    receipt.classR!.pluginStall = stall;
-    const table = readProcessTable();
-    const worker = findDaytonaPluginWorker(table, server.pid!, root => descendantPids(root, table));
-    if (!worker) throw new Error("CR3 found no single Daytona plugin worker under the server");
-    stall.workerPid = worker.pid;
-    stall.command = worker.command;
-    const freezer = new ProcessFreezer();
-    try {
-      stall.frozenPids = freezer.freeze(worker.pid, true);
-      stall.frozenAt = receipt.stoppedAt = Date.now();
-      this.timeline.add("plugin_worker_frozen", { faultId: receipt.faultId, pids: stall.frozenPids, holdMs });
-      while (Date.now() - stall.frozenAt < holdMs) {
-        if (this.shuttingDown) throw new Error("Harness shutdown interrupted the plugin stall");
-        await delay(Math.min(1_000, holdMs - (Date.now() - stall.frozenAt)));
-      }
-    } finally {
-      freezer.thaw();
-      if (stall.frozenAt !== null) {
-        stall.thawedAt = receipt.restartedAt = Date.now();
-        this.timeline.add("plugin_worker_thawed", { faultId: receipt.faultId, frozenMs: stall.thawedAt - stall.frozenAt });
-      }
-    }
-    receipt.healthyAt = await this.waitForHealth(server, receipt.phases);
-  }
-
   private async freeze(kind: "TM1" | "TM2", server: ChildProcess, holdMs: number, receipt: FaultReceipt): Promise<void> {
     const timeFault: TimeFaultRecord = { kind };
     receipt.timeFault = timeFault;

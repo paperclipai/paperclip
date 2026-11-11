@@ -336,13 +336,15 @@ async function main(): Promise<number> {
     if (!runId) record.error = "no running run for the task";
     else {
       const result = await executeInWaveSandboxes({ apiKey: process.env.DAYTONA_API_KEY!, ...owned, command: providerKillCommand(runId, adapter),
-        secrets: knownSecretValues(), done: attempt => attempt.exitCode === 0 || attempt.exitCode === 4 });
+        secrets: knownSecretValues(), done: attempt => attempt.exitCode === 0 || attempt.exitCode === 4 || attempt.exitCode === 5 });
       record.attempts = result.attempts;
+      // Exit 0 is printed only when every selected provider process is confirmed gone.
       const hit = result.attempts.find(attempt => attempt.exitCode === 0);
       record.sandboxId = hit?.sandboxId ?? null;
       record.killedPids = hit ? killedPidsFromOutput(hit.output) : [];
-      record.error = result.error ?? (hit ? null : result.attempts.some(attempt => attempt.exitCode === 4)
-        ? "the run's Runner had no provider process" : "no sandbox runs a Runner for the run");
+      record.error = result.error ?? (hit ? null : result.attempts.some(attempt => attempt.exitCode === 5)
+        ? "a provider process survived the kill" : result.attempts.some(attempt => attempt.exitCode === 4)
+          ? "the run's Runner had no provider process" : "no sandbox runs a Runner for the run");
     }
     timeline.add("class_r_provider_killed", { taskId, runId, adapter, sandboxId: record.sandboxId, killedPids: record.killedPids, error: record.error,
       attempts: record.attempts.map(attempt => `${attempt.sandboxId}:${attempt.exitCode ?? attempt.error?.slice(0, 80)}`) });

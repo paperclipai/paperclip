@@ -23,7 +23,8 @@
  * Harness only: no product code changes. The one in-sandbox mutation is CR2's SIGKILL of the provider
  * process, run by a fixed script in sandboxes labelled with this wave's company and environment.
  */
-import type { AdapterId, FaultKind, WaveOptions } from "./types.js";
+import type { AdapterId, FaultKind, FaultReceipt, WaveOptions } from "./types.js";
+import { ProcessFreezer, descendantPids, readProcessTable, type ProcessRow } from "./time-faults.js";
 
 export const CLASS_R_FAULT_KINDS = ["CR1", "CR2", "CR3"] as const;
 export type ClassRFaultKind = (typeof CLASS_R_FAULT_KINDS)[number];
@@ -84,6 +85,16 @@ export function classRHoldMs(kind: FaultKind, options: Pick<WaveOptions, "cr1Hol
 }
 
 /** CR1, and CR2 with a hold, replace the controller as a deploy does (K15). */
+/** Class R hooks (main.ts sets them on CR waves): sandbox captures and CR2's provider kill. None may throw. */
+export interface ClassRHooks {
+  /** Captures every wave sandbox under `label`; returns the label for the receipt. */
+  capture(label: string, deadlineMs?: number): Promise<string>;
+  /** CR2: SIGKILL the provider process of the task's current run inside its sandbox. */
+  killProvider(requestedBy: string): Promise<ProviderKillRecord>;
+  /** After the controller is ready again: keep capturing through the window staging failed in. */
+  watchAfterReady(receipt: FaultReceipt): void;
+}
+
 export function classRRedeploys(kind: FaultKind, holdMs: number): boolean {
   return kind === "CR1" || (kind === "CR2" && holdMs > 0);
 }
@@ -106,6 +117,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
  * It finds the `paperclip-runnerd` whose listen path names this run, walks its descendants, SIGKILLs only the
  * ones whose arguments contain the pattern, and prints the process table with start times before and after.
  * Exit 3: no Runner for this run here (another task's sandbox). Exit 4: the Runner has no provider process.
+ * Exit 5: a selected process was still alive after the signal; `== killed` is printed only for confirmed deaths.
  */
 export const PROVIDER_KILL_SCRIPT = [
   "set -u",
@@ -121,6 +133,11 @@ export const PROVIDER_KILL_SCRIPT = [
   'echo "== before $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"; ps -o pid,ppid,sid,lstart,etimes,stat,wchan:24,args -p "$(echo $all | tr " " ",")" 2>/dev/null | cut -c1-300',
   'test -n "$targets" || exit 4',
   'kill -KILL $targets 2>/dev/null',
+  // Only a process that is gone counts: a failed signal or a survivor fails the fault (exit 5).
+  'alive=""; wait_ticks=0; while test "$wait_ticks" -lt 20; do alive=""; for p in $targets; do'
+    + ' if kill -0 "$p" 2>/dev/null && ! grep -qs "^State:[[:space:]]*Z" /proc/$p/status; then alive="$alive $p"; fi; done;'
+    + ' test -z "$alive" && break; wait_ticks=$((wait_ticks + 1)); sleep 0.1; done',
+  'if test -n "$alive"; then echo "== survived$alive"; exit 5; fi',
   'echo "== killed$targets at $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"',
   "sleep 1",
   'echo "== after $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"; ps -o pid,ppid,sid,lstart,etimes,stat,wchan:24,args -p "$(echo $all | tr " " ",")" 2>/dev/null | cut -c1-300',
@@ -163,6 +180,44 @@ export interface PluginStallRecord {
 }
 
 /** The Daytona sandbox-provider plugin worker among the server's descendants (a forked `node .../worker`). */
+/**
+ * CR3: stop the server's Daytona plugin worker and its children for the hold, then continue them. The stall clock
+ * starts only once the worker itself is stopped; a worker that is missing or could not be stopped is an error.
+ */
+export async function runPluginStall(input: {
+  serverPid: number; holdMs: number; cancelled: () => boolean; record: (event: string, data: Record<string, unknown>) => void;
+  freezer?: Pick<ProcessFreezer, "freeze" | "thaw">; table?: () => ProcessRow[]; sleep?: (ms: number) => Promise<void>;
+}): Promise<PluginStallRecord> {
+  const stall: PluginStallRecord = { workerPid: null, command: null, frozenPids: [], frozenAt: null, thawedAt: null, error: null };
+  const rows = (input.table ?? readProcessTable)();
+  const worker = findDaytonaPluginWorker(rows, input.serverPid, root => descendantPids(root, rows));
+  if (!worker) return { ...stall, error: "CR3 found no single Daytona plugin worker under the server" };
+  stall.workerPid = worker.pid;
+  stall.command = worker.command;
+  const freezer = input.freezer ?? new ProcessFreezer();
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  try {
+    stall.frozenPids = freezer.freeze(worker.pid, true);
+    if (!stall.frozenPids.includes(worker.pid)) {
+      stall.error = `CR3 could not stop the Daytona plugin worker ${worker.pid}`;
+      return stall;
+    }
+    stall.frozenAt = Date.now();
+    input.record("plugin_worker_frozen", { pids: stall.frozenPids, holdMs: input.holdMs });
+    while (Date.now() - stall.frozenAt < input.holdMs) {
+      if (input.cancelled()) { stall.error = "Harness shutdown interrupted the plugin stall"; break; }
+      await sleep(Math.min(1_000, input.holdMs - (Date.now() - stall.frozenAt)));
+    }
+  } finally {
+    freezer.thaw();
+    if (stall.frozenAt !== null) {
+      stall.thawedAt = Date.now();
+      input.record("plugin_worker_thawed", { frozenMs: stall.thawedAt - stall.frozenAt });
+    }
+  }
+  return stall;
+}
+
 export function findDaytonaPluginWorker(rows: ReadonlyArray<{ pid: number; ppid: number; command: string }>, serverPid: number,
   descendants: (root: number) => number[]): { pid: number; command: string } | null {
   const under = new Set(descendants(serverPid));
@@ -211,7 +266,7 @@ export function withClassRCheck<T extends { verdict: "pass" | "fail"; checks: Ar
   let detail = own.length ? own.map(fault => fault.error ? `error=${fault.error}` : "ok").join(",") : "fault never fired";
   if (plan.fault === "CR2") {
     const kills = own.map(fault => fault.classR?.providerKill);
-    ok &&= kills.length > 0 && kills.every(kill => (kill?.killedPids.length ?? 0) > 0);
+    ok &&= kills.length > 0 && kills.every(kill => (kill?.killedPids.length ?? 0) > 0 && kill?.error === null);
     detail += `; killed ${kills.map(kill => kill?.killedPids.join("+") || `none(${kill?.error ?? "?"})`).join(",")}`;
   }
   if (plan.fault === "CR3") {

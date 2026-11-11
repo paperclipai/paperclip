@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   CR1_DEFAULT_HOLD_SECONDS, PROVIDER_KILL_SCRIPT, classRHoldMs, classRRedeploys, findDaytonaPluginWorker, killedPidsFromOutput,
-  parseClassROptions, providerKillCommand, watchLabels, withClassRCheck, type ClassRRecord,
+  parseClassROptions, providerKillCommand, runPluginStall, watchLabels, withClassRCheck, type ClassRRecord,
 } from "./class-r.js";
+import { executeInWaveSandboxes } from "./daytona-runner-logs.js";
 import { parseCommand } from "./config.js";
 import { redeployWave } from "./redeploy.js";
 import { planTasks } from "./scheduler.js";
@@ -11,6 +12,8 @@ import type { WaveOptions } from "./types.js";
 
 const IMAGE = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"a".repeat(64)}`;
 const RUN = "c4373803-ef67-4dcc-ad20-ea330aac80c1";
+const COMPANY = "11111111-1111-4111-8111-111111111111";
+const ENVIRONMENT = "22222222-2222-4222-8222-222222222222";
 
 describe("class R options", () => {
   const base = { env: "daytona" as const, stormMinutes: undefined, crashPoint: undefined };
@@ -57,6 +60,10 @@ describe("class R planning", () => {
     expect(classRRedeploys("CR2", 60_000)).toBe(true);
     expect(classRRedeploys("CR3", 45_000)).toBe(false);
     expect(redeployWave({ options: { ...options, faults: ["CR1"] }, tasks: [] })).toBe(true);
+    // A default CR2 keeps the controller up, so it gets no deploy identity; a held CR2 does.
+    const cr2 = (holdMs: number) => planTasks({ ...options, faults: ["CR2"], tasks: 1, cr2HoldMs: [holdMs, holdMs] });
+    expect(redeployWave({ options: { ...options, faults: ["CR2"] }, tasks: cr2(0) })).toBe(false);
+    expect(redeployWave({ options: { ...options, faults: ["CR2"] }, tasks: cr2(60_000) })).toBe(true);
   });
 });
 
@@ -66,6 +73,8 @@ describe("CR2 provider kill", () => {
     expect(command.startsWith("sh -c '")).toBe(true);
     expect(command.endsWith(`paperclip-chaos-cr2 '${RUN}' ' serve --hostname 127.0.0.1 --port '`)).toBe(true);
     expect(PROVIDER_KILL_SCRIPT).toContain("kill -KILL $targets");
+    // A survivor fails the fault instead of being reported as killed.
+    expect(PROVIDER_KILL_SCRIPT.indexOf("exit 5")).toBeLessThan(PROVIDER_KILL_SCRIPT.indexOf("== killed"));
     // Never the Runner itself.
     expect(PROVIDER_KILL_SCRIPT).toContain('test "$p" = "$runner" && continue');
   });
@@ -96,6 +105,39 @@ describe("CR3 plugin worker", () => {
   });
   it("finds nothing when there is no single worker", () => {
     expect(findDaytonaPluginWorker(rows.filter(row => row.pid !== 11 && row.pid !== 12), 10, descendants)).toBeNull();
+  });
+});
+
+describe("CR3 stall", () => {
+  const rows = [{ pid: 10, ppid: 1, command: "node server" }, { pid: 11, ppid: 10, command: "node /x/daytona/dist/worker.js" }];
+  const base = { serverPid: 10, holdMs: 30, cancelled: () => false, record: () => {}, table: () => rows, sleep: async () => {} };
+  it("starts the stall clock only once the worker itself is stopped", async () => {
+    const thawed: string[] = [];
+    const stall = await runPluginStall({ ...base, freezer: { freeze: () => [11], thaw: () => { thawed.push("thaw"); } } });
+    expect(stall.error).toBeNull();
+    expect(stall.frozenAt).not.toBeNull();
+    expect(stall.thawedAt! - stall.frozenAt!).toBeGreaterThanOrEqual(30);
+    expect(thawed).toEqual(["thaw"]);
+  });
+  it("fails when the worker could not be stopped or is missing", async () => {
+    const missed = await runPluginStall({ ...base, freezer: { freeze: () => [], thaw: () => {} } });
+    expect(missed.error).toMatch(/could not stop/);
+    expect(missed.frozenAt).toBeNull();
+    expect((await runPluginStall({ ...base, table: () => rows.slice(0, 1), freezer: { freeze: () => [], thaw: () => {} } })).error).toMatch(/no single/);
+  });
+});
+
+describe("CR2 sandbox search", () => {
+  it("stops at its deadline and never starts a command after it", async () => {
+    let commands = 0;
+    const client = {
+      async *list() { yield { id: "a", state: "started", labels: { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT } }; },
+      get: async () => new Promise<never>(() => {}),
+    };
+    const result = await executeInWaveSandboxes({ apiKey: "", companyId: COMPANY, environmentId: ENVIRONMENT, command: "true", secrets: [],
+      done: () => { commands += 1; return true; }, client: client as never, deadlineMs: 50 });
+    expect(result.error).toMatch(/deadline/);
+    expect(commands).toBe(0);
   });
 });
 
