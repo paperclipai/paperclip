@@ -2650,10 +2650,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               thread,
             })
           : Promise.resolve()),
-        // Slack implements this through assistant.threads.setStatus, which
-        // requires assistant:write. The least-privilege Paperclip manifest
-        // deliberately does not request that scope; the coalesced lifecycle
-        // reply below is the visible working state instead.
+        // Slack shows the working state through the Agents & AI Apps session
+        // status (agents.sessions.setStatus, set from the publication's
+        // progressState in chat-channels/slack/session-status.ts) and the
+        // coalesced lifecycle reply below, so no separate typing indicator.
         endpoint.provider === "slack"
           ? Promise.resolve()
           : thread.startTyping("Working…"),
