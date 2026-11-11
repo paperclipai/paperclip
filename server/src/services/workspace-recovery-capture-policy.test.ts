@@ -215,14 +215,6 @@ describe("saves exhausted under an older workspace capture policy", () => {
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
   }, 90_000);
 
-  /**
-   * The second staging record (Nov 10, 14:37): the export hold also carries
-   * the workspace finalization block that the run's result finalizer
-   * recorded, and the run's finished coordinator still names the lease owner
-   * of a finalizer pass from a replaced server, whose lease lapsed. Discovery
-   * once left that owner to the abandoned-owner settlement, which handles only
-   * unfinished coordinators, so the worker never re-armed this save.
-   */
   it("re-arms a save whose finished coordinator still names a lapsed finalizer owner", async () => {
     const f = await stagingIncident(false);
     const exportHold = await action(f.actionId);
@@ -238,8 +230,6 @@ describe("saves exhausted under an older workspace capture policy", () => {
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
       .toMatchObject({ phase: "terminal_failure" });
 
-    // The worker is woken for the hold and selects it; it runs while work is
-    // due (its sweep cursor is shared with earlier passes) and then goes idle.
     expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
     expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).toContain(f.actionId);
     let passes = 0;
