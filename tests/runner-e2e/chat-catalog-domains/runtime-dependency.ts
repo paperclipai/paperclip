@@ -73,7 +73,7 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
   expectedHumanMessageCount: 2, expectedRunCount: 4, minimumRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v8",
   sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
-    const workerId = (state.worker as Entity).id, websiteTask = state.task as Entity, gate = state.design as Entity;
+    const workerId = (state.worker as Entity | undefined)?.id ?? "", websiteTask = state.task as Entity, gate = state.design as Entity;
     const settled = await pollUntil({ label: "Saved dependency and canonical reply before human approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
       accept: v => chatCatalogNativePhaseIsTimely(ctx) && v.source?.conversationState === "waiting" && v.runs.filter(row => row.agentId !== workerId).length === 1
