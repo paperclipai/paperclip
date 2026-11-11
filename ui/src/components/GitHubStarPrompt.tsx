@@ -15,11 +15,9 @@ import { PaperclipMark } from "./PaperclipLockup";
 export const STAR_PROMPT_COMPLETED_TASKS = 5;
 export const STAR_PROMPT_SEEN_KEY = "paperclip.github-star-prompt.seen";
 export const PAPERCLIP_GITHUB_URL = "https://github.com/paperclipai/paperclip";
-/** A task asking for the user: its Retry or its status banner. */
 export const TASK_ATTENTION_SELECTOR = '[data-testid="task-execution-retry"], [role="status"][aria-label="Task status"]';
 const TASK_LIST_VIEWS = new Set(["all", "active", "backlog", "done", "recent"]);
 
-/** The user is mid-task while one task or one agent chat fills the page. */
 export function isTaskFocusPath(pathname: string) {
   const segments = pathname.split("/").filter(Boolean);
   const [section, ref] = segments.slice(-2);
@@ -39,10 +37,7 @@ function markSeen() {
  * Asks self-hosted users to star the repository once they have finished
  * enough tasks to know whether Paperclip helps them. It shows at most once
  * per browser: showing it counts as seen, so a reload or another open tab
- * never repeats it. It waits for any other dialog to close, and for a calm
- * moment: never while the user is looking at one task or chat, and never
- * while a task's Retry or status banner is on screen, because a modal makes
- * the rest of the page unreachable. Cloud instances,
+ * never repeats it. It waits for any other dialog to close. Cloud instances,
  * unfinished onboarding and unknown state (loading or a failed read) keep it
  * hidden.
  */
@@ -63,7 +58,7 @@ export function GitHubStarPrompt() {
   });
   const reached = eligible && done.isSuccess && done.data.length >= STAR_PROMPT_COMPLETED_TASKS;
   const otherModalOpen = useModalOpen(reached);
-  const taskNeedsAttention = useModalOpen(reached, TASK_ATTENTION_SELECTOR);
+  const taskNeedsAttention = useModalOpen(reached || open, TASK_ATTENTION_SELECTOR);
   const midTask = isTaskFocusPath(useLocation().pathname);
 
   useEffect(() => {
@@ -84,6 +79,10 @@ export function GitHubStarPrompt() {
     setSeen(true);
     setOpen(true);
   }, [reached, otherModalOpen, taskNeedsAttention, midTask]);
+
+  useEffect(() => {
+    if (open && (midTask || taskNeedsAttention)) setOpen(false);
+  }, [open, midTask, taskNeedsAttention]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

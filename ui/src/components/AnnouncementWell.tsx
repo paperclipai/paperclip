@@ -14,7 +14,6 @@ import { AnnouncementCard } from "./AnnouncementCard";
 
 // Includes the command palette, sheets and dialogs created outside DialogContext.
 export const MODAL_SELECTOR = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [aria-modal="true"]:not([data-state="closed"]), dialog[open]';
-/** Whether anything matching `selector` (by default an open modal) is on the page. */
 export function useModalOpen(enabled: boolean, selector = MODAL_SELECTOR) {
   const [open, setOpen] = useState(false);
   useEffect(() => {

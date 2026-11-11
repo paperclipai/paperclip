@@ -78,8 +78,6 @@ describe("GitHub star prompt", () => {
     try {
       await render();
       expect(visible()).toBe(false);
-      // An open modal hides everything else from assistive technology, so a
-      // covered Retry is unreachable by role as well as by pointer.
       expect(banner.closest('[aria-hidden="true"]')).toBeNull();
       await act(async () => { banner.remove(); });
       expect(visible()).toBe(true);
@@ -94,6 +92,27 @@ describe("GitHub star prompt", () => {
     expect(window.localStorage.getItem(STAR_PROMPT_SEEN_KEY)).toBeNull();
     await act(async () => { navigate!("/CHA/issues"); });
     expect(visible()).toBe(true);
+  });
+
+  it("closes when the user goes back to a task, or a task asks for Retry", async () => {
+    await render();
+    expect(visible()).toBe(true);
+    await act(async () => { navigate!("/CHA/issues/CHA-4"); });
+    expect(visible()).toBe(false);
+
+    window.localStorage.clear();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(visible()).toBe(true);
+    const retry = document.createElement("button");
+    retry.setAttribute("data-testid", "task-execution-retry");
+    document.body.append(retry);
+    try {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+      expect(visible()).toBe(false);
+      expect(retry.closest('[aria-hidden="true"]')).toBeNull();
+    } finally { retry.remove(); }
   });
 
   it("does not open after another tab has shown it", async () => {
