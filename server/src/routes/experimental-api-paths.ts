@@ -51,6 +51,8 @@ export const experimentalApiDocs: Record<string, { summary: string; description:
     description: "Accepts a task UUID or identifier and returns each readable case linked to that task, as { id, role, case: { id, identifier, ... } }. The top-level id is the link; pass case.id to read_case or the case audit history." },
   "GET /api/cases/{id}": { summary: "Read a case and its current facts",
     description: "Returns the case identifier, title, status, current facts (fields) and primary task." },
+  "PATCH /api/cases/{id}": { summary: "Update a case's facts, labels or status",
+    description: "Updates title, summary, fields, labels, project, parent case or status. For a case with a primary task, agents do not close it here: the agent assigned to that task records a terminal handoff to done, and only that agent may cancel or reopen the case." },
   "GET /api/cases/{id}/events": { summary: "Read a case's audit history of fact changes, handoffs and links",
     description: "Newest first. Each event has its kind (such as fields_changed, status_changed, issue_linked), the actor and time. An agent actor has actorAgentId and actorAgentName; a person has actorType user and actorUserId, without a display name. A fields_changed event records who changed the facts and when; it does not retain the previous fact values. Document edits are in document revisions and handoffs in the case handoff history." },
   "GET /api/cases/{id}/documents/{key}/revisions": { summary: "Read a case document's revision history",

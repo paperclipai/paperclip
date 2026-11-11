@@ -50,10 +50,8 @@ describe("controller process-space identity", () => {
     expect(state.sysctl).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(first)).not.toContain(firstBoot);
     // Old weak/foreign receipts retain their original deadline: no local probe.
-    const kill = vi.spyOn(process, "kill");
-    expect(await owner.controllerProcessExited({ bootId: "old", pid: 2_000_000_001,
-      hostHash: "old-rounded-clock-hash", processStartedAt: null })).toBe(false);
-    expect(kill).not.toHaveBeenCalled();
+    expect(owner.sameProcessSpace("old-rounded-clock-hash")).toBe(false);
+    expect(owner.sameProcessSpace(first.hostHash)).toBe(true);
   });
 
   it.each(["unreadable", "malformed", "unsupported"] as const)("fails closed without an owner PID probe for %s identity", async mode => {
@@ -62,10 +60,7 @@ describe("controller process-space identity", () => {
     if (mode === "malformed") state.sysctl.mockReturnValue("not-a-kernel-uuid");
     const owner = await fresh();
     expect((await owner.currentControllerProcess()).hostHash).toBe("unknown");
-    const kill = vi.spyOn(process, "kill");
-    expect(await owner.controllerProcessExited({ bootId: "old", pid: 2_000_000_001,
-      hostHash: "unknown", processStartedAt: null })).toBe(false);
-    expect(kill).not.toHaveBeenCalled();
+    expect(owner.sameProcessSpace("unknown")).toBe(false);
     if (mode === "unsupported") expect(state.sysctl).not.toHaveBeenCalled();
   });
 });

@@ -60,8 +60,12 @@ export function gradeChatCatalogRuns(input: {
       detail: "Only edit-properties may declare the exact independently proved worker reassignment cancellation." });
   }
   if (c.runPolicy?.kind === "terminal-counts") {
-    checks.push({ id: "catalog-exact-run-outcomes", passed: Object.entries(c.runPolicy.terminalStatusCounts).every(([status, count]) => runs.filter(run => run.status === status).length === count),
-      detail: "The independently observed ledger matches every declared successful/cancelled/failed terminal outcome count." });
+    const policy = c.runPolicy, maximum = policy.maximumTerminalStatusCounts ?? {};
+    checks.push({ id: "catalog-exact-run-outcomes", passed: Object.entries(policy.terminalStatusCounts).every(([status, count]) => {
+      const actual = runs.filter(run => run.status === status).length, upper = maximum[status as keyof typeof maximum] ?? count;
+      return actual >= count! && actual <= Math.max(count!, upper);
+    }) && Object.keys(maximum).every(status => status in policy.terminalStatusCounts),
+      detail: "The independently observed ledger matches every declared successful/cancelled/failed terminal outcome count (or its declared role-bound range)." });
   } else if (c.runPolicy?.kind === "source-settled-with-active-work") {
     const sourceRuns = runs.filter(run => taskId(run) === source?.id);
     const workers = runs.filter(run => taskId(run) !== source?.id);

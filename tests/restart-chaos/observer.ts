@@ -718,7 +718,8 @@ export class TaskObserver {
     if (this.board) {
       const click = await this.board.clickRetry(issueRef, issueId);
       Object.assign(attempt, { via: "ui", httpStatus: click.httpStatus, accepted: click.accepted, error: click.error, bannerText: click.bannerText,
-        ...(click.diagnostics !== undefined ? { diagnostics: click.diagnostics } : {}) });
+        ...(click.diagnostics !== undefined ? { diagnostics: click.diagnostics } : {}),
+        ...(click.dismissedDialogs?.length ? { dismissedDialogs: click.dismissedDialogs } : {}) });
       if (click.accepted) attempt.acceptedAt = Math.max(now, Date.now());
       return attempt;
     }

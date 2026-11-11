@@ -550,7 +550,7 @@ describe("Codex app-server Codex driver", () => {
     await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
       recovered: false,
       reason: expect.stringContaining(
-        "Codex working directory is outside the assigned workspace",
+        "Agent working directory is outside the assigned workspace",
       ),
     });
   });

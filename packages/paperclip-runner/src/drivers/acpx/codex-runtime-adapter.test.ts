@@ -1005,6 +1005,72 @@ describe("Codex ACPX runtime adapter", () => {
     } finally { await port.close({ reason: "fixture done" }); }
   });
 
+  it("journals a turn before provider work and its prompt dispatch before the prompt write", async () => {
+    const runtime = fakeRuntime();
+    let created!: AcpRuntimeOptions;
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: value => { created = value; return runtime; } });
+    const order: string[] = [];
+    const journal = {
+      markReceived: vi.fn(() => { order.push("received"); return true; }),
+      markDispatched: vi.fn(() => { order.push("dispatched"); }),
+    };
+    const pending = pendingExtensionTurn("journaled-turn");
+    vi.mocked(runtime.startTurn).mockImplementation(() => { order.push("runtime.startTurn"); return pending.turn; });
+    try {
+      const turn = port.startTurn({ requestId: "journaled-turn", text: "fixture", dispatchJournal: journal });
+      expect(order).toEqual(["received", "runtime.startTurn"]);
+      // Other outbound traffic never counts as the prompt.
+      created.onAcpMessage?.("outbound", { id: 7, method: "session/set_config_option", params: {} });
+      created.onAcpMessage?.("outbound", { method: "session/cancel", params: {} });
+      expect(journal.markDispatched).not.toHaveBeenCalled();
+      created.onAcpMessage?.("outbound", { id: 8, method: "session/prompt", params: { sessionId: "backend-1" } });
+      // Only the first prompt of the turn is journaled.
+      created.onAcpMessage?.("outbound", { id: 9, method: "session/prompt", params: { sessionId: "backend-1" } });
+      expect(order).toEqual(["received", "runtime.startTurn", "dispatched"]);
+      pending.settle();
+      await turn.result;
+    } finally { await port.close({ reason: "fixture done" }); }
+  });
+
+  it("runs a turn unjournaled when its start cannot be journaled", async () => {
+    const runtime = fakeRuntime();
+    let created!: AcpRuntimeOptions;
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: value => { created = value; return runtime; } });
+    const pending = pendingExtensionTurn("unjournaled-start");
+    vi.mocked(runtime.startTurn).mockImplementation(() => pending.turn);
+    const markDispatched = vi.fn();
+    try {
+      const turn = port.startTurn({ requestId: "unjournaled-start", text: "fixture",
+        dispatchJournal: { markReceived: () => false, markDispatched } });
+      created.onAcpMessage?.("outbound", { id: 1, method: "session/prompt", params: {} });
+      expect(markDispatched).not.toHaveBeenCalled();
+      pending.settle();
+      await turn.result;
+    } finally { await port.close({ reason: "fixture done" }); }
+  });
+
+  it("aborts the prompt write when its dispatch cannot be journaled", async () => {
+    const runtime = fakeRuntime();
+    let created!: AcpRuntimeOptions;
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: value => { created = value; return runtime; } });
+    const pending = pendingExtensionTurn("unjournaled-turn");
+    vi.mocked(runtime.startTurn).mockImplementation(() => pending.turn);
+    try {
+      const turn = port.startTurn({ requestId: "unjournaled-turn", text: "fixture", dispatchJournal: {
+        markReceived: () => true,
+        markDispatched: () => { throw new Error("ENOSPC: journal write failed"); },
+      } });
+      // ACPX calls this hook before it writes the bytes; a throw rejects that write.
+      expect(() => created.onAcpMessage?.("outbound", { id: 1, method: "session/prompt", params: {} }))
+        .toThrow("ENOSPC: journal write failed");
+      pending.settle();
+      await turn.result;
+    } finally { await port.close({ reason: "fixture done" }); }
+  });
+
   it.each(["cancel", "closeStream"] as const)("retains the bound Grok usage response during %s until the prompt settles", async (stop) => {
     const runtime = fakeRuntime();
     const durableRecord = { acpxRecordId: "record-1", acpSessionId: "backend-1", agentSessionId: "agent-1", lastRequestId: "previous" };

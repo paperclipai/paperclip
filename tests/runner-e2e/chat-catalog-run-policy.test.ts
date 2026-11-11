@@ -118,3 +118,15 @@ it("treats only a never-started run cancelled by its own task's terminal status 
   const implementation = { expectedRunCount: 3, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1 } };
   expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, worker, queued] }).passed).toBe(false);
 });
+it("admits a declared role-bound range above an exact terminal count, and nothing beyond it", () => {
+  const cancelled = { ...succeeded, id: "stopped", status: "cancelled" };
+  const ok = (id: string) => ({ ...succeeded, id });
+  const implementation = { expectedRunCount: 6, minimumRunCount: 4, runPolicy: { kind: "terminal-counts" as const, terminalStatusCounts: { cancelled: 1, succeeded: 3 }, maximumTerminalStatusCounts: { succeeded: 5 } } };
+  expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [cancelled, ok("a"), ok("b"), ok("c")] }).passed).toBe(true);
+  expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [cancelled, ok("a"), ok("b"), ok("c"), ok("d"), ok("e")] }).passed).toBe(true);
+  expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [cancelled, ok("a"), ok("b")] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...scope, implementation: { ...implementation, expectedRunCount: 7 }, runs: [cancelled, ok("a"), ok("b"), ok("c"), ok("d"), ok("e"), ok("f")] }).passed).toBe(false);
+  // A maximum may only widen a status the exact counts already declare.
+  const undeclared = { ...implementation, runPolicy: { ...implementation.runPolicy, maximumTerminalStatusCounts: { failed: 1 } } };
+  expect(gradeChatCatalogRuns({ ...scope, implementation: undeclared, runs: [cancelled, ok("a"), ok("b"), ok("c")] }).passed).toBe(false);
+});

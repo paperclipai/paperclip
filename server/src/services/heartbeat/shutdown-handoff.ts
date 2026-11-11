@@ -11,3 +11,8 @@ export function watchShutdownHandoff(runId: string): () => boolean {
     return current !== undefined && current !== atStart;
   };
 }
+
+/** This process handed the run to the next server (graceful drain or hot restart). */
+export function isRunHandedOffForShutdown(runId: string): boolean {
+  return runsHandedOffForShutdown.has(runId);
+}

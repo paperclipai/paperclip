@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { conversationLinkBindings, readConversationDomLinks, type ConversationLinkInput } from "./chat-rendered-links.js";
+import { collectConversationLinks, conversationLinkBindings, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, type ConversationLinkInput } from "./chat-rendered-links.js";
 
 const card = '<div data-thread-item-kind="project_created" data-thread-anchor="project-created:project"><article aria-label="Project created: Launch"><div><p>Project created</p><a href="/RUN/projects/project">Launch</a></div></article></div>';
 const thread = (content = card) => `<div data-testid="task-chat-thread"><div data-testid="task-chat-history-content"><div data-testid="task-chat-scroller"><div id="comment-human" data-thread-item-kind="human">Create a project called Launch for the new website.</div>${content}<div id="comment-reply" data-thread-item-kind="agent">Created the Launch project. No repositories are connected yet.</div></div></div></div>`;
@@ -90,4 +90,25 @@ it("retains ordinary inline links in the supported classic issue-chat root", () 
   document.body.innerHTML=thread('').replace('task-chat-thread','thread-root');
   document.querySelector('#comment-reply')!.innerHTML='<a href="/RUN/issues/task">Task</a>';
   expect(collect().map(row=>[row.threadTestId,row.source,row.href])).toEqual([['thread-root','reply','/RUN/issues/task']]);
+});
+
+// Full cohort on 9296c74e8d (choose-primary, case-history, set-budget): the API saw the saved reply ~2s before
+// the open conversation rendered it, so links read in between were empty although the reply linked correctly.
+describe("waits for the latest saved reply to render before reading links", () => {
+  const page = () => ({ evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) }) as unknown as Parameters<typeof collectConversationLinks>[0];
+  it("reads the reply's links once the reply renders after the API saw it", async () => {
+    document.querySelector('#comment-reply')!.remove();
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 600);
+    const value = input(); value.projects = []; value.activity = [];
+    expect((await collectConversationLinks(page(), value)).map(row => row.href)).toEqual(["/RUN/issues/task"]);
+  });
+  it("does not wait when the conversation is not open, and waits at most once for a reply that never renders", async () => {
+    const bindings = conversationLinkBindings(input());
+    document.body.innerHTML = "<main>Other page</main>";
+    expect(readLatestConversationReplyRender({ anchors: bindings.anchors, latest: "reply" })).toBe("closed");
+    document.body.innerHTML = thread(); document.querySelector('#comment-reply')!.remove();
+    const p = page();
+    expect(await waitForLatestConversationReplyRender(p, bindings, 300, 50)).toBe("pending");
+    const started = Date.now(); expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("pending"); expect(Date.now() - started).toBeLessThan(1_000);
+  });
 });

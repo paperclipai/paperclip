@@ -477,6 +477,74 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(eventRows.filter((event) => event.runId === runId)).toHaveLength(eventRows.length);
   });
 
+  it("holds direct case status writes to the terminal handoff's primary-task authority", async () => {
+    await enableCases();
+    const company = await seedCompany("TRM");
+    const owner = await seedAgent(company.id);
+    const other = await seedAgent(company.id);
+    const [primary] = await db.insert(issues).values({
+      companyId: company.id,
+      identifier: `${company.issuePrefix.toUpperCase()}-1`,
+      title: "Primary case task",
+      status: "done",
+      assigneeAgentId: owner.id,
+    }).returning();
+    const [caseRow] = await db.insert(cases).values({
+      companyId: company.id,
+      caseNumber: 1,
+      identifier: `${company.issuePrefix.toUpperCase()}-C1`,
+      caseType: "customer",
+      key: "accepted-fix",
+      title: "Accepted fix",
+      status: "in_review",
+      workIssueId: primary!.id,
+    }).returning();
+    const agentActor = (agentId: string): Express.Request["actor"] => ({
+      type: "agent",
+      companyId: company.id,
+      agentId,
+      source: "agent_key",
+      keyId: `key-${agentId}`,
+      onBehalfOfUserId: null,
+      onBehalfOfMemberships: [],
+    });
+    const otherHttp = request(app(agentActor(other.id)));
+    const readCase = async () => (await db.select().from(cases).where(eq(cases.id, caseRow!.id)))[0]!;
+
+    for (const status of ["done", "cancelled"] as const) {
+      const denied = await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status }).expect(403);
+      expect(denied.body.error).toBe(`Agents may complete only their own case work. ${owner.name} (agent ${owner.id}) owns primary task ${primary!.identifier} and records the terminal handoff. Ask that agent on ${primary!.identifier} to close the case.`);
+    }
+    const upsert = await otherHttp
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "customer", key: "accepted-fix", title: "Accepted fix", status: "done" })
+      .expect(403);
+    expect(upsert.body.error).toMatch(/^Agents may complete only their own case work\. /);
+    expect(await readCase()).toMatchObject({ status: "in_review", completedAt: null });
+
+    // Fact edits and non-terminal status remain ordinary case writes.
+    await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ title: "Accepted checkout fix" }).expect(200);
+    await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(200);
+
+    // The owner still closes through the terminal handoff, not a raw status write.
+    const ownerHttp = request(app(agentActor(owner.id)));
+    await ownerHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "done" }).expect(422);
+    expect(await readCase()).toMatchObject({ status: "in_progress", completedAt: null });
+    await ownerHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "cancelled" }).expect(200);
+    const reopen = await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(403);
+    expect(reopen.body.error).toMatch(/^Agents may complete only their own case work\. /);
+
+    await request(app(boardActor)).patch(`/api/cases/${caseRow!.id}`).send({ status: "done" }).expect(200);
+    expect(await readCase()).toMatchObject({ status: "done", completedAt: expect.any(Date) });
+
+    // An upsert without status keeps the locked row's status and completion.
+    await otherHttp
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "customer", key: "accepted-fix", title: "Accepted checkout fix" })
+      .expect(200);
+    expect(await readCase()).toMatchObject({ status: "done", completedAt: expect.any(Date) });
+  });
+
   it("rejects cross-company agent access across the cases route surface", async () => {
     await enableCases();
     const ownCompany = await seedCompany("OWN");

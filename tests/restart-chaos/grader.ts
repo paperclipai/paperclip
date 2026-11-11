@@ -1,4 +1,4 @@
-import { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
+import { UI_RETRY_BLOCKED_BY_MODAL, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
 import { enforcedUniversalFailures, gradeUniversal, type UniversalDbEvidence } from "./universal.js";
 
@@ -112,7 +112,7 @@ function gradeOwnRetry(record: TaskRecord): RuleResult {
     }
     return { verdict: "n/a", detail: "no Retry needed" };
   }
-  if (record.retry.via === "ui" && (record.retry.error === UI_RETRY_BUTTON_MISSING || record.retry.error === UI_RETRY_NO_REQUEST)) {
+  if (record.retry.via === "ui" && [UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, UI_RETRY_BLOCKED_BY_MODAL].includes(record.retry.error ?? "")) {
     return { verdict: "fail", detail: `${record.retry.error}${record.retry.bannerText ? ` (user saw: ${record.retry.bannerText})` : ""}` };
   }
   if (record.retry.error || record.retry.accepted !== true) {

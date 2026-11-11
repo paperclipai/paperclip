@@ -224,11 +224,19 @@ export async function retireSupersededTaskRetry(db: Db, input: {
 type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
-  /** Paperclip requests the user's Retry itself after a restart lost an unstarted turn. */
-  initiatedBy?: "restart_recovery";
+  /** Paperclip requests the user's Retry itself: after a restart lost an
+   * unstarted turn, or once a provider usage limit it waited on has reset. */
+  initiatedBy?: "restart_recovery" | "provider_limit_reset";
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
 };
+
+/** Activity actor for a Retry: the user, or the Paperclip hook acting for them. */
+function automaticRetryActor(input: Pick<TaskRetryRequest, "initiatedBy" | "actorId">) {
+  if (!input.initiatedBy) return { actorType: "user" as const, actorId: input.actorId };
+  return { actorType: "system" as const,
+    actorId: input.initiatedBy === "restart_recovery" ? "restart-recovery" : "provider-limit-reset" };
+}
 
 const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
 const TASK_RETRY_CONTENTION_DELAY_MS = 100;
@@ -324,13 +332,11 @@ function admitTaskRetry(input: TaskRetryRequest) {
         source: "on_demand", triggerDetail: "manual", reason: "task_retry", idempotencyKey: key,
         requestedByActorType: "user", requestedByActorId: input.actorId, ...settled,
         payload: { issueId: issue.id, taskRetry: finalizeIntent } });
-      const restartRecovery = input.initiatedBy === "restart_recovery";
-      await persistActivity(db, { companyId: issue.companyId, actorType: restartRecovery ? "system" : "user",
-        actorId: restartRecovery ? "restart-recovery" : input.actorId,
+      await persistActivity(db, { companyId: issue.companyId, ...automaticRetryActor(input),
         action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
         details: { requestId: canonicalId ?? finalizeId, sourceRunId: latest.id, attachedToExistingWork: Boolean(canonicalId),
           strategy: "finalize_result",
-          ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
+          ...(input.initiatedBy ? { initiatedBy: input.initiatedBy, onBehalfOfUserId: input.actorId } : {}) } });
       const finalizing = savedResult.kind === "rearmed" || savedResult.finalizing;
       return { requestId: canonicalId ?? finalizeId, accepted: true, stale: false, observedRunId: latest.id,
         chatActionId: undefined, ...(finalizing ? { finalizeRunId: latest.id } : {}) };
@@ -371,10 +377,10 @@ function admitTaskRetry(input: TaskRetryRequest) {
     // A new deliberate click (new key) replaces it with a fresh attempt under the
     // clicker's current authority instead of joining it. Waits on shared state
     // (cleanup, recovery, an active run) keep coalescing: that intent starts by
-    // itself once the gate clears. The restart hook never replaces a user's click.
+    // itself once the gate clears. An automatic hook never replaces a user's click.
     let replacedRequestId: string | undefined;
     if (active && !busy && !active.runId && active.status === "deferred_issue_execution" &&
-        input.initiatedBy !== "restart_recovery" && activeIntent && !activeIntent.chatActionId &&
+        !input.initiatedBy && activeIntent && !activeIntent.chatActionId &&
         !activeIntent.queuedChatRequestId && isDeclinedTaskRetry(active.payload)) {
       await tx.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_replaced",
         finishedAt: new Date(), updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, active.id),
@@ -462,13 +468,11 @@ function admitTaskRetry(input: TaskRetryRequest) {
           actionId: action.id }, previous, next);
       }
     }
-    const restartRecovery = input.initiatedBy === "restart_recovery";
-    await persistActivity(db, { companyId: issue.companyId, actorType: restartRecovery ? "system" : "user",
-      actorId: restartRecovery ? "restart-recovery" : input.actorId,
+    await persistActivity(db, { companyId: issue.companyId, ...automaticRetryActor(input),
       action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy),
         ...(replacedRequestId ? { replacedRequestId } : {}),
-        ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
+        ...(input.initiatedBy ? { initiatedBy: input.initiatedBy, onBehalfOfUserId: input.actorId } : {}) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId,
       ...(!active && latest.status === "scheduled_retry" ? { scheduledRetryRunId: latest.id } : {}) };

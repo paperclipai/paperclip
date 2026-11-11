@@ -41,6 +41,10 @@ const briefMarker = (nonce: string) => `CHAOS-${nonce}`;
 const followUpMarker = (nonce: string) => `FOLLOWUP-${nonce}`;
 const continueMarker = (nonce: string) => `CONTINUE-${nonce}`;
 const notesFile = (nonce: string) => `NOTES-${nonce}.md`;
+/** F1: the absolute symlink the agent creates and keeps in the repository root. */
+export const f1LinkName = (nonce: string) => `hosts-link-${nonce}`;
+/** F1: an `ls -l` line for that link: a symlink (`l` mode) naming the link and its absolute target. */
+export const f1LinkListing = (nonce: string) => new RegExp(`^l\\S*\\s.*\\s${f1LinkName(nonce)} -> /etc/hosts$`);
 const benchFile = (nonce: string) => `bench-result-${nonce}.txt`;
 const benchRecord = (nonce: string) => `.bench/run-${nonce}.txt`;
 const r1Module = (nonce: string) => `packages/shared/src/chaos/slug-${nonce}.ts`;
@@ -316,6 +320,37 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         { name: "unittest_passes", ok: tests?.exitCode === 0, detail: `exit=${tests?.exitCode ?? "not run"}` },
         { name: "slugify_output", ok: slug?.exitCode === 0 && slug.stdout.trim() === "hello-chaos-world", detail: JSON.stringify(slug?.stdout.trim() ?? null) },
         { name: "notes_file", ok: artifacts.files[notesFile(nonce)]?.trim() === `B1-${nonce}` },
+      ]);
+    },
+  },
+  F1: {
+    // Staging class F (doc/plans/2026-11-11-staging-failures-vs-chaos-coverage.md): a remote save-back refused
+    // an absolute symlink (`remote_workspace_archive_unsafe_symlink`), exhausted its retries and left the task
+    // blocked. Agents create such links in ordinary work (tool caches, `node_modules/.bin`). The oracle expects
+    // the task to finish with its result saved, with no Retry; how the link itself is saved is the product's choice.
+    id: "F1",
+    label: "Absolute symlink kept in the repository workspace",
+    usesRepository: true,
+    fireWindowMs: [20_000, 90_000],
+    budgetMs: 12 * 60_000,
+    title: nonce => `Chaos F1 workspace link ${nonce}`,
+    description: nonce => [
+      "Work in this task's repository workspace (a small Python CLI called chaoscli).",
+      `Run \`ln -s /etc/hosts ${f1LinkName(nonce)}\` in the repository root to create a symbolic link, and keep it.`,
+      `Create \`${notesFile(nonce)}\` in the repository root. Its first line is exactly \`F1-${nonce}\`.`,
+      `Its second line is the exact output of \`ls -l ${f1LinkName(nonce)}\`, run after you created the link.`,
+      "Do not change any other file and do not run ./bench.sh. Then mark this task done.",
+    ].join("\n"),
+    collect: { documents: [], files: nonce => [notesFile(nonce)], commands: [] },
+    grade(nonce, artifacts) {
+      const lines = (artifacts.files[notesFile(nonce)] ?? "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      return result([
+        statusCheck(artifacts),
+        { name: "workspace_located", ok: artifacts.workspacePath !== null },
+        { name: "notes_file", ok: lines[0] === `F1-${nonce}` },
+        // Proof the absolute link was in the workspace before the save-back: the agent's own `ls -l` output, saved
+        // with the notes file. Best-effort against an agent that invents it; how the link itself is saved is not graded.
+        { name: "link_listed", ok: f1LinkListing(nonce).test(lines[1] ?? ""), detail: JSON.stringify((lines[1] ?? "").slice(0, 160)) },
       ]);
     },
   },

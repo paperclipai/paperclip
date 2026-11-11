@@ -134,7 +134,11 @@ export async function appendHeartbeatRunEvent(
         ...(projectsProgress ? { issueId: boundRunIssueIdSql() } : {}) })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, input.runId))
-      .for("update")
+      // Appenders, Stop, recovery and deletion still serialize on this row.
+      // The append never changes key columns, so it must not block foreign
+      // key checks (FOR KEY SHARE) of child rows, such as controller
+      // checkpoints, that are written for the same run while events stream.
+      .for("no key update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {

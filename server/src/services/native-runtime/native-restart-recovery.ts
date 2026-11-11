@@ -164,9 +164,13 @@ export function suspendedByCleanDrain(coordinator: {
 }): boolean {
   // Attempt 0 means no execution has claimed the run yet. Its first provider
   // start must still be counted, whatever interrupted preparation.
-  if (coordinator.attempt <= 0) return false;
-  for (let index = coordinator.recoveryHistory.length - 1; index >= 0; index -= 1) {
-    const disposition = coordinator.recoveryHistory[index]?.disposition;
+  return coordinator.attempt > 0 && handedToNextControllerSinceClaim(coordinator.recoveryHistory);
+}
+
+/** The latest record since the last claim hands the run to the next server. */
+function handedToNextControllerSinceClaim(history: ReadonlyArray<{ disposition?: unknown }>): boolean {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const disposition = history[index]?.disposition;
     if (disposition === "restart_suspended") return true;
     if (RECOVERY_CLAIM_DISPOSITIONS.has(disposition)) return false;
   }
@@ -963,7 +967,7 @@ function historyEntry(input: {
   } satisfies Record<string, unknown>;
 }
 
-function appendBoundedRecoveryHistory(entry: Record<string, unknown>) {
+export function appendBoundedRecoveryHistory(entry: Record<string, unknown>) {
   const encoded = JSON.stringify(entry);
   return sql`(
     select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
@@ -1029,6 +1033,8 @@ export async function claimNativeRestartRecoveries(input: {
   recoveryRequestId?: string | null;
   runIds?: string[];
   liveRunExecutions?: Pick<ReadonlySet<string>, "has">;
+  /** Runs this process handed to the next server (graceful drain or hot restart). */
+  handedOffForShutdown?: (runId: string) => boolean;
   now?: Date;
   limit?: number;
   /** Called after each committed claim, before scanning the next candidate. */
@@ -1306,8 +1312,27 @@ export async function claimNativeRestartRecoveries(input: {
         && (controllerHostHash === "unknown" || row.coordinator.controllerHostHash !== controllerHostHash);
       const nonExecutionOwner = row.coordinator.leaseOwner?.startsWith("native-finalizer:")
         || row.coordinator.leaseOwner?.startsWith("native-cleanup:");
+      // The recorded controller is this exact process (same boot and PID), so
+      // a PID probe can only ever answer "alive" and the wait would never end.
+      // This process knows whether it still drives the run: its executor is
+      // registered for the whole execution. While it is, leave the run to it.
+      // Once it has exited (for example after a stall outlived its lease and
+      // renewal detached it for "the next controller"), the prior owner is
+      // provably gone, and the evidence checks below decide as for any
+      // stopped controller. An unexpired self lease still waits: a claim that
+      // has not reached its executor yet holds it, and it lapses on its own.
+      // A run this process handed to the next server (graceful drain or hot
+      // restart) stays with that server: this process is about to exit.
+      const ownControllerProcess = !nonExecutionOwner && isCurrentNativeControllerProcess(row.coordinator);
+      if (ownControllerProcess && activeNativeExecutionRunIds.has(row.run.id)) {
+        return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
+      }
+      const ownLeaseLapsed = ownControllerProcess && row.coordinator.leaseExpiresAt !== null
+        && row.coordinator.leaseExpiresAt <= now && !input.handedOffForShutdown?.(row.run.id)
+        && !handedToNextControllerSinceClaim(row.coordinator.recoveryHistory);
       const evaluatedTakeover = nonExecutionOwner
         ? { allowed: false, reason: "native_finalization_or_cleanup_owner" }
+        : ownLeaseLapsed ? { allowed: true, reason: "current_controller_released" }
         : await evaluateNativeControllerTakeover({
           owner: row.coordinator,
           now,
@@ -1379,6 +1404,10 @@ export async function claimNativeRestartRecoveries(input: {
           runId: row.run.id,
           reason: takeover.reason,
           ...(durableAuthority && row.coordinator.leaseExpiresAt ? { retryAt: row.coordinator.leaseExpiresAt }
+            // This process's own unexpired lease with no driver here lapses by
+            // itself; look again then instead of waiting for another signal.
+            : ownControllerProcess && row.coordinator.leaseExpiresAt && row.coordinator.leaseExpiresAt > now
+              && !input.handedOffForShutdown?.(row.run.id) ? { retryAt: row.coordinator.leaseExpiresAt }
             : ["controller_lease_held", "controller_lease_grace"].includes(takeover.reason)
               ? { retryAt: new Date(now.getTime() + CONTROLLER_LEASE_RENEW_MS) } : {}),
         } as const;

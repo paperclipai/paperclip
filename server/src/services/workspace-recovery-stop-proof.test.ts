@@ -3,21 +3,25 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { readRemoteWorkspaceWriterHold, remoteWorkspaceHoldRefusesStart } from "./remote-workspace-writer-hold.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery } from "./system-recovery.js";
-import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork, subscribeDeliveryWork } from "./delivery-work-notifications.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { registerWorkspaceRecoveryWork } from "./workspace-recovery-work.js";
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
 import { RETAINED_SOURCE_FALLBACK_OUTCOME } from "./workspace-recovery-fallback.js";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
-import { reconcileRetainedWorkspaces, recoverRetainedWorkspace, retainedWorkspaceCandidates } from "./workspace-recovery.js";
+import { reconcileRetainedWorkspaces, recoverRetainedWorkspace, retainedWorkspaceCandidates, type PassiveSweep } from "./workspace-recovery.js";
 import { acceptedRemoteExport, action, connectionString, db, run, seed, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
+vi.mock("./execution-control-deadline.js", async importOriginal => ({
+  ...await importOriginal<typeof import("./execution-control-deadline.js")>(), EXECUTION_RECONCILIATION_INTERVAL_MS: 200 }));
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
   return { ...actual, resolveEnvironmentExecutionTarget: async (input: Parameters<typeof actual.resolveEnvironmentExecutionTarget>[0]) =>
@@ -290,6 +294,69 @@ describe("exhausted stop-proof holds", () => {
     // Once that settlement releases the owner, the hold is due again.
     await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).toContain(f.actionId);
+  }, 60_000);
+
+  async function waitingSettledHold(id: string) {
+    const f = await seed("native", true);
+    settledRuns.set(id, f.runId);
+    await adoptSystemRecovery(db, f);
+    const prior = await action(f.actionId);
+    const system = readSystemRecovery(prior.evidence)!;
+    await db.update(issueRecoveryActions).set({ id, status: "resolved", outcome: "blocked", ownerType: "system", evidence: { ...prior.evidence,
+      systemRecovery: { ...system, state: "complete", phase: "reconcile_effects", attempts: 1 },
+      workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "recovered", stage: "saving_receipts",
+        attempt: 1, attemptLimit: 6, retryable: false, requestIds: [] },
+      automaticRecovery: { runId: f.runId, policy: "preserve_without_replay_v1", replay: "blocked" } } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    const source = await run(f.runId);
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: source.agentId, source: "on_demand",
+      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId } });
+    return f;
+  }
+
+  const settledRuns = new Map<string, string>();
+
+  it("restarts a finished passive pass when a change adds work both before and after its cursor", async () => {
+    const first = await waitingSettledHold("00000002-0000-4000-8000-000000000000");
+    await waitingSettledHold("00000003-0000-4000-8000-000000000000");
+    const visited: string[] = [];
+    const onRecovered = async (source: { id: string }) => { visited.push(source.id); };
+    const sweep: PassiveSweep = {};
+    for (let pass = 0; pass < 4 && !sweep.complete; pass += 1)
+      await Promise.all(await reconcileRetainedWorkspaces(db, first.environmentRuntime, onRecovered, true, undefined, sweep) ?? []);
+    expect(sweep.complete).toBe(true);
+    await waitingSettledHold("00000001-0000-4000-8000-000000000000");
+    const f = await exhaustedStopProofHold();
+    await db.update(issueRecoveryActions).set({ id: "ffffffff-0000-4000-8000-000000000000" }).where(eq(issueRecoveryActions.id, f.actionId));
+    sweep.restart = true;
+    visited.length = 0;
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, sweep) ?? []);
+    expect(sweep).toMatchObject({ complete: false, restart: true });
+    for (let pass = 0; pass < 6 && !(sweep.complete && !sweep.restart && visited.includes(settledRuns.get("00000001-0000-4000-8000-000000000000")!)); pass += 1)
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, sweep) ?? []);
+    expect(visited).toContain(settledRuns.get("00000001-0000-4000-8000-000000000000"));
+    expect((await action("ffffffff-0000-4000-8000-000000000000")).evidence.stopProofRecovery).toMatchObject({ rearms: 1 });
+  }, 60_000);
+
+  it("re-arms the hold on a busy instance whose passive sweep keeps selecting earlier settled holds", async () => {
+    for (const prefix of ["00000001", "00000002", "00000003", "00000004", "00000005", "00000006"])
+      await waitingSettledHold(`${prefix}-0000-4000-8000-000000000000`);
+    const f = await exhaustedStopProofHold();
+    const holdId = "ffffffff-0000-4000-8000-000000000000";
+    await db.update(issueRecoveryActions).set({ id: holdId }).where(eq(issueRecoveryActions.id, f.actionId));
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: vi.fn() });
+    const worker = registerWorkspaceRecoveryWork(db, coordinator, f.environmentRuntime, async () => undefined);
+    const busy = setInterval(() => { void db.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery)).catch(() => undefined); }, 50);
+    try {
+      await worker.ready;
+      await vi.waitFor(async () => expect((await action(holdId)).evidence.stopProofRecovery).toMatchObject({ rearms: 1 }),
+        { timeout: 20_000, interval: 250 });
+    } finally {
+      clearInterval(busy);
+      await worker.stop();
+      await coordinator.stop();
+    }
   }, 60_000);
 
   it("wakes the workspace recovery worker when a stop receipt is recorded", async () => {

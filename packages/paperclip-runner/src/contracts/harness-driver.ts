@@ -498,7 +498,9 @@ export interface PersistedHarnessSession {
 }
 
 /** Runner proof that saved provider state cannot be restored by this runner
- * build. Restoring the same state again fails the same way. */
+ * build, or in the workspace assigned to this run (for example, a remote
+ * workspace root that moved after its epoch was abandoned). Restoring the same
+ * state again fails the same way. */
 export const PROVIDER_STATE_INCOMPATIBLE = "provider_state_incompatible";
 /** Runner refused to attach a new run to the saved session (for example, a
  * protected launch argument or the durable provider profile would change).

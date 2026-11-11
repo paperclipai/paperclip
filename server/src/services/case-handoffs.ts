@@ -111,10 +111,37 @@ async function authorizeTerminalTask(tx: Db, actor: AuthorizationActor, issue: I
     parentIssueId: issue.parentId, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status };
   if (!(await access.decide({ actor, action: "issue:read", resource })).allowed) throw notFound("Task not found");
   if (actor.type === "agent" && (issue.assigneeAgentId !== actor.agentId || issue.assigneeUserId)) {
-    throw forbidden("Agents may complete only their own case work");
+    const task = issue.identifier ?? issue.id;
+    const [owner] = issue.assigneeAgentId && !issue.assigneeUserId ? await tx.select({ name: agents.name }).from(agents)
+      .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId))).limit(1) : [];
+    throw forbidden(owner
+      ? `Agents may complete only their own case work. ${owner.name} (agent ${issue.assigneeAgentId}) owns primary task ${task} and records the terminal handoff. Ask that agent on ${task} to close the case.`
+      : `Agents may complete only their own case work. Primary task ${task} has no assigned agent to close the case.`,
+    { primaryTaskId: issue.id, assigneeAgentId: issue.assigneeAgentId });
   }
   const mutation = await access.decide({ actor, action: "issue:mutate", resource });
   if (!mutation.allowed) throw forbidden(mutation.explanation, authorizationDeniedDetails(mutation));
+}
+
+const TERMINAL_CASE_STATUSES = new Set(["done", "cancelled"]);
+
+/**
+ * Direct case writes must not close or reopen a case with a primary task past
+ * the authority a terminal handoff requires. Agents need the same ownership of
+ * the primary task, and `done` still goes through the handoff so primary-task
+ * completion passes its normal gates.
+ */
+export async function assertCaseStatusWriteAuthority(tx: Db, actor: AuthorizationActor,
+  current: { companyId: string; status: string; workIssueId: string | null }, nextStatus: string | undefined) {
+  if (actor.type !== "agent" || nextStatus === undefined || nextStatus === current.status || !current.workIssueId) return;
+  if (!TERMINAL_CASE_STATUSES.has(nextStatus) && !TERMINAL_CASE_STATUSES.has(current.status)) return;
+  const [issue] = await tx.select().from(issues)
+    .where(and(eq(issues.id, current.workIssueId), eq(issues.companyId, current.companyId))).limit(1);
+  if (!issue) throw notFound("Task not found");
+  await authorizeTerminalTask(tx, actor, issue);
+  if (nextStatus === "done") {
+    throw unprocessable("Close a case that has a primary task with a terminal handoff to done");
+  }
 }
 
 async function authorizeHandoffControl(tx: Db, actor: AuthorizationActor, row: CaseHandoffRow, issue: IssueRow, validateRecipient = true) {

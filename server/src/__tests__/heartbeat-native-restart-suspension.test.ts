@@ -384,6 +384,55 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(reached).toHaveBeenCalled();
   }, 60_000);
 
+  // Daytona waves s9330 and s9331 (TM1): stalls of the same server outlived
+  // the execution lease. Renewal found the lease lapsed and detached the
+  // executor for "the next controller" with no shutdown handoff, and the
+  // executor returned with the run still running. The next controller is this
+  // same process; nothing may leave the run running with no recovery.
+  it("recovers a run whose executor detached after its own lease lapsed, with no restart", async () => {
+    const f = await seedRecoverableRun("SELF-DETACHED-LAPSED");
+    let opened = 0;
+    const reachedAgain = vi.fn();
+    const backend = vi.fn((): NativeSessionBackend => {
+      opened += 1;
+      const first = opened === 1;
+      const open = async () => {
+        if (first) {
+          // What the remote renewal's loss does: the lease lapsed during the
+          // stall, and the executor is detached for the next controller.
+          await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+            .where(eq(nativeRunFinalizations.runId, f.runId));
+          void detachNativeSessionsForRestart([f.runId]);
+          throw new Error("runner stream lost while the controller was stopped");
+        }
+        reachedAgain();
+        throw new Error("stop at provider dispatch");
+      };
+      return {
+        async descriptor() {
+          return { kind: "mock", name: "self-detached", version: "1", capabilities: {
+            resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+            runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } };
+        },
+        openSession: open,
+        recoverSession: open,
+      } as unknown as NativeSessionBackend;
+    });
+    const heartbeat = heartbeatService(f.db, { nativeSessionBackendFactory: backend });
+    try {
+      const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+      await heartbeat.drainActiveRunExecutions();
+      // The same process takes the run back on its own, without a restart.
+      await waitForCondition("the same process to take the run back", () => reachedAgain.mock.calls.length > 0, 15_000);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    expect(reachedAgain).toHaveBeenCalled();
+    const transitions = await f.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.transition")));
+    expect(transitions.map(event => (event.payload as Record<string, unknown>).reason))
+      .not.toContain("controller_still_alive");
+  }, 60_000);
+
 
   async function shutdownDispositions(db: Awaited<ReturnType<typeof seedRecoverableRun>>["db"], runId: string) {
     const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
@@ -832,7 +881,9 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         .where(eq(nativeRunFinalizations.runId, f.runId));
       const onClaim = vi.fn();
       expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim }))
-        .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_still_alive" }]);
+        .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_still_alive",
+          // This process's own live lease lapses by itself; recovery looks again then.
+          retryAt: expect.any(Date) }]);
       expect(onClaim).not.toHaveBeenCalled();
     }, 60_000);
 

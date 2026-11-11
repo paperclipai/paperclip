@@ -19,8 +19,8 @@ function isReattachmentLoss(error: string | null): boolean {
   return error !== null && REATTACHMENT_LOST_ERRORS.some(code => error === code || error.startsWith(`${code}: `));
 }
 
-const TURN_STARTED_EVENTS = ["turn.submitted", "turn.started", "turn.accepted"];
-const TURN_SETTLED_EVENTS = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
+export const TURN_STARTED_EVENTS = ["turn.submitted", "turn.started", "turn.accepted"];
+export const TURN_SETTLED_EVENTS = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -29,7 +29,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
  * A driver that lost its event stream records `providerTerminalObserved: false`
  * (on the event or its stored PRP source): the real outcome is unknown, and
  * another turn could repeat work that already happened. */
-function isProvenTurnSettlement(event: { eventType: string; payload: unknown }) {
+export function isProvenTurnSettlement(event: { eventType: string; payload: unknown }) {
   if (!TURN_SETTLED_EVENTS.includes(event.eventType)) return false;
   const payload = asRecord(event.payload);
   return payload.providerTerminalObserved !== false &&

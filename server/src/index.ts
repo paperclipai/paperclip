@@ -132,6 +132,7 @@ import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { startEventLoopStallMonitor } from "./event-loop-stall-monitor.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
   StartupRefusalError,
@@ -951,7 +952,8 @@ async function startServerWithDatabaseTeardown(
     logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
   }
   const idleDeadlineOwners: IdleDeadlineOwners = {};
-  // createApp fills the chat Retry callback; the continuation worker reads it.
+  // createApp fills the chat Retry callback; the continuation and
+  // provider-limit Retry workers read it.
   const budgetResumeDelivery: BudgetResumeDelivery = {};
   const app = await createApp(db as any, {
     idleDeadlineOwners,
@@ -1089,6 +1091,13 @@ async function startServerWithDatabaseTeardown(
     });
   });
   startupListenerBound = true;
+  // A blocked event loop lapses every controller lease and freezes every
+  // request, so record each long block with the deltas that name its class.
+  const eventLoopStallMonitor = startEventLoopStallMonitor({
+    log: (stall) => logger.warn({ eventLoopStall: stall }, `event loop blocked for ${stall.stallMs} ms (likely ${stall.likelyCause})`),
+  });
+  // A failed startup closes the listener without the ordered shutdown path.
+  server.once("close", () => eventLoopStallMonitor.stop());
   // The factory publishes the verified numeric endpoint on listening. Native
   // recovery must never fall back to a configured/public URL if it is absent.
   resolveLocalRuntimeApiUrl();
@@ -1771,6 +1780,10 @@ async function startServerWithDatabaseTeardown(
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerDeferredReceiptWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    // A connected conversation's Retry needs the chat callback createApp registered.
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerProviderLimitResumeWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+      () => budgetResumeDelivery.prepareChatRetry).ready;
     if (config.heartbeatSchedulerEnabled) {
       const work = heartbeat.registerRunDispatchWork(deliveryWork,
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
@@ -2057,6 +2070,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     const shutdownStartedAt = Date.now();
     logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
+    eventLoopStallMonitor.stop();
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();

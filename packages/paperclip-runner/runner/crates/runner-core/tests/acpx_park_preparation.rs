@@ -17,6 +17,9 @@ use sha2::{Digest, Sha256};
 #[path = "support/acpx_turn_end_restart.rs"]
 mod turn_end_restart;
 
+#[path = "support/acpx_cut_turn_start.rs"]
+mod cut_turn_start;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {

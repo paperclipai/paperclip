@@ -362,7 +362,8 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "documents-artifacts.resolve-feedback": o => { o.annotations![1]!.status = "resolved"; },
   "documents-artifacts.restore-document": o => { o.documents[0]!.body = "third"; },
   "inbox-search.show-decisions": o => { o.reply = "You can approve every item."; },
-  "inbox-search.find-design": o => { o.reply = "Revision 2 is the latest approved design."; },
+  // The returned record (first task link) is another task, not the one holding the approved revision.
+  "inbox-search.find-design": o => { o.links = ["/RUN/issues/earlier-design", ...o.links]; },
   "inbox-search.notification-audience": o => { Object.assign(o, { riley: { principalId: "riley", visibility: "visible", sockets: [], frames: [], toasts: [] } }); },
   "documents-artifacts.find-artifact": o => { o.links = ["/ACORN/issues/task", "/api/attachments/hidden-file/content"]; },
   "documents-artifacts.produce-download": o => { o.links = ["/ACORN/issues/task", "/tmp/website.html"]; },

@@ -20,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -38,6 +38,7 @@ import {
 import {
   boundedCodexValue,
   codexThreadWorkingDirectory,
+  remoteRunnerWorkingDirectoryMoved,
   validateCodexWorkingDirectory as validateWorkingDirectory,
 } from "./codex-boundaries.js";
 import {
@@ -394,6 +395,40 @@ export class CodexAppServerDriver implements HarnessDriver {
         recovered: false,
         reason: "persisted session identity is incomplete",
       };
+    }
+    // A session saved under an abandoned remote workspace root cannot resume
+    // in the newly assigned root. When it holds no in-flight turn or runtime
+    // request (a follow-up's inherited checkpoint, for example), decline
+    // before any Runner or provider process starts, so the runtime's recovery
+    // policy decides: a replacement in the assigned workspace, or the
+    // permanent named refusal when the checkpoint requires the same session.
+    // Retrying cannot move the saved session, so this is incompatible state,
+    // not a transient failure. A session with an in-flight turn or runtime
+    // request may have an external effect nothing here can prove settled, so
+    // it is never replaced: it stops by name for an operator to reconcile.
+    if (
+      snapshot.workingDirectory &&
+      this.#options.workingDirectoryAuthority === "remote_runner" &&
+      remoteRunnerWorkingDirectoryMoved(snapshot.workingDirectory, this.#options.environment)
+    ) {
+      // A crash can save a turn's terminal record before clearing its active
+      // marker; that turn finished and is not in flight.
+      const activeTurnIsTerminal = (snapshot.terminalTurns ?? []).some(
+        (terminal) => terminal.turnId === snapshot.activeTurnId,
+      );
+      const inFlight = (Boolean(snapshot.activeTurnId) && !activeTurnIsTerminal)
+        || Boolean(snapshot.pendingRuntimeRequests?.length);
+      return inFlight
+        ? {
+            recovered: false,
+            reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
+            failureClass: PROVIDER_SIDE_EFFECT_PENDING,
+          }
+        : {
+            recovered: false,
+            reason: "persisted session working directory is not the assigned remote workspace",
+            failureClass: PROVIDER_STATE_INCOMPATIBLE,
+          };
     }
     const transport = this.#transport({
       workingDirectory: snapshot.workingDirectory

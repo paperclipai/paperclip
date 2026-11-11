@@ -58,7 +58,7 @@ export const runtimeGitCases = [runtimeDefinition("workspaces.inspect-git", asyn
     headerBefore: await readFile(header, "utf8"), notesBefore: await readFile(notes, "utf8") };
 }, gradeInspectGit, {
   sourceFiles: ["chat-catalog-domains/runtime-git.ts", "chat-catalog-domains/runtime-workspaces.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/workspaces.yaml"],
-  oracleVersion: "paperclip.chat-catalog.inspect-git.structural.v3", expectedRunCount: 2, attemptTimeoutMs: 540_000,
+  oracleVersion: "paperclip.chat-catalog.inspect-git.structural.v4", expectedRunCount: 2, attemptTimeoutMs: 540_000,
   async observe(ctx, state) {
     const cwd = String(state.nativeInspectionCwd);
     state.workspaceAfter = await ctx.input.api.get(`/api/issues/${(state.task as Entity).id}/workspace`);
@@ -72,13 +72,17 @@ export const runtimeGitCases = [runtimeDefinition("workspaces.inspect-git", asyn
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
     await expect(ctx.input.page.getByRole("heading", { name: task.title!, exact: true }).first()).toBeVisible();
-    // The task side panel can start closed; open it through its ordinary toggle, as a person would.
-    const newTab = ctx.input.page.getByRole("button", { name: "Open a new tab", exact: true }).filter({ visible: true });
-    const toggle = ctx.input.page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true });
-    await expect.poll(async () => await newTab.isVisible() || await toggle.isVisible()).toBe(true);
-    if (!await newTab.isVisible()) await toggle.click();
-    await newTab.click();
-    await ctx.input.page.getByRole("option", { name: /^Files/ }).click();
+    // The task side panel can start closed; open it through the control the page renders ("Show properties"
+    // in the task header), as a person would, then choose the Files tab from the panel's tab launcher.
+    const page = ctx.input.page;
+    const newTab = page.getByRole("button", { name: "Open a new tab", exact: true }).filter({ visible: true });
+    const toggle = page.getByRole("button", { name: /^(Show properties|Toggle side panel)$/ }).filter({ visible: true }).first();
+    const files = page.getByRole("option", { name: /^Files/ }).filter({ visible: true }).first();
+    await expect.poll(async () => await newTab.isVisible() || await files.isVisible() || await toggle.isVisible()).toBe(true);
+    if (!await newTab.isVisible() && !await files.isVisible()) await toggle.click();
+    await expect.poll(async () => await files.isVisible() || await newTab.isVisible()).toBe(true);
+    if (!await files.isVisible()) await newTab.click();
+    await files.click();
     await expect(ctx.input.page.getByText("header.html", { exact: true }).first()).toBeVisible();
     await expect(ctx.input.page.getByText("existing-notes.txt", { exact: true }).first()).toBeVisible();
     await ctx.input.evidence("runtime-authorized-git-files-ui.json", { taskId: task.id, workspaceId: (state.workspaceBefore as { workspace: { id: string } }).workspace.id, url: ctx.input.page.url() });

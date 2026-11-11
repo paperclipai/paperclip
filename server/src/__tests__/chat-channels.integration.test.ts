@@ -4194,6 +4194,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
+    it("finds terminal GitHub responses by native issue binding before legacy run context", async () => {
+      const f = await toolReplyFixture();
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      // Newer runs of the same agent that do not bind this issue: one is natively
+      // bound to another issue although its legacy context names this issue, and
+      // one names another issue in its context. Neither may hide the stopped run.
+      await db.insert(heartbeatRuns).values([
+        { companyId: f.companyId, agentId: f.assignedAgentId, status: "running", runtimeMode: "native",
+          nativeIssueId: randomUUID(), contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 60_000) },
+        { companyId: f.companyId, agentId: f.assignedAgentId, status: "running",
+          contextSnapshot: { issueId: randomUUID() }, createdAt: new Date(Date.now() + 120_000) },
+      ]);
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("keeps terminal GitHub responses waiting while a natively bound newer run is active", async () => {
+      const f = await toolReplyFixture();
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      // The newer run binds this issue natively; its legacy context is ignored.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        status: "running", runtimeMode: "native", nativeIssueId: issueId, contextSnapshot: { issueId: randomUUID() },
+        createdAt: new Date(Date.now() + 60_000) });
+      const baseline = f.responseWrites.length;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        expect(f.responseWrites).toHaveLength(baseline);
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+          eq(chatActions.kind, "github_response_comment")));
+        expect(action).toMatchObject({ status: "processed" });
+        expect(action.result?.final).not.toBe(true);
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
     it("settles a deleted Board-origin request without starving unrelated terminal GitHub replies", async () => {
       const invalid = await toolReplyFixture();
       const valid = await toolReplyFixture();

@@ -220,6 +220,23 @@ export async function nativeRecoveryClaimRelinquished(input: {
     && row.lastDisposition === "restart_suspended";
 }
 
+/**
+ * The run's controller is this process and its execution lease has lapsed
+ * (or was released): the executor that held it detached because of that loss,
+ * not because a shutdown or hot restart handed the run on.
+ */
+export async function ownNativeExecutionLeaseLapsed(db: Db, input: { companyId: string; id: string }): Promise<boolean> {
+  const controller = await currentNativeControllerIdentity();
+  const [row] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.id),
+      eq(heartbeatRuns.status, "running"), isNull(nativeRunFinalizations.resultId),
+      eq(nativeRunFinalizations.controllerBootId, controller.bootId), eq(nativeRunFinalizations.controllerPid, controller.pid),
+      or(isNull(nativeRunFinalizations.leaseExpiresAt), sql`${nativeRunFinalizations.leaseExpiresAt} <= clock_timestamp()`)))
+    .limit(1);
+  return Boolean(row);
+}
+
 export async function releaseLapsedNativeRestartClaim(input: {
   db: Db; companyId: string; runId: string; leaseOwner: string; controllerGeneration: number; providerAttempt: number;
 }): Promise<boolean> {

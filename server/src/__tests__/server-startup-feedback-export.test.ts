@@ -159,6 +159,7 @@ const {
     registerIssueStateRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(),
       watchdogs: { reconciliationSnapshot: () => ({ revision: "startup-watchdogs:1", reconciled: true }), stop: vi.fn(async () => {}) } })),
     registerDeferredReceiptWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerProviderLimitResumeWork: vi.fn((_coordinator: unknown, _canRun: () => boolean, _prepareChatRetry?: () => unknown) => ({ ready: Promise.resolve() })),
     registerRunDispatchWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(),
       retries: { reconciliationSnapshot: () => ({ revision: "startup-retries:1", reconciled: true }), stop: vi.fn(async () => {}) } })),
     registerScheduledRetryCancellationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
@@ -1048,7 +1049,14 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.registerActiveRunSilenceWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.registerDeferredReceiptWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerProviderLimitResumeWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+    if (enabled) {
+      const [limitCoordinator, limitAdmitted, chatRetry] = heartbeatServiceMock.registerProviderLimitResumeWork.mock.calls[0];
+      expect(limitCoordinator).toBe((await createAppMock.mock.results.at(-1)!.value).locals.deliveryWork);
+      expect(limitAdmitted()).toBe(true);
+      expect(typeof chatRetry).toBe("function");
+    }
     if (enabled) {
       const [coordinator, admitted] = heartbeatServiceMock.registerRunDispatchWork.mock.calls[0];
       const app = await createAppMock.mock.results.at(-1)!.value;

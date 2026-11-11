@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -51,6 +51,7 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
         const fixtureCompanies = [companyId, otherCompanyId];
         await db.delete(heartbeatRunEvents).where(inArray(heartbeatRunEvents.companyId, fixtureCompanies));
         await db.delete(heartbeatRuns).where(inArray(heartbeatRuns.companyId, fixtureCompanies));
+        await db.delete(issues).where(inArray(issues.companyId, fixtureCompanies));
         await db.delete(agents).where(inArray(agents.companyId, fixtureCompanies));
         await db.delete(companies).where(inArray(companies.id, fixtureCompanies));
       }
@@ -145,12 +146,59 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     expect((await readRun(runId)).nextEventSeq).toBe(2);
     expect(await readEvents(runId)).toEqual([committed.row]);
     const lockReads = statements.filter(query => query.startsWith("select ") &&
-      query.includes('from "heartbeat_runs"') && query.endsWith("for update"));
+      query.includes('from "heartbeat_runs"') && query.endsWith("for no key update"));
     expect(lockReads).toHaveLength(2);
     for (const query of lockReads) {
       expect(query).toMatch(/^select "company_id", "agent_id" from "heartbeat_runs" /);
       expect(query).not.toMatch(/context_snapshot|runner_profile_json|result_json|stdout_excerpt/);
     }
+  });
+
+  it("serializes appenders without blocking child foreign key checks on the run", async () => {
+    const runId = await makeRun();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Checkpointed task" }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id, runtimeMode: "native" })
+      .where(eq(heartbeatRuns.id, runId));
+    const native = (ordinal: number) => ({
+      companyId, agentId, runId, eventType: "item.completed",
+      nativeSource: { sourceInstanceId: "native-writer", sourceEventId: `held-${ordinal}`,
+        sourceSeq: ordinal, protocolSchemaVersion: 1, canonicalPayload: { ordinal } },
+    });
+    let releaseHolder!: () => void;
+    const held = new Promise<void>(resolve => { releaseHolder = resolve; });
+    let holderLocked!: () => void;
+    const locked = new Promise<void>(resolve => { holderLocked = resolve; });
+    // An append whose transaction is still open holds the run lock, as an
+    // event append does while its remaining statements run.
+    const holder = otherDb.transaction(async tx => {
+      await appendHeartbeatRunEvent(tx as unknown as typeof db, native(1));
+      holderLocked();
+      await held;
+    });
+    await locked;
+    let secondSettled = false;
+    const second = appendHeartbeatRunEvent(db, native(2)).finally(() => { secondSettled = true; });
+    try {
+      // A controller checkpoint row references the run row by foreign key.
+      // Its insert must not wait for the open append.
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '2s'`);
+        await tx.insert(nativeRunnerCheckpoints).values({ companyId, issueId: issue!.id, runId,
+          part: "event:1", material: { fixture: true } });
+      });
+      // Another appender still waits for the open append.
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(secondSettled).toBe(false);
+    } finally {
+      releaseHolder();
+      await holder;
+    }
+    expect((await second).row.seq).toBe(2);
+    expect((await readEvents(runId)).map(row => [row.seq, row.sourceSeq])).toEqual([[1, 1], [2, 2]]);
+    expect((await readRun(runId)).nextEventSeq).toBe(3);
+    expect(await db.select({ part: nativeRunnerCheckpoints.part }).from(nativeRunnerCheckpoints)
+      .where(eq(nativeRunnerCheckpoints.runId, runId))).toEqual([{ part: "event:1" }]);
+    await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, runId));
   });
 
   it("rejects mismatched authority without changing either run", async () => {
