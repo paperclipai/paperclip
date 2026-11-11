@@ -41,6 +41,22 @@ function commentDb(rows: unknown[] | Error) {
   return { db: { select } as unknown as Db, select };
 }
 
+function heldCommentDb() {
+  let release!: (rows: unknown[]) => void;
+  const limit = vi.fn(() => new Promise<unknown[]>((resolve) => { release = resolve; }));
+  const query = { from: () => query, where: () => query, limit };
+  const db = { select: vi.fn(() => query) } as unknown as Db;
+  return { db, limit, release: (rows: unknown[]) => release(rows) };
+}
+
+function flushAsyncWork() {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function publishedEventTypes() {
+  return vi.mocked(publishPluginDomainEvent).mock.calls.map(([event]) => event.eventType);
+}
+
 function run(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running",
@@ -91,5 +107,77 @@ describe("run lifecycle plugin events", () => {
     await lifecycle.publishRunLifecyclePluginEvent(run({ status, finishedAt: new Date(1) }));
     expect(select).not.toHaveBeenCalled();
     expect(publishedPayload()).toMatchObject({ status, sourceCommentId: null });
+  });
+
+  describe("ordering per run", () => {
+    const comment = [{ id: "comment-1", authorUserId: "user-1", authorAgentId: null }];
+    const cancelled = { status: "cancelled", finishedAt: new Date(1) } satisfies Partial<Run>;
+
+    it("does not let a cancel from another service instance overtake a pending started event", async () => {
+      const held = heldCommentDb();
+      const claimLifecycle = createHeartbeatLifecycle(held.db, dependencies(held.db));
+      const { db: otherDb } = commentDb(comment);
+      const cancelLifecycle = createHeartbeatLifecycle(otherDb, dependencies(otherDb));
+
+      const started = claimLifecycle.publishRunLifecyclePluginEvent(run());
+      await flushAsyncWork();
+      expect(held.limit).toHaveBeenCalledOnce();
+      const cancel = cancelLifecycle.publishRunLifecyclePluginEvent(run(cancelled));
+      await flushAsyncWork();
+      expect(publishPluginDomainEvent).not.toHaveBeenCalled();
+
+      held.release(comment);
+      await Promise.all([started, cancel]);
+      expect(publishedEventTypes()).toEqual(["agent.run.started", "agent.run.cancelled"]);
+      expect(publishedPayload(0)).toMatchObject({ status: "running", sourceCommentId: "comment-1" });
+    });
+
+    it("queues run-dispatch effect events behind a pending started event", async () => {
+      const held = heldCommentDb();
+      const lifecycle = createHeartbeatLifecycle(held.db, dependencies(held.db));
+
+      const started = lifecycle.publishRunLifecyclePluginEvent(run());
+      await flushAsyncWork();
+      lifecycle.publishRunLifecyclePluginEventData({
+        companyId: "company-1", runId: "run-1", agentId: "agent-1", status: "cancelled",
+        invocationSource: "automation", triggerDetail: "system", error: null, errorCode: null,
+        issueId: "issue-1", startedAt: new Date(0), finishedAt: new Date(1),
+      });
+      await flushAsyncWork();
+      expect(publishPluginDomainEvent).not.toHaveBeenCalled();
+
+      held.release(comment);
+      await started;
+      await flushAsyncWork();
+      expect(publishedEventTypes()).toEqual(["agent.run.started", "agent.run.cancelled"]);
+    });
+
+    it("does not hold events for other runs", async () => {
+      const held = heldCommentDb();
+      const lifecycle = createHeartbeatLifecycle(held.db, dependencies(held.db));
+
+      const started = lifecycle.publishRunLifecyclePluginEvent(run());
+      await flushAsyncWork();
+      void lifecycle.publishRunLifecyclePluginEvent(run({ id: "run-2", ...cancelled }));
+      expect(publishedEventTypes()).toEqual(["agent.run.cancelled"]);
+
+      held.release(comment);
+      await started;
+    });
+
+    it("publishes synchronously again once the pending event settles", async () => {
+      const held = heldCommentDb();
+      const lifecycle = createHeartbeatLifecycle(held.db, dependencies(held.db));
+
+      const started = lifecycle.publishRunLifecyclePluginEvent(run());
+      await flushAsyncWork();
+      held.release(comment);
+      await started;
+      await flushAsyncWork();
+      vi.mocked(publishPluginDomainEvent).mockClear();
+
+      void lifecycle.publishRunLifecyclePluginEvent(run(cancelled));
+      expect(publishedEventTypes()).toEqual(["agent.run.cancelled"]);
+    });
   });
 });
