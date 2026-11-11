@@ -38,6 +38,9 @@ import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
 import { TaskObserver, childSpeedTasksInTurn } from "./observer.js";
 import { closeJourneyApps } from "./journey-driver.js";
 import { matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
+import { redeployWave } from "./redeploy.js";
+import { withT1CrossingCheck } from "./workloads.js";
+import { captureWaveRunnerLogs } from "./daytona-runner-logs.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
@@ -200,7 +203,9 @@ async function main(): Promise<number> {
   const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
   if (crashPoint && plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
-    ...(plan.options.upgradeFrom ?? plan.options.serverFrom ? { upgradeFrom: plan.options.upgradeFrom ?? plan.options.serverFrom } : {}) });
+    ...(plan.options.upgradeFrom ?? plan.options.serverFrom ? { upgradeFrom: plan.options.upgradeFrom ?? plan.options.serverFrom } : {}),
+    // K15: every server of the wave runs under an emulated deploy identity; a replay derives the source wave's ones.
+    ...(redeployWave(plan) ? { redeployWaveId: plan.replayOf?.waveId ?? plan.waveId } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
   // its own batch of tasks; the point is armed once the batch launched and the
   // server kills itself at its nth hit (restarted like K1). Invariants are
@@ -236,6 +241,14 @@ async function main(): Promise<number> {
   }
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
+  let runnerLogTarget: { companyId: string; environmentId: string } | null = null;
+  const captureRunnerLogs = async (label: string) => {
+    if (!runnerLogTarget) return;
+    const capture = await captureWaveRunnerLogs({ apiKey: process.env.DAYTONA_API_KEY!, ...runnerLogTarget,
+      outDir: path.join(waveDir, "daytona-runner"), label, secrets: knownSecretValues() });
+    timeline.add("runner_logs_captured", { label: capture.label, error: capture.error,
+      sandboxes: capture.sandboxes.map(sandbox => `${sandbox.id}:${sandbox.state ?? "?"}${sandbox.file ? ":probed" : ""}${sandbox.error ? `:error=${sandbox.error.slice(0, 120)}` : ""}`) });
+  };
   let interrupted = false;
   const onSignal = (signal: NodeJS.Signals) => { if (!interrupted) { interrupted = true; timeline.add("harness_interrupted", { signal }); } };
   process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal);
@@ -339,6 +352,11 @@ async function main(): Promise<number> {
       adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
+        // K15 on Daytona: the remote Runner's logs, identity and state while the controller is down (daytona-runner-logs.ts).
+        if (redeployWave(plan)) {
+          runnerLogTarget = { companyId: owned.companyId, environmentId: owned.environmentId };
+          supervisor.redeployEvidence = (faultId, phase) => captureRunnerLogs(`${faultId}-${phase}`);
+        }
       } });
     spendTarget = { api, companyId: lab.companyId };
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
@@ -623,6 +641,7 @@ async function main(): Promise<number> {
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
     await recordWaveSpend();
     timeline.add("wave_sweep", {});
+    if (runnerLogTarget) await captureRunnerLogs("wave-end");
     if (sweeper) {
       sandboxSweep = await (sweeper as DaytonaWaveSweeper).sweep();
       timeline.add("daytona_sweep", { ...sandboxSweep });
@@ -659,7 +678,9 @@ async function main(): Promise<number> {
       const restart = faults.find(receipt => receipt.requestedBy === observer.plan.taskId && receipt.trigger === "provider");
       const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? [], restart?.startedAt ?? null,
         restart?.stoppedAt ?? restart?.startedAt ?? null);
-      const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle, universalByIssue ? {
+      // T1: a mid-tool fault only counts when one of the task's faults started while its loop ran (workloads.ts).
+      const toolOracle = withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults);
+      const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;
       if (!grade.pass) {

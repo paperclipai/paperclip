@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { LinkPreviewProvider } from "@/context/LinkPreviewContext";
+import { startPersistedQueryCache } from "@/lib/persisted-query-cache";
+import { queryKeys } from "@/lib/queryKeys";
 import { prepareFixtureApi } from "../../support/capability-gaps/api";
 
 interface PreviewArgs { state: LinkPreviewState; mode: "ready" | "loading" | "unavailable" | "failure"; longTitle: boolean }
 
-function PreviewExample(_args: PreviewArgs) {
-  const [client] = useState(() => new QueryClient());
+function PreviewExample({ client: restoredClient }: PreviewArgs & { client?: QueryClient }) {
+  const [localClient] = useState(() => new QueryClient());
+  const client = restoredClient ?? localClient;
   return <QueryClientProvider client={client}>
     <LinkPreviewProvider companyId="company-storybook" userId="user-board">
       <main className="mx-auto flex max-w-3xl flex-col gap-8 p-6">
@@ -27,6 +30,19 @@ function PreviewExample(_args: PreviewArgs) {
       </main>
     </LinkPreviewProvider>
   </QueryClientProvider>;
+}
+
+function PersistedPreviewExample(args: PreviewArgs) {
+  const [client] = useState(() => new QueryClient());
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-board" } });
+    client.setQueryData(queryKeys.companies.list("user-board"), { companies: [{ id: "company-storybook" }] });
+    const cache = startPersistedQueryCache(client, { buildId: "link-preview-story-v1" });
+    setReady(true);
+    return () => { cache.dispose(); client.clear(); };
+  }, [client]);
+  return ready ? <PreviewExample {...args} client={client} /> : null;
 }
 
 const meta = {
@@ -60,6 +76,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Neutral: Story = {};
+export const ReloadCache: Story = {
+  render: args => <PersistedPreviewExample {...args} />,
+  parameters: { paperclip: { notes: "Production browser read-cache persistence with fixture account/company identity. Load a PR, then reload this iframe to retain the learned status. Fresh previews reuse their original read time; stale previews refresh only on hover or focus. No live provider authorization is claimed." } },
+};
 export const Open: Story = {};
 export const Merged: Story = { args: { state: "merged" } };
 export const Conflicts: Story = { args: { state: "conflicts" } };
