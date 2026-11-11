@@ -6210,7 +6210,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     core.persistRunAttachTemplate(runAttachTemplate);
     if (!unclaimedBootstrap) {
       core.queueCommand("run.prepare", runAttachTemplate);
-      this.#openingCommandId = core.queueCommand("session.open", { reuse: "same_session" }).commandId;
+      const opening: { commandId?: string } | undefined = core.queueCommand("session.open", { reuse: "same_session" });
+      this.#openingCommandId = opening?.commandId ?? null;
     }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
@@ -6885,7 +6886,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ? `command_resume_probe_${randomUUID().replaceAll("-", "")}`
         : null;
     if (recoveryProbeCommandId !== null) {
-      this.#openingCommandId = core.queueCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", {}, recoveryProbeCommandId).commandId;
+      core.queueCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", {}, recoveryProbeCommandId);
+      this.#openingCommandId = recoveryProbeCommandId;
     }
     // A controller retry can open the exact authority after run.attach has
     // already reached a durable outcome. Re-observe that command instead of

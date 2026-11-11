@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
+import type { PersistedHarnessProviderIdentity } from "../contracts/harness-driver.js";
 import { createCapabilityRunnerdCodexTransport } from "./runnerd-codex-transport.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
@@ -14,7 +15,7 @@ const identity = {
   itemId: "stale-journal-item",
 };
 
-function transport(root: string, resumeProviderSession?: { driverSessionId: string; providerSessionId: string; providerIdentity?: Record<string, unknown> }) {
+function transport(root: string, resumeProviderSession?: { driverSessionId: string; providerSessionId: string; providerIdentity?: PersistedHarnessProviderIdentity }) {
   return createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
@@ -44,7 +45,7 @@ it.each(["stale", "current"] as const)("a follow-up controller resumes the prede
     expect(runner).toMatchObject({ lastControllerCommandSeq: closed.commands.length, lifecycle: "suspended" });
     if (journal === "stale") await writeFile(controlPath, JSON.stringify({ ...closed, commands: closed.commands.slice(0, -2) }));
 
-    const providerIdentity = journal === "stale" ? { providerIdentity: { kind: "codex", threadId: opened.id } } : {};
+    const providerIdentity = journal === "stale" ? { providerIdentity: { kind: "acpx", normalizedSessionId: identity.normalizedSessionId } as unknown as PersistedHarnessProviderIdentity } : {};
     follower = transport(root, { driverSessionId: opened.id, providerSessionId: opened.sessionId, ...providerIdentity });
     const outcome = await follower.transport.request("thread/read", {})
       .then(() => "resumed", (error: unknown) => String(error));
