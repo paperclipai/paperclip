@@ -61,7 +61,7 @@ import { evaluateAgentInvokability } from "../agent-invokability.js";
 import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import type { Db } from "@paperclipai/db";
 import type { issueService } from "../issues.js";
-import type { createHeartbeatQueue } from "./queue.js";
+import { issueRunPriorityRank, type createHeartbeatQueue } from "./queue.js";
 import type { createHeartbeatRetries, HeartbeatRetryDependencies } from "./retries.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { NativeSessionGoalControl } from "../../vendor/paperclip-runner/index.js";
@@ -1050,6 +1050,10 @@ export function createHeartbeatScheduling(
       )
       .orderBy(asc(issues.monitorNextCheckAt), asc(issues.updatedAt))
       .limit(50);
+
+    dueMonitors.sort(
+      (left, right) => issueRunPriorityRank(left.priority) - issueRunPriorityRank(right.priority),
+    );
 
     let triggered = 0;
     let skipped = 0;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
@@ -305,6 +305,50 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_triggered");
+  });
+
+  it("gives free agent slots to the highest-priority due monitors in one sweep", async () => {
+    const { companyId, agentId, issueId: lowIssueId } = await seedFixture();
+    await db.update(agents).set({
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => {}, 20000)"],
+        cwd: process.cwd(),
+      },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 2 } },
+    }).where(eq(agents.id, agentId));
+    await db.update(issues).set({ priority: "low" }).where(eq(issues.id, lowIssueId));
+    const [lowIssue] = await db.select().from(issues).where(eq(issues.id, lowIssueId));
+
+    const laterPriorities = ["medium", "high", "high"] as const;
+    const issueIdsByPriority: string[] = [];
+    for (const [index, priority] of laterPriorities.entries()) {
+      const issueId = randomUUID();
+      const issueNumber = index + 2;
+      await db.insert(issues).values({
+        ...lowIssue,
+        id: issueId,
+        priority,
+        issueNumber,
+        identifier: `${lowIssue.identifier?.split("-")[0]}-${issueNumber}`,
+        monitorNextCheckAt: new Date(lowIssue.monitorNextCheckAt!.getTime() + (index + 1) * 1000),
+      });
+      issueIdsByPriority.push(issueId);
+    }
+    const highIssueIds = issueIdsByPriority.slice(1);
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.tickIssueMonitors(new Date("2026-04-11T12:31:00.000Z"));
+
+    const runs = await db
+      .select({
+        issueId: sql<string>`${heartbeatRuns.contextSnapshot}->>'issueId'`,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .orderBy(asc(heartbeatRuns.createdAt));
+    const firstStartedIssueIds = runs.slice(0, 2).map((run) => run.issueId);
+    expect(firstStartedIssueIds.sort()).toEqual([...highIssueIds].sort());
   });
 
   it("preserves a due monitor through native execution and dispatches once after release", async () => {
