@@ -1,3 +1,4 @@
+import { completionReviewStageEntry } from "./issue-execution-policy.js";
 import { agentConfigurationChangeTargetId } from "./change-consent-gate.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { resolveNewTaskParent } from "./issue-hierarchy.js";
@@ -524,6 +525,8 @@ type IssueResolutionContext = {
   reviewPolicy: IssueReviewPolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  executionPolicy?: unknown;
+  executionState?: unknown;
 };
 
 async function assertRequestConfirmationResolutionAllowedUnderLock(
@@ -2462,6 +2465,8 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
@@ -2586,10 +2591,18 @@ export function issueThreadInteractionService(
           )).limit(1);
         // Each explicit reviewer must be able to answer independently. Completing
         // on the first answer would cancel the other pending decisions.
+        // A task whose configured review stage has not run cannot be closed by
+        // this card (for example an early review of unfinished work): the
+        // answer resumes the worker, whose finished work then enters that stage.
+        const configuredReviewPending = completionReviewStageEntry({
+          status: issueContext.status, assigneeAgentId: issueContext.assigneeAgentId, assigneeUserId: issueContext.assigneeUserId,
+          executionPolicy: issueContext.executionPolicy as Record<string, unknown> | null,
+          executionState: issueContext.executionState as Record<string, unknown> | null,
+        }, issueContext.assigneeAgentId ?? "").kind !== "none";
         const completedIssue = otherPending.length > 0 || issueContext.status !== "in_review" ? null : await issueService(db).update(
           args.issue.id,
           {
-            status: "done",
+            status: configuredReviewPending ? "todo" : "done",
             actorAgentId: args.actor.agentId ?? null,
             actorUserId: args.actor.userId ?? null,
           },
@@ -2755,6 +2768,8 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
