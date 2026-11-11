@@ -12,11 +12,17 @@ add so it would.
    them were new Railway deployments: about one deploy every 40 minutes in working hours. Each deploy
    replaces the container, so the new server runs in a **different process space** (host, kernel boot
    and PID namespace) with **newer code**. Remote Daytona sandboxes keep the previous runner.
-3. **The harness restarts the same build on the same Mac.** After a harness restart, the new server
-   has the same process-space hash. PID-based "the old owner has exited" checks
-   (`server/src/services/controller-process-identity.ts`) succeed there. On staging they always fail
-   closed, so recovery refuses, quarantines or waits. This is the largest single reason the harness
-   passed (D1 8/8, D5 6/6 on master) while staging blocked tasks.
+3. **The harness restarts the same build on the same Mac, at once.** A harness restart keeps the
+   process space and has no deployment identity. It is back in seconds. A staging deploy has three
+   differences:
+   - it sends a graceful SIGTERM, often 1–3 s after a native coordinator claim;
+   - the server stays down for 4–7 minutes;
+   - it has a new deployment identity.
+   
+   Native recovery uses the deployment proof (`proveOwnerGone`, `deployment_replaced`), not PID
+   proofs. So the process space matters less than first assumed. This was corrected after review.
+   The open gap is the long, mid-turn outage, during which the remote Runner is lost (class R
+   below). The harness passed D1 8/8 and D5 6/6 on master while staging blocked tasks.
 4. **The Daytona matrix does not use the staging workload mix.** Staging runs OpenCode in 66% of
    native runs (1266 of 1917), uses reusable sandboxes (saved epochs up to 5), runs 25 agents and has
    long-lived parent/child task trees. The Daytona matrix runs only `codex,claude` on fresh
@@ -66,7 +72,7 @@ blocked at census time.
 | Class | Runs | Share | Tasks | Blocked now | Mechanism (root) | Fixed on master? | Why the harness missed it | Proposed scenario |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | W: wake loop on a held shared workspace | 103 | 37% | 4 | 1 | A parent shares a legacy execution workspace with a child that stranded a writer hold on Nov 5. The new stall-wake feature (#20098) woke the parent every 10 min. Each wake failed setup with no backoff. T01 had 99 runs from 07:27 to 15:53Z. | **Fixed:** #20273, #20295, #20314 | Fresh database every wave, so there was no legacy shared-workspace state. The feature landed between waves. U2 would have caught the loop. | None (fixed). If needed: K14 from a pre-2026-11-07 build with M1. |
-| R: remote recovery refuses after a deploy | 34 | 12% | 32 | **24** | After a deploy, the new controller cannot prove that the prior owner stopped. The cause is a different process space or a reused-sandbox runner identity from another run. Codes include `runner_remote_process_identity_unavailable` (9), `native_remote_recovery_lease_mismatch …identity_run_id` (8), `prior_owner_terminal_state_indeterminate` (6), `cleanup_quarantined` (4) and `missing_evidence` (3). 27 of 34 failed within 10 min of a process start. | **Partly fixed:** #20639, #20631, #20666, #20662 and #20650 address parts. `identity_unavailable` and `lease_mismatch` have no fix. | Harness restarts keep the same process space, so PID proofs succeed. There were no OpenCode cells on Daytona (19 of 34 are OpenCode). Reusable sandboxes are not in the matrix. | **K15 redeploy**: SIGTERM, then a replacement in a new process space with a new deployment identity (implemented). Run on Daytona with `--adapters opencode --daytona-reuse-lease`. |
+| R: remote recovery refuses after a deploy | 34 | 12% | 32 | **24** | Recovery after a deploy refuses to continue. Codes include `runner_remote_process_identity_unavailable` (9), `native_remote_recovery_lease_mismatch …identity_run_id` (8), `prior_owner_terminal_state_indeterminate` (6), `cleanup_quarantined` (4) and `missing_evidence` (3). 27 of 34 failed within 10 min of a process start. | **Mostly fixed:** `identity_run_id` by #20642, `prior_owner…` by #20677, others by #20639, #20631, #20666, #20662 and #20650. **Open:** `runner_remote_process_identity_unavailable`, where the remote Runner is gone after a 4–7 min mid-turn outage. | Harness restarts come back at once, with no long mid-turn outage. There were no OpenCode cells on Daytona (19 of 34 are OpenCode). No Daytona workload keeps a tool running across the fault. | **K15 redeploy** (implemented). A long-hold and mid-tool variant with sandbox-side Runner log capture is the follow-up. |
 | F: finalization and workspace save-back | 24 | 9% | 15 | 8 | A saved result cannot be copied back or restored. Causes: sandbox disk full (ENOSPC in 2 runs), unsafe symlink in the archive, `recovery_receipt_invalid` (7), a stuck "Recovering saved work…" phase (8) and an exhausted finalization budget (3). | **Partly fixed:** #20666 (receipt), #20578 (re-finalize). Nothing for disk full or symlinks. | Workloads write small files. They never fill the sandbox disk and never create symlinks. ST faults hit S3, not the sandbox disk. | **F1 symlink** workload (built; passes on master). **DF1 sandbox disk full** (proposed). |
 | E: Daytona capacity outage | 18 | 7% | 13 | 4 | Daytona returned HTTP 502 and the worker hit SIGKILL from 16:36 to 17:02Z on Nov 10. Reusable sandbox resume failed, plus a git clone network failure. | **Mostly recovers:** 8 tasks recovered automatically and bounded retry works. 4 tasks still blocked. | The harness has no environment-provider fault. All faults hit the control plane or S3. | **EP1 environment provider 5xx window** (proposed, not built). |
 | U: provider usage limit | 17 | 6% | 12 | 8 | `provider_limit_wait` waits as designed. The ACPX "terminal limit failure" (7) fails the run, where it should wait. | **Open:** ACPX limit classification. | Not a restart class. Provider shims have no usage-limit message. | Add a usage-limit message to PV faults (proposed). |
@@ -128,28 +134,38 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
   - T14, T15, T16 and T17 (`prior_owner_terminal_state_indeterminate`, with
     `retirement_refused=journal_commands_unsettled(run.attach.pending | semantic_tool.result.pending)`);
   - T18 and T19 (`cleanup_quarantined`).
-- Mechanism:
-  - `controllerProcessExited` and `sameProcessSpace` return false whenever the recorded `hostHash`
-    differs. Every Railway deploy changes the `hostHash`.
-  - The new controller therefore cannot prove that the old one stopped. The Railway
-    `deployment.exclusiveVolume` proof applies only on some paths.
-  - Recovery reads the runner identity file in the retained (reusable) sandbox and finds either no
-    identity or another run's identity (`identity_run_id`).
+- Mechanism, per sub-code. This was corrected after review by the class R fix owner.
+  - Native recovery does **not** depend on PID proofs. It uses `proveOwnerGone`, which accepts a
+    replaced Railway deployment on an exclusive volume (`deployment_replaced`) or a stopped or fenced
+    boot row. The only PID-only caller left is the runtime skill cache lock (#20688).
+  - `native_remote_recovery_lease_mismatch … identity_run_id`: the leases were ephemeral and the
+    sandboxes fresh, so a reused sandbox was not the cause. This is the shape that #20642 fixed. The
+    last staging occurrence was 14:43Z on Nov 10.
+  - `prior_owner_terminal_state_indeterminate` with unsettled `run.attach` or `semantic_tool.result`:
+    fixed by #20677. Retirement is no longer held when the prior ephemeral sandbox is provably
+    destroyed.
+  - `runner_remote_process_identity_unavailable` is **still open**:
+    1. The controller dies mid-turn while tools run.
+    2. Recovery starts 4–7 minutes later.
+    3. By then the remote Runner process is gone, or its `session.snapshot` times out.
+    
+    Why the Runner exits despite its 60-minute connection lease is not yet known.
 - Last occurrences: `identity_unavailable` 2026-11-10T08:10Z, `lease_mismatch` 14:43Z, `prior_owner…`
   18:56Z and `cleanup_quarantined` 17:48Z.
 - Code pointers:
-  - `server/src/services/controller-process-identity.ts` (`processSpaceHash`, `controllerProcessExited`);
   - `server/src/services/native-runtime/native-session-executor.ts:14247` (identity wait);
   - `server/src/services/native-runtime/remote-recovery-lease-mismatch.ts`;
   - `server/src/services/heartbeat/restart-interrupted-turn.ts`.
 - Why the harness missed it:
-  1. **Same process space:** K1, K2 and K4 restart on the same host and kernel boot, so every PID
-     proof succeeds.
+  1. **Deploy timing:** a staging deploy sends a graceful SIGTERM, often 1–3 s after
+     `native.coordinator.claim`, and the server stays down for 4–7 minutes. K2 restarts at once,
+     and K4's long hold uses SIGKILL.
   2. **Missing adapter:** OpenCode (19 of 34) never ran in a Daytona cell.
-  3. **Missing environment shape:** `--daytona-reuse-lease` and `--daytona-warm` are not in the
+  3. **Mid-turn Runner loss:** no Daytona workload keeps a tool running across the fault. The
+     `tool` trigger covers only the local B5 shell bench, so the remote Runner is never under a
+     running tool when the controller goes away.
+  4. **Missing environment shape:** `--daytona-reuse-lease` and `--daytona-warm` are not in the
      matrix.
-  4. **Missing workload:** restarts while a semantic Paperclip tool result or `run.attach` is
-     pending. The `tool` trigger only covers the B5 shell bench.
 - Scenario: **K15 redeploy** (implemented). The fault does a graceful SIGTERM like K2. The
   replacement then starts in a new emulated process space (a new hostname through a preload, so
   `processSpaceHash` changes) and with a new Railway-shaped deployment identity on the same volume.
