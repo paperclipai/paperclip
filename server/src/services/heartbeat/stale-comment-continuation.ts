@@ -1,5 +1,5 @@
 import { agentWakeupRequests, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { saveUndeliveredUserComments, taskClosedByAgentSql } from "../work-intent-outbox.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,12 +44,18 @@ export async function deferUndeliveredCommentsOfStaleRun(db: Db, run: typeof hea
     .where(and(eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.id, run.wakeupRequestId))) : [];
   // Another agent's comment posted with `resume: true` reopens finished work
   // like a person's message (staging run 8c71398f dropped one). Without that
-  // explicit intent an agent's comment stays communicative.
-  const payload = wake?.payload && typeof wake.payload === "object" ? wake.payload as Record<string, unknown> : {};
-  const explicitResumeAgentId = wake?.requestedByActorType === "agent" && wake.requestedByActorId
-    && wake.requestedByActorId !== run.agentId && (payload.resumeIntent === true || context.resumeIntent === true)
-    ? wake.requestedByActorId : null;
+  // explicit intent an agent's comment stays communicative. Queued runs can
+  // merge comments of several requesters, so each comment needs its own wake:
+  // one its author requested with an explicit resume intent.
+  const explicitResume = await db.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, owed),
+    isNotNull(issueComments.authorAgentId), ne(issueComments.authorAgentId, run.agentId),
+    sql`exists (select 1 from ${agentWakeupRequests} own where own.company_id = ${run.companyId}
+      and own.agent_id = ${run.agentId} and own.payload->>'issueId' = ${issueId}
+      and own.requested_by_actor_type = 'agent' and own.requested_by_actor_id = ${issueComments.authorAgentId}::text
+      and own.payload->>'commentId' = ${issueComments.id}::text
+      and own.payload->'resumeIntent' = 'true'::jsonb)`));
   return saveUndeliveredUserComments(db, { companyId: run.companyId, issueId, agentId: run.agentId, commentIds: owed,
     allowedStatuses: ["done"], requestedByActorId: wake?.requestedByActorType === "user" ? wake.requestedByActorId : null,
-    source: wake?.source, triggerDetail: wake?.triggerDetail, explicitResumeAgentId });
+    source: wake?.source, triggerDetail: wake?.triggerDetail, explicitResumeCommentIds: explicitResume.map(row => row.id) });
 }

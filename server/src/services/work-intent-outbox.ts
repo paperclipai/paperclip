@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, issueComments, issues, type Db } from "@paperclipai/db";
 import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
@@ -106,12 +106,12 @@ export function taskClosedByAgentSql(companyId: unknown, issueId: unknown) {
  * user's message) gate it. Normal admission and the release drain deliver
  * the receipt once. Returns the receipt id, or null when nothing is owed.
  *
- * `explicitResumeAgentId` also admits that agent's comments: another agent's
- * comment posted with `resume: true`, which reopens finished work as a
- * person's comment does. When only that agent's comments remain, the receipt
- * keeps the agent as requester with the explicit resume intent, so the release
- * drain's existing agent-resume rule reopens the task. The assignee's own
- * comments never qualify.
+ * `explicitResumeCommentIds` also admits those comments of another agent: each
+ * was posted with `resume: true`, which reopens finished work as a person's
+ * comment does. When only such comments remain, the receipt names the latest
+ * one's author as requester and keeps the explicit resume intent, so the
+ * release drain's existing agent-resume rule reopens the task. The assignee's
+ * own comments never qualify.
  */
 export async function saveUndeliveredUserComments(db: Db, input: {
   companyId: string; issueId: string; agentId: string; commentIds: string[];
@@ -120,7 +120,7 @@ export async function saveUndeliveredUserComments(db: Db, input: {
   /** Names why the receipt waits and what promotes it. */
   executionWait?: Record<string, unknown>;
   reopenAgentClosedDone?: boolean;
-  explicitResumeAgentId?: string | null;
+  explicitResumeCommentIds?: readonly string[];
 }): Promise<string | null> {
   if (input.commentIds.length === 0) return null;
   let publication: ActivityPublication | undefined;
@@ -136,22 +136,22 @@ export async function saveUndeliveredUserComments(db: Db, input: {
       const [closed] = await tx.execute<{ byAgent: boolean }>(sql`select ${taskClosedByAgentSql(input.companyId, input.issueId)} as "byAgent"`);
       if (closed?.byAgent !== true) return null;
     }
-    const resumingAgentId = input.explicitResumeAgentId && input.explicitResumeAgentId !== input.agentId
-      ? input.explicitResumeAgentId : null;
+    const resumeIds = input.explicitResumeCommentIds?.filter(id => input.commentIds.includes(id)) ?? [];
     // A direct human comment: no agent author and no creating run.
     const human = and(isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId));
     const live = await tx.select({ id: issueComments.id, authorUserId: issueComments.authorUserId,
       authorAgentId: issueComments.authorAgentId }).from(issueComments).where(and(
       eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
       inArray(issueComments.id, input.commentIds), isNull(issueComments.deletedAt),
-      resumingAgentId ? or(human, eq(issueComments.authorAgentId, resumingAgentId)) : human));
+      resumeIds.length ? or(human, and(inArray(issueComments.id, resumeIds), isNotNull(issueComments.authorAgentId),
+        ne(issueComments.authorAgentId, input.agentId))) : human));
     const delivered = await deliveredQueuedCommentIds(tx as unknown as Db, { companyId: input.companyId,
       issueId: input.issueId, agentId: input.agentId, commentIds: live.map(row => row.id) });
     const remaining = input.commentIds.filter(id => live.some(row => row.id === id) && !delivered.has(id));
     if (remaining.length === 0) return null;
     const latest = remaining.at(-1)!;
-    const agentResume = resumingAgentId !== null
-      && remaining.every(id => live.find(row => row.id === id)?.authorAgentId === resumingAgentId);
+    const resumingAgentId = live.find(row => row.id === latest)?.authorAgentId ?? null;
+    const agentResume = resumingAgentId !== null && remaining.every(id => live.find(row => row.id === id)?.authorAgentId);
     const resumeIntent = agentResume ? { resumeIntent: true, followUpRequested: true } : {};
     await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
     await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });

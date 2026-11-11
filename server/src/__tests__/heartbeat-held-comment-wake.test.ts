@@ -527,6 +527,50 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(resume!.id)).toHaveLength(1);
   }, 180_000);
 
+  // Queued runs merge comments of several requesters. The resume intent is
+  // each comment's own: another agent's plain note on the same queued run is
+  // not promoted, and the resuming agent's comment is not lost.
+  it("keeps each merged comment's own resume intent when two agents share a stale queued run", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    const [resumer] = await db.select().from(agents).where(and(eq(agents.companyId, f.companyId), eq(agents.name, "Earlier worker")));
+    const [notifier] = await db.insert(agents).values({ companyId: f.companyId, name: "Notifier", adapterType, status: "idle",
+      adapterConfig: {} }).returning();
+    const [note] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: notifier!.id,
+      body: "FYI: unrelated status note." }).returning();
+    const [resume] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: resumer!.id,
+      body: "Changed requirement for your next turn." }).returning();
+    // The note's wake owns the queued run; the resume comment's own wake coalesced into it.
+    const [primary] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "agent", requestedByActorId: notifier!.id,
+      payload: { issueId: f.issueId, commentId: note!.id, mutation: "comment" } }).returning();
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "coalesced", requestedByActorType: "agent", requestedByActorId: resumer!.id,
+      payload: { issueId: f.issueId, commentId: resume!.id, mutation: "comment", resumeIntent: true, followUpRequested: true } });
+    const [stale] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "queued", wakeupRequestId: primary!.id,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: resume!.id, wakeCommentId: resume!.id,
+        wakeCommentIds: [note!.id, resume!.id], wakeReason: "issue_commented", source: "issue.comment",
+        resumeIntent: true, followUpRequested: true } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: stale!.id }).where(eq(agentWakeupRequests.id, primary!.id));
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+    await settle(f); await settle(f);
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    await settle(f); await settle(f);
+    expect(deliveries(resume!.id)).toHaveLength(1);
+    expect(deliveries(note!.id).filter(turn => !(turn.context.wakeCommentIds as string[]).includes(resume!.id))).toHaveLength(0);
+    const [saved] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.payload}->>'commentId' = ${resume!.id}`, eq(agentWakeupRequests.requestedByActorId, resumer!.id),
+      sql`${agentWakeupRequests.status} <> 'coalesced'`));
+    expect(saved?.payload).toMatchObject({ resumeIntent: true });
+    expect((saved?.payload as { _paperclipWakeContext?: { wakeCommentIds?: string[] } })._paperclipWakeContext?.wakeCommentIds)
+      .toEqual([resume!.id]);
+  }, 180_000);
+
   // Without `resume: true` an agent's comment stays communicative: the closed
   // task is not reopened for it (issues route: only human comments reopen
   // finished work implicitly).
