@@ -11913,7 +11913,9 @@ async function executePaperclipNativeSessionAttempt(
                 // the work-based budget (provider-attempt-outcome.ts).
                 payload: { hostname: hostname(), providerAttempt: attempt, requestedAt: new Date().toISOString() },
               });
-              crashPoint("native.process_start.after_requested_before_spawn");
+              // Fail mode (restart chaos only) is a runnerd start that failed before the process existed.
+              crashPoint("native.process_start.after_requested_before_spawn", { fail: () => Object.assign(
+                new Error("spawn paperclip-runnerd EAGAIN"), { code: "EAGAIN", syscall: "spawn paperclip-runnerd" }) });
             },
             input: runnerExecution,
             startup: executionContext && (!usesPluginTask || executionContext.pluginSupported) ? executionContext : undefined,
