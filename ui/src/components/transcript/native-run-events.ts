@@ -48,6 +48,11 @@ function normalizedItemText(payload: Record<string, unknown>): string | null {
   return text(payload.text) ?? text(item.text);
 }
 
+/** The provider's own message id (for example Claude's `msg_…`), when reported. */
+function providerMessageId(payload: Record<string, unknown>): string | null {
+  return text(payload.providerItemId) ?? text(record(payload.update)?.providerItemId);
+}
+
 function assistantChannel(
   payload: Record<string, unknown>,
   fallback: "progress" | "final" | "unknown" = "unknown",
@@ -978,6 +983,11 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   let usageSinceLastCompaction = false;
   const proposalMarkdownById = new Map<string, string>();
   const completedProposalIds = new Set<string>();
+  // Where the last assistant delta entry sits, and which item and provider
+  // message it came from.
+  let lastAssistantDeltaIndex = -1;
+  let lastAssistantDeltaItemId: string | null = null;
+  let lastAssistantDeltaMessageId: string | null = null;
   for (const event of orderedEvents) {
     const envelope = record(event.payload?.prpEvent);
     if (
@@ -1048,7 +1058,29 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       // Before that point the deltas still provide the live streaming view.
       if (completedAgentMessageIds.has(itemId)) continue;
       const channel = itemIdentity.assistantChannel;
-      entries.push({ kind: "assistant", ts, text: value, delta: true, channel, itemId });
+      // The runner streams a whole provider turn under one assistant item, so
+      // the turn's separate progress messages share an itemId. When nothing
+      // else (a tool call, for example) separates two of them, as in the
+      // conversation-only event view, a new provider message starts a new
+      // paragraph instead of being glued onto the previous sentence.
+      const messageId = providerMessageId(payload);
+      const startsNewMessage =
+        lastAssistantDeltaIndex === entries.length - 1
+        && lastAssistantDeltaItemId === itemId
+        && messageId !== null
+        && lastAssistantDeltaMessageId !== null
+        && messageId !== lastAssistantDeltaMessageId;
+      entries.push({
+        kind: "assistant",
+        ts,
+        text: startsNewMessage && !value.startsWith("\n") ? `\n\n${value}` : value,
+        delta: true,
+        channel,
+        itemId,
+      });
+      lastAssistantDeltaIndex = entries.length - 1;
+      lastAssistantDeltaItemId = itemId;
+      lastAssistantDeltaMessageId = messageId;
       continue;
     }
 
