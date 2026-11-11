@@ -260,5 +260,7 @@ describe("admitted unversioned runtime skill preservation", () => {
     const rehydrated = await rehydratePinnedInstructionAsset(db, { companyId, agentId }, context);
     expect(rehydrated.instructions.bundle).toEqual(bundle);
     expect(await fs.readFile(path.join(bundle.rootPath, "AGENTS.md"), "utf8")).toBe("# Admitted instructions\n");
+    const elsewhere = { ...context, instructions: { ...context.instructions, bundle: { ...bundle, rootPath: "/other-home/runtime-context-assets/bundles/x" } } };
+    expect(await rehydratePinnedInstructionAsset(db, { companyId, agentId }, elsewhere)).toBe(elsewhere);
   });
 });

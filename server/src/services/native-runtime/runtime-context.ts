@@ -216,6 +216,7 @@ export async function rehydratePinnedInstructionAsset(
   context: NativeRuntimeContextSnapshot,
 ): Promise<NativeRuntimeContextSnapshot> {
   const pinned = context.instructions.bundle;
+  if (pinned.rootPath !== path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets", "bundles", pinned.digest)) return context;
   if (await localRuntimeAssetPresent(pinned)) return context;
   const matches = (bundle: NativeRuntimeAssetReference) => bundle.digest === pinned.digest
     && bundle.manifestDigest === pinned.manifestDigest && bundle.fileCount === pinned.fileCount && bundle.totalBytes === pinned.totalBytes;
