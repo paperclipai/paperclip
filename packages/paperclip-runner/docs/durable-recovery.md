@@ -70,6 +70,18 @@ PRP v2 command vocabulary. Incoming wire commands still undergo the negotiated
 protocol validation before execution; ordinary persisted v1 summaries remain
 compatible.
 
+## External driver checkpoint identity
+
+Dot, Grok, and Muse external drivers keep a durable driver session and deliberately
+leave the upstream `providerSessionId` null. Exact checkpoint eligibility uses the
+validated external execution binding and matching company, agent, issue, run, and
+session identity, together with the existing current remote checkpoint-header and
+preparation fences. A missing or mismatched header, invalid binding, or failed
+terminal checkpoint remains ambiguous; provider events alone do not prove identity.
+This classification grants no execution authority: normal current broker checks and
+the target-owned durable session restore still run before work resumes. Existing
+checkpoints that retain this identity need no invented upstream ID or reset.
+
 ## Adoption and retired launch artifacts
 
 A live runner is adopted with its admitted artifact binding and authenticated
