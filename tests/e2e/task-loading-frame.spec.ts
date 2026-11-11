@@ -1,5 +1,8 @@
 import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 
+// Network fault injection must reach Playwright instead of the asset service worker.
+test.use({ serviceWorkers: "block" });
+
 async function json(response: APIResponse) {
   expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
   return response.json();

@@ -22,7 +22,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const roots: string[] = [];
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  // The provider is retired by each test's finally block. ACPX can still finish
+  // its atomic session-file rename after publishing the failed turn outcome.
+  await Promise.all(roots.splice(0).map(root => rm(root, {
+    recursive: true, force: true, maxRetries: 5, retryDelay: 100,
+  })));
+});
 
 async function fixture(options: { node?: boolean; script?: string } = {}): Promise<NativeAcpxDistributionInput> {
   const root = await mkdtemp(join(tmpdir(), "native-acpx-test-")); roots.push(root);

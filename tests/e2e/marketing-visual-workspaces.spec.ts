@@ -29,6 +29,8 @@ test("graph notes and dashboard layouts persist in their workspace", async ({ pa
     await expect.poll(async () => (await (await page.request.get(`/api/companies/${a.id}/ui-layouts/agent_graph/me`)).json()).layout?.stickies?.[0]?.text)
       .toBe("Brief exclusivo do workspace A");
     await page.reload();
+    // The page opens in list view; layout persistence is independent of that preference.
+    await page.getByRole("button", { name: "Org chart view", exact: true }).click();
     await expect(page.getByLabel("Note text")).toHaveValue("Brief exclusivo do workspace A");
     await page.goto(`/${b.issuePrefix}/agents/all`);
     const orgView = page.getByRole("button", { name: "Org chart view", exact: true });

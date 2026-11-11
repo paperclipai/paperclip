@@ -8,12 +8,17 @@ on:
 # pull_request_target gives access to secrets for untrusted fork PRs.
 
 permissions:
-  pull-requests: write
-  checks: write
   contents: read
+  pull-requests: read
 
 jobs:
   review:
+    # The upstream GitHub App and its private key belong to Paperclip.
+    if: github.repository == 'paperclipai/paperclip'
+    permissions:
+      pull-requests: write
+      checks: write
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -61,3 +66,28 @@ jobs:
         run: |
           echo "One or more quality gates failed. See commitperclip comment on the PR for details."
           exit 1
+
+  fork-review:
+    if: github.repository != 'paperclipai/paperclip'
+    name: Fork dependency and PR review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout reviewed base only
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Dependency Review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          head-ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Validate the PR description without a private bot
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        run: node .github/scripts/check-pr-template.mjs
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}

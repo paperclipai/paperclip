@@ -91,6 +91,11 @@ if (laneMatch) {
 const plannedCommands = [
   { command: "pnpm", args: ["run", "ensure:eval-build-deps"], cwd: packageRoot },
   { command: "pnpm", args: ["run", "build:rust"], cwd: packageRoot },
+  // The native server suite also launches the release daemon. Compile it before
+  // Vitest starts its bounded integration-test hooks on a cold hosted runner.
+  ...(runNativeRunnerGroup
+    ? [{ command: "cargo", args: ["build", "--release", "--locked", "--manifest-path", "runner/Cargo.toml", "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], cwd: packageRoot }]
+    : []),
   ...(runPackageTests
     ? [{ command: "pnpm", args: ["exec", "vitest", "run", ...packageArgs], cwd: packageRoot }]
     : []),

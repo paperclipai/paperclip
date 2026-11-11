@@ -33,6 +33,7 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-ease-pane-width-reset", group: "Easing", kind: "easing" },
   { name: "--motion-ease-pane-reveal", group: "Easing", kind: "easing" },
   { name: "--motion-ease-primary-crown-burst", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-agent-graph-live-pulse", group: "Easing", kind: "easing" },
 
   // Duration primitives
   { name: "--motion-duration-instant", group: "Durations", kind: "time", min: 0, max: 1000, step: 10 },
@@ -57,6 +58,7 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-status-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-status-notice-fade", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-approval-pulse", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
+  { name: "--motion-agent-graph-live-pulse", group: "States", kind: "time", min: 0, max: 5000, step: 50 },
   { name: "--motion-plan-entry-stagger", group: "States", kind: "time", min: 0, max: 300, step: 5 },
   { name: "--motion-plan-check", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-question-page-enter", group: "States", kind: "time", min: 0, max: 1000, step: 10 },

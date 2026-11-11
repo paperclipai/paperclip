@@ -1,11 +1,31 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { expect, it } from "vitest";
-import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
+import { createProcessTreeOwner, ProcessInspectionUnavailableError, settleUncertainIdentity, stopOwnedProcessTree } from "./process-tree-owner.js";
 import { readProcessTable, type ProcessObservation } from "./process-tree.js";
 
 function row(pid: number, parentPid: number, processGroupId: number, started = `start-${pid}`, state = "S"): ProcessObservation {
   return { pid, parentPid, processGroupId, started, state, kind: "node" };
 }
+
+it("requires a successful fresh audit after a transient inspector failure", async () => {
+  let inspections = 0;
+  const deadline = Date.now() + 1_000;
+  const result = await settleUncertainIdentity(async () => {
+    if (++inspections === 1) throw new ProcessInspectionUnavailableError();
+    return "verified";
+  }, () => deadline, 1);
+  expect(result).toBe("verified");
+  expect(inspections).toBe(2);
+  await expect(settleUncertainIdentity(async () => {
+    throw new ProcessInspectionUnavailableError();
+  }, () => Date.now() - 1)).rejects.toThrow("Could not inspect owned process identities");
+  let fatalCalls = 0;
+  await expect(settleUncertainIdentity(async () => {
+    fatalCalls++;
+    throw new Error("kill EPERM");
+  }, () => deadline, 1)).rejects.toThrow("kill EPERM");
+  expect(fatalCalls).toBe(1);
+});
 function fixture(initial: ProcessObservation[]) {
   let table = [row(process.pid, 1, 10), ...initial];
   const root = { pid: 100, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null };

@@ -46,6 +46,23 @@ volumes são removidos ao final. O workflow de publicação herdado da branch
 principal é independente; esta integração deve permanecer em uma branch de
 trabalho até a autorização para publicação.
 
+## Adaptação da CI herdada
+
+A revisão de dependências requer o Dependency Graph habilitado no repositório.
+O workflow de revisão foi adaptado para forks: usa somente permissões de leitura,
+executa o código da base revisada e verifica dependências e a descrição do PR.
+O bot privado `commitperclip` fica restrito ao repositório original. Como o evento
+é `pull_request_target`, essa alteração só passa a valer depois de incorporada à
+branch de base; reenviar o PR não altera o workflow que está sendo executado.
+
+A política de lockfiles também executa a cópia da branch de base. Ela rejeita
+lockfiles e a prova de resolução alterados por PRs humanos, inclusive quando a
+integração preserva os bytes publicados pelo upstream. Este PR conserva essa
+restrição: não falsifica autoria de bot nem desativa o check. A adoção do fluxo
+de atualização de dependências do fork precisa ser resolvida na base antes do
+merge da integração. As qualificações da aplicação continuam independentes
+desse bloqueio administrativo.
+
 ## Limites do incremento
 
 Contas, assinaturas e modelos continuam dependentes do suporte de cada adaptador

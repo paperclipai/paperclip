@@ -28,10 +28,12 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
           }
         }).observe(document, { childList: true, subtree: true });
       });
+      const healthResponse = await request.get("/api/health");
+      expect(healthResponse.ok()).toBe(true);
+      const health = await healthResponse.json();
       await page.route("**/api/health", async (route) => {
-        const response = await route.fetch();
-        await route.fulfill({ response, json: {
-          ...await response.json(), deploymentMode: "authenticated", bootstrapStatus: "ready",
+        await route.fulfill({ json: {
+          ...health, deploymentMode: "authenticated", bootstrapStatus: "ready",
           cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: cloudOrigin, stackSlug: "test-workspace" },
         } });
       });

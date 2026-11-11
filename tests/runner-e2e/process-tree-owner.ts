@@ -30,6 +30,10 @@ export function restartProcessStartMatches(observed: string, expected: string, p
 
 export const UNCERTAIN_GROUP_IDENTITY = "Owned process group identity became uncertain";
 
+export class ProcessInspectionUnavailableError extends Error {
+  constructor() { super("Could not inspect owned process identities"); }
+}
+
 /**
  * Under load or during a graceful drain a whole group can turn over between
  * two inspections: its observed members exit and a member nobody saw start
@@ -42,8 +46,12 @@ export async function settleUncertainIdentity<T>(step: () => Promise<T>, until: 
   for (;;) {
     try { return await step(); }
     catch (error) {
-      if (!String(error).includes(UNCERTAIN_GROUP_IDENTITY) || Date.now() >= until()) throw error;
-      await new Promise(resolve => setTimeout(resolve, pollMs));
+      const transient = error instanceof ProcessInspectionUnavailableError
+        || String(error).includes(UNCERTAIN_GROUP_IDENTITY);
+      if (!transient || Date.now() >= until()) throw error;
+      // A parent cancellation can interrupt the wrapper's inspector. A fresh
+      // successful audit is still mandatory before any group is signaled.
+      await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(0, until() - Date.now()))));
     }
   }
 }
@@ -69,7 +77,7 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     if (observing) return observing;
     observing = (async () => {
       const next = await readTable();
-      if (!next) throw new Error("Could not inspect owned process identities");
+      if (!next) throw new ProcessInspectionUnavailableError();
       const callerGroup = next.find(row => row.pid === process.pid)?.processGroupId;
       if (callerGroup === undefined) throw new Error("Cleanup caller group identity is unavailable");
       const rootRow = next.find(row => row.pid === root.pid);
