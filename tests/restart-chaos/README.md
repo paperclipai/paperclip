@@ -425,6 +425,76 @@ for a while after the new one was up. Plain K15 restarts on the same instance ho
 Pass is the usual grade: no Retry (R3), no stuck record (R6), and the oracle. Staging's terminal errors here
 were `ENOENT` on a runtime asset, `Agent directory operation is already active` after a 9.5-minute
 `controller_lease_held` wait.
+### Staging class R cells (CR1–CR3, `class-r.ts`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters opencode,claude --workloads T1 --faults CR1 --concurrency 1 --tasks 2 --seed 9501
+```
+
+Staging failed with `runner_remote_process_identity_unavailable` in 9 runs. In 8 of them:
+
+1. A deploy kept the controller away for 5–7 minutes.
+2. The Runner in the Daytona sandbox survived, and the new controller adopted it.
+3. About 40 s later, `session.snapshot` failed because the provider process was dead or unresponsive.
+
+The ninth run had no deploy. A plugin `environmentExecute` RPC stalled for more than 40 s. These cells
+reproduce each part. The class is named R on staging. The cells are named CR1–CR3 because the R1 workload
+and the R1–R6 grading rules already exist.
+
+| Fault | What it does | Option |
+| --- | --- | --- |
+| CR1 | The K15 redeploy: SIGTERM, then a held outage, then the next deploy generation. | `--cr1-hold-seconds <n>` or `<min>-<max>`, 0–600. Default 360. |
+| CR2 | SIGKILL of the provider process only, inside the task's sandbox. The Runner stays alive. | `--cr2-hold-seconds <n>`, 0–600. Default 0: the controller stays up. With a hold, a K15 redeploy holds the controller down, and the kill happens right after the stop. |
+| CR3 | SIGSTOP of the server's Daytona plugin worker and its children. Every plugin RPC, including `environmentExecute`, stalls. There is no deploy. | `--cr3-stall-seconds <n>`, 41–600. Default 45. |
+
+- CR2 kills only the processes under the run's `paperclip-runnerd` whose arguments match the adapter's
+  provider command. For Claude (ACPX) that is `--output-format stream-json`. For OpenCode it is
+  `serve --hostname 127.0.0.1 --port`. The Runner is found by the run id in its listen path.
+- CR2 is the only class R action that changes anything in a sandbox. It runs one fixed script, only in
+  sandboxes that carry the wave's company and environment labels.
+- The run id comes from the task's last sample before the fault. Each kill's output is saved to
+  `daytona-runner/provider-kill-<task>-<ms>.json`.
+- Each CR task must pass `class_r_fault_applied`. The fault must not have failed, CR2 must have killed a
+  provider process, and CR3's stall must have ended. A cell whose fault never applied tested nothing.
+- Use T1, so that the fault lands while a tool runs, as it did on staging. Use `--concurrency 1` for CR3,
+  because the stall hits every task's plugin RPCs.
+
+**Sandbox capture.** Every Daytona wave, not only a CR wave, runs the class R probe (`CLASS_R_PROBE`) in
+every started wave sandbox. Staging's Runner loss also reproduces with no fault at all (W2 re-wake). Its
+output goes to `results/<wave>/daytona-runner/<label>/<sandbox>.txt`. The probe reads:
+
+- every process with its start time (`lstart`), elapsed time and kernel wait (`wchan`);
+- TCP sockets with their owners;
+- the runtime directory listing, with the size and last write of each file;
+- the tail of every log, state or transcript file the Runner or provider keeps. This includes
+  `runner-state.json`, the ACPX state files, OpenCode `opencode/log`, and Claude `debug` and `projects`
+  transcripts.
+
+The probe runs at these times:
+
+| Label | When |
+| --- | --- |
+| `<fault>-before` | Just before the fault, with a 20 s deadline. The fault's `startedAt` is taken after it. |
+| `<fault>-stopped`, `<fault>-before_start` | CR1 and CR2 with a hold: right after the stop, and just before the next deploy starts. |
+| `<fault>-ready+<n>s` | Every 15 s for 180 s after the controller is ready again. It stops after 60 s if the task has rested. Staging failed about 40 s after adoption, so this window covers it. |
+| `<task>-rest` | When any task rests, pass or fail, before the product releases the sandbox. |
+| `watch+<n>s` | With `--sandbox-watch-seconds <n>` (10–600), on that clock for the whole wave. This catches a Runner exit that no fault announces. |
+| `wave-end` | Before the sweep. |
+
+Before PR #20907, a remote Runner wrote its stdout and stderr to `/dev/null`. Only a panic or a graceful
+error exit reached `diagnostics/runnerd.stderr.log`. Since #20907, its stderr goes to the bounded
+`diagnostics/runnerd.process-stderr.log`, and the probe reads both files. The probe never stops, starts or
+deletes a sandbox. An archived or stopped sandbox is recorded by its state alone.
+
+**Results on master `6154b9485e` with #20907** (image `paperclip-daytona-runner@sha256:39df7406…`):
+
+| Wave | Cell | Result |
+| --- | --- | --- |
+| `w-20261111T192658-s5201` | W2 re-wake, `--faults K0 --daytona-warm`, Codex, 10 tasks | `runner_remote_process_identity_unavailable` twice, with no fault. The follow-up run launched a new runnerd on the warm session state. That runnerd stopped itself: `paperclip-runnerd: controller sequence must be contiguous: expected 13, received 11`. The new controller's journal ended before the predecessor's `runner.drain` and `runner.suspend` (seq 11 and 12). |
+| `w-20261111T202055-s9502` | CR1 75 s and CR2, OpenCode and Claude | No refusal. The Runner survived every outage. A killed provider failed the turn with a clear code: Claude `ACP agent reported a terminal connection failure`, OpenCode `opencode_server_exited`. |
+| `w-20261111T204144-s9503` | CR1 360 s twice, OpenCode and Claude | No refusal. The Runner and the provider survived both outages. |
+| `w-20261111T210055-s9504` | CR3 45 s, OpenCode and Claude | Not the staging code, a separate failure. `runnerd process supervision failed: RPC call "environmentExecute" timed out after 40000ms` failed the run as `notification_transport_failed`. The close path suspended a healthy Runner (`lifecycle: suspended`, no stderr). Retry worked. |
 
 ## Absolute symlink in the workspace (F1)
 
