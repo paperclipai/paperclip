@@ -20,6 +20,7 @@ import { priceCodexReceipt } from "./codex-pricing.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { injectRunAccountingFault } from "./accounting-fault-injection.js";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -229,6 +230,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     issueId: sql<string | null>`${heartbeatRuns.usageJson}->'ledgerScope'->>'issueId'`,
   }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
   if (!identity || !identity.pending || !terminalStatuses.includes(identity.status)) return false;
+  injectRunAccountingFault({ runId, issueId: text(identity.issueId) });
   // Finalization can call twice. Settled or active runs owe no accounting work.
   // Pending acknowledgements still receive the locked stale-marker cleanup.
   const index = identity.pending && !identity.accountedAt && terminalStatuses.includes(identity.status)

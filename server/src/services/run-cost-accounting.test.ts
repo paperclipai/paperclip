@@ -6,7 +6,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, budgetEvaluationWork, budgetPolicies, companies, costEvents, costAdjustments, createDb, heartbeatRuns, projects, promptInjectionInvocations, runUsageReceipts, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { accountRunCost, createCostAccountingReconciler, readCostAccountingWork } from "./run-cost-accounting.js";
+import { accountRunCost, createCostAccountingReconciler, readCostAccountingWork, reconcileRunCosts } from "./run-cost-accounting.js";
+import { setAccountingFaultControlPathForTest } from "./accounting-fault-injection.js";
+import { costDataQualityReport } from "./cost-data-quality.js";
 import { createRunUsageRecorder, persistUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
 import * as usageReceipts from "./usage-receipts.js";
 import { billingReconciliationService } from "./billing-reconciliation.js";
@@ -491,6 +493,35 @@ const support = await getEmbeddedPostgresTestSupport();
     release();
     await first;
     expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it("an armed accounting fault leaves only that run's saved usage retryable until it is disarmed", async () => {
+    const control = path.join(directory, "accounting-fault");
+    const issueId = randomUUID();
+    const armed = await seed({ usageJson: { accountingReceiptReady: true, provider: "test", model: "test", billingType: "metered_api", costUsd: 0.01, ledgerScope: { issueId } } });
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: armed.companyId, agentId: armed.agentId, invocationSource: "on_demand", status: "succeeded",
+      costAccountingPending: true, finishedAt: new Date(), usageJson: { accountingReceiptReady: true, provider: "test", model: "test", billingType: "metered_api", costUsd: 0.02 } });
+    await fs.writeFile(control, `${issueId}\n`);
+    const restore = setAccountingFaultControlPathForTest(control);
+    try {
+      await expect(accountRunCost(db, armed.runId)).rejects.toThrow(/Failed query/);
+      // The worker retries and keeps failing; other debt in the same company still settles.
+      expect(await reconcileRunCosts(db)).toEqual({ scanned: 2, accounted: 1 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, armed.runId));
+      expect(run.costAccountingPending).toBe(true);
+      expect(run.costAccountedAt).toBeNull();
+      expect(run.accountingLastError).toMatch(/Failed query/);
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, armed.runId))).toHaveLength(0);
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, otherRunId))).toHaveLength(1);
+      const quality = await costDataQualityReport(db, armed.companyId, true, { allTime: true });
+      expect(quality.runs.map(row => [row.runId, row.reason])).toEqual([[armed.runId, "retryable"]]);
+      await expect(accountingIntegrityService(db).retry(armed.companyId, armed.runId, "board")).rejects.toThrow(/Failed query/);
+      await fs.writeFile(control, "");
+      expect(await accountingIntegrityService(db).retry(armed.companyId, armed.runId, "board")).toEqual({ accounted: true });
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, armed.runId))).toHaveLength(1);
+      expect((await costDataQualityReport(db, armed.companyId, true, { allTime: true })).runs).toEqual([]);
+    } finally { restore(); }
   });
 
   it("recovers run receipts even when an unrelated service invocation cannot settle", async () => {
