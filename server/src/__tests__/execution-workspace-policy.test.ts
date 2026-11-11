@@ -780,15 +780,6 @@ describe("operator default isolated execution workspaces", () => {
   });
 });
 
-describe("project-owned environment", () => {
-  it("gives the project priority while keeping task trust and managed-only restrictions", () => {
-    const defaults = { agentDefaultEnvironmentId: "agent-env", instanceDefaultEnvironmentId: "instance-env", localDefaultEnvironmentId: "local-env" };
-    expect(resolveExecutionWorkspaceEnvironmentId({ ...defaults, projectEnvironmentId: "project-env" })).toEqual({ environmentId: "project-env", source: "project" });
-    expect(resolveExecutionWorkspaceEnvironmentId({ ...defaults, projectEnvironmentId: "project-env", lowTrustIssueEnvironmentId: "task-sandbox" })).toEqual({ environmentId: "task-sandbox", source: "issue" });
-    expect(resolveExecutionWorkspaceEnvironmentId({ ...defaults, projectEnvironmentId: "local-env", managedSandboxOnly: true, managedSandboxEnvironmentId: "managed-env" })).toEqual({ environmentId: "managed-env", source: "managed" });
-  });
-});
-
  describe("task-scoped low-trust environment", () => {
   it("uses the explicit phone-task sandbox while preserving ordinary agent defaults", () => {
     const defaults = {agentDefaultEnvironmentId: "agent-env", instanceDefaultEnvironmentId: "instance-env", localDefaultEnvironmentId: "local-env"};
