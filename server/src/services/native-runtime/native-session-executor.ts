@@ -298,7 +298,7 @@ import {
 import { conflict, HttpError } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { classifyRemoteConnectionError } from "../remote-connection-failure.js";
-import { resolvePaperclipRunnerBinary, resolveRemotePaperclipRunnerBinary, verifiedBundledRemoteRunnerBinary } from "./native-codex-runner.js";
+import { resolvePaperclipRunnerBinary, resolvePaperclipRunnerBinaryAsync, resolveRemotePaperclipRunnerBinary, verifiedBundledRemoteRunnerBinary } from "./native-codex-runner.js";
 import {
   createNativeRunTrace,
   isNativeRunRootHistoricalSpan,
@@ -15668,12 +15668,12 @@ async function createRunnerdBackendWithinSessionClaim(
   // The persisted admission owns a surviving runner's identity. Local release
   // files are launch inputs and may no longer exist on a replacement controller.
   const controllerRunnerBinary = adoptingPersistedRemoteRunner
-    ? input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary()
+    ? input.runnerRemoteBinaryPath?.trim() || await resolvePaperclipRunnerBinaryAsync()
     : targetMatchedCodexArtifact
     ? await timeController("runner_binary", () => resolveRemotePaperclipRunnerBinary({ runner: remoteCommandRunner!, remoteCwd: remoteTarget.remoteCwd, configuredPath: input.runnerRemoteBinaryPath }))
     : remoteTarget
-    ? remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
-    : resolvePaperclipRunnerBinary();
+    ? remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
+    : await resolvePaperclipRunnerBinaryAsync();
   const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
     stateDirectory: root,
     binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,

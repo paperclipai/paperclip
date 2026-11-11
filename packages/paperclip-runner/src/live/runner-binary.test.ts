@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolvePackagedRunnerBinary, runnerBinaryFileTarget, runnerBinaryTarget } from "./runner-binary.js";
+import { resolvePackagedRunnerBinary, resolvePackagedRunnerBinaryAsync, runnerBinaryFileTarget, runnerBinaryFileTargetAsync, runnerBinaryTarget } from "./runner-binary.js";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function header(target: string) {
@@ -57,6 +57,17 @@ describe("packaged native daemon target", () => {
     expect(runnerBinaryTarget(pe)).toBe("win32-x64");
     expect(runnerBinaryFileTarget(binary(root, "win32-x64", pe))).toBe("win32-x64");
     expect(runnerBinaryFileTarget(binary(root, "empty", Buffer.alloc(0)))).toBeNull();
+  });
+  it("resolves the packaged daemon asynchronously with the same selection and errors", async () => {
+    const root = fixture();
+    const selected = binary(root, "linux-x64", header("linux-x64"));
+    expect(await resolvePackagedRunnerBinaryAsync(join(root, "dist"), "linux", "x64")).toBe(resolvePackagedRunnerBinary(join(root, "dist"), "linux", "x64"));
+    expect(await resolvePackagedRunnerBinaryAsync(join(root, "dist"), "linux", "x64")).toBe(selected);
+    expect(await runnerBinaryFileTargetAsync(selected)).toBe("linux-x64");
+    expect(await resolvePackagedRunnerBinaryAsync(join(root, "dist"), "darwin", "arm64")).toBeNull();
+    binary(root, "linux-arm64", header("linux-x64"));
+    await expect(resolvePackagedRunnerBinaryAsync(join(root, "dist"), "linux", "arm64")).rejects.toThrow("packaged daemon does not match linux-arm64");
+    expect(() => resolvePackagedRunnerBinary(join(root, "dist"), "linux", "arm64")).toThrow("packaged daemon does not match linux-arm64");
   });
   it("rejects malformed, truncated and unknown binary formats", () => {
     for (const bytes of [Buffer.alloc(0), Buffer.alloc(64), header("linux-x64").subarray(0, 19)]) expect(runnerBinaryTarget(bytes)).toBeNull();

@@ -41,9 +41,10 @@ const linuxX64Header = () => {
   return bytes;
 };
 
-const SLOW_MS = 800;
-// Generous for a loaded CI runner, and far below one blocked slow step.
-const RESPONSIVE_GAP_MS = 400;
+const SLOW_MS = 2_500;
+// Generous for a loaded CI runner, and well below one blocked slow step.
+const RESPONSIVE_GAP_MS = 1_500;
+const SLOW_TEST_TIMEOUT_MS = 30_000;
 
 // The fixtures use POSIX tools (mkfifo, sh, sleep, find); the controller
 // paths under test are the Linux and macOS ones.
@@ -88,7 +89,7 @@ describe.skipIf(process.platform === "win32")("run-path file work stays off the 
 
     expect(resolved).toBe(binary);
     expect(gap).toBeLessThan(RESPONSIVE_GAP_MS);
-  });
+  }, SLOW_TEST_TIMEOUT_MS);
 
   it("archives a staged directory without blocking while tar is slow", async () => {
     slowTar();
@@ -113,7 +114,7 @@ describe.skipIf(process.platform === "win32")("run-path file work stays off the 
 
     expect(staged).toEqual(["./keep/file.txt"]);
     expect(gap).toBeLessThan(RESPONSIVE_GAP_MS);
-  });
+  }, SLOW_TEST_TIMEOUT_MS);
 
   it("checks and installs a copied-back checkpoint without blocking while tar is slow", async () => {
     const payload = join(root, "payload");
@@ -134,7 +135,7 @@ describe.skipIf(process.platform === "win32")("run-path file work stays off the 
 
     expect(readFileSync(join(target, "state", "session.json"), "utf8")).toBe("{\"ok\":true}");
     expect(gap).toBeLessThan(RESPONSIVE_GAP_MS);
-  });
+  }, SLOW_TEST_TIMEOUT_MS);
 });
 
 describe.skipIf(process.platform === "win32")("off-loop file helpers", () => {

@@ -149,6 +149,8 @@ export const createRunnerdCodexTransport: (
   runner.createRunnerdCodexTransport;
 export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
+export const defaultCapabilityRunnerdBinaryAsync =
+  runner.defaultCapabilityRunnerdBinaryAsync;
 export const runnerBinaryTarget = runner.runnerBinaryTarget;
 export const coldAdmissionTimeoutMs = runner.coldAdmissionTimeoutMs;
 export const unreadSteeredMessageIds = runner.unreadSteeredMessageIds;

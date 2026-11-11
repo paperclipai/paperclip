@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, chmodSync, constants, mkdirSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
@@ -17,6 +18,7 @@ import {
   bundledRemoteRunnerRelease,
   createPaperclipRunnerAuthorizedToolSet,
   defaultCapabilityRunnerdBinary,
+  defaultCapabilityRunnerdBinaryAsync,
   runnerBinaryTarget,
   type PaperclipSemanticToolDefinition,
 } from "../../vendor/paperclip-runner/index.js";
@@ -221,6 +223,42 @@ export function resolvePaperclipRunnerBinary(
   );
 }
 
+/** `resolvePaperclipRunnerBinary` without blocking the event loop (run paths). */
+export async function resolvePaperclipRunnerBinaryAsync(
+  configuredPath = controllerPaperclipRunnerBinaryConfiguration(),
+): Promise<string> {
+  assertPaperclipRunnerBinaryConfiguration(configuredPath);
+  if (configuredPath) {
+    try {
+      await access(configuredPath, constants.R_OK | (process.platform === "win32" ? 0 : constants.X_OK));
+      return configuredPath;
+    } catch {
+      // Preserve the existing fallback for an unavailable configured path.
+    }
+  }
+  const candidates = [
+    // The runner owns its compiled/vendored root and verifies the target header.
+    // Never prefer a flat build-host executable over a staged release target.
+    await defaultCapabilityRunnerdBinaryAsync(),
+    resolve(
+      moduleDirectory,
+      "../../../../packages/paperclip-runner/runner/target/release",
+      executableName(),
+    ),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.R_OK | (process.platform === "win32" ? 0 : constants.X_OK));
+      return candidate;
+    } catch {
+      // Continue through the fixed production and workspace locations.
+    }
+  }
+  throw new Error(
+    "paperclip_runner_binary_missing: build @paperclipai/paperclip-runner or set PAPERCLIP_RUNNER_BINARY",
+  );
+}
+
 export async function resolveRemotePaperclipRunnerBinary(input: {
   runner: CommandManagedRuntimeRunner;
   remoteCwd: string;
@@ -239,8 +277,8 @@ export async function resolveRemotePaperclipRunnerBinary(input: {
   const controllerOverride = platform === process.platform && architecture === process.arch
     ? process.env.PAPERCLIP_RUNNER_BINARY : undefined;
   const binary = configured || (controllerOverride
-    ? resolvePaperclipRunnerBinary(controllerOverride)
-    : defaultCapabilityRunnerdBinary(platform, architecture));
+    ? await resolvePaperclipRunnerBinaryAsync(controllerOverride)
+    : await defaultCapabilityRunnerdBinaryAsync(platform, architecture));
   // The header names the target; reading the whole daemon here blocked the
   // event loop on every remote run.
   let target: string | null;
@@ -383,7 +421,7 @@ export async function executeNativeCodexRunner(input: {
     startedAt: string;
   }) => Promise<void>;
 }): Promise<AdapterExecutionResult> {
-  const binary = input.runnerBinary ?? resolvePaperclipRunnerBinary();
+  const binary = input.runnerBinary ?? await resolvePaperclipRunnerBinaryAsync();
   const runnerDigest = await cachedFileSha256(binary);
   const runtimeRoot = input.runtimeRoot
     ? resolve(input.runtimeRoot)

@@ -390,6 +390,7 @@ vi.mock("../issue-recovery-actions.js", () => ({
 
 vi.mock("./native-codex-runner.js", () => ({
   resolvePaperclipRunnerBinary: state.resolveRunnerBinary,
+  resolvePaperclipRunnerBinaryAsync: async (...args: unknown[]) => state.resolveRunnerBinary(...(args as [])),
   resolveRemotePaperclipRunnerBinary: state.resolveRemoteRunnerBinary,
   // Resolves through the (mocked) vendor bundle, like the production checks.
   verifiedBundledRemoteRunnerBinary: async () =>

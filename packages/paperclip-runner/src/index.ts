@@ -95,6 +95,7 @@ export {
   NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
+  defaultCapabilityRunnerdBinaryAsync,
   readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
   coldAdmissionTimeoutMs,

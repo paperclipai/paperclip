@@ -1,4 +1,5 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 /** Native binary headers bind the packaged executable to its actual target. */
@@ -44,6 +45,32 @@ export function runnerBinaryFileTarget(path: string): string | null {
 
 const targetCache = new Map<string, { key: string; target: string | null }>();
 
+/** `runnerBinaryFileTarget` without blocking the event loop; shares its cache. */
+export async function runnerBinaryFileTargetAsync(path: string): Promise<string | null> {
+  const metadata = await stat(path, { bigint: true });
+  const key = `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
+  const cached = targetCache.get(path);
+  if (cached?.key === key) return cached.target;
+  const handle = await open(path, "r");
+  let target: string | null;
+  try {
+    const header = Buffer.alloc(RUNNER_BINARY_HEADER_BYTES);
+    let length = 0;
+    let ended = false;
+    while (length < header.length) {
+      const { bytesRead } = await handle.read(header, length, header.length - length, null);
+      if (bytesRead === 0) { ended = true; break; }
+      length += bytesRead;
+    }
+    target = runnerBinaryTarget(header.subarray(0, length));
+    if (target === null && !ended) target = runnerBinaryTarget(Buffer.concat([header.subarray(0, length), await handle.readFile()]));
+  } finally {
+    await handle.close();
+  }
+  targetCache.set(path, { key, target });
+  return target;
+}
+
 function readRunnerBinaryFileTarget(path: string): string | null {
   const descriptor = openSync(path, "r");
   try {
@@ -62,13 +89,30 @@ function readRunnerBinaryFileTarget(path: string): string | null {
   }
 }
 
-export function resolvePackagedRunnerBinary(outputRoot: string, platform = process.platform, architecture = process.arch): string | null {
+function packagedRunnerBinaryCandidates(outputRoot: string, platform: string, architecture: string) {
   const target = `${platform}-${architecture}`, executable = platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
-  for (const binary of [resolve(outputRoot, "bin", target, executable), resolve(outputRoot, "bin", executable)]) {
+  return { target, binaries: [resolve(outputRoot, "bin", target, executable), resolve(outputRoot, "bin", executable)] };
+}
+
+const packagedRunnerMismatch = (target: string) =>
+  new Error(`runner_runtime_incompatible: packaged daemon does not match ${target}; install the matching Paperclip release`);
+
+export function resolvePackagedRunnerBinary(outputRoot: string, platform = process.platform, architecture = process.arch): string | null {
+  const { target, binaries } = packagedRunnerBinaryCandidates(outputRoot, platform, architecture);
+  for (const binary of binaries) {
     if (!existsSync(binary)) continue;
-    if (runnerBinaryFileTarget(binary) !== target) {
-      throw new Error(`runner_runtime_incompatible: packaged daemon does not match ${target}; install the matching Paperclip release`);
-    }
+    if (runnerBinaryFileTarget(binary) !== target) throw packagedRunnerMismatch(target);
+    return binary;
+  }
+  return null;
+}
+
+/** `resolvePackagedRunnerBinary` without blocking the event loop. */
+export async function resolvePackagedRunnerBinaryAsync(outputRoot: string, platform = process.platform, architecture = process.arch): Promise<string | null> {
+  const { target, binaries } = packagedRunnerBinaryCandidates(outputRoot, platform, architecture);
+  for (const binary of binaries) {
+    if (!await stat(binary).then(() => true, () => false)) continue;
+    if (await runnerBinaryFileTargetAsync(binary) !== target) throw packagedRunnerMismatch(target);
     return binary;
   }
   return null;
