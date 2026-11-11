@@ -2,6 +2,7 @@ import { agentWakeupRequests, heartbeatRuns, statusDecisions, statusDecisionEffe
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { boundRunIssueIdSql } from "../run-task-binding.js";
+import { NATIVE_RUN_FAILED_RETRY_CAUSE } from "./status-arbiter.js";
 
 /** Recover conversation provenance from a committed continuation, never from
  * provider-supplied source IDs or the mere presence of a chat on the task. */
@@ -44,7 +45,7 @@ export async function readNativeContinuationSource(
       ), and(
         // The one automatic retry after a failed turn answers the same chat.
         eq(statusDecisionEffects.effectKind, "schedule_retry"),
-        sql`${agentWakeupRequests.payload}->>'retryCause' = 'native_run_failed'`,
+        sql`${agentWakeupRequests.payload}->>'retryCause' = ${NATIVE_RUN_FAILED_RETRY_CAUSE}`,
       )),
     ))
     .innerJoin(statusDecisions, and(
