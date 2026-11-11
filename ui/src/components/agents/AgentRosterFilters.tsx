@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NativeSelect } from "@/components/ui/select";
+import { useTx } from "@/i18n/tx";
 
 const emptyAgents: Agent[] = [];
 const emptyDepartments: Department[] = [];
@@ -62,6 +63,7 @@ export function AgentRosterFilters({ filters, options, departmentOptions, onChan
   retryConnections: () => void;
   retryDepartments: () => void;
 }) {
+  const tx = useTx();
   return <div data-canonical-toolbar="agent-filters" role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center justify-between gap-3">
     <Popover>
       <PopoverTrigger asChild>
@@ -86,12 +88,12 @@ export function AgentRosterFilters({ filters, options, departmentOptions, onChan
           </NativeSelect>
         </label>)}
         <label className="block space-y-1 text-xs font-medium text-muted-foreground">
-          <span>Department</span>
-          <NativeSelect aria-label="Department" value={filters.department} onChange={event => onChange({ ...filters, department: event.target.value })}
+          <span>{tx("Department")}</span>
+          <NativeSelect aria-label={tx("Department")} value={filters.department} onChange={event => onChange({ ...filters, department: event.target.value })}
             className="h-11 text-base md:text-sm">
-            <option value="">All departments</option>
-            <option value={AGENT_DEPARTMENT_UNASSIGNED}>Unassigned</option>
-            {filters.department && filters.department !== AGENT_DEPARTMENT_UNASSIGNED && !departmentOptions.some(option => option.value === filters.department) && <option value={filters.department}>Previously selected department</option>}
+            <option value="">{tx("All departments")}</option>
+            <option value={AGENT_DEPARTMENT_UNASSIGNED}>{tx("Unassigned")}</option>
+            {filters.department && filters.department !== AGENT_DEPARTMENT_UNASSIGNED && !departmentOptions.some(option => option.value === filters.department) && <option value={filters.department}>{tx("Previously selected department")}</option>}
             {departmentOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </NativeSelect>
         </label>
@@ -99,6 +101,6 @@ export function AgentRosterFilters({ filters, options, departmentOptions, onChan
     </Popover>
     <span className="text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>
     {!!connectionError && <p role="alert" className="basis-full text-xs text-destructive">Connection names couldn’t be loaded. <Button variant="link" size="sm" onClick={retryConnections}>Retry</Button></p>}
-    {!!departmentError && <p role="alert" className="basis-full text-xs text-destructive">Departments couldn’t be loaded. <Button variant="link" size="sm" onClick={retryDepartments}>Retry</Button></p>}
+    {!!departmentError && <p role="alert" className="basis-full text-xs text-destructive">{tx("Departments couldn’t be loaded.")} <Button variant="link" size="sm" onClick={retryDepartments}>Retry</Button></p>}
   </div>;
 }

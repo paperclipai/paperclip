@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { normalizeDepartmentName } from "@paperclipai/shared";
 import { departmentsApi } from "@/api/departments";
+import { useTx } from "@/i18n/tx";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +11,7 @@ import { Input } from "@/components/ui/input";
 // department list is not adapter config and must not take a configuration
 // revision or block Save of the agent's name and title.
 export function AgentDepartmentsField({ companyId, agentId }: { companyId: string; agentId: string }) {
+  const tx = useTx();
   const client = useQueryClient();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +28,7 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
       setError(null);
       await invalidate();
     },
-    onError: (cause: Error) => setError(cause.message || "Couldn’t save departments"),
+    onError: (cause: Error) => setError(tx(cause.message || "Couldn’t save departments")),
   });
   const create = useMutation({
     mutationFn: (name: string) => departmentsApi.create(companyId, name),
@@ -36,13 +38,13 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
       ids.add(department.id);
       await replace.mutateAsync([...ids]);
     },
-    onError: (cause: Error) => setError(cause.message || "Couldn’t add department"),
+    onError: (cause: Error) => setError(tx(cause.message || "Couldn’t add department")),
   });
 
   const add = () => {
     const name = normalizeDepartmentName(draft);
     if (!name) {
-      setError("Enter a department name of 1 to 80 characters");
+      setError(tx("Enter a department name of 1 to 80 characters"));
       return;
     }
     const existing = rows.find((row) => row.name.toLowerCase() === name.toLowerCase());
@@ -61,8 +63,8 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
   const busy = replace.isPending || create.isPending;
   return (
     <div className="space-y-1.5">
-      <div className="text-xs font-medium text-muted-foreground">Departments</div>
-      <p className="text-xs text-muted-foreground">Optional. An agent can belong to several departments, or to none. This does not change who they report to.</p>
+      <div className="text-xs font-medium text-muted-foreground">{tx("Departments")}</div>
+      <p className="text-xs text-muted-foreground">{tx("Optional. An agent can belong to several departments, or to none. This does not change who they report to.")}</p>
       <div className="flex flex-wrap gap-1.5">
         {mine.map((department) => (
           <button
@@ -70,7 +72,7 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
             type="button"
             className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs"
             disabled={busy}
-            aria-label={`Remove ${department.name}`}
+            aria-label={`${tx("Remove")} ${department.name}`}
             onClick={() => replace.mutate(mine.filter((row) => row.id !== department.id).map((row) => row.id))}
           >
             {department.name}
@@ -95,7 +97,7 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
         />
         <Button type="button" variant="outline" size="sm" disabled={busy || !draft.trim()} onClick={add}>+</Button>
       </div>
-      {departments.isError && <p role="alert" className="text-xs text-destructive">Departments couldn’t be loaded.</p>}
+      {departments.isError && <p role="alert" className="text-xs text-destructive">{tx("Departments couldn’t be loaded.")}</p>}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     </div>
   );
