@@ -15062,27 +15062,42 @@ export function createRemoteRunnerProcessLauncher(input: {
         attributes: { identitySource: "remote_marker", detached: true },
       });
 
+      let supervisionUnknownSince: number | null = null;
       while (true) {
-        const observed = await readRemoteRunnerRecoveryProbe({
-          runner,
-          stage: "process_verification",
-          deadline: Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS,
-          readOnly: true,
-          request: {
-            command: "sh",
-            args: [
-              "-c",
-              REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
-              "paperclip-runner-monitor",
-              input.processIdentityPath,
-              identityNonce,
-              input.runnerInstanceId,
-              String(identity.pid),
-              ...(identity.processStartFingerprint ? [identity.processStartFingerprint] : []),
-            ],
-            bypassSession: true,
-          },
-        });
+        let observed: Awaited<ReturnType<typeof readRemoteRunnerRecoveryProbe>>;
+        try {
+          observed = await readRemoteRunnerRecoveryProbe({
+            runner,
+            stage: "process_verification",
+            deadline: Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS,
+            readOnly: true,
+            request: {
+              command: "sh",
+              args: [
+                "-c",
+                REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
+                "paperclip-runner-monitor",
+                input.processIdentityPath,
+                identityNonce,
+                input.runnerInstanceId,
+                String(identity.pid),
+                ...(identity.processStartFingerprint ? [identity.processStartFingerprint] : []),
+              ],
+              bypassSession: true,
+            },
+          });
+        } catch (error) {
+          supervisionUnknownSince ??= Date.now();
+          if (
+            spec.isRunnerConnected?.() !== true ||
+            Date.now() - supervisionUnknownSince >= REMOTE_RUNNER_RECONNECT_GRACE_MS
+          ) throw error;
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),
+          );
+          continue;
+        }
+        supervisionUnknownSince = null;
         if (observed.exitCode === 0 && !observed.timedOut) {
           await new Promise<void>((resolve) =>
             setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),

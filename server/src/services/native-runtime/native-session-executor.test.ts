@@ -83,6 +83,7 @@ import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
@@ -1584,6 +1585,97 @@ fs.readFileSync = function(path, ...args) {
       const probes = execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-monitor");
       expect(probes.map(([x]) => x.timeoutMs)).toEqual([10_000, 10_000, 9_250]);
       expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps supervising a connected runner through plugin RPC timeouts until the probe answers", async () => {
+    vi.useFakeTimers();
+    let nonce = "";
+    let stalledProbes = 0;
+    let connected = true;
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") { nonce = input.args![4]!; return ok; }
+      if (label === "paperclip-runner-process-identity") return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+      if (label === "paperclip-runner-monitor" && stalledProbes < 3) {
+        stalledProbes++;
+        await new Promise(resolve => setTimeout(resolve, 40_000));
+        throw new Error('RPC call "environmentExecute" timed out after 40000ms');
+      }
+      if (label === "paperclip-runner-monitor") return { ...ok, exitCode: connected ? 0 : 45 };
+      return { ...ok, exitCode: 1 };
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {}, isRunnerConnected: () => connected });
+    let settled = false;
+    const outcome = handle.completion.then(() => { settled = true; }, error => { settled = true; return error as Error; });
+    try {
+      await vi.advanceTimersByTimeAsync(130_000);
+      expect(settled ? readRemoteRunnerRecoveryError(await outcome) : "supervising").toBe("supervising");
+      expect(stalledProbes).toBe(3);
+      expect(handle.isExitConfirmed?.()).toBe(false);
+      connected = false;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await outcome).toBeUndefined();
+      expect(handle.isExitConfirmed?.()).toBe(true);
+      expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("fails closed without exit proof when the runner is also disconnected through plugin RPC timeouts", async () => {
+    vi.useFakeTimers();
+    let nonce = "";
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") { nonce = input.args![4]!; return ok; }
+      if (label === "paperclip-runner-process-identity") return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+      await new Promise(resolve => setTimeout(resolve, 40_000));
+      throw new Error('RPC call "environmentExecute" timed out after 40000ms');
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {}, isRunnerConnected: () => false });
+    const failure = handle.completion.catch(readRemoteRunnerRecoveryError);
+    try {
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(await failure).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+      expect(handle.isExitConfirmed?.()).toBe(false);
+      expect(execute.mock.calls.some(([x]) => x.args?.[2] === "paperclip-runner-diagnostics")).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds supervision without exit proof when a connected runner's probes never answer", async () => {
+    vi.useFakeTimers();
+    let nonce = "";
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") { nonce = input.args![4]!; return ok; }
+      if (label === "paperclip-runner-process-identity") return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+      await new Promise(resolve => setTimeout(resolve, 40_000));
+      throw new Error('RPC call "environmentExecute" timed out after 40000ms');
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {}, isRunnerConnected: () => true });
+    let settled = false;
+    const failure = handle.completion.catch(error => { settled = true; return readRemoteRunnerRecoveryError(error); });
+    try {
+      await vi.advanceTimersByTimeAsync(REMOTE_RUNNER_RECONNECT_GRACE_MS - 60_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(true);
+      expect(await failure).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+      expect(handle.isExitConfirmed?.()).toBe(false);
     } finally { vi.useRealTimers(); }
   });
 
