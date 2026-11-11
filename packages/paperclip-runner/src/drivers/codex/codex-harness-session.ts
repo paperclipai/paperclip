@@ -933,11 +933,11 @@ export class CodexHarnessSession
   }
 
   // `force` is part of the contract. Codex closes the same way with or without it.
-  async close(input: { reason: string; force?: boolean }): Promise<void> {
+  async close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
     // Untyped callers (for example generated scripts) may still omit the input.
-    await this.transport.close(input?.reason);
+    await this.transport.close(input?.reason, { retainUnsettledRemoteRunner: input?.retainUnsettledRemoteRunner === true });
   }
 
   async release(): Promise<DurableRecoveryIdentity | false> {

@@ -67,6 +67,8 @@ export function buildPaperclipTaskMarkdown(input: {
   slackCommand?: string | null;
   nativeRunner?: boolean;
   coordinatorWorkspace?: boolean;
+  // IANA zone saved from the chat owner's browser; null when unknown.
+  personTimeZone?: string | null;
   conferenceRoomEnabled?: boolean;
   statusCardsEnabled?: boolean;
   casesEnabled?: boolean;
@@ -223,6 +225,9 @@ export function buildPaperclipTaskMarkdown(input: {
     }
     if (issue.conversationAgentId) {
       lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      if (input.personTimeZone) {
+        lines.push(`The person's time zone is ${input.personTimeZone} (from their browser). Read times and dates they give, such as "nine in the morning" or "today", in that zone, and save schedules such as routine triggers with that timezone; say the zone when you report a schedule.`);
+      }
       if (input.nativeRunner && input.coordinatorWorkspace) {
         lines.push("", "Coordinator task proposals:", COORDINATOR_CHAT_HANDOFF_DIRECTIVE);
       }

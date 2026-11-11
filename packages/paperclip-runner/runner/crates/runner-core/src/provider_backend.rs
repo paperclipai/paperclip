@@ -6679,7 +6679,10 @@ mod tests {
             use std::io::{BufRead, BufReader};
             use std::os::unix::process::CommandExt;
             // The leader starts a child in its own process group, reports the
-            // child pid, and is then killed and reaped. The child keeps the group.
+            // child pid, and is then killed and reaped. The child keeps the group
+            // as an orphan, which is held apart from a reap that must verify.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let orphans = crate::process_lineage::host_orphans::may_orphan();
             let mut leader = std::process::Command::new("sh")
                 .args(["-c", "sleep 30 & echo $!; wait"])
                 .process_group(0)
@@ -6706,6 +6709,13 @@ mod tests {
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", &child.to_string()])
                 .status();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                crate::process_lineage::host_orphans::wait_until_group_gone(
+                    i32::try_from(group).unwrap(),
+                );
+                drop(orphans);
+            }
             fs::remove_dir_all(directory).unwrap();
         }
     }
@@ -6747,6 +6757,33 @@ mod tests {
         assert_ne!(
             CodexCommandExecutor::stable_launch_args(&before),
             CodexCommandExecutor::stable_launch_args(&unsafe_args)
+        );
+    }
+
+    #[test]
+    fn external_sandbox_planning_profile_rules_carry_saved_launches_forward() {
+        let launch = |filesystem: &str, network: &str| -> Vec<String> {
+            vec![
+                "-c".to_owned(),
+                "default_permissions=\"paperclip-runner-external-sandbox\"".to_owned(),
+                "-c".to_owned(),
+                format!("permissions.paperclip-runner-workspace-read-only.filesystem={filesystem}"),
+                "-c".to_owned(),
+                format!(
+                    "permissions.paperclip-runner-workspace-read-only.network.enabled={network}"
+                ),
+                "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+                "app-server".to_owned(),
+            ]
+        };
+        let saved = launch(
+            "{\":root\"=\"none\",\":minimal\"=\"read\",\":tmpdir\"=\"none\",\"/home/daytona/.codex\"=\"none\",\":workspace_roots\"={\".\"=\"read\"}}",
+            "false",
+        );
+        let current = launch("{\":root\"=\"read\"}", "true");
+        assert_eq!(
+            CodexCommandExecutor::stable_launch_args(&saved),
+            CodexCommandExecutor::stable_launch_args(&current)
         );
     }
     use super::*;
@@ -9073,11 +9110,24 @@ done
         recovered.validate().unwrap();
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    type ReceiptLimitOrphans = crate::process_lineage::host_orphans::MayOrphan;
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    type ReceiptLimitOrphans = ();
+
+    /// The provider's `sleep` can be orphaned for a moment when its group is
+    /// killed, so the fixture holds it apart from a reap that must verify.
+    /// Bind the guard first, so it is released after the executor stops the
+    /// provider.
     #[cfg(unix)]
     fn disconnected_receipt_limit_fixture(
         mode: &str,
         deadline: u64,
-    ) -> (CodexCommandExecutor, PathBuf, u64) {
+    ) -> (ReceiptLimitOrphans, CodexCommandExecutor, PathBuf, u64) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let orphans = crate::process_lineage::host_orphans::may_orphan();
+        #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+        let orphans = ();
         let directory = std::env::temp_dir().join(format!(
             "paperclip-offline-receipt-limit-{}",
             uuid::Uuid::new_v4()
@@ -9164,13 +9214,13 @@ done
         executor.state = Some(state);
         executor.provider = Some(provider);
         executor.save_state().unwrap();
-        (executor, directory, deadline)
+        (orphans, executor, directory, deadline)
     }
 
     #[cfg(unix)]
     #[test]
     fn disconnected_receipt_limit_preserves_a_future_deadline_without_rpc_or_facade_claims() {
-        let (mut executor, directory, deadline) =
+        let (_orphans, mut executor, directory, deadline) =
             disconnected_receipt_limit_fixture("silent", current_unix_ms().unwrap() + 60_000);
         for _ in 0..2 {
             assert!(
@@ -9236,7 +9286,7 @@ done
     #[test]
     fn disconnected_receipt_limit_stops_a_hanging_provider_at_its_original_deadline() {
         for accepted in [false, true] {
-            let (mut executor, directory, deadline) =
+            let (_orphans, mut executor, directory, deadline) =
                 disconnected_receipt_limit_fixture("silent", 1);
             executor
                 .state
@@ -9285,7 +9335,8 @@ done
     #[test]
     fn disconnected_receipt_limit_preserves_terminal_and_its_fifo_prefix_for_reconnect() {
         for mode in ["terminal", "prefix_terminal", "prefix_only"] {
-            let (mut executor, directory, deadline) = disconnected_receipt_limit_fixture(mode, 1);
+            let (_orphans, mut executor, directory, deadline) =
+                disconnected_receipt_limit_fixture(mode, 1);
             let retained = executor.state.as_ref().unwrap().pending_events.clone();
             assert!(executor.maintain_disconnected_provider().unwrap().is_none());
             assert!(executor
@@ -9344,7 +9395,7 @@ done
     #[cfg(unix)]
     #[test]
     fn fenced_receipt_limit_replays_child_and_unavailable_requests_before_root_terminal() {
-        let (mut executor, directory, _) =
+        let (_orphans, mut executor, directory, _) =
             disconnected_receipt_limit_fixture("requests_terminal", 1);
         executor.restore_checked = true;
         let mut observed = Vec::new();
@@ -9402,7 +9453,7 @@ done
 
     #[cfg(unix)]
     fn assert_disconnected_receipt_limit_drains_batches(mode: &str, has_terminal: bool) {
-        let (mut executor, directory, _) = disconnected_receipt_limit_fixture(mode, 1);
+        let (_orphans, mut executor, directory, _) = disconnected_receipt_limit_fixture(mode, 1);
         executor.maintain_disconnected_provider().unwrap();
         assert!(executor
             .provider

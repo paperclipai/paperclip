@@ -509,6 +509,29 @@ describe("environment routes", () => {
     });
   });
 
+  it.each(["list", "detail"])("exposes only plugin driver identity in the restricted environment %s", async view => {
+    const environment = {
+      ...createEnvironment(),
+      driver: "plugin",
+      config: { pluginKey: "example.runtime", driverKey: "tasks", driverConfig: { token: "fixture" } },
+      envVars: { API_KEY: "fixture" },
+    };
+    mockEnvironmentService.list.mockResolvedValue([environment]);
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const app = createApp({
+      type: "board", userId: "user-2", source: "session", companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "member" }],
+      isInstanceAdmin: false,
+    });
+    const response = await request(app).get(view === "list" ? "/api/companies/company-1/environments" : "/api/environments/env-1");
+    expect(response.status).toBe(200);
+    expect(view === "list" ? response.body[0] : response.body).toMatchObject({
+      id: "env-1", pluginDriver: { pluginKey: "example.runtime", driverKey: "tasks" },
+      config: {}, envVars: {}, metadata: null,
+    });
+    expect(JSON.stringify(response.body)).not.toContain("fixture");
+  });
+
   describe("platform-provisioned environment floor on cloud-managed instances", () => {
     function createPlatformSandboxEnvironment() {
       const now = new Date("2026-04-16T05:00:00.000Z");
@@ -1503,6 +1526,24 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.list).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["get", "/api/companies/company-1/environments/capabilities"],
+    ["post", "/api/companies/company-1/environments"],
+    ["post", "/api/environments/env-1/probe"],
+    ["patch", "/api/environments/env-1"],
+    ["delete", "/api/environments/env-1"],
+    ["get", "/api/environments/env-1/leases"],
+  ] as const)("gives an agent denied %s %s the final environment settings guidance", async (method, path) => {
+    const app = createApp({ type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_key", runId: "run-1" });
+    const res = await request(app)[method](path).send(method === "post" && path.endsWith("/environments") ? { name: "Agent computer", driver: "local", config: {} } : {});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(res.body.remediation).toContain("this denial is final");
+    expect(res.body.remediation).toContain("Execution environments are board-only throughout");
+    expect(res.body.remediation).toContain("[Open environment settings](/<prefix>/company/settings/instance/environments)");
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+  });
+
   it("rejects agent detail reads for instance-scoped environments", async () => {
     mockEnvironmentService.getById.mockResolvedValue(createEnvironment());
     mockAgentService.getById.mockResolvedValue({
@@ -1656,7 +1697,7 @@ describe("environment routes", () => {
       });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("board operators");
+    expect(res.body.error).toBe("Board access required");
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
@@ -2554,7 +2595,7 @@ describe("environment routes", () => {
     });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("board operators");
+    expect(res.body.error).toBe("Board access required");
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 

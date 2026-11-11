@@ -4,6 +4,7 @@ import type { AgentEnvConfig } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
+import { environments } from "./environments.js";
 import { connectionGrants } from "./tool_access.js";
 
 export const projects = pgTable(
@@ -19,6 +20,7 @@ export const projects = pgTable(
     personalOwnerUserId: text("personal_owner_user_id"),
     status: text("status").notNull().default("backlog"),
     leadAgentId: uuid("lead_agent_id").references(() => agents.id),
+    legacyEnvironmentId: uuid("environment_id").references(() => environments.id, { onDelete: "set null" }),
     targetDate: date("target_date"),
     color: text("color"),
     icon: text("icon"),

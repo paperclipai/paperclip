@@ -30,7 +30,7 @@ import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/nati
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
-import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, boardRecoveryApp, db, interruptedRemotePreparation, makeRetryDue, root, run, seed, withheldPreparationRetry } from "./__tests__/workspace-recovery-fixture.js";
+import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, boardRecoveryApp, db, interruptedRemotePreparation, makeRetryDue, recoverRunHolds, root, run, seed, withheldPreparationRetry } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
@@ -289,10 +289,10 @@ describe("automatic retained workspace recovery", () => {
   // "exhausted before upgrade": the wave databases, where earlier code already
   // spent the whole budget on rechecks and recorded no hold.
   it.each([
-    { wave: "s13", spentAttempts: 0, expectedStrategy: "finalize_result", exhaustedBeforeUpgrade: false },
-    { wave: "s12", spentAttempts: 1, expectedStrategy: "continue", exhaustedBeforeUpgrade: false },
-    { wave: "exhausted before upgrade", spentAttempts: 0, expectedStrategy: "finalize_result", exhaustedBeforeUpgrade: true },
-  ])("lets an accepted Retry finish after a killed copyback owner instead of waiting forever ($wave)", async ({ spentAttempts, expectedStrategy, exhaustedBeforeUpgrade }) => {
+    { wave: "s13", spentAttempts: 0, exhaustedBeforeUpgrade: false },
+    { wave: "s12", spentAttempts: 1, exhaustedBeforeUpgrade: false },
+    { wave: "exhausted before upgrade", spentAttempts: 0, exhaustedBeforeUpgrade: true },
+  ])("lets an accepted Retry finish after a killed copyback owner instead of waiting forever ($wave)", async ({ spentAttempts, exhaustedBeforeUpgrade }) => {
     const f = await acceptedRemoteExport();
     const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId, status: "running" });
@@ -354,25 +354,19 @@ describe("automatic retained workspace recovery", () => {
       stopEvidence: "The killed control-plane process exited and its host was replaced.",
     }).expect(202);
     expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeUndefined();
-    // The same steps the periodic sweep runs for this action.
-    await recoverRetainedWorkspace(f.input);
+    // The same steps the periodic sweep runs for this run's holds.
+    await recoverRunHolds(f.input);
     expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
     await resumePreservedResultFinalization(db, f.companyId, f.runId);
     await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
-    // The one accepted click now does work: it finishes the saved result, or,
-    // after an earlier recovery handoff (s12), continues in exactly one new run.
+    // The one accepted click now does work: it finishes the saved result,
+    // also after an earlier recovery failure (s12), with no new agent turn.
     const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
-    expect(settled).toMatchObject({ status: "coalesced", runId: expect.any(String) });
-    if (expectedStrategy === "finalize_result") {
-      expect(settled).toMatchObject({ runId: f.runId, payload: { taskRetry: { strategy: "finalize_result" } } });
-      await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
-      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "done" });
-    } else {
-      expect(settled.payload).toMatchObject({ taskRetry: { strategy: "continue" } });
-      expect(await db.select({ id: heartbeatRuns.id, previousRunId: sql<string>`${heartbeatRuns.contextSnapshot}->>'previousRunId'` })
-        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued"))))
-        .toEqual([{ id: settled.runId, previousRunId: f.runId }]);
-    }
+    expect(settled).toMatchObject({ status: "coalesced", runId: f.runId, payload: { taskRetry: { strategy: "finalize_result" } } });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")))).toEqual([]);
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "done" });
   }, 60_000);
 
   // RC-50b (wave s14/t05): Retry was accepted while saved-work recovery ran.
@@ -403,17 +397,17 @@ describe("automatic retained workspace recovery", () => {
     const second = (await request(app).post(`/api/issues/${f.issueId}/retry`)
       .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
     expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "scheduled", attempts: 0 });
-    await recoverRetainedWorkspace(f.input);
+    await recoverRunHolds(f.input);
     expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
-    await resumePreservedResultFinalization(db, f.companyId, f.runId);
     await heartbeatService(db).resumeTaskRetry(f.companyId, second.requestId!);
-    // After a board handoff the Retry continues from the recovered files in
-    // exactly one new run (as in the s12 case), never another wait.
+    // After a board handoff the Retry applies the accepted result from the
+    // recovered files, never another wait and never a new agent turn.
     const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, second.requestId!));
-    expect(settled).toMatchObject({ status: "coalesced", runId: expect.any(String), payload: { taskRetry: { strategy: "continue" } } });
-    expect(await db.select({ id: heartbeatRuns.id, previousRunId: sql<string>`${heartbeatRuns.contextSnapshot}->>'previousRunId'` })
-      .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued"))))
-      .toEqual([{ id: settled.runId, previousRunId: f.runId }]);
+    expect(settled).toMatchObject({ status: "coalesced", runId: f.runId, payload: { taskRetry: { strategy: "finalize_result" } } });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")))).toEqual([]);
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "done" });
   }, 60_000);
 
   it("names a deterministic saved-files refusal behind Retry when no fallback can continue, and another Retry shows it again", async () => {
