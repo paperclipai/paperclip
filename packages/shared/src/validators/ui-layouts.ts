@@ -153,7 +153,7 @@ export function parseUiLayoutForSurface(surface: (typeof UI_LAYOUT_SURFACES)[num
 
 export const upsertUiLayoutSchema = z.object({
   layout: z.unknown(),
-});
+}).strict();
 
 export type UpsertUiLayout = z.infer<typeof upsertUiLayoutSchema>;
 
