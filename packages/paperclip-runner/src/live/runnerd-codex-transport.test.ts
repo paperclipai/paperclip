@@ -179,7 +179,7 @@ it("uses one durable attachment command and an event for a settled download", as
   });
   try {
     await transport.request("thread/start", { cwd: directory });
-    await expect(transport.downloadAttachment(() => ({
+    await expect(transport.downloadAttachment!(() => ({
       url: "https://127.0.0.1:0/attachment", token: "a".repeat(43),
       byteSize: 1, sha256: "0".repeat(64), contentType: "image/png",
     }))).rejects.toThrow("runner_attachment_download_invalid_path");
