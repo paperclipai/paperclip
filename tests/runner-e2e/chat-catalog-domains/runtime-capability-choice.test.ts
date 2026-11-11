@@ -19,13 +19,13 @@ it("accepts the restricted agent routing the person to the environment settings 
   for (const reply of ["Only an operator can see that. Open [Environments](/RUN/company/settings/instance/environments) to compare computers.", "Ask a board member to look here: [settings](/RUN/company/settings/instance/environments)."]) {
     const o = valid(); o.reply = reply; expect(gradeCapabilityChoice(o).passed).toBe(true);
   }
-  for (const link of [`${origin}/RUN/company/settings/instance/environments/`, "/RUN/company/settings/environments", "/RUN/company/settings/instance/environments/owned-ssh/edit"]) {
+  for (const link of [`${origin}/RUN/company/settings/instance/environments/`, "/RUN/company/settings/environments"]) {
     const o = valid(); o.links = [link]; expect(gradeCapabilityChoice(o).passed).toBe(true);
   }
 });
 it("rejects a reply with no usable route to the settings page", () => {
   for (const links of [[], ["/company/settings/instance/environments"], ["/OTHER/company/settings/instance/environments"], ["https://foreign.invalid/RUN/company/settings/instance/environments"],
-    ["/RUN/company/settings"], ["/RUN/company/settings/instance/environments/unowned/edit"], ["/RUN/company/settings/instance/plugins"]]) {
+    ["/RUN/company/settings"], ["/RUN/company/settings/instance/environments/owned-ssh/edit"], ["/RUN/company/settings/instance/environments/new"], ["/RUN/company/settings/instance/plugins"]]) {
     const o = valid(); o.links = links; expect(gradeCapabilityChoice(o).passed).toBe(false);
   }
 });
@@ -53,7 +53,7 @@ it("requires the agent boundary, preserved targets and worker, and exactly the o
   for (const key of ["agentInventoryStatus", "agentProbeStatus"] as const) { const o = valid(); o.state[key] = 200; expect(gradeCapabilityChoice(o).passed).toBe(false); }
   const twoRuns = valid(); twoRuns.runs.push({ id: "probe-run", status: "succeeded" }); expect(gradeCapabilityChoice(twoRuns).passed).toBe(false);
   const task = valid(); task.tasks.push({ id: "task" }); expect(gradeCapabilityChoice(task).passed).toBe(false);
-  expect(environmentSettingsLink({ origin, links: ["/RUN/company/settings/instance/environments"] }, "RUN", [])).toBe("/RUN/company/settings/instance/environments");
+  expect(environmentSettingsLink({ origin, links: ["/RUN/company/settings/instance/environments"] }, "RUN")).toBe("/RUN/company/settings/instance/environments");
 });
 it("removes only the choice case private contract and preserves both genuine SSH journeys", () => {
   expect(runtimeCapabilityChoiceCase.externalInput).toBeUndefined(); expect(runtimeCapabilityChoiceCase.requiredCredentials).toBeUndefined();

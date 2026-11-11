@@ -23,8 +23,8 @@ export function advertisedClaudeTargets(capabilities: EnvironmentCapabilities, s
     && typeof unqualified.config.host === "string" && unqualified.config.host.endsWith(".invalid")
     && claude?.drivers.local === "supported" && claude.drivers.ssh === "supported";
 }
-/** The rendered reply links the environment settings page (or one of the two targets on it). */
-export function environmentSettingsLink(o: Pick<InternalObservation, "links" | "origin">, prefix: string, targetIds: readonly string[]) {
+/** The rendered reply links the environment settings page that lists the computers. */
+export function environmentSettingsLink(o: Pick<InternalObservation, "links" | "origin">, prefix: string) {
   return o.links.find(href => {
     try {
       const url = new URL(href, o.origin);
@@ -33,7 +33,7 @@ export function environmentSettingsLink(o: Pick<InternalObservation, "links" | "
       if (parts[1] !== prefix || parts[2] !== "company" || parts[3] !== "settings") return false;
       const rest = parts.slice(4);
       if (rest[0] === "instance") rest.shift();
-      return rest[0] === "environments" && (rest.length === 1 || (rest.length === 3 && targetIds.includes(rest[1]!) && rest[2] === "edit"));
+      return rest.length === 1 && rest[0] === "environments";
     } catch { return false; }
   });
 }
@@ -47,8 +47,7 @@ export function gradeCapabilityChoice(value: unknown) {
     "Production metadata advertises Claude Code on both saved computers; the SSH computer was never qualified and cannot be reached.");
   c.add("restricted-agent-boundary", s.agentInventoryStatus === 403 && s.agentProbeStatus === 403,
     "The ordinary agent cannot read environment capabilities or probe a computer.");
-  c.add("directs-to-environment-settings", !!supported && !!unqualified && typeof s.companyPrefix === "string"
-    && !!environmentSettingsLink(o, s.companyPrefix, [supported.id, unqualified.id]),
+  c.add("directs-to-environment-settings", typeof s.companyPrefix === "string" && !!environmentSettingsLink(o, s.companyPrefix),
     "The reply links the environment settings page where a person can check support and test the computer.");
   c.add("no-hidden-target-settings", !!unqualified && hiddenSshLiterals(unqualified).length === 3
     && hiddenSshLiterals(unqualified).every(literal => !o.reply.toLowerCase().includes(literal.toLowerCase())),
@@ -98,7 +97,7 @@ export const runtimeCapabilityChoiceCase = runtimeDefinition(scenarioId, async c
   async verifyResult(ctx, state, value) {
     const o = runtimeObservation(value); if (!o) throw new Error("Missing independent runtime result");
     const targets = [state.supportedTarget, state.unqualifiedTarget] as Environment[];
-    const href = environmentSettingsLink(o, String(state.companyPrefix), targets.map(target => target.id));
+    const href = environmentSettingsLink(o, String(state.companyPrefix));
     if (!href) throw new Error("The reply rendered no environment settings link");
     const source = ctx.input.page.url(), company = `/api/companies/${ctx.input.fixtures.company.id}`;
     const response = ctx.input.page.waitForResponse(row => row.request().method() === "GET" && new URL(row.url()).pathname === `${company}/environments/capabilities`);
