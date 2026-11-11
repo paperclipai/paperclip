@@ -82,7 +82,9 @@ async function assertCasesEnabled(db: Db) {
   const experimental = await instanceSettingsService(db).getExperimental();
   if (!experimental.enableCases) {
     // An operator can hide the Experimental page, so link it only while it is visible.
-    const where = getHiddenSettings().has("instance.experimental")
+    // Hiding only the Cases key keeps the page but drops its switch, so check both.
+    const hidden = getHiddenSettings();
+    const where = hidden.has("instance.experimental") || hidden.has("instance.experimental.enableCases")
       ? "An instance operator controls it."
       : "An instance admin turns them on with Cases in [Experimental settings](/<prefix>/company/settings/instance/experimental), "
         + "with this conversation's company prefix as <prefix>.";

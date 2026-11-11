@@ -5422,12 +5422,21 @@ const PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE =
   + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
   + "reply now that the hosting operator controls this plugin's settings, with the routine's page link.";
 
-/** Picks the plugin-managed routine guidance that matches plugin settings visibility. */
+/** Picks the plugin-managed routine and experimental settings guidance that matches settings visibility. */
 export function applyPluginSettingsVisibility(document: any, hidden: ReadonlySet<string> = getHiddenSettings()): any {
-  if (!hidden.has("instance.plugins")) return document;
-  for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
-    if (typeof operation?.description === "string") {
-      operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+  if (hidden.has("instance.plugins")) {
+    for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
+      if (typeof operation?.description === "string") {
+        operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+      }
+    }
+  }
+  if (hidden.has("instance.experimental")) {
+    const experimental = document.paths?.["/api/instance/settings/experimental"];
+    for (const operation of [experimental?.get, experimental?.patch]) {
+      if (typeof operation?.description === "string") {
+        operation.description = operation.description.replace(EXPERIMENTAL_SETTINGS_PAGE, EXPERIMENTAL_SETTINGS_OPERATOR_GUIDANCE);
+      }
     }
   }
   return document;
@@ -7265,6 +7274,10 @@ registry.registerPath({
 const EXPERIMENTAL_SETTINGS_PAGE = "Instance experimental features (for example Cases via enableCases) are turned on or off by an instance admin in "
   + "Experimental settings at /<prefix>/company/settings/instance/experimental. Agent credentials cannot read or change these settings, "
   + "so do not claim a change: link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental), name the feature's setting, and reply.";
+// When the hosting operator hides the Experimental page, it redirects away, so name the operator instead.
+const EXPERIMENTAL_SETTINGS_OPERATOR_GUIDANCE = "Instance experimental features (for example Cases via enableCases) are controlled by the hosting operator on this instance, "
+  + "so no Paperclip page offers that change. Agent credentials cannot read or change these settings, "
+  + "so do not claim a change or search for another route: reply that the hosting operator controls it.";
 
 registry.registerPath({
   method: "get",
