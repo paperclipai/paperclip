@@ -275,9 +275,14 @@ Core sends `phase: "poll"` with the same operation identity and the deadline
 from the receipt. The provider returns the same receipt while work is pending
 and the usual scoped `prepared` result after success. Core rejects late results
 and stops polling when the deadline expires. Each submission and poll has a
-short transport bound independent of the operation deadline. A fresh workspace
-with recovery snapshots can return `ready_to_finish` after checkout to request
-a separate `phase: "finish"` call for recovery, under the original deadline.
+short transport bound independent of the operation deadline. A provider can
+keep reporting pending while it restores recovery snapshots, under the same
+deadline.
+
+Each invocation has its own scoped host access. Complete scoped host calls
+inside the submit or poll that owns them. Detached work can use a remote
+operation already authorized by that invocation. It cannot reuse the
+invocation to call host services after the reply.
 
 ### Workspace operation failures
 

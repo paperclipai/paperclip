@@ -126,13 +126,13 @@ export const pluginWorkspaceParamsSchema = z
 export type PluginWorkspaceParams = z.infer<typeof pluginWorkspaceParamsSchema>;
 
 export const pluginWorkspacePrepareParamsSchema = pluginWorkspaceParamsSchema.extend({
-  phase: z.enum(["submit", "poll", "finish"]),
+  phase: z.enum(["submit", "poll"]),
 }).refine((input) => input.operation.kind === "prepare");
 export type PluginWorkspacePrepareParams = z.infer<typeof pluginWorkspacePrepareParamsSchema>;
 
 export type PluginWorkspacePrepareResult =
   | { kind: "unsupported" }
-  | { kind: "pending" | "ready_to_finish"; deadline: string }
+  | { kind: "pending"; deadline: string }
   | Extract<PluginWorkspaceResult, { kind: "prepared" }>;
 
 export function parseWorkspacePrepareResult(
@@ -142,14 +142,10 @@ export function parseWorkspacePrepareResult(
   const result = z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("unsupported") }).strict(),
     z.object({ kind: z.literal("pending"), deadline: z.string().datetime() }).strict(),
-    z.object({ kind: z.literal("ready_to_finish"), deadline: z.string().datetime() }).strict(),
   ]).safeParse(value);
   if (result.success) {
     if (result.data.kind === "unsupported" && params.phase !== "submit")
       throw new Error("Workspace provider withdrew asynchronous preparation");
-    if (result.data.kind === "ready_to_finish" && (params.phase !== "poll" ||
-      params.operation.kind !== "prepare" || !params.operation.fresh?.recoverySnapshots.length))
-      throw new Error("Unexpected workspace preparation continuation");
     return result.data;
   }
   const prepared = parseWorkspaceProviderResult(params, value);

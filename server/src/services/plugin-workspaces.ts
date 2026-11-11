@@ -2,7 +2,6 @@ import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { assertProjectStorageEnvironment, effectiveProjectWorkspacePolicy, requireWorkspaceProviderWorker, type WorkspaceWorkers } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { retireAbandonedPluginWorkspaceReservation } from "./plugin-workspace-reservations.js";
-import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID, createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -18,8 +17,6 @@ import {
   type WorkspaceProviderBinding,
 } from "@paperclipai/shared";
 import {
-  parseWorkspaceProviderResult,
-  parseWorkspacePrepareResult,
   workspaceProviderOperationSchema,
   type PluginWorkspaceOperation,
   type PluginWorkspaceRecoveryPullRequest,
@@ -27,6 +24,7 @@ import {
   type PluginWorkspaceResult,
   type PluginFreshWorkspace,
 } from "@paperclipai/plugin-sdk";
+import { invokeWorkspaceProvider } from "./plugin-workspace-preparation.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { WorkspaceProviderFailureError, workspaceProviderCallFailure } from "./workspace-provider-failure.js";
@@ -109,18 +107,9 @@ export async function callWorkspaceProvider(
     agentId: input.agentId ?? null,
     operation,
   };
-  let result: PluginWorkspaceResult | null = null;
+  let result: PluginWorkspaceResult;
   try {
-    if (!verifyExisting && operation.kind === "prepare" && workers!.getWorker(pluginId)?.supportedMethods?.includes("workspacePrepare"))
-      result = await prepareWorkspaceWithPolling(workers!, params);
-    if (result === null) {
-      // Compatibility for providers and launchers without asynchronous preparation.
-      const timeout = verifyExisting ? 10_000 : operation.kind === "finalize" ? 30_000 : 300_000;
-      const request = { ...params, deadline: new Date(Date.now() + timeout).toISOString() };
-      result = parseWorkspaceProviderResult(request, await workers!.call(
-        pluginId, "workspaceOperation", request, timeout + (verifyExisting ? 2_000 : 10_000),
-      ));
-    }
+    result = await invokeWorkspaceProvider(workers!, params);
   } catch (error) {
     // A worker that never received the call, a lost reply and a provider-reported
     // failure need different recovery; only a closed provider reason crosses over.
@@ -149,48 +138,6 @@ export async function callWorkspaceProvider(
   if (result.kind === "prepared" && result.binding.pluginId !== pluginId)
     throw conflict("Workspace provider ownership changed");
   return result;
-}
-
-async function prepareWorkspaceWithPolling(workers: WorkspaceWorkers, params: Omit<PluginWorkspaceParams, "deadline">) {
-  const rpcTimeout = 15_000; // Transport bound. The provider selects the operation deadline.
-  const submit = { ...params, phase: "submit" as const, deadline: new Date(Date.now() + rpcTimeout).toISOString() };
-  const receipt = parseWorkspacePrepareResult(submit, await workers.call(params.pluginId, "workspacePrepare", submit, rpcTimeout));
-  if (receipt.kind === "unsupported") return null;
-  if (receipt.kind === "prepared") return receipt;
-  const expiresAt = Date.parse(receipt.deadline);
-  const remaining = () => {
-    const ms = expiresAt - Date.now();
-    if (ms <= 0) throw new WorkspaceProviderFailureError({
-      kind: "provider", reason: "deadline_exceeded", retryable: true,
-      message: "Workspace storage operation expired; retry the same workspace",
-    });
-    return ms;
-  };
-  const poll = { ...params, phase: "poll" as const, deadline: receipt.deadline };
-  for (;;) {
-    await delay(Math.min(1000, remaining()));
-    const timeout = Math.min(rpcTimeout, remaining());
-    let response: unknown;
-    try {
-      response = await workers.call(params.pluginId, "workspacePrepare", poll, timeout);
-    } catch (error) {
-      const failure = workspaceProviderCallFailure(error);
-      if (failure.kind === "transport" || failure.kind === "timeout") continue;
-      throw failure;
-    }
-    remaining();
-    const status = parseWorkspacePrepareResult(poll, response);
-    if (status.kind === "prepared") return status;
-    if (status.kind === "unsupported" || status.deadline !== receipt.deadline)
-      throw new Error("Workspace provider changed the preparation deadline");
-    if (status.kind === "ready_to_finish") {
-      const finish = { ...poll, phase: "finish" as const };
-      const result = parseWorkspacePrepareResult(finish, await workers.call(params.pluginId, "workspacePrepare", finish, remaining()));
-      remaining();
-      if (result.kind !== "prepared") throw new Error("Workspace preparation continuation did not finish");
-      return result;
-    }
-  }
 }
 
 export async function preparePluginWorkspace(
