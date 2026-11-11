@@ -65,7 +65,7 @@ import { coldAdmissionTimeoutMs } from "../../vendor/paperclip-runner/index.js";
 import { applyObservabilityEnvironment, type ProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 import { museRunnerBroker } from "../muse-runner-broker.js";
 import { nativeCaseHandoffResult } from "./native-case-handoff.js";
-import { assertExternalNativeRunAuthority } from "./external-native-authority.js";
+import { assertExternalNativeRunAuthority, hasExternalNativeCheckpointIdentity } from "./external-native-authority.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
 import {
   NATIVE_CONTINUITY_STATE_ENTRIES, NATIVE_SESSION_ROOT_HELD_ENTRIES, describeUnexpectedNativeSessionRootEntries,
@@ -8532,7 +8532,7 @@ export async function nativeProviderRecoveryEvidence(input: {
   unclaimedBootstrap?: { fingerprint: string };
 }> {
   const run = await input.db
-    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson, companyId: heartbeatRuns.companyId,
+    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       nativeIssueId: heartbeatRuns.nativeIssueId, nativeSessionId: heartbeatRuns.nativeSessionId,
       runnerInstanceId: heartbeatRuns.runnerInstanceId })
     .from(heartbeatRuns)
@@ -8542,7 +8542,7 @@ export async function nativeProviderRecoveryEvidence(input: {
   const checkpoint = record(run?.runnerProfileJson).sessionCheckpoint;
   const checkpointRecord = record(checkpoint);
   const checkpointExists = Object.keys(checkpointRecord).length > 0;
-  const providerSessionEstablished =
+  let providerSessionEstablished =
     (typeof checkpointRecord.providerSessionId === "string" &&
       checkpointRecord.providerSessionId.length > 0) ||
     Object.keys(record(checkpointRecord.providerIdentity)).length > 0;
@@ -8583,6 +8583,16 @@ export async function nativeProviderRecoveryEvidence(input: {
         controllerCheckpointMatches = matches(identity) || Boolean(staged && matches(staged.attachment.targetIdentity));
       }
     }
+  }
+  // External drivers persist their normalized driver session, not an invented
+  // upstream provider ID. Only the owning closed identity projection plus the
+  // existing current remote-header fence can establish this alternative.
+  if (!providerSessionEstablished && input.executionTargetKind === "remote" && controllerCheckpointMatches
+    && run?.nativeIssueId && run.nativeSessionId && run.runnerInstanceId
+    && record(run.runnerProfileJson).nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION) {
+    providerSessionEstablished = hasExternalNativeCheckpointIdentity(checkpoint,
+      record(run.runnerProfileJson).nativeExecutionInput, { runId: input.runId, companyId: run.companyId,
+        agentId: run.agentId, issueId: run.nativeIssueId, sessionId: run.nativeSessionId });
   }
   if (
     checkpointExists &&

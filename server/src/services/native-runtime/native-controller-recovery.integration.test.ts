@@ -3,15 +3,18 @@ import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, restore
   verifyRemoteRunnerReattachment } from "./native-session-executor.js";
 import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
+import { buildNativeExecutionInput } from "./native-execution-input.js";
+import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints, heartbeatRunEvents } from "@paperclipai/db";
 import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
-import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres.js";
+import { startRecoveryPostgres, getRecoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres-fixture.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
@@ -20,6 +23,10 @@ import { claimNativeSessionResumptions } from "./native-finalization-reconciler.
 import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
 import { inspectRemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+
+const dedicatedCheckpointDatabase=resolveExternalTestDatabaseUrl("external checkpoint classifier",process.env.PAPERCLIP_EXTERNAL_CHECKPOINT_TEST_DATABASE_URL);
+const recoveryOptions=dedicatedCheckpointDatabase?{dedicatedDatabaseUrl:dedicatedCheckpointDatabase}:{};
+const recoveryPostgresSupport=await getRecoveryPostgresSupport(recoveryOptions);
 
 describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable discovery and import", () => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
@@ -33,8 +40,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     home = createIsolatedTestHome();
     process.env.PAPERCLIP_HOME = home.home;
     root = await mkdtemp(join(tmpdir(), "native-controller-discovery-"));
-    database = await startRecoveryPostgres("native-controller-discovery-");
-    db = createDb(database.connectionString);
+    database = await startRecoveryPostgres("native-controller-discovery-",recoveryOptions);
+    db = createDb(database.connectionString, { maxConnections: 4 });
     await db.insert(companies).values({ id: companyId, name: "Controller discovery", issuePrefix: "NCD" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Runner", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
   }, 60_000);
@@ -190,6 +197,56 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       .toMatchObject({ identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: currentRun.runnerInstanceId } });
     expect(await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure),
       executionTargetKind: "local" })).toMatchObject({ recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true });
+  });
+
+  it("classifies existing target-owned external driver sessions without fabricating an upstream identity", async () => {
+    // Controlled durable classifier proof, not OAuth/current-binding authority:
+    // real restore still validates the target state and broker generation.
+    for (const provider of ["openai_dot", "grok_bot", "muse"] as const) {
+      const fixture = await seed();
+      const binding = { bindingId: randomUUID(), bindingGeneration: 1, companyId, agentId,
+        acceptByUnixMs: Date.now() + 30_000, expiresAtUnixMs: Date.now() + 60_000 };
+      const execution = buildNativeExecutionInput({ companyId, agentId, runId: fixture.scope.runId,
+        issue: { id: fixture.scope.issueId, identifier: "EXT-1", title: "Retain the offered external assignment", description: null, workMode: "standard" },
+        taskPrompt: "Retain the offered external assignment.", workspace: { id: randomUUID(), cwd: root, repoUrl: null, repoRef: null, branchName: null },
+        normalizedSessionId: fixture.scope.normalizedSessionId, provider,
+        ...(provider === "muse" ? { museBinding: binding } : { dotBinding: binding }),
+        completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+          contract: { revision: "1", objective: "Retain the assignment", criteria: [{ id: "retained", requirement: "Retain the assignment" }] } },
+        runtimeContext: nativeRuntimeContextFixture() });
+      if(execution.schema!=="paperclip.native-execution-input.v6"&&execution.schema!=="paperclip.native-execution-input.v8")throw new Error("Expected normal external execution");
+      const snapshot = { ...fixture.snapshot, backendKind: "runner" as const, driverKind: execution.session.driverKind,
+        providerSessionId: null, providerRecoveryPolicy: "same_session_only" as const };
+      const profile = { ...fixture.profile, nativeExecutionInput: execution, sessionCheckpoint: snapshot };
+      const write = async (next: Record<string, unknown>) => { await db.update(heartbeatRuns).set({ runnerProfileJson: next }).where(eq(heartbeatRuns.id, fixture.scope.runId)); };
+      const evidence = () => nativeProviderRecoveryEvidence({ db, runId: fixture.scope.runId,
+        executionTargetKind: "remote", sourceFailureCode: "native_session_interrupted" });
+      // Durable provider events alone cannot establish a resumable identity.
+      await db.insert(heartbeatRunEvents).values({companyId,agentId,runId:fixture.scope.runId,seq:9000,eventType:"session.started"});
+      await write(profile);
+      expect(await evidence()).toMatchObject({ recoveryMode: "exact_checkpoint_resume", checkpointExists: true, providerSessionEstablished: true, providerEventsExist:true });
+      // Already persisted null-ID checkpoints need no migration or reset.
+      const { providerSessionId: _upstream, providerRecoveryPolicy: _policy, ...legacy } = snapshot;
+      await write({ ...profile, sessionCheckpoint: legacy });
+      expect((await evidence()).recoveryMode).toBe("exact_checkpoint_resume");
+      for (const key of ["companyId", "agentId", "issueId", "runId", "sessionId"] as const) {
+        await write({ ...profile, sessionCheckpoint: { ...snapshot, identity: { ...snapshot.identity, [key]: randomUUID() } } });
+        expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      }
+      await write({ ...profile, sessionCheckpoint: { ...snapshot, driverKind: "codex_app_server" } });
+      expect(await evidence()).toMatchObject({recoveryMode:"ambiguous_state",providerEventsExist:true});
+      await write({...profile,sessionCheckpoint:{...snapshot,terminal:{runTerminalState:"failed"}}});
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await write(Object.fromEntries(Object.entries(profile).filter(([key])=>key!=="nativePreparationFencingVersion")));
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await write({...profile,nativeExecutionInput:{...execution,binding:{...execution.binding,runId:randomUUID()}}});
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await write({...profile,nativeExecutionInput:{...execution,provider:{...execution.provider,binding:{...execution.provider.binding,bindingGeneration:0}}}});
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await write(profile);
+      await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, fixture.scope.runId));
+      expect(await evidence()).toMatchObject({recoveryMode:"ambiguous_state",providerEventsExist:true});
+    }
   });
 
   it("uses the database clock when an import finds an expired owner", async () => {
