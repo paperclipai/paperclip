@@ -119,6 +119,8 @@ function toRunSnapshot(row: ReleaseRun): RunSnapshot {
     operatorStopped: isOperatorStoppedRunRow(row),
     retryableBeforeProviderWork: isRetryableBeforeProviderWorkRunRow(row),
     executionRetryAccounting: carriedRetryAccounting(row),
+    reassignmentStopConfirmed: row.status === "cancelled" && row.errorCode === "issue_reassigned"
+      && parseObject(row.resultJson).reassignmentStopConfirmed === true,
   };
 }
 

@@ -130,6 +130,7 @@ import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
 import {
   legacyExecutionNeedsReconciliationWithEvidence,
+  legacyExecutionNeedsWorkspaceRepair,
   legacyReconciliationRunFields,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
@@ -526,6 +527,22 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   return null;
 }
 
+function isConfirmedReassignmentStop(run: {
+  status: string;
+  errorCode?: string | null;
+  resultJson?: unknown;
+}) {
+  return (
+    run.status === "cancelled" &&
+    run.errorCode === "issue_reassigned" &&
+    parseObject(run.resultJson).reassignmentStopConfirmed === true
+  );
+}
+
+function isAssigneeChangeDispatchRefusal(run: { status: string; errorCode?: string | null }) {
+  return run.status === "cancelled" && run.errorCode === "issue_assignee_changed";
+}
+
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
   expectedRetryReason:
@@ -534,6 +551,7 @@ function didAutomaticRecoveryFail(
     | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
 ) {
   if (!latestRun) return false;
+  if (isConfirmedReassignmentStop(latestRun) || isAssigneeChangeDispatchRefusal(latestRun)) return false;
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
@@ -1053,6 +1071,7 @@ export function recoveryService(
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        resultJson: recoveryRunResultColumn,
         finishedAt: heartbeatRuns.finishedAt,
       })
       .from(heartbeatRuns)
@@ -1080,6 +1099,7 @@ export function recoveryService(
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
       if (retryReason !== "issue_continuation_needed" && retryReason !== INTERRUPTED_PREPARATION_RETRY_REASON) break;
+      if (isConfirmedReassignmentStop(row)) break;
       if (
         !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
@@ -2025,7 +2045,17 @@ export function recoveryService(
             eq(heartbeatRuns.agentId, input.agentId),
           ),
         );
-      if (
+      if (predecessor && isConfirmedReassignmentStop(predecessor)) {
+        if (predecessor.runtimeMode === "native") return null;
+        if (await legacyExecutionNeedsWorkspaceRepair(db, predecessor)) {
+          await terminalizeLegacyExecution({
+            db,
+            run: predecessor,
+            status: predecessor.status,
+          });
+          return null;
+        }
+      } else if (
         predecessor &&
         ["failed", "timed_out", "interrupted", "cancelled"].includes(
           predecessor.status,
@@ -4903,7 +4933,12 @@ export function recoveryService(
               eq(heartbeatRuns.id, executionRecoverySource.id),
             ),
           );
-        if (source && await legacyExecutionNeedsReconciliationWithEvidence(db, source)) {
+        if (
+          source &&
+          (isConfirmedReassignmentStop(source)
+            ? await legacyExecutionNeedsWorkspaceRepair(db, source)
+            : await legacyExecutionNeedsReconciliationWithEvidence(db, source))
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: source,

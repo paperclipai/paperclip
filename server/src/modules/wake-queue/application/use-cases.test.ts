@@ -802,6 +802,30 @@ describe("releaseIssueExecution", () => {
     expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["todo", "assignment_recovery"],
+    ["in_progress", "issue_continuation_needed"],
+  ] as const)("does not count a recovery run's confirmed hand-over stop as a failed recovery (%s)", async (status, retryReason) => {
+    const stopped = { ...RUN, status: "cancelled", errorCode: "issue_reassigned", contextSnapshot: { retryReason } };
+    const confirmed = createFakeTransaction();
+    const confirmedRecovery = createFakeRecovery();
+    const result = await createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), confirmed, { ...ISSUE, status }, { ...stopped, reassignmentStopConfirmed: true }),
+      recovery: confirmedRecovery,
+    })({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(confirmed.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+    expect(confirmedRecovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+
+    const unconfirmedRecovery = createFakeRecovery();
+    const unconfirmed = await createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), createFakeTransaction(), { ...ISSUE, status }, stopped),
+      recovery: unconfirmedRecovery,
+    })({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(unconfirmed.outcome.kind).toBe("blocked");
+    expect(unconfirmedRecovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
+  });
+
   it("throws WakeQueueApplicationError with code responsible_user_unresolved for a recovery run, without queuing it", async () => {
     const transaction = createFakeTransaction();
     const host = createFakeHost({ resolveResponsibleUserId: vi.fn(async () => null) });
