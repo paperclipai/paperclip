@@ -3258,6 +3258,26 @@ admission applies the same checks as for a per-turn owner. The journal of a
 warm owner has no `runner.suspend` command. A local warm Runner and a resumed
 sandbox that still holds the Runner keep the live adoption path.
 
+A remote Runner whose sandbox lease for the prior run ended (`released` or
+`expired`, with a release time) on a different sandbox than this run's is gone
+by record. No process remains that could act on a command it never
+acknowledged. For such an owner, these unfinished commands do not hold the
+retirement:
+
+- its own lifecycle commands (`runner.suspend`, `runner.drain`,
+  `runner.shutdown`);
+- deliveries that only that Runner could receive: `run.attach`,
+  `semantic_tool.result`, `session.snapshot` and `session.goal.get`. A
+  journaled `semantic_tool.result` also answers its tool input, because the
+  controller journals the answer after the tool ran.
+
+Retirement replays none of these commands. Any other unfinished command, such
+as `turn.start`, `turn.steer`, `request.resolve` or
+`external_provider.operation`, still holds the owner. A tool input with no
+journaled answer still holds it with `journal_tool_input_unanswered`. A
+retained lease, a lease on this run's sandbox, or a missing lease record keeps
+every unfinished command decisive.
+
 The provider session then follows the normal resume-or-replace policy. A
 resumed sandbox, a local warm session, a plugin task, a restart claim, or any
 missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
