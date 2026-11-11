@@ -326,6 +326,7 @@ docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
   -e PAPERCLIP_HOME=/paperclip \
   -e PAPERCLIP_INSTANCE_ID="$instance_id" \
   -e PAPERCLIP_CONFIG="/paperclip/instances/$instance_id/config.json" \
+  -e PAPERCLIP_SECRETS_MASTER_KEY_FILE="/paperclip/instances/$instance_id/secrets/master.key" \
   -e PAPERCLIP_BIND=loopback \
   -e DATABASE_URL="postgres://paperclip:restore-smoke@$CONTAINER:5432/paperclip" \
   -e BETTER_AUTH_SECRET="$auth_secret" \
