@@ -682,6 +682,93 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     },
   );
 
+  it.each(["pending", "answered", "dismissed", "other_addressee", "wrong_issue", "missing", "human_only",
+    "other_wake", "answered_before_claim"] as const)(
+    "runs the addressee of a pending card while dependencies remain blocked: %s", async card => {
+      const companyId = randomUUID(), agentId = randomUUID(), askerId = randomUUID();
+      const blockerId = randomUUID(), issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Addressee fixture",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user",
+        status: "active", membershipRole: "member" });
+      await db.insert(agents).values([agentId, askerId].map((id) => ({ id, companyId,
+        name: id === agentId ? "Blocked assignee" : "Reviewer", role: "engineer", status: "active" as const,
+        adapterType: "codex_local", adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} })));
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Parked prerequisite", status: "backlog", responsibleUserId: "responsible-user" },
+        { id: issueId, companyId, title: "Blocked task", status: "blocked", assigneeAgentId: agentId,
+          responsibleUserId: "responsible-user" },
+      ]);
+      await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+      const [interaction] = await db.insert(issueThreadInteractions).values({ companyId,
+        issueId: card === "wrong_issue" ? blockerId : issueId, createdByAgentId: askerId,
+        addresseeAgentId: card === "other_addressee" ? askerId : agentId,
+        kind: "ask_user_questions", status: card === "answered" ? "answered" : "pending",
+        dismissedAt: card === "dismissed" ? new Date() : null,
+        ...(card === "human_only" ? { requestedResolverPolicy: "human_only" as const, effectiveResolverPolicy: "human_only" as const } : {}),
+        title: "Which environment?",
+        payload: { version: 1, questions: [{ id: "env", prompt: "Which environment should the check use?",
+          selectionMode: "single", options: [{ id: "staging", label: "Staging" }] }] },
+      }).returning();
+      const interactionId = card === "missing" ? randomUUID() : interaction.id;
+      const context = card === "other_wake"
+        ? { issueId, taskId: issueId, interactionId, wakeReason: "issue_status_changed", source: "issue.status_change" }
+        : { issueId, taskId: issueId, interactionId, interactionKind: interaction.kind, sourceCommentId: null,
+          sourceRunId: null, wakeReason: "interaction_pending", source: "issue.interaction.created" };
+
+      if (card === "answered_before_claim") {
+        const [queued] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation",
+          triggerDetail: "system", status: "queued",
+          contextSnapshot: { ...context, dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [blockerId] },
+        }).returning();
+        await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: new Date() })
+          .where(eq(issueThreadInteractions.id, interaction.id));
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0])
+          .toMatchObject({ status: "cancelled", errorCode: "issue_dependencies_blocked" });
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        return;
+      }
+
+      const wake = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system",
+        reason: context.wakeReason, payload: { issueId, interactionId, mutation: "interaction" },
+        idempotencyKey: `interaction-pending:${interactionId}`, contextSnapshot: context,
+        requestedByActorType: "agent", requestedByActorId: askerId });
+      if (card !== "pending") {
+        expect(wake).toBeNull();
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        return;
+      }
+
+      expect(wake).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.id));
+      expect({ status: run.status, errorCode: run.errorCode }).toEqual({ status: "succeeded", errorCode: null });
+      expect(run.contextSnapshot).toMatchObject({ interactionId: interaction.id, dependencyBlockedInteraction: true,
+        unresolvedBlockerIssueIds: [blockerId] });
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+        .toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+      expect((await db.select().from(issues).where(eq(issues.id, blockerId)))[0].status).toBe("backlog");
+
+      const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation",
+        status: "scheduled_retry", scheduledRetryAt: new Date(), scheduledRetryReason: "workspace_busy",
+        retryOfRunId: run.id, contextSnapshot: { ...run.contextSnapshot, wakeReason: "workspace_busy_retry",
+          retryReason: "workspace_busy" },
+      }).returning();
+      const retryGate = () => createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({
+        companyId, runId: retry.id, retryReasonOverride: "workspace_busy", now: new Date(),
+      });
+      expect(await retryGate()).toMatchObject({ allowed: true });
+      await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: new Date() })
+        .where(eq(issueThreadInteractions.id, interaction.id));
+      expect(await retryGate()).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
+    },
+  );
+
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

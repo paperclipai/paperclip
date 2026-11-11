@@ -4235,6 +4235,16 @@ Task interruption notices ignore Retry receipts for a superseded run. A later
 successful conversation must not inherit the old failure banner. This read-only
 projection neither retires Retry authority nor acknowledges independent saved input.
 
+A pending question card addressed to an agent can also reach that agent while
+dependencies remain unfinished. Admission, claim, and scheduled-retry promotion
+read the stored card again. The card must be pending, not dismissed, on the same
+company and task, addressed to the run's agent, and open to that agent as a
+resolver. The run uses dependency-blocked answer/triage mode. It does not resolve
+the dependencies. A card that is answered, dismissed, readdressed, moved, or
+missing grants no such exception, and the run is cancelled as
+`issue_dependencies_blocked`. This rule does not change the ownership gate for an
+addressee that is not the assignee.
+
 Snapshot preservation and native copyback are distinct receipts. A historical
 workspace recovered as an immutable snapshot does not make its old native sync
 reference finalized. Once recovery settles, the current inbound owner can
