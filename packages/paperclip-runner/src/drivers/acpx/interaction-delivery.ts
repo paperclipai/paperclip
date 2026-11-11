@@ -60,16 +60,17 @@ export function acpxElicitationHandler(handler: AcpxHostElicitationHandler): Acp
  * dispatches it, and each outbound reply just before the pipe write. Pairing
  * the two by session and tool call recovers the request id, which the stock
  * permission callback does not expose. Delivery resolves only when that reply
- * carries a result whose cancellation matches the host decision. An error
- * reply, a cancelled reply for a non-cancel decision, an ambiguous request, a
- * turn abort, or a missing reply rejects it.
+ * selects exactly the host decision: the chosen option for an option id, the
+ * single offered option of a decision kind, or a cancellation for a cancel.
+ * An error reply, any other result, an ambiguous request, a turn abort, or a
+ * missing reply rejects it.
  */
 type JsonRpcId = string | number;
 
 export interface AcpxPermissionReplyBinding {
   readonly delivery: Promise<void>;
   /** Record the decision the host callback is about to return to ACPX. */
-  select(decision: { outcome: string } | undefined): void;
+  select(decision: PermissionDecision | undefined): void;
   /** Reject delivery when the callback throws or its turn expires. */
   fail(error: Error): void;
 }
@@ -79,6 +80,9 @@ export interface AcpxPermissionReplyConfirmations {
   bind(request: { sessionId: string; raw?: unknown }, signal: AbortSignal): AcpxPermissionReplyBinding;
 }
 
+type PermissionDecision = { outcome: string; optionId?: string };
+type OfferedOption = { optionId: string; kind: string };
+
 const MAX_PENDING = 128;
 const DEFAULT_REPLY_TIMEOUT_MS = 10_000;
 
@@ -86,11 +90,13 @@ export function createAcpxPermissionReplyConfirmations(options: { replyTimeoutMs
   const replyTimeoutMs = options.replyTimeoutMs ?? DEFAULT_REPLY_TIMEOUT_MS;
   const requestIds = new Map<string, JsonRpcId>();
   const keysById = new Map<JsonRpcId, string>();
+  const offeredById = new Map<JsonRpcId, readonly OfferedOption[]>();
   const ambiguous = new Set<string>();
   const waiting = new Map<JsonRpcId, (reply: Record<string, unknown>) => void>();
   const forget = (id: JsonRpcId): void => {
     const key = keysById.get(id);
     keysById.delete(id);
+    offeredById.delete(id);
     if (key !== undefined && requestIds.get(key) === id) requestIds.delete(key);
   };
   return {
@@ -105,6 +111,7 @@ export function createAcpxPermissionReplyConfirmations(options: { replyTimeoutMs
         else {
           requestIds.set(key, id);
           keysById.set(id, key);
+          offeredById.set(id, offeredOptions(value.params));
         }
         return;
       }
@@ -121,7 +128,8 @@ export function createAcpxPermissionReplyConfirmations(options: { replyTimeoutMs
       reply.promise.catch(() => undefined);
       const key = permissionKey(request.raw) ?? permissionKey({ sessionId: request.sessionId });
       const id = key === undefined || ambiguous.has(key) ? undefined : requestIds.get(key);
-      let selected: { outcome: string } | undefined | null = null;
+      const offered = id === undefined ? [] : offeredById.get(id) ?? [];
+      let selected: PermissionDecision | undefined | null = null;
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = (error?: Error): void => {
@@ -143,8 +151,7 @@ export function createAcpxPermissionReplyConfirmations(options: { replyTimeoutMs
         waiting.set(id, (reply) => {
           if (selected === null) return finish(new Error("ACP replied before the host selected a permission decision"));
           if ("error" in reply || !("result" in reply)) return finish(new Error("ACP wrote an error instead of the selected permission decision"));
-          const cancelled = record(record(reply.result).outcome).outcome === "cancelled";
-          if (cancelled !== (selected === undefined || selected.outcome === "cancel")) {
+          if (!replySelects(reply.result, selected, offered)) {
             return finish(new Error("ACP changed the selected permission decision"));
           }
           finish();
@@ -167,6 +174,24 @@ export function createAcpxPermissionReplyConfirmations(options: { replyTimeoutMs
       };
     },
   };
+}
+
+function offeredOptions(params: unknown): OfferedOption[] {
+  const options = record(params).options;
+  if (!Array.isArray(options)) return [];
+  return options.map(record).flatMap(option =>
+    typeof option.optionId === "string" && typeof option.kind === "string" ? [{ optionId: option.optionId, kind: option.kind }] : []);
+}
+
+/** Whether the written reply is exactly the host's decision. */
+function replySelects(result: unknown, decision: PermissionDecision | undefined, offered: readonly OfferedOption[]): boolean {
+  const outcome = record(record(result).outcome);
+  if (decision === undefined || decision.outcome === "cancel") return outcome.outcome === "cancelled";
+  if (outcome.outcome !== "selected" || typeof outcome.optionId !== "string") return false;
+  if (decision.outcome === "selected") return outcome.optionId === decision.optionId;
+  // ACPX resolves a decision kind to the offered option of that kind.
+  const ofKind = offered.filter(option => option.kind === decision.outcome);
+  return ofKind.length === 1 && ofKind[0]!.optionId === outcome.optionId;
 }
 
 function permissionKey(params: unknown): string | undefined {

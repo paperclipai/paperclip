@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 
-export interface AcpxAgentSpawnHooks {
+// A type alias, not an interface, so callers can treat options as plain records.
+export type AcpxAgentSpawnHooks = {
   /** Host-only child cwd (the remote relay); ACP still advertises `cwd`. */
   spawnCwd?: string;
   /** Observes agent stderr chunks; callback failures are ignored. */
@@ -13,7 +14,7 @@ export interface AcpxAgentSpawnHooks {
    * ACPX derives from this process, so the agent never inherits host variables.
    */
   agentEnvironment?: () => Readonly<Record<string, string>>;
-}
+};
 
 /**
  * Express the engine's spawn hooks with stock ACPX 0.22 options. ACPX calls

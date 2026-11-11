@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { acpxElicitationHandler, createAcpxPermissionReplyConfirmations, withReturnedResponseDelivery } from "./interaction-delivery.js";
 
 const raw = (toolCallId: string) => ({ sessionId: "s", toolCall: { toolCallId } });
-const request = (id: number, toolCallId = "tool-1") => ({ jsonrpc: "2.0", id, method: "session/request_permission", params: raw(toolCallId) });
+const options = [{ optionId: "allow", kind: "allow_once" }, { optionId: "deny", kind: "reject_once" }];
+const request = (id: number, toolCallId = "tool-1") => ({ jsonrpc: "2.0", id, method: "session/request_permission", params: { ...raw(toolCallId), options } });
 const selected = { outcome: { outcome: "selected", optionId: "allow" } };
 
 async function settled(promise: Promise<void>): Promise<"resolved" | Error | "pending"> {
@@ -17,7 +18,7 @@ describe("ACP permission reply confirmation", () => {
     const replies = createAcpxPermissionReplyConfirmations();
     replies.observe("inbound", request(4));
     const binding = replies.bind({ sessionId: "s", raw: raw("tool-1") }, new AbortController().signal);
-    binding.select({ outcome: "selected" });
+    binding.select({ outcome: "allow_once" });
     replies.observe("outbound", { jsonrpc: "2.0", id: 9, result: selected });
     expect(await settled(binding.delivery)).toBe("pending");
     replies.observe("outbound", { jsonrpc: "2.0", id: 4, result: selected });
@@ -27,13 +28,30 @@ describe("ACP permission reply confirmation", () => {
   it.each([
     ["an error reply", { jsonrpc: "2.0", id: 4, error: { code: -32603, message: "failed" } }, /error instead/],
     ["a cancellation in place of the decision", { jsonrpc: "2.0", id: 4, result: { outcome: { outcome: "cancelled" } } }, /changed the selected/],
+    ["another offered option", { jsonrpc: "2.0", id: 4, result: { outcome: { outcome: "selected", optionId: "deny" } } }, /changed the selected/],
+    ["an option that was not offered", { jsonrpc: "2.0", id: 4, result: { outcome: { outcome: "selected", optionId: "elsewhere" } } }, /changed the selected/],
+    ["an empty result", { jsonrpc: "2.0", id: 4, result: {} }, /changed the selected/],
   ])("rejects %s", async (_label, reply, error) => {
     const replies = createAcpxPermissionReplyConfirmations();
     replies.observe("inbound", request(4));
     const binding = replies.bind({ sessionId: "s", raw: raw("tool-1") }, new AbortController().signal);
-    binding.select({ outcome: "selected" });
+    binding.select({ outcome: "allow_once" });
     replies.observe("outbound", reply);
     await expect(binding.delivery).rejects.toThrow(error);
+  });
+
+  it("rejects an allow written for a deny decision, and accepts the exact option id", async () => {
+    const replies = createAcpxPermissionReplyConfirmations();
+    replies.observe("inbound", request(4));
+    const deny = replies.bind({ sessionId: "s", raw: raw("tool-1") }, new AbortController().signal);
+    deny.select({ outcome: "reject_once" });
+    replies.observe("outbound", { jsonrpc: "2.0", id: 4, result: selected });
+    await expect(deny.delivery).rejects.toThrow(/changed the selected/);
+    replies.observe("inbound", request(5, "tool-2"));
+    const exact = replies.bind({ sessionId: "s", raw: raw("tool-2") }, new AbortController().signal);
+    exact.select({ outcome: "selected", optionId: "deny" });
+    replies.observe("outbound", { jsonrpc: "2.0", id: 5, result: { outcome: { outcome: "selected", optionId: "deny" } } });
+    await expect(exact.delivery).resolves.toBeUndefined();
   });
 
   it("accepts a cancelled reply when the host cancelled", async () => {
@@ -70,7 +88,7 @@ describe("ACP permission reply confirmation", () => {
       failed.fail(new Error("callback failed"));
       await expect(failed.delivery).rejects.toThrow("callback failed");
       const unwritten = replies.bind({ sessionId: "s", raw: raw("c") }, new AbortController().signal);
-      unwritten.select({ outcome: "selected" });
+      unwritten.select({ outcome: "allow_once" });
       const rejection = expect(unwritten.delivery).rejects.toThrow(/not written/);
       await vi.advanceTimersByTimeAsync(50);
       await rejection;
@@ -85,7 +103,7 @@ describe("ACP permission reply confirmation", () => {
     replies.observe("outbound", { jsonrpc: "2.0", id: 1, result: selected });
     replies.observe("inbound", request(2));
     const binding = replies.bind({ sessionId: "s", raw: raw("tool-1") }, new AbortController().signal);
-    binding.select({ outcome: "selected" });
+    binding.select({ outcome: "allow_once" });
     replies.observe("outbound", { jsonrpc: "2.0", id: 2, result: selected });
     await expect(binding.delivery).resolves.toBeUndefined();
   });

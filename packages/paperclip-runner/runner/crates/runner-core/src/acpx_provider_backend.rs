@@ -6776,4 +6776,40 @@ mod tests {
             fs::remove_dir_all(directory).unwrap();
         }
     }
+
+    // The previous release pinned ACPX 0.13.1. A session it saved, settled or
+    // with a turn in flight when the deploy lands, is refused by name and kept.
+    #[cfg(unix)]
+    #[test]
+    fn sessions_saved_by_the_previous_acpx_release_are_refused_by_name_and_kept() {
+        for mid_turn in [false, true] {
+            let label = if mid_turn {
+                "previous-acpx-mid-turn"
+            } else {
+                "previous-acpx-settled"
+            };
+            let (directory, config, _, saved) = settled_session_after_runner_upgrade(label);
+            let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+            let mut state: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
+            state.descriptor.acpx_version = "0.13.1".into();
+            state.descriptor.provider_version = "0.13.1".into();
+            if mid_turn {
+                state.lifecycle = "turn_active".into();
+                state.active_turn_id = Some("turn-1".into());
+            }
+            fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+            let retained = fs::read(&state_path).unwrap();
+
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            let error = recovered.restore().unwrap_err();
+            assert_eq!(
+                error.classification(),
+                Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+                "{label}: {error}"
+            );
+            assert!(recovered.session.is_none(), "{label}");
+            assert_eq!(fs::read(&state_path).unwrap(), retained, "{label}");
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
 }
