@@ -187,6 +187,30 @@ export function codexThreadWorkingDirectory(
   return returned;
 }
 
+/**
+ * Whether a saved session names a remote workspace root other than the one
+ * Core assigned to this run. A workspace epoch that was abandoned (for example
+ * after a restart killed its preparation) is restored into a new sibling root,
+ * so a session saved under the old root cannot resume here. That is an
+ * ordinary resume failure, not an invalid admission: both paths are
+ * well-formed and only differ. Malformed paths and a missing assignment are
+ * still refused by validateCodexWorkingDirectory.
+ */
+export function remoteRunnerWorkingDirectoryMoved(
+  savedWorkingDirectory: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const assigned = environment.PAPERCLIP_WORKSPACE_CWD?.trim();
+  return Boolean(
+    assigned &&
+      isNormalizedRemotePath(assigned) &&
+      assigned !== posix.parse(assigned).root &&
+      isNormalizedRemotePath(savedWorkingDirectory) &&
+      savedWorkingDirectory !== posix.parse(savedWorkingDirectory).root &&
+      savedWorkingDirectory !== assigned,
+  );
+}
+
 function validateRemoteRunnerWorkingDirectory(
   workingDirectory: string,
   environment: NodeJS.ProcessEnv,
