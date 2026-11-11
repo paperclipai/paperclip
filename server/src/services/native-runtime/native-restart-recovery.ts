@@ -1578,7 +1578,12 @@ export async function claimNativeRestartRecoveries(input: {
         && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
         && row.coordinator.phase === "retryable_failure" && row.run.status === "failed" && !row.coordinator.leaseOwner
         && settledFailure?.recoveryMode === "bootstrap_retry"
-        && settledFailure?.originalFailureCode === "native_runner_process_exited"
+        // The runner exited on its own, or it rejected session.open and the
+        // controller's close then proved it settled and exited. A failure
+        // saved without that proof (older releases) stays held.
+        && (settledFailure?.originalFailureCode === "native_runner_process_exited"
+          || (settledFailure?.originalFailureCode === "provider_session_open_rejected"
+            && settledFailure?.runnerExitConfirmed === true))
         && settledFailure?.providerSessionEstablished === false && settledFailure?.providerEventsExist === false
         && settledFailure?.checkpointExists === false && !settledFailure?.successorRunId
         && !row.run.sessionIdBefore && !row.run.sessionIdAfter

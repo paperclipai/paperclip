@@ -5,6 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   subscribeDatabaseWork,
+  environmentLeases,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -19,6 +20,7 @@ import {
   removePluginWorkspace,
   type WorkspaceWorkers,
 } from "../services/plugin-workspaces.js";
+import { verifyRetryWorkspace } from "../services/fresh-workspace-continuation.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { WorkspaceProviderFailureError } from "../services/workspace-provider-failure.js";
 import { findPluginWorkerUnavailableError, PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
@@ -47,6 +49,50 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
+    it.each(["ready", "lost_reply", "unconfirmed", "live_writer", "unsupported"] as const)(
+      "verifies the same checkout before choosing a fresh retry (%s)", async (state) => {
+        const f = await fixture();
+        const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+        if (state !== "unsupported") await db.update(plugins).set({ manifestJson: {
+          ...plugin.manifestJson, workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, workspaceVerificationVersion: 1 },
+        } }).where(eq(plugins.id, f.pluginId));
+        if (state === "lost_reply") {
+          f.lose();
+          await expect(preparePluginWorkspace(db, f.workers, f.input)).rejects.toThrow();
+        } else {
+          await preparePluginWorkspace(db, f.workers, f.input);
+        }
+        const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+        const workspaceId = task.executionWorkspaceId!;
+        await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+        if (state !== "lost_reply") await db.insert(environmentLeases).values({
+          companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.runId,
+          provider: "plugin:test:tasks", executionWorkspaceId: workspaceId, leasePolicy: "ephemeral",
+          status: state === "live_writer" ? "active" : "released",
+          releasedAt: state === "live_writer" ? null : new Date(),
+        });
+        const retryIntentId = randomUUID();
+        const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
+          issueId: f.issueId, status: "running", contextSnapshot: { taskRetryRequestId: retryIntentId },
+        }).returning();
+        const fresh = { mode: "fresh_isolated_workspace", retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] } as const;
+        const workers: WorkspaceWorkers = { ...f.workers, call: async (...args) => {
+          const result = await f.workers.call(...args) as { kind: string };
+          if (state === "unconfirmed") throw new Error("checkout incomplete");
+          return { ...result, created: false };
+        } };
+        const result = await verifyRetryWorkspace(db, workers, retry, f.issueId, null,
+          { ...fresh, retainedSourceIds: [] });
+        const verified = state === "ready" || state === "lost_reply";
+        expect(result).toEqual(verified
+          ? { mode: "reuse_issue_workspace", retryIntentId, sourceRunId: f.runId, workspaceId, cwd: null }
+          : fresh);
+        expect(f.calls.slice(1)).toHaveLength(state === "live_writer" || state === "unsupported" ? 0 : 1);
+        if (f.calls.length > 1) expect(f.calls[1]).toMatchObject({ executionWorkspaceId: workspaceId,
+          runId: retry.id, operation: { kind: "prepare", verifyExisting: true } });
+        const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+        expect(retained.providerRef).toBe(`checkout:${workspaceId}`);
+      });
     it.each([
       ["missing", undefined],
       ["stopped", { status: "stopped", supportedMethods: [] }],
