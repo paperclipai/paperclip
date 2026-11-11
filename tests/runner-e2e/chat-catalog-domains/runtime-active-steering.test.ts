@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { gradeActiveSteering, isBlueColor, hasVisibleBlueDesign, steeringBranch } from "./runtime-active-steering.js";
+import { describe, expect, it } from "vitest";
+import { gradeActiveSteering, isBlueColor, hasVisibleBlueDesign, steerDeliveryRevisionBound, steeringBranch } from "./runtime-active-steering.js";
 function valid() {
   return { scenarioId: "steering.steer-active", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "", tasks: [{ id: "website" }], activity: [],
     runs: [{ id: "worker", status: "succeeded" }, { id: "source", status: "succeeded" }],
@@ -97,4 +97,14 @@ it("accepts an unsupported runtime whose continuation also consumes the chat lea
   const o = unsupported(); Object.assign(o.state, { leadRelayCount: 1 });
   o.state.queueAfterAction.entries.push({ comment: { id: "relay", body: "Use a blue palette.", authorAgentId: "ceo" } } as never);
   expect(gradeActiveSteering(o).passed).toBe(true);
+});
+
+describe("website-delivery document after a same-turn steer with a queued relay", () => {
+  const doc = (latest: string) => ({ documents: [{ id: "doc", key: "website-delivery", issueId: "website", latestRevisionId: latest }],
+    revisions: [{ id: "r1", documentId: "doc", createdByRunId: "worker", createdByAgentId: "morgan" }, { id: "r2", documentId: "doc", createdByRunId: "relay-consumer", createdByAgentId: "morgan" },
+      { id: "r3", documentId: "doc", createdByRunId: "other", createdByAgentId: "morgan" }] });
+  it("accepts the steered turn's own revision", () => expect(steerDeliveryRevisionBound(doc("r1") as never, "website", "morgan", "worker")).toBe(true));
+  it("accepts a later revision by the relay consumer", () => expect(steerDeliveryRevisionBound(doc("r2") as never, "website", "morgan", "worker", "relay-consumer")).toBe(true));
+  it("rejects a later revision by the relay consumer when no relay was queued", () => expect(steerDeliveryRevisionBound(doc("r2") as never, "website", "morgan", "worker")).toBe(false));
+  it("rejects a revision by any other run", () => expect(steerDeliveryRevisionBound(doc("r3") as never, "website", "morgan", "worker", "relay-consumer")).toBe(false));
 });

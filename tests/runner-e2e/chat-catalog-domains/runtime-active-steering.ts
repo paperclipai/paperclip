@@ -25,6 +25,11 @@ export function hasVisibleBlueDesign(elements: Array<{ tag: string; role?: strin
     ? isBlueColor(element.background) || element.tag !== "BODY" && isBlueColor(element.color) : false);
 }
 const direction = "Switch to a blue design while you are working.";
+/** The website-delivery document is current at the run that produced the output, or, after a same-turn steer, at the one
+ * normal turn that consumed the chat lead's queued relay and may have updated it. */
+export function steerDeliveryRevisionBound(o: Parameters<typeof deliveryRevisionBound>[0], taskId: string, workerId: string, outputRunId: string, relayConsumerRunId?: string) {
+  return deliveryRevisionBound(o, taskId, outputRunId, workerId) || (!!relayConsumerRunId && deliveryRevisionBound(o, taskId, relayConsumerRunId, workerId));
+}
 /** Branch a run must take, decided by what the harness actually advertised and how the product answered. */
 export function steeringBranch(disposition: unknown, steerStatus: unknown) {
   return disposition === "unsupported" ? "unsupported-queued-normal-continuation" : disposition !== "available" ? "not-advertised"
@@ -82,7 +87,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, humanId: session.user.id, queueBefore: before, targetId, ...controls };
 }, gradeActiveSteering, {
-  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v6",
+  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v7",
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
@@ -148,6 +153,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
       reject: v => v.runs.length > 3 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Steered work failed or admitted an undeclared execution" : undefined });
     const successors = finished.runs.filter(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId);
     state.ordinaryConsumerCount = successors.length; state.outputRunId = state.steerStatus === 200 ? state.workerRunId : successors[0]?.id;
+    if (state.steerStatus === 200 && Number(state.leadRelayCount) && successors.length === 1) state.relayConsumerRunId = successors[0]!.id;
     if (successors.length === 1) {
       const full = await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[] }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${successors[0]!.id}`);
       state.continuationInputBound = full.contextSnapshot?.wakeCommentIds?.filter(id => id === targetId).length === 1 && full.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(direction) === true;
@@ -166,7 +172,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
         state.actualBlueArtifact = hasVisibleBlueDesign(await renderRuntimeArtifact(ctx, artifact.content));
       }
       // The rendered page proves the colour; the document must be the requested website-delivery record, current at the consuming run's revision.
-      state.deliveryRevisionBound = deliveryRevisionBound(o, task.id, String(state.outputRunId), (state.worker as Entity).id);
+      state.deliveryRevisionBound = steerDeliveryRevisionBound(o, task.id, (state.worker as Entity).id, String(state.outputRunId), typeof state.relayConsumerRunId === "string" ? state.relayConsumerRunId : undefined);
     }
     return o;
   },
