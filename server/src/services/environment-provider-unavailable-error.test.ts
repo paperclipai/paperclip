@@ -143,8 +143,8 @@ describe("readTransientLeaseAcquisitionFailure", () => {
     expect(readTransientLeaseAcquisitionFailure(creationFailure(12_000), run)).toEqual({ reason: "acquisition_incomplete" });
   });
 
-  it("ignores an acquisition diagnostic recorded for another run", () => {
-    expect(readTransientLeaseAcquisitionFailure(creationFailure(300_000, "run-2"), run)).toBeNull();
+  it("ignores an unfinished-creation diagnostic recorded for another run", () => {
+    expect(readTransientLeaseAcquisitionFailure(creationFailure(12_000, "run-2"), run)).toBeNull();
   });
 
   it("retries a plugin RPC deadline", () => {
