@@ -19,18 +19,24 @@ type WakeRow = {
   status: string;
   idempotencyKey: string | null;
   requestedAt: Date;
+  joinedRunStatus?: string | null;
 };
 
 function dbWithWakes(rows: WakeRow[]): Db {
+  const result = rows.map((row) => ({ joinedRunStatus: null, ...row }));
+  const query = {
+    leftJoin() {
+      return query;
+    },
+    where() {
+      return Promise.resolve(result);
+    },
+  };
   return {
     select() {
       return {
         from() {
-          return {
-            where() {
-              return Promise.resolve(rows);
-            },
-          };
+          return query;
         },
       };
     },
@@ -264,6 +270,23 @@ describe("findIssueBlockersResolvedWakeForStateKey", () => {
       if (underLock) covered.push(status);
     }
     expect(covered).toEqual(["queued", "deferred_issue_execution", "claimed", "completed"]);
+  });
+
+  it("counts a wake that joined a waiting, running, or succeeded run", async () => {
+    const covered: string[] = [];
+    for (const joinedRunStatus of [
+      "queued", "scheduled_retry", "running", "succeeded",
+      "failed", "cancelled", "timed_out", "interrupted", null,
+    ]) {
+      const rows = [{ id: "wake-joined", status: "coalesced", idempotencyKey: stateKey, requestedAt: secondCycle, joinedRunStatus }];
+      const found = await findIssueBlockersResolvedWakeForStateKey(dbWithWakes(rows), {
+        companyId,
+        issueId: dependentIssueId,
+        idempotencyKey: stateKey,
+      });
+      if (found) covered.push(String(joinedRunStatus));
+    }
+    expect(covered).toEqual(["queued", "scheduled_retry", "running", "succeeded"]);
   });
 
   it("does not query for per-edge or missing keys", async () => {

@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns } from "@paperclipai/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
@@ -284,6 +284,23 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
   return covering ?? null;
 }
 
+// A wake that joined another run is recorded as a coalesced receipt with the
+// joined run's id. It covers the ready state while that run is still waiting
+// or running, or after it succeeded: the same span the queued, claimed and
+// completed statuses cover for a wake with its own run.
+const COVERING_JOINED_RUN_STATUSES = new Set<string>([
+  "queued",
+  "scheduled_retry",
+  "running",
+  "succeeded",
+]);
+
+function wakeCoversDependencyStateKey(row: { status: string; joinedRunStatus: string | null }) {
+  if (IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET.has(row.status)) return true;
+  return row.status === "coalesced" && row.joinedRunStatus !== null &&
+    COVERING_JOINED_RUN_STATUSES.has(row.joinedRunStatus);
+}
+
 export function isIssueBlockersResolvedWakeStateKey(idempotencyKey: string | null | undefined): idempotencyKey is string {
   return typeof idempotencyKey === "string" && idempotencyKey.startsWith(`${ISSUE_BLOCKERS_RESOLVED_WAKE_REASON}:state:`);
 }
@@ -304,8 +321,13 @@ export async function findIssueBlockersResolvedWakeForStateKey(
       status: agentWakeupRequests.status,
       idempotencyKey: agentWakeupRequests.idempotencyKey,
       requestedAt: agentWakeupRequests.requestedAt,
+      joinedRunStatus: heartbeatRuns.status,
     })
     .from(agentWakeupRequests)
+    .leftJoin(heartbeatRuns, and(
+      eq(heartbeatRuns.id, agentWakeupRequests.runId),
+      eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+    ))
     .where(
       and(
         eq(agentWakeupRequests.companyId, input.companyId),
@@ -314,5 +336,5 @@ export async function findIssueBlockersResolvedWakeForStateKey(
         input.excludeWakeupRequestId ? ne(agentWakeupRequests.id, input.excludeWakeupRequestId) : undefined,
       ),
     );
-  return rows.find((row) => IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET.has(row.status)) ?? null;
+  return rows.find(wakeCoversDependencyStateKey) ?? null;
 }
