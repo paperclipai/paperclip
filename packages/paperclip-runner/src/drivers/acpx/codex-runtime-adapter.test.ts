@@ -2810,6 +2810,8 @@ describe("Codex ACPX runtime adapter", () => {
       ["holds a conversation", { messages: [{ User: { id: "m", content: [] } }] as unknown as AcpSessionRecord["messages"] }],
       ["recorded a prompt", { lastPromptAt: "2026-11-07T00:33:09.553Z" }],
       ["recorded provider events", { lastSeq: 3 }],
+      // Its own message list starts empty; the provider holds the conversation.
+      ["was opened from a resume id", { acpx: { session_origin: "resume" } } as Partial<AcpSessionRecord>],
     ])("keeps a record that %s", async (_label, overrides) => {
       const sessions = store();
       vi.mocked(sessions.load).mockResolvedValue(savedRecord(overrides));
@@ -3845,6 +3847,157 @@ describe("Codex ACPX runtime adapter", () => {
     expect(postCleanupChild.kill).toHaveBeenCalledWith("SIGKILL");
     expect(retainCleanup).toHaveBeenCalledTimes(4);
     await retainCleanup.mock.calls[3]?.[0];
+  });
+});
+
+describe("a restored Claude session that connects when it opens", () => {
+  const prompted = (overrides: Partial<AcpSessionRecord> = {}): AcpSessionRecord => ({
+    schema: "acpx.session.v1", acpxRecordId: "provider-key", acpSessionId: "backend-1", agentCommand: "agent",
+    cwd: "/workspace", name: "provider-key", createdAt: "2026-11-07T00:32:24.053Z", lastUsedAt: "2026-11-07T00:33:09.553Z",
+    lastPromptAt: "2026-11-07T00:33:09.553Z", lastSeq: 4, eventLog: {} as AcpSessionRecord["eventLog"], messages: [],
+    updated_at: "2026-11-07T00:33:09.553Z", cumulative_token_usage: {}, request_token_usage: {}, acpx: {},
+    ...overrides,
+  }) as AcpSessionRecord;
+
+  async function open(input: { agent?: "claude" | "codex"; restoring: boolean; saved: AcpSessionRecord | undefined }) {
+    const runtime = fakeRuntime();
+    const options = openOptions({ spawn: () => fakeChild(), close: async () => undefined });
+    if (input.agent !== "codex") options.profile = { ...options.profile, agent: "claude" };
+    options.restoringSession = input.restoring;
+    const sessions = store();
+    vi.mocked(sessions.load).mockResolvedValue(input.saved);
+    let created!: AcpRuntimeOptions;
+    const seenDuringEnsure: Array<AcpSessionRecord | undefined> = [];
+    vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+      seenDuringEnsure.push(await created.sessionStore!.load("provider-key"));
+      return HANDLE;
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => sessions, createRuntime: value => { created = value; return runtime; },
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
+    });
+    const seenAfterOpen = await created.sessionStore!.load("provider-key");
+    await port.close({ reason: "test complete" });
+    return { ensured: vi.mocked(runtime.ensureSession).mock.calls[0]![0], seenDuringEnsure, seenAfterOpen, sessions };
+  }
+
+  it("resumes the saved backend session while it opens, hiding the saved record from ACPX only for that call", async () => {
+    const saved = prompted();
+    const result = await open({ restoring: true, saved });
+    expect(result.ensured).toMatchObject({ sessionKey: "provider-key", resumeSessionId: "backend-1" });
+    expect(result.seenDuringEnsure).toEqual([undefined]);
+    expect(result.seenAfterOpen).toBe(saved);
+    // The saved record is never rewritten to force the new path.
+    expect(result.sessions.save).not.toHaveBeenCalled();
+  });
+
+  it("resumes again from a record an earlier connect-on-open wrote before any prompt", async () => {
+    const result = await open({ restoring: true, saved: prompted({ lastPromptAt: undefined, acpx: { session_origin: "resume" } }) });
+    expect(result.ensured).toMatchObject({ resumeSessionId: "backend-1" });
+  });
+
+  it.each([undefined, "high"] as const)("starts the real Claude agent once, while it opens, and continues the conversation (effort=%s)", async effort => {
+    const root = await mkdtemp(join(tmpdir(), "claude-connect-on-open-"));
+    const home = join(root, "home"), cwd = join(root, "workspace"), config = join(home, ".claude");
+    await Promise.all([mkdir(config, { recursive: true }), mkdir(cwd)]);
+    await writeFile(join(config, "settings.json"), JSON.stringify({ model: "claude-sonnet-5-5" }));
+    // The Claude CLI can reach only this local fixture, never a provider.
+    const conversations: string[][] = [];
+    const api = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const parsed = JSON.parse(body || "{}") as { stream?: boolean; messages?: Array<{ role: string; content: unknown }> };
+      if (request.url?.startsWith("/v1/messages") && parsed.stream) {
+        conversations.push((parsed.messages ?? []).filter(message => message.role === "user")
+          .flatMap(message => JSON.stringify(message.content).match(/turn-[a-z]+/g) ?? []));
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        const event = (type: string, data: Record<string, unknown>) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+        event("message_start", { message: { id: "msg_fixture", type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [],
+          stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } });
+        event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+        event("content_block_delta", { index: 0, delta: { type: "text_delta", text: "OK" } });
+        event("content_block_stop", { index: 0 });
+        event("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
+        event("message_stop", {});
+        response.end();
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ id: "msg_fixture", type: "message", role: "assistant", model: "claude-sonnet-5-5",
+        content: [{ type: "text", text: "OK" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+    });
+    await new Promise<void>(resolve => api.listen(0, "127.0.0.1", resolve));
+    const address = api.address() as { port: number };
+    const entry = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/index.js");
+    let spawns = 0;
+    const command: VerifiedAcpxCommandLease = {
+      spawn: (args, input) => {
+        spawns += 1;
+        return spawn(process.execPath, [entry, ...(args ?? [])], { ...input, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      },
+      close: async () => undefined,
+    };
+    const options = (restoringSession: boolean): AcpxRuntimePortOpenOptions => ({
+      ...openOptions(command), profile: resolveQualifiedAcpxProfile("claude", "claude-sonnet-5-5"),
+      cwd, stateDirectory: join(root, "state"), permissionMode: "approve-all" as const, restoringSession,
+      refreshConsumedCommand: async () => undefined, ...(effort ? { claudeEffort: effort } : {}),
+      launchEnvironment: { HOME: home, CLAUDE_CONFIG_DIR: config, PATH: "/usr/bin:/bin", TMPDIR: root,
+        PAPERCLIP_RUNNER_HOME_MODE: "preconfigured", ANTHROPIC_API_KEY: "local-fixture-only",
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+    });
+    const dependencies = {
+      // This test exercises session open and resume; lifetime-fence tests are separate.
+      awaitProviderOwnership: async () => undefined,
+      awaitProviderExit: (child: ChildProcess) => new Promise<void>(resolve => {
+        if (child.exitCode !== null || child.signalCode !== null) resolve();
+        else child.once("exit", () => resolve());
+      }),
+    };
+    const run = async (restoringSession: boolean, text: string) => {
+      const before = spawns;
+      const port = await openCodexAcpxRuntime(options(restoringSession), dependencies);
+      const openSpawns = spawns - before;
+      try {
+        const turn = port.startTurn({ text, requestId: text });
+        for await (const _event of turn.events) { /* drain the turn */ }
+        expect(await turn.result).toMatchObject({ status: "completed" });
+        return { openSpawns, turnSpawns: spawns - before - openSpawns };
+      } finally {
+        await port.close({ reason: "turn complete" });
+      }
+    };
+    const priorSettingsFlag = process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
+    process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
+    try {
+      expect(await run(false, "turn-first")).toEqual({ openSpawns: 1, turnSpawns: 0 });
+      // An effort control on a lazily reused record would open a temporary
+      // connection here, and the turn would start the agent a second time.
+      expect(await run(true, "turn-second")).toEqual({ openSpawns: 1, turnSpawns: 0 });
+      // The resumed turn carries the earlier conversation.
+      expect(conversations).toContainEqual(["turn-first", "turn-second"]);
+      const saved = JSON.parse(await readFile(join(root, "state", "sessions", "provider-key.json"), "utf8")) as { acpx?: { session_origin?: string } };
+      expect(saved.acpx?.session_origin).toBe("resume");
+    } finally {
+      if (priorSettingsFlag === undefined) delete process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
+      else process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = priorSettingsFlag;
+      api.closeAllConnections();
+      await new Promise<void>(resolve => api.close(() => resolve()));
+      // Provider shutdown can flush metadata just after the ACP process exits.
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }, 30_000);
+
+  it.each([
+    ["a fresh open", { restoring: false, saved: prompted() }],
+    ["another agent", { agent: "codex" as const, restoring: true, saved: prompted() }],
+    ["no saved record", { restoring: true, saved: undefined }],
+    ["a never-prompted record", { restoring: true, saved: prompted({ lastPromptAt: undefined }) }],
+    ["a record ACPX was told to replace", { restoring: true, saved: prompted({ acpx: { reset_on_next_ensure: true } }) }],
+  ])("keeps ACPX's lazy reuse for %s", async (_label, input) => {
+    const result = await open(input);
+    expect(result.ensured).not.toHaveProperty("resumeSessionId");
+    expect(result.seenDuringEnsure).toEqual([input.saved]);
   });
 });
 

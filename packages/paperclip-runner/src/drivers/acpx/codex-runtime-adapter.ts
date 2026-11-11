@@ -306,8 +306,14 @@ export async function openQualifiedAcpxRuntime(
   // them, so goal controls and Pi steering stay available after a restore.
   // `null` means the latest initialize advertised no goal support.
   let initializedGoalCapability: AcpxRuntimeGoalCapability | null | undefined;
+  // While set, ACPX cannot see the saved record for this key, so ensureSession
+  // opens the session from its backend id: it starts the provider, resumes the
+  // conversation and keeps that connection for the first turn. Hiding it only
+  // in memory leaves the saved record intact if the open fails.
+  let connectOnOpenKey: string | null = null;
   const sessionStore: AcpSessionStore = {
     async load(sessionId) {
+      if (sessionId === connectOnOpenKey) return undefined;
       const record = await baseStore.load(sessionId);
       if (record !== undefined) {
         rememberHandshakeHandle(record);
@@ -638,31 +644,46 @@ export async function openQualifiedAcpxRuntime(
   );
 
   let handle: AcpRuntimeHandle | null = null;
+  const ensureSavedSession = (resumeSessionId: string | undefined) =>
+    runtime.ensureSession({
+      ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
+      sessionKey: options.providerSessionKey,
+      agent: options.profile.agent,
+      mode: "persistent",
+      cwd: options.cwd,
+      sessionOptions: {
+        // Forward the requested model unchanged; verify the provider's
+        // reported selection before admitting a billable prompt. Grok binds
+        // its model when the native session opens and rejects any later
+        // selection, so ACPX must not replay one after a load.
+        ...(options.profile.agent === "grok" ? {} : { model: options.profile.reportedModelId }),
+        ...(preconfigured && options.profile.agent === "claude" ? {
+          allowedTools: options.mcpServers
+            .filter(server => server.runnerOwned && server.name.startsWith("paperclip_runner_"))
+            .map(server => `mcp__${server.name}__*`),
+        } : {}),
+        ...(options.systemInstructions
+          ? { systemPrompt: { append: options.systemInstructions } }
+          : {}),
+      },
+    });
   const ensuredSession = Promise.resolve()
-    .then(() => options.restoringSession ? undefined : resetAbandonedBootstrapRecord(baseStore, options.providerSessionKey))
-    .then(() =>
-      runtime.ensureSession({
-        sessionKey: options.providerSessionKey,
-        agent: options.profile.agent,
-        mode: "persistent",
-        cwd: options.cwd,
-        sessionOptions: {
-          // Forward the requested model unchanged; verify the provider's
-          // reported selection before admitting a billable prompt. Grok binds
-          // its model when the native session opens and rejects any later
-          // selection, so ACPX must not replay one after a load.
-          ...(options.profile.agent === "grok" ? {} : { model: options.profile.reportedModelId }),
-          ...(preconfigured && options.profile.agent === "claude" ? {
-            allowedTools: options.mcpServers
-              .filter(server => server.runnerOwned && server.name.startsWith("paperclip_runner_"))
-              .map(server => `mcp__${server.name}__*`),
-          } : {}),
-          ...(options.systemInstructions
-            ? { systemPrompt: { append: options.systemInstructions } }
-            : {}),
-        },
-      }),
-    );
+    .then(async () => {
+      if (!options.restoringSession) {
+        await resetAbandonedBootstrapRecord(baseStore, options.providerSessionKey);
+        return undefined;
+      }
+      if (!CONNECT_ON_OPEN_AGENTS.has(options.profile.agent)) return undefined;
+      return await connectOnOpenSessionId(baseStore, options.providerSessionKey);
+    })
+    .then(async (resumeSessionId) => {
+      if (resumeSessionId !== undefined) connectOnOpenKey = options.providerSessionKey;
+      try {
+        return await ensureSavedSession(resumeSessionId);
+      } finally {
+        connectOnOpenKey = null;
+      }
+    });
   const handshake = (contextAdmission || modeBinding
     ? ensuredSession.then(async (ensuredHandle) => {
         handle = ensuredHandle;
@@ -1219,6 +1240,26 @@ function nonEmptyRuntimeIdentity(
 }
 
 /**
+ * Agents whose restored sessions connect when the session opens instead of at
+ * the first prompt.
+ */
+const CONNECT_ON_OPEN_AGENTS: ReadonlySet<string> = new Set(["claude"]);
+
+/**
+ * The backend session a restore should resume while it opens, or undefined to
+ * keep ACPX's lazy reuse. Only a prompted, reusable conversation qualifies: a
+ * record ACPX was told to replace, or one that never ran a prompt, keeps the
+ * existing path.
+ */
+export async function connectOnOpenSessionId(store: AcpSessionStore, sessionKey: string): Promise<string | undefined> {
+  const record = await store.load(sessionKey);
+  if (!record || record.acpx?.reset_on_next_ensure === true) return undefined;
+  if (typeof record.acpSessionId !== "string" || record.acpSessionId.length === 0) return undefined;
+  if (record.lastPromptAt === undefined && record.acpx?.session_origin !== "resume") return undefined;
+  return record.acpSessionId;
+}
+
+/**
  * A fresh open has no runner-recorded provider identity, so a saved record for
  * its session key was left by an earlier bootstrap of the same session that
  * stopped before any prompt (for example a session.open the controller gave up
@@ -1229,6 +1270,9 @@ function nonEmptyRuntimeIdentity(
 export async function resetAbandonedBootstrapRecord(store: AcpSessionStore, sessionKey: string): Promise<boolean> {
   const record = await store.load(sessionKey);
   if (!record || record.acpx?.reset_on_next_ensure === true) return false;
+  // A record opened from a resume id continues a prompted conversation. Its
+  // own message list starts empty, but the provider holds the history.
+  if (record.acpx?.session_origin === "resume") return false;
   // Only a record that provably holds no conversation qualifies.
   if (!Array.isArray(record.messages) || record.messages.length > 0 || record.lastSeq !== 0 ||
       record.lastPromptAt !== undefined) return false;
