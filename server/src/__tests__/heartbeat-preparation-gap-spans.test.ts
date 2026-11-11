@@ -12,6 +12,19 @@ import { closeIdleWarmNativeSessionsForRestart } from "../services/native-runtim
 import { nativeRestartFixture, waitForCondition } from "./helpers/native-restart-fixture.js";
 import { getRecoveryPostgresSupport } from "./helpers/recovery-postgres-fixture.js";
 
+vi.mock("../services/durable-chat-wakeup.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../services/durable-chat-wakeup.js")>();
+  return {
+    ...original,
+    authorizeFailedChatRunRetryWake: async (...args: Parameters<typeof original.authorizeFailedChatRunRetryWake>) => {
+      // Phases over 50 ms are also replayed in the native run history. Exercise
+      // both trace hierarchies even on an otherwise fast, unloaded test runner.
+      await new Promise(resolve => setTimeout(resolve, 60));
+      return original.authorizeFailedChatRunRetryWake(...args);
+    },
+  };
+});
+
 const support = await getRecoveryPostgresSupport({});
 
 function completingBackend(db: ReturnType<typeof createDb>): NonNullable<HeartbeatServiceOptions["nativeSessionBackendFactory"]> {
@@ -101,7 +114,8 @@ describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
 
       await provider.forceFlush();
       const spans = exporter.getFinishedSpans();
-      const names = new Set(spans.map(span => span.name));
+      const preparationSpans = spans.filter(span => span.instrumentationScope.name === "paperclip.heartbeat-preparation");
+      const controllerSpans = spans.filter(span => span.instrumentationScope.name === "paperclip.native-controller");
       const preparation = [
         "heartbeat.prepare.chat_retry_admission",
         "heartbeat.prepare.workspace_selection",
@@ -119,12 +133,20 @@ describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
         "native.controller.span_persistence",
         "native.controller.state_migration",
       ];
-      for (const name of [...preparation, ...controller]) expect(names, name).toContain(name);
+      for (const name of preparation) expect(preparationSpans.map(span => span.name), name).toContain(name);
+      for (const name of controller) expect(controllerSpans.map(span => span.name), name).toContain(name);
       const attempts = spans.filter(span => span.name === "task.execution_attempt");
       expect(attempts).toHaveLength(1);
-      for (const span of spans.filter(span => preparation.includes(span.name))) {
+      for (const span of preparationSpans.filter(span => preparation.includes(span.name))) {
         expect(span.parentSpanContext?.spanId, span.name).toBe(attempts[0]!.spanContext().spanId);
       }
+      const replayedAdmission = spans.filter(span => span.name === "heartbeat.prepare.chat_retry_admission"
+        && span.instrumentationScope.name === "paperclip.native-runner");
+      expect(replayedAdmission).toHaveLength(1);
+      const nativePreparation = spans.find(span => span.name === "task.prepare"
+        && span.instrumentationScope.name === "paperclip.native-runner");
+      expect(nativePreparation).toBeDefined();
+      expect(replayedAdmission[0]!.parentSpanContext?.spanId).toBe(nativePreparation!.spanContext().spanId);
     } finally {
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();

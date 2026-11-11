@@ -178,9 +178,11 @@ if sys.argv[1] != "completion":
     expect(read).toMatchObject({ exitCode: 1 }); expect(String((read as any).output)).not.toContain("PRIVATE");
     const write = await executeWorkspaceTool(directory, "workspace_run", { program: "/bin/sh", args: ["-c", 'printf stolen > "$1"', "sh", secret] }, authorize);
     // POSIX shells differ: dash reports a redirection denial with status 2.
+    // A sandbox can hide the outside directory instead of exposing it as
+    // forbidden. The host-side content check below proves the write was denied.
     expect(write).toMatchObject({ exitCode: expect.any(Number), stopped: null });
     expect((write as any).exitCode).not.toBe(0);
-    expect(String((write as any).output)).toMatch(/permission denied|operation not permitted/i);
+    expect(String((write as any).output)).toMatch(/permission denied|operation not permitted|directory nonexistent|no such file or directory/i);
     expect(await readFile(secret, "utf8")).toBe("PRIVATE");
   });
   it.skipIf(!workspaceCommandSandboxAvailable())("stops its owned process on authority loss and bounds output", async () => {
