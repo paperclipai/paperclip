@@ -33,6 +33,7 @@ export const CRASH_POINTS = {
     environments: ["daytona"],
     kinds: ["remote_workspace_unsaved_files"],
     invariants: ["I2", "I7"],
+    prerequisite: "a previously saved remote workspace: the point counts only a preparation that restores a saved version (a follow-up or continuation run, for example workload S1), never a workspace's first preparation",
   },
   "sandbox.create.after_intent_before_provider": {
     description: "The sandbox_creation_operations intent is committed; the provider create call has not been made. Recovery must settle the intent without a sandbox to find.",

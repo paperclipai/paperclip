@@ -3,7 +3,7 @@ import { executionWorkspaces, heartbeatRunEvents, heartbeatRuns, nativeRunFinali
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import type { OwnerProof } from "../owner-proof.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "../remote-workspace-epoch-abandonment.js";
-import { releaseUnchangedRemoteWorkspaceWriter } from "../remote-workspaces.js";
+import { releaseUnchangedRemoteWorkspaceWriterById } from "../remote-workspaces.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import type { InProgressRecord, SettleOutcome } from "./ownership-registry.js";
 
@@ -51,11 +51,7 @@ export async function settlePreparationOnlyRemoteWorkspaceEpoch(db: Db, record: 
     // it. Anything unproven (no baseline from an older release, a provisioning
     // command, a runner command, a process, a kill before the restore published)
     // is abandoned exactly as before.
-    const [locked] = await tx.select().from(executionWorkspaces)
-      .where(and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, record.recordId))).for("update");
-    const lockedAuthority = readRemoteWorkspaceAuthority(locked?.metadata);
-    if (locked && lockedAuthority?.writerRunId === runId
-      && await releaseUnchangedRemoteWorkspaceWriter(transaction, { workspace: locked, authority: lockedAuthority })) {
+    if (await releaseUnchangedRemoteWorkspaceWriterById(transaction, { companyId, workspaceId: record.recordId, runId })) {
       return { settled: true, reason: context.proof.reason };
     }
     await notifyTerminalWorkspaceWork(tx, `workspace:${record.recordId}`);

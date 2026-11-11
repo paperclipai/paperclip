@@ -619,7 +619,12 @@ export async function prepareRemoteWorkspace(input: {
     return { workspace: savedWorkspace!, lease: savedLease! as EnvironmentLease, remoteRoot, reference: runReference };
   });
   target.remoteCwd = remoteRoot;
-  crashPoint("remote_workspace.prepare.after_publish_before_provision");
+  // Counted only for a preparation that published an unchanged baseline (a
+  // restore of a saved version), so the point exercises the saved-root handoff.
+  const publishedBaseline = readUnchangedBaseline(prepared.workspace.metadata);
+  if (publishedBaseline?.runId === input.runId && publishedBaseline.epoch === prepared.reference.epoch && !publishedBaseline.releasedAt) {
+    crashPoint("remote_workspace.prepare.after_publish_before_provision");
+  }
   if (restoredExport?.cleanupPending) await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, location: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location!, target,
     assertOwned: input.assertOwned ?? (async () => undefined) });
