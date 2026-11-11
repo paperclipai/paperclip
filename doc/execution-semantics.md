@@ -1711,7 +1711,10 @@ assigned the task, or clicked Retry. It does this only when the run recorded no
 provider turn or its last provider turn is settled. Activity records the request
 as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
 recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
-server requested gets no second automatic attempt. System wakes and runs with an
+server requested gets no second automatic attempt. A system wake (for example a
+monitor or an automatic assignment) continues this way only when its run recorded
+no turn event and no tool event at all, and only under the run's responsible user;
+nothing such a run did can be repeated. Other system wakes and runs with an
 in-flight provider turn do not continue automatically. For these failed runs, a
 recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only

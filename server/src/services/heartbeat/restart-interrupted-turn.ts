@@ -36,6 +36,17 @@ export function isProvenTurnSettlement(event: { eventType: string; payload: unkn
     asRecord(asRecord(payload.prpEvent).payload).providerTerminalObserved !== false;
 }
 
+/** Any turn or tool event: the run may have done provider work that a new turn could repeat. */
+const PROVIDER_TURN_ACTIVITY_EVENTS = [...TURN_STARTED_EVENTS, ...TURN_SETTLED_EVENTS,
+  "tool.execution.started", "tool.execution.completed"];
+
+async function hasProviderTurnActivity(db: Db, run: { companyId: string; id: string }) {
+  const [event] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    inArray(heartbeatRunEvents.eventType, PROVIDER_TURN_ACTIVITY_EVENTS))).limit(1);
+  return Boolean(event);
+}
+
 /** Automatic continuation is requested at most once per chain of runs. */
 export const RESTART_RETRY_KEY_PREFIX = "restart-interrupted-turn:";
 
@@ -47,7 +58,9 @@ type Outcome = { requested: true; requestId: string } | { requested: false; reas
  * request the same Retry a user would click, once and idempotently per run,
  * under the requesting user's authority. Only when the run's user input was not
  * yet acted on, or its last provider turn is settled; an in-flight turn's
- * outcome is unknown, so it keeps the visible Retry. Admission keeps every gate,
+ * outcome is unknown, so it keeps the visible Retry. A system wake continues
+ * this way only when its run recorded no turn or tool event at all, under the
+ * run's responsible user. Admission keeps every gate,
  * including stop proof and saved-work recovery before the next turn.
  */
 export async function requestRestartInterruptedTurnRetry(db: Db, claim: NativeRestartRecoveryClaim): Promise<Outcome> {
@@ -71,11 +84,17 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
   const [wake] = await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
     eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.runId, run.id)));
-  const actorId = wake?.requestedByActorType === "user" ? wake.requestedByActorId : null;
+  const userActorId = wake?.requestedByActorType === "user" ? wake.requestedByActorId : null;
   const reason = typeof context.wakeReason === "string" ? context.wakeReason : wake?.reason;
-  // System wakes keep their policy: only a new user turn continues them.
-  if (!actorId) return { requested: false, reason: "not_user_request" };
-  if (reason === "task_retry") {
+  let actorId = userActorId;
+  if (!userActorId) {
+    // System wakes keep their policy (only a new user turn continues them),
+    // except when the run never started a provider turn: nothing it did can be
+    // repeated, so the Retry runs once under the run's responsible user.
+    if (!wake || reason === "task_retry" || !run.responsibleUserId || await hasProviderTurnActivity(db, run))
+      return { requested: false, reason: "not_user_request" };
+    actorId = run.responsibleUserId;
+  } else if (reason === "task_retry") {
     // A Retry this hook already requested gets no second automatic attempt.
     const retryId = typeof context.taskRetryRequestId === "string" ? context.taskRetryRequestId : null;
     const [receipt] = retryId ? await db.select({ key: agentWakeupRequests.idempotencyKey }).from(agentWakeupRequests).where(and(
@@ -88,10 +107,11 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
     const [comment] = commentId ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
       eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
       sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
-      eq(issueComments.authorUserId, actorId), isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
+      eq(issueComments.authorUserId, userActorId), isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
     )) : [];
     if (!comment && reason !== "issue_assigned") return { requested: false, reason: "message_unavailable" };
   } else return { requested: false, reason: "not_user_request" };
+  if (!actorId) return { requested: false, reason: "not_user_request" };
   const [issue] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
     .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
   if (!issue || issue.assigneeAgentId !== run.agentId || ["done", "cancelled"].includes(issue.status))
