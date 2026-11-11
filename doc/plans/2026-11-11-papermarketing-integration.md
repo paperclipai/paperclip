@@ -55,13 +55,13 @@ O bot privado `commitperclip` fica restrito ao repositório original. Como o eve
 é `pull_request_target`, essa alteração só passa a valer depois de incorporada à
 branch de base; reenviar o PR não altera o workflow que está sendo executado.
 
-A política de lockfiles também executa a cópia da branch de base. Ela rejeita
-lockfiles e a prova de resolução alterados por PRs humanos, inclusive quando a
-integração preserva os bytes publicados pelo upstream. Este PR conserva essa
-restrição: não falsifica autoria de bot nem desativa o check. A adoção do fluxo
-de atualização de dependências do fork precisa ser resolvida na base antes do
-merge da integração. As qualificações da aplicação continuam independentes
-desse bloqueio administrativo.
+A política de lockfiles também executa a cópia da branch de base. A preparação
+de CI aprovada separadamente em `28f223a0` autoriza somente o PR #1 e os SHA-256
+dos três arquivos de dependências desta integração. Qualquer alteração desses
+bytes, outro PR ou um lockfile de provedor continua sujeito ao bloqueio normal.
+A preparação também bloqueia no fork a publicação automática de imagens e o
+bot de atualização e merge de dependências do upstream. Ela foi incorporada à
+base sem incorporar o código da aplicação.
 
 ## Limites do incremento
 
