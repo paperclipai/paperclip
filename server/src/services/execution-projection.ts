@@ -46,7 +46,8 @@ const executionRunColumns = {
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
     'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
-    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
+    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
+    'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;

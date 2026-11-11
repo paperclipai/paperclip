@@ -1596,10 +1596,11 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "graceful", runIds: [fixture.runId] });
     expect(claim).toMatchObject({ kind: "reattach_remote_runner", providerAttempt: 3 });
+    if (claim?.kind !== "reattach_remote_runner") throw new Error("restart recovery did not reattach");
     const schedule = vi.fn();
     const deferral = await prepareWithAgentDirectoryDeferral(async () => { throw new AgentDirectoryOperationBusyError(); }).catch(error => error);
     expect(await deferRunForBusyAgentDirectory(fixture.db, { run: { id: fixture.runId, companyId }, error: deferral,
-      restartRecovery: claim!, schedule, record: async () => undefined, random: () => 0 })).toBe("deferred");
+      restartRecovery: claim, schedule, record: async () => undefined, random: () => 0 })).toBe("deferred");
     const [, retryAt, mode] = schedule.mock.calls[0]! as [string, Date, string | undefined];
     expect(mode).toBe("restart");
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "graceful",
@@ -1607,9 +1608,10 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const [resumed] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "graceful", runIds: [fixture.runId], now: retryAt });
     expect(resumed).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId, providerAttempt: 3 });
-    expect(nextNativeProviderAttempt(3, resumed!.kind, "chargesProviderAttempt" in resumed! ? resumed.chargesProviderAttempt : true)).toBe(3);
+    if (resumed?.kind !== "reattach_remote_runner") throw new Error("deferred restart recovery did not reattach");
+    expect(nextNativeProviderAttempt(3, resumed.kind)).toBe(3);
     const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
-    expect(coordinator).toMatchObject({ attempt: 3, phase: "observed", leaseOwner: resumed!.leaseOwner });
+    expect(coordinator).toMatchObject({ attempt: 3, phase: "observed", leaseOwner: resumed.leaseOwner });
     const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     expect(run).toMatchObject({ status: "running", errorCode: null });
   });
