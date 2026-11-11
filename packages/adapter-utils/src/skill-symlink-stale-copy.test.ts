@@ -144,6 +144,28 @@ describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
     expect(await fs.readdir(target)).not.toContain(".paperclip-stale-owner");
   });
 
+  it("repairs a skill whose previous repair stopped after marking it and before moving it", async () => {
+    const root = await makeRoot();
+    const { source, target } = await makeStaleCopy(root);
+    await fs.writeFile(path.join(target, ".paperclip-stale-owner"), path.basename(target), "utf8");
+
+    expect(await ensurePaperclipSkillSymlink(source, target)).toBe("repaired");
+    expect(await fs.readlink(target)).toBe(source);
+    expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
+  });
+
+  it("does not write the ownership marker through a symlink planted in the copy", async () => {
+    const root = await makeRoot();
+    const { source, target } = await makeStaleCopy(root);
+    const outside = path.join(root, "outside.txt");
+    await fs.writeFile(outside, "UNTOUCHED\n", "utf8");
+    await fs.symlink(outside, path.join(target, ".paperclip-stale-owner"));
+
+    expect(await ensurePaperclipSkillSymlink(source, target)).toBe("repaired");
+    expect(await fs.readFile(outside, "utf8")).toBe("UNTOUCHED\n");
+    expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
+  });
+
   it("leaves a fresh managed copy alone", async () => {
     const root = await makeRoot();
     const source = await makeSource(root, "REAL CONTENT\n");

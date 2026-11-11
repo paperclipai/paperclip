@@ -4447,9 +4447,10 @@ async function listStaleSkillCopies(target: string): Promise<string[]> {
   for (const entry of entries) {
     if (!entry.isDirectory() || !pattern.test(entry.name)) continue;
     const copy = path.join(dir, entry.name);
-    const recordedOwner = await fs
-      .readFile(path.join(copy, STALE_SKILL_COPY_OWNER_FILE), "utf8")
-      .catch(() => null);
+    const marker = path.join(copy, STALE_SKILL_COPY_OWNER_FILE);
+    const markerStat = await fs.lstat(marker).catch(() => null);
+    if (!markerStat?.isFile()) continue;
+    const recordedOwner = await fs.readFile(marker, "utf8").catch(() => null);
     if (recordedOwner === owner) copies.push(copy);
   }
   return copies;
@@ -4459,6 +4460,15 @@ async function removeStaleSkillCopies(target: string): Promise<void> {
   for (const copy of await listStaleSkillCopies(target)) {
     await fs.rm(copy, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+async function markStaleSkillCopy(dir: string, owner: string): Promise<boolean> {
+  const marker = path.join(dir, STALE_SKILL_COPY_OWNER_FILE);
+  await fs.rm(marker, { force: true }).catch(() => {});
+  return fs
+    .writeFile(marker, owner, { encoding: "utf8", flag: "wx" })
+    .then(() => true)
+    .catch(() => false);
 }
 
 async function restoreStaleSkillCopy(copy: string, target: string): Promise<void> {
@@ -4514,15 +4524,14 @@ export async function ensurePaperclipSkillSymlink(
       return "skipped";
     }
     const staleCopy = `${target}${STALE_SKILL_COPY_MARKER}${process.pid}-${Date.now()}`;
+    if (!(await markStaleSkillCopy(target, path.basename(target)))) return "skipped";
     try {
       await fs.rename(target, staleCopy);
     } catch (err) {
+      await fs.rm(path.join(target, STALE_SKILL_COPY_OWNER_FILE), { force: true }).catch(() => {});
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return "skipped";
       throw err;
     }
-    await fs
-      .writeFile(path.join(staleCopy, STALE_SKILL_COPY_OWNER_FILE), path.basename(target), "utf8")
-      .catch(() => {});
     try {
       await linkSkill(source, target);
     } catch (err) {
