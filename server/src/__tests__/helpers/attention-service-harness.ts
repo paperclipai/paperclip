@@ -111,7 +111,7 @@ export function createAttentionServiceHarness() {
     executionState?: Record<string, unknown> | null;
     updatedAt?: Date;
     createdAt?: Date;
-    unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
+    unblockDescriptor?: { owner: { userId: string } | { agentId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
     visibility?: "open" | "private";
     privacyRootIssueId?: string | null;
