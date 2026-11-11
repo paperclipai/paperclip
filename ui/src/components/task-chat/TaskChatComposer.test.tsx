@@ -352,6 +352,22 @@ describe("TaskChatComposer", () => {
     expect(pasteFiles([document]).defaultPrevented).toBe(true);
   });
 
+  it("sends a follow-up from an insecure origin without crypto.randomUUID", async () => {
+    Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+    try {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="insecure-origin" />);
+      typeText("Close the task");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      expect(onAdd.mock.calls[0]?.[0]).toBe("Close the task");
+      expect(onAdd.mock.calls[0]?.[4]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    } finally {
+      delete (crypto as { randomUUID?: unknown }).randomUUID;
+    }
+  });
+
   it("settles an acknowledged submission after navigating away", async () => {
     const key = "navigate-before-save";
     let resolveSend!: () => void;
