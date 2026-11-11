@@ -9,6 +9,8 @@ export function UiLayoutNotice({
   subject,
   onRetry,
   onOverwrite,
+  saveError = null,
+  onRetrySave,
   className,
 }: {
   blocked: UiLayoutBlock;
@@ -16,8 +18,23 @@ export function UiLayoutNotice({
   subject: string;
   onRetry: () => void;
   onOverwrite: () => void;
+  saveError?: unknown;
+  onRetrySave?: () => void;
   className?: string;
 }) {
+  if (blocked === null && saveError !== null && saveError !== undefined) {
+    return (
+      <InlineBanner
+        tone="warning"
+        compact
+        className={className}
+        title={`Your latest ${subject} layout changes are not saved yet.`}
+        actions={onRetrySave ? <Button size="sm" variant="outline" onClick={onRetrySave}>Retry saving</Button> : undefined}
+      >
+        {describeError(saveError, { action: `save your ${subject} layout` }).body}
+      </InlineBanner>
+    );
+  }
   if (blocked === null) return null;
   if (blocked === "load-error") {
     return (
