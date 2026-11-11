@@ -390,6 +390,17 @@ collection, another close error from an owner without a task, or continuation
 of the same session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
 
+Deleting an environment (with consent to destroy its reusable sandboxes) closes its
+idle warm owners first. An idle owner whose close cannot settle is retired the same
+way: one confirmed `stop`, the credential snapshot, `complete`, then instruction
+collection. An owner whose sandbox lease already carries a `destroyed` termination
+receipt has no process left to stop, so Core releases it without contacting the
+sandbox. Only then are the environment's sandboxes destroyed, through the usual
+workspace-export and restore-source guards. When an owner still cannot be retired,
+the delete returns 409 and names each run and the close and stop errors. Idle-timeout,
+restart and sleep sweeps do not force a stop. They log the exact close error for each
+owner instead of a count.
+
 When retiring the previous owner stays unproven anyway (any close failure,
 on any of the paths a new run uses to retire it: instruction preparation,
 configuration change, session reset, or a prior-owner fence on a resumed

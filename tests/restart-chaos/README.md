@@ -864,6 +864,14 @@ pending is retried for the same settle window; if it is still blocked then, the
 wave fails (not as a harness error) and the instance is kept, because its
 database owns the cleanup work. The result is in `<wave>/sandbox-sweep.json`.
 
+**Clean warm shutdown.** Every warm wave (`--daytona-warm` or `--lifecycle warm`)
+also grades "no leaked sandboxes / clean warm shutdown" (`warm-shutdown.ts`). It fails
+the wave when the environment delete stayed blocked, when a wave sandbox is still
+running after cleanup, or when the server log shows a warm session that did not close
+on environment delete or controller shutdown. Idle closes that needed a forced Runner
+stop, or whose sandbox was already destroyed, are counted but do not fail. The result
+is in `<wave>/warm-shutdown.json` and in the wave's `SUMMARY.md`.
+
 ## Provider message faults (PV1–PV3) and the saved question (Q1)
 
 ```sh

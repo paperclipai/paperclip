@@ -1387,12 +1387,15 @@ export function environmentRoutes(
       const warmSessions = await closeWarmNativeSessionsForEnvironment({
         environmentId: existing.id,
         reason: "environment deleted",
+        forceStopUnsettled: true,
+        db,
       });
       if (warmSessions.busy > 0 || warmSessions.failed > 0) {
         throw conflict(
           warmSessions.busy > 0
             ? "Cannot delete this environment while a native runner session is active. Wait for its run to finish, then retry."
-            : "Cannot delete this environment because its warm native runner did not shut down cleanly. Retry after the runner exits.",
+            : `Cannot delete this environment because its warm native runner could not be stopped (${warmSessions.failures
+              .map((failure) => `run ${failure.runId}: ${failure.reason}`).join("; ")}). Retry after the runner exits.`,
           { nativeRunnerSessions: warmSessions },
         );
       }
