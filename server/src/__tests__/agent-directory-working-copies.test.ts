@@ -941,7 +941,7 @@ describe("persistent agent directories", () => {
     expect((await fs.stat(active.localRoot)).isDirectory()).toBe(true);
   });
 
-  it.each(["new-home", "same-path-empty", "foreign-lease", "other-controller", "released-holder", "missing-collector", "over-quota"] as const)("recovers remote agent files after controller cache loss: %s", async scenario => {
+  it.each(["new-home", "same-path-empty", "foreign-lease", "other-controller", "missing-collector", "over-quota"] as const)("recovers remote agent files after controller cache loss: %s", async scenario => {
     const copy = await run({ warm: true });
     const environmentId = randomUUID(), leaseId = randomUUID(), remoteCwd = "/fixture/retained-task";
     const executionRoot = path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId);
@@ -981,29 +981,15 @@ describe("persistent agent directories", () => {
         return;
       }
       if (scenario === "other-controller") {
-        const shortWait = agentInstructionWorkingCopyService(db, { agentDirectoryLockWaitMs: 300 });
         await db.transaction(async tx => {
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
-          await expect(shortWait.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true }))
+          await expect(copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true }))
             .rejects.toThrow("Agent directory operation is already active");
           expect(transport).not.toHaveBeenCalled();
         });
         return;
       }
-      let holder: Promise<void> | null = null;
-      if (scenario === "released-holder") {
-        let acquired!: () => void;
-        const held = new Promise<void>(resolve => { acquired = resolve; });
-        holder = db.transaction(async tx => {
-          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
-          acquired();
-          await new Promise(resolve => setTimeout(resolve, 400));
-        });
-        await held;
-      }
       const preparing = copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true });
-      preparing.catch(() => undefined);
-      await holder;
       if (scenario === "foreign-lease") {
         await expect(preparing).rejects.toThrow("Agent directory recovery lease changed");
         expect(transport).not.toHaveBeenCalled();

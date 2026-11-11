@@ -46,11 +46,7 @@ function baseline(row: Copy) {
 function actor(row: Copy): AuthorizationActor {
   return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
 }
-export const AGENT_DIRECTORY_LOCK_WAIT_MS = 120_000;
-const AGENT_DIRECTORY_LOCK_BUSY = Symbol("agent-directory-lock-busy");
-
-export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patch: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService,
-  lockWaitMs = AGENT_DIRECTORY_LOCK_WAIT_MS) {
+export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patch: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
   const store = agentFileStore(db);
   async function insertCopy(values: typeof copies.$inferInsert) {
     return db.transaction(async tx => {
@@ -658,19 +654,12 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     if (!disposableRemoteCopy(row)) return run();
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
-    const deadline = Date.now() + lockWaitMs;
-    for (let delayMs = 100; ; delayMs = Math.min(delayMs * 2, 2_000)) {
-      const result = await withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
-        const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
-          (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
-        if (lock?.acquired !== true) return AGENT_DIRECTORY_LOCK_BUSY;
-        return { value: await withWorkspaceLockKeepalive(tx as unknown as Db, Number(lock.idle_timeout_ms), run) };
-      }));
-      if (result !== AGENT_DIRECTORY_LOCK_BUSY) return result.value;
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) throw conflict("Agent directory operation is already active");
-      await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, remainingMs)));
-    }
+    return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
+      const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
+        (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
+      if (lock?.acquired !== true) throw conflict("Agent directory operation is already active");
+      return withWorkspaceLockKeepalive(tx as unknown as Db, Number(lock.idle_timeout_ms), run);
+    }));
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,
     recoverStoppedRemote: (row: Copy) => serial(row, current => current.receipt?.retainedByRunId ? Promise.resolve(current) : recoverStoppedRemote(current), "agent_directory_collect"),

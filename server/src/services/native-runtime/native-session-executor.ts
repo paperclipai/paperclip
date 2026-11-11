@@ -25,7 +25,7 @@ import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HAR
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
-import { rehydratePinnedSkillAssets } from "./runtime-context.js";
+import { rehydratePinnedInstructionAsset, rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
@@ -15220,6 +15220,9 @@ async function createRunnerdBackendWithinSessionClaim(
   retainedTransition?: VerifiedWarmTransitionBinding,
 ): Promise<ManagedRunnerdBackend> {
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
+  if ("runtimeContext" in input.execution) {
+    await rehydratePinnedInstructionAsset(input.db, input.execution.binding, input.execution.runtimeContext).catch(() => undefined);
+  }
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
   const remoteTarget = target.kind === "remote" ? target : null;
