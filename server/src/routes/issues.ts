@@ -50,7 +50,7 @@ import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } fro
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
-import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
+import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnQueuedCommentIds, firstTurnTakesAllQueuedComments, firstTurnWakeColumns, firstTurnWakeContextFields, firstTurnWakePayloadFields, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
@@ -5608,11 +5608,7 @@ export function issueRoutes(
       })
       .from(issueRows)
       .where(and(eq(issueRows.companyId, companyId), inArray(issueRows.id, uniqueIds)));
-    const decisions = await Promise.all(rows.map(async (row) => ({
-      id: row.id,
-      allowed: (await decideIssueAccess(req, row, "issue:read")).allowed,
-    })));
-    return new Set(decisions.filter((decision) => decision.allowed).map((decision) => decision.id));
+    return new Set((await filterIssuesForActor(req, rows)).map((row) => row.id));
   }
 
   function lockedIssueStub(issue: Pick<IssueRelationIssueSummary, "id" | "identifier">): IssueLockedStub {
@@ -5808,12 +5804,24 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_visible_issue_write";
   }
 
+  /**
+   * Keeps the tasks the actor may read. One batched authorization read decides
+   * all of them, so the number of statements does not grow with the number of
+   * tasks.
+   */
   async function filterIssuesForActor<
     T extends Parameters<typeof decideIssueAccess>[1],
   >(req: Request, rows: T[]) {
-    const decisions = await Promise.all(
-      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
-    );
+    const decisions = await access.decideReads(req.actor, rows.map((issue) => ({
+      type: "issue" as const,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    })));
     return rows.filter((_, index) => decisions[index]?.allowed);
   }
 
@@ -7599,7 +7607,8 @@ export function issueRoutes(
   type IssueQueueWake = typeof agentWakeupRequests.$inferSelect;
   type IssueQueueRun = typeof heartbeatRuns.$inferSelect;
   type IssueQueueState = {
-    wake: Pick<IssueQueueWake, "id" | "companyId" | "payload" | "status" | "runId">;
+    wake: Pick<IssueQueueWake, "id" | "companyId" | "payload" | "status" | "runId" | "agentId" | "reason"
+      | "requestedByActorType" | "requestedByActorId">;
     state: "deferred" | "queued";
     queueRun: Pick<IssueQueueRun, "runtimeMode"> | null;
     /** The receipt already read for an interaction wake, reused by the queue builder. */
@@ -7615,16 +7624,18 @@ export function issueRoutes(
       .select({
         id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
         status: agentWakeupRequests.status, runId: agentWakeupRequests.runId,
+        ...firstTurnWakeColumns,
         payload: sql<Record<string, unknown>>`jsonb_build_object(
+          ${firstTurnWakePayloadFields(agentWakeupRequests.payload)},
           'issueId', ${agentWakeupRequests.payload}->'issueId',
           'mutation', ${agentWakeupRequests.payload}->'mutation',
-          'interactionId', ${agentWakeupRequests.payload}->'interactionId',
           'interactionStatus', ${agentWakeupRequests.payload}->'interactionStatus',
           'externalChatContinuation', ${agentWakeupRequests.payload}->'externalChatContinuation',
           'executionWait', jsonb_build_object(
             'reason', ${agentWakeupRequests.payload}->'executionWait'->'reason',
             'message', ${agentWakeupRequests.payload}->'executionWait'->'message'),
           '_paperclipWakeContext', jsonb_build_object(
+            ${firstTurnWakeContextFields(agentWakeupRequests.payload)},
             'wakeCommentIds', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeCommentIds',
             'forceFreshSession', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'forceFreshSession')
         )`,
@@ -7660,7 +7671,8 @@ export function issueRoutes(
       if (wake.status === "deferred_issue_execution") {
         if (isReceipt) {
           const response = await readReceipt();
-          if (response) receipt = { wake, state: "deferred", queueRun: null, response };
+          // A tool action's outcome is delivered, never listed (approve = run).
+          if (response && !response.toolActionOutcome) receipt = { wake, state: "deferred", queueRun: null, response };
           continue;
         }
         return { wake, state: "deferred", queueRun: null };
@@ -7682,7 +7694,7 @@ export function issueRoutes(
         .then((runRows) => runRows[0] ?? null);
       if (queueRun && isReceipt) {
         const response = await readReceipt();
-        if (response) receipt = { wake, state: "queued", queueRun, response };
+        if (response && !response.toolActionOutcome) receipt = { wake, state: "queued", queueRun, response };
       }
       else if (queueRun) return { wake, state: "queued", queueRun };
     }
@@ -7782,6 +7794,13 @@ export function issueRoutes(
     if (wake && queuedInteractionId(wake.payload)) {
       if (response?.source.requiresFreshSession) queue.steeringDisposition = "unsupported";
       queue.entries = response ? [{ comment: response.comment, source: response.source, position: 0, canEdit: false, canDiscard: false }] : [];
+    } else if (wake && queueState?.state === "deferred" && input.activeRun?.status === "running") {
+      // A starting run (a booting sandbox, say) cannot be steered yet, but its
+      // first turn takes these messages. The view shows them as sent.
+      const firstTurnCommentIds = await firstTurnQueuedCommentIds(input.executor, {
+        companyId: input.issue.companyId, issueId: input.issue.id, runId: input.activeRun.id, wake,
+      });
+      if (firstTurnCommentIds.length > 0) queue.firstTurnCommentIds = firstTurnCommentIds;
     }
     return queue;
   }
@@ -7848,7 +7867,11 @@ export function issueRoutes(
     if (
       !wake ||
       readObject(wake.payload).issueId !== input.issue.id ||
-      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
+      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload)) ||
+      // A tool action's outcome is never a message to steer, interrupt or discard.
+      (queuedInteractionId(wake.payload) &&
+        (await readQueuedInteractionResponse(input.tx as unknown as Db, input.issue.companyId, input.issue.id, wake.payload))
+          ?.toolActionOutcome)
     ) {
       throw conflict("The queued message is no longer pending", {
         code: "queued_comment_not_pending",

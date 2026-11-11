@@ -33,7 +33,7 @@ import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
-import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
+import { STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
@@ -64,7 +64,11 @@ const diagnosticNativeFixture = vi.hoisted(() => ({
 }));
 vi.mock("../native-runtime/native-codex-runner.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../native-runtime/native-codex-runner.js")>();
-  return { ...actual, resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary() };
+  return {
+    ...actual,
+    resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary(),
+    resolvePaperclipRunnerBinaryAsync: async () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinaryAsync(),
+  };
 });
 vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
@@ -857,6 +861,64 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
   });
 
+  // Staging incident shape: a server restart reattached a remote native runner whose turn was
+  // still in flight. A storage outage then failed the reattachment, restart
+  // recovery kept the workspace under a no-replay hold, and the run reported
+  // "Paperclip will retry automatically when storage is back" with no storage
+  // wait scheduled. The task sat blocked for 15 hours behind a false promise.
+  it.each([
+    ["an outage", "ServiceUnavailable", 503, STORAGE_UNAVAILABLE_HELD_MESSAGE],
+    ["rejected credentials", "ExpiredToken", 403, STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE],
+  ] as const)("never promises a storage retry when native recovery holds the run after %s", async (_label, name, status, expected) => {
+    const f = await fixture({ runtimeMode: "native" });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Daily staging review",
+      assigneeAgentId: f.agent.id, status: "in_progress" }).returning();
+    await db.update(agentWakeupRequests).set({ runId: f.run.id, reason: "issue_monitor_due", requestedByActorType: "system" })
+      .where(eq(agentWakeupRequests.id, f.wake.id));
+    const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id,
+      contextSnapshot: { issueId: issue.id, wakeReason: "issue_monitor_due", wakeSource: "automation" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
+      eventType: "turn.started", stream: "system", level: "info", message: "Provider turn started" });
+    // Restart recovery's workspace preservation already settled the coordinator.
+    await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: issue.id, runId: run.id,
+      phase: "terminal_failure", attempt: 1, controllerGeneration: 3, recoveryState: "blocked",
+      failureCode: "native_continuation_requires_reconciliation" });
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name, $metadata: { httpStatusCode: status, attempts: 3 } });
+    }).catch(error => error as Error);
+    await f.completion.failRun({ ...f.failure(outage), run, issueId: issue.id, requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: false });
+    const failed = await read(run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "native_continuation_requires_reconciliation", error: expected });
+    expect(failed.error).not.toMatch(/retry automatically/i);
+    expect(failed.error).toContain("Retry");
+    // No storage wait is created for a run native recovery owns: it could only be refused.
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.eventType, "error")));
+    expect(events.map(event => event.message)).toEqual([expected]);
+  });
+
+  it.each([
+    ["run", "not scheduled"], ["setup", "not scheduled"], ["run", "scheduling failed"], ["setup", "scheduling failed"],
+  ] as const)("withdraws the storage retry promise when no storage wait could be scheduled (%s, %s)", async (phase, mode) => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    }).catch(error => error as Error);
+    if (mode === "not scheduled") f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled",
+      reason: "Scheduled retry suppressed because the agent is not invokable", errorCode: "agent_not_invokable", issueId: null } as never);
+    else f.deps.scheduleBoundedRetryForRun.mockRejectedValueOnce(new Error("retry write failed"));
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE,
+      error: STORAGE_UNAVAILABLE_HELD_MESSAGE });
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.run.id),
+      eq(heartbeatRunEvents.eventType, "error")));
+    expect(events.map(event => event.message)).toEqual([STORAGE_UNAVAILABLE_HELD_MESSAGE]);
+  });
+
   it.each(["execution", "setup"] as const)("names the nested cause of a generic %s failure and keeps SQL text off the board", async phase => {
     const f = await fixture();
     const logged = vi.spyOn(logger, "error");
@@ -1337,6 +1399,33 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     if (retried) {
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         providerFailure: { provider: "sandbox", phase: "startup", category: "overloaded", httpStatus: 502, retryability: "transient" } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  // Staging run f41857b6: the Daytona create was still pending at the
+  // acquisition deadline, so the worker returned the cleanup envelope with a
+  // create-phase diagnostic and no provider status.
+  const daytonaLeaseTimeout = (elapsedMs: number) => new JsonRpcCallError({ code: -32000,
+    message: "Daytona lease acquisition timed out; allocation cleanup is pending",
+    data: { schema: "paperclip/environment-creation-cleanup/v1",
+      cleanup: { providerLeaseId: "paperclip-create-05f81d77", companyId: "company", environmentId: "environment",
+        runId: "f41857b6", attemptId: "05f81d77", accountFingerprint: "a".repeat(64),
+        labels: { "paperclip-provider": "daytona", "paperclip-create-attempt": "05f81d77" } },
+      acquisitionDiagnostic: { phase: "create", elapsedMs, budgetMs: 300_000, providerState: "creating" } } });
+
+  it.each(["fresh", "started", "early_failure"] as const)("routes a %s sandbox create that timed out through bounded bootstrap recovery", async scenario => {
+    const f = await fixture();
+    const error = await acquireThroughOrchestrator(daytonaLeaseTimeout(scenario === "early_failure" ? 100 : 300_004));
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    const retried = scenario === "fresh";
+    expect(failed).toMatchObject({ status: "failed", errorCode: retried ? "environment_provider_unavailable" : "setup_failed" });
+    expect(failed.error).toContain("Daytona lease acquisition timed out");
+    if (retried) {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        providerFailure: { provider: "sandbox", phase: "startup", category: "timeout", retryability: "transient" } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });

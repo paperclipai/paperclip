@@ -5,7 +5,6 @@ import { BreadcrumbBar } from "@/components/BreadcrumbBar";
 import { LockedIssueChip } from "@/components/LockedIssueChip";
 import { StatusIcon } from "@/components/StatusIcon";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { useSidebar } from "@/context/SidebarContext";
 import { useLocation } from "@/lib/router";
 import { PluginLauncherProvider } from "@/plugins/launchers";
 
@@ -23,21 +22,19 @@ function TaskBreadcrumbPreview({
   source?: "Tasks" | "Mine";
 }) {
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { isMobile } = useSidebar();
   const location = useLocation();
   useEffect(() => {
     setBreadcrumbs([
       { label: source, href: source === "Mine" ? "/inbox" : "/issues" },
       ...(showParent ? [{
         label: privateParent ? "Private task" : parentTitle,
-        identifier: "PAP-120",
         href: privateParent ? undefined : "/issues/PAP-120",
-        control: privateParent ? <LockedIssueChip identifier={isMobile ? null : "PAP-120"} /> : undefined,
-        controlKey: privateParent ? `private-parent:${isMobile}` : undefined,
+        control: privateParent ? <LockedIssueChip identifier={null} /> : undefined,
+        controlKey: privateParent ? "private-parent" : undefined,
       }] : []),
       { label: title, identifier: "PAP-121", leading: <StatusIcon status="in_progress" className="size-3" />, leadingKey: "in_progress" },
     ]);
-  }, [parentTitle, title, showParent, privateParent, source, isMobile, setBreadcrumbs]);
+  }, [parentTitle, title, showParent, privateParent, source, setBreadcrumbs]);
 
   return (
     <div className="min-h-dvh w-full bg-background text-foreground">
@@ -67,7 +64,7 @@ const meta = {
       status: "current",
       implementation: "production",
       boundary: "fixtures",
-      notes: "Mounts the shipped BreadcrumbBar with fixture breadcrumb context. Covers linked immediate parent, long titles, private parent, standalone task, Mine source, light/dark themes and responsive widths. Page data loading and parent authorization are outside this isolated header story.",
+      notes: "Mounts the shipped BreadcrumbBar with fixture breadcrumb context. Covers title-only linked immediate parent, long titles, private parent, standalone task, Mine source, light/dark themes and responsive widths. Page data loading and parent authorization are outside this isolated header story.",
     },
   },
   args: { parentTitle: "Prepare the product launch", title: "Review the release checklist" },
@@ -79,7 +76,8 @@ type Story = StoryObj<typeof meta>;
 export const Subtask: Story = {
   play: async ({ canvasElement }) => {
     const nav = within(await within(canvasElement).findByRole("navigation", { name: "breadcrumb" }));
-    await expect(nav.getByRole("link", { name: "Prepare the product launch PAP-120" })).toHaveAttribute("href", "/PAP/issues/PAP-120");
+    await expect(nav.getByRole("link", { name: "Prepare the product launch" })).toHaveAttribute("href", "/PAP/issues/PAP-120");
+    await expect(nav.getByRole("link", { name: "Prepare the product launch" })).toHaveTextContent(/^Prepare the product launch$/);
     await expect(nav.getByRole("link", { name: "Review the release checklist PAP-121" })).toHaveAttribute("aria-current", "page");
   },
 };
@@ -108,7 +106,8 @@ export const PrivateParent: Story = {
     const nav = await within(canvasElement).findByRole("navigation", { name: "breadcrumb" });
     await expect(within(nav).queryByRole("link", { name: /Prepare the product launch/ })).not.toBeInTheDocument();
     await expect(within(nav).queryByRole("link", { name: /private/i })).not.toBeInTheDocument();
-    await expect(within(nav).getByTestId("locked-issue-chip")).toBeVisible();
+    await expect(within(nav).getByTestId("locked-issue-chip")).toHaveTextContent(/^Private$/);
+    await expect(nav).not.toHaveTextContent("PAP-120");
     await expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
   },
 };

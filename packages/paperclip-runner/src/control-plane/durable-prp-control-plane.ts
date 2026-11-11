@@ -84,6 +84,15 @@ export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
   return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
 }
 
+/** The Runner journaled this command before its effect, then died. It sends
+ * that `indeterminate` entry as `failed` with `execution_indeterminate`, never
+ * executes it again, and still treats a lifecycle command as terminal. */
+function isIndeterminateCommandResult(command: DurableRecoveryCoreCommand): boolean {
+  if (command.status === "indeterminate") return true;
+  const detail = command.result?.result;
+  return command.status === "failed" && isRecord(detail) && detail.code === "execution_indeterminate";
+}
+
 const commandTypes = new Set([
   "run.prepare",
   "run.attach",
@@ -1644,6 +1653,8 @@ class DurableCoreStore {
   #writeRevision = 0;
   #externallyPersisted = false;
   revision = 0;
+  /** Called after the stored state is replaced or saved. */
+  onChange: (() => void) | null = null;
   #pendingEvent: {
     buildCandidate: (state: StoredCoreState) => StoredCoreState | null;
     isCurrentOwner: () => boolean;
@@ -1705,6 +1716,7 @@ class DurableCoreStore {
     this.#state.checkpointEventPolicy = "control-v1";
     this.#externallyPersisted = true;
     this.revision += 1;
+    this.onChange?.();
   }
 
   save(): void {
@@ -1723,6 +1735,7 @@ class DurableCoreStore {
       this.#state = candidate;
       if (pending && withEvent) pending.committed = true;
       this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       this.#writeIndeterminate = true;
       throw error;
@@ -1748,6 +1761,7 @@ class DurableCoreStore {
         this.#state = candidate;
         ++this.#writeRevision;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
         return true;
       }
       await withStagedPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`, (temporary) => {
@@ -1759,6 +1773,7 @@ class DurableCoreStore {
         ++this.#writeRevision;
         pending.committed = true;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
       });
       // Explicit authority commits do not absorb pending events. On conflict,
       // leave the event unacknowledged for replay instead of rewriting in a loop.
@@ -1792,6 +1807,7 @@ class DurableCoreStore {
       }
       this.#state = candidate;
       if (checkpointRequired) this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
@@ -2082,6 +2098,7 @@ export class DurablePrpControlPlane {
   #persistenceTail = Promise.resolve();
   #sendQueues = new Map<AuthorityConnection, Promise<void>>();
   #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
+  #readableStateListeners = new Set<() => void>();
 
   constructor(options: DurablePrpControlPlaneOptions) {
     if (
@@ -2102,6 +2119,7 @@ export class DurablePrpControlPlane {
       options.stateDirectory,
       options.identity,
     );
+    this.#store.onChange = () => this.#readableStateChanged();
     if (this.#store.state.checkpointEventPolicy === "control-v1") {
       this.#recoveredCursor = { runId: options.identity.runId, sourceSeq: this.#store.state.ackedSourceSeq };
     }
@@ -2132,6 +2150,31 @@ export class DurablePrpControlPlane {
 
   get store(): DurablePrpControlPlaneStore {
     return this.#publishedStore ?? this.#store;
+  }
+
+  /**
+   * Tell a reader of `store` that what it can see may have changed: an event
+   * or command was committed, or a saved checkpoint released the events that
+   * were waiting for it. This is a hint, and it can arrive partway through the
+   * change, so the reader must look at the state in a later task. Returns the
+   * function that removes the listener.
+   */
+  onReadableStateChange(listener: () => void): () => void {
+    this.#readableStateListeners.add(listener);
+    return () => {
+      this.#readableStateListeners.delete(listener);
+    };
+  }
+
+  #readableStateChanged(): void {
+    for (const listener of this.#readableStateListeners) {
+      // A reader can never fail the commit that woke it.
+      try {
+        listener();
+      } catch {
+        // The reader owns its own failure handling.
+      }
+    }
   }
 
   #capturePublishedState(snapshot: DurablePrpCheckpoint): StoredCoreState {
@@ -2218,6 +2261,7 @@ export class DurablePrpControlPlane {
         this.#publishedState = published;
         this.#persistedRevision = revision;
         this.#checkpointPersistenceFailed = false;
+        this.#readableStateChanged();
       } catch (error) {
         this.#checkpointPersistenceFailed = true;
         throw error;
@@ -3786,6 +3830,7 @@ export class DurablePrpControlPlane {
       const cursor = Math.max(this.#store.state.ackedSourceSeq, pending.acknowledgedSourceSeq);
       this.#store.state.ackedSourceSeq = cursor;
       this.#recoveredCursor = { runId: this.#identity.runId, sourceSeq: cursor };
+      this.#readableStateChanged();
     }
     connection.pendingChallenge = null;
     connection.lease = lease;
@@ -4102,7 +4147,8 @@ export class DurablePrpControlPlane {
    * A rejected runner.suspend changes no provider state, and the runner keeps
    * serving this connection. Lift the terminal-lifecycle fence it installed
    * so the controller's next command (a fresh suspend) can be delivered.
-   * Completed suspensions and every shutdown keep the fence.
+   * Completed suspensions and every shutdown keep the fence. So does an
+   * indeterminate suspension: the Runner treats it as terminal and exits.
    */
   #releaseServingLifecycle(
     connection: AuthorityConnection,
@@ -4111,6 +4157,7 @@ export class DurablePrpControlPlane {
     if (
       command.type === "runner.suspend" &&
       (command.status === "failed" || command.status === "rejected") &&
+      !isIndeterminateCommandResult(command) &&
       connection.terminalLifecycleCommandId === command.commandId
     ) {
       connection.terminalLifecycleCommandId = null;
@@ -4159,7 +4206,11 @@ export class DurablePrpControlPlane {
           commandId: command.commandId,
           commandType: command.type,
           controllerSeq: command.controllerSeq,
-          status: command.status,
+          // A Runner journals a command it may have started before dying as
+          // `indeterminate` and sends it as `failed`. Runners compare this
+          // acknowledgement with their journal, so name that journal status;
+          // current Runners accept either spelling.
+          status: isIndeterminateCommandResult(command) ? "indeterminate" : command.status,
         },
       ),
     );

@@ -658,6 +658,20 @@ for file storage before <step>; it was still unavailable." Its payload holds
 `reason: "storage_outage_wait"`, `purpose` (the step), `waitedMs`, and
 `recovered`. The record stays in the instance run log.
 
+When the outage outlasts that wait, the run fails. Only a run recorded with
+`errorCode: "storage_unavailable"` gets a storage wait: a bounded retry
+(`retryReason: "storage_unavailable_wait"`) that starts again after storage is
+back. Its error says "Paperclip will retry automatically when storage is back"
+only while that retry is scheduled. When the retry budget is spent, the error
+says so and asks for Retry. When no storage wait follows, the error says
+"Paperclip is not retrying it automatically. Retry or send a message to
+continue." That happens when a native recovery already holds the run under
+another code (for example `native_continuation_requires_reconciliation`, where
+its files are kept and its unfinished turn is not replayed), or when the retry
+is refused or cannot be written. A run saved by an earlier release with the
+retry promise under another code reads with the same Retry text, with no
+migration.
+
 ## Durable storage timing
 
 A saved remote workspace is one encrypted archive in durable object storage.
@@ -848,7 +862,11 @@ or its owner changed, the existing cancellation settlement records
 `continuation_task_ownership_changed`. The run and wake request become cancelled
 before adapter dispatch, with the run-log message
 `stale execution continuation cancelled before dispatch`. Immediate recovery is
-suppressed. Missing source context, authorization failures, and other setup
+suppressed. A comment the cancelled run carried that no run read is saved
+first when an agent run closed the task: a person's comment, or another agent's
+comment posted with `resume: true`. The release then reopens the task and
+delivers that comment once. Another agent's comment without `resume: true`
+stays communicative and does not reopen the task. Missing source context, authorization failures, and other setup
 errors retain their failure classification. An untyped error with the same
 message is also still a failure; cancellation requires the typed ownership guard.
 
@@ -935,6 +953,28 @@ The message distinguishes an automatic retry from work that is no longer eligibl
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
+
+## Agent directory waits
+
+A run whose instruction preparation finds another run of the same agent using
+its files writes one informational `lifecycle` event to the local run log, with
+`stream: "system"`. It records no file contents, paths or credentials, and
+creates no Telemetry or OpenTelemetry export.
+
+- A resumed native run that stays on its own run writes the message "Another
+  run of this agent is still using its files; this run continues when it
+  finishes". Its payload has exactly two fields: `retryReasonCode`, always
+  `agent_directory_operation_busy`, and `nextAttemptAt`, the ISO time when the
+  same run is scheduled to try again.
+- A run that has not yet started native execution is cancelled with error code
+  `agent_directory_busy` and writes "Another run of this agent is still using
+  its files. This task will continue automatically." when an
+  `agent_directory_busy` retry was scheduled, or "Another run of this agent is
+  still using its files, and this task could not be rescheduled." when it was
+  not. Its payload contains only `retryScheduled`, a boolean.
+
+Neither wait consumes the provider-failure retry allowance. Each stops after 30
+deferrals, after which the run follows the normal failure path.
 
 ## Managed Agent File Save Receipts
 

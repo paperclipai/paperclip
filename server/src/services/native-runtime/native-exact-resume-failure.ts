@@ -16,7 +16,7 @@ const FAILURE_DETAIL_MAX_CHARS = 2_000;
 const REFUSAL_MAX_CHARS = 480;
 const REFUSAL_SEPARATOR = "; exact checkpoint resume refused: ";
 /** Restart-recovery waits that keep the interrupted provider attempt. */
-const RECOVERY_WAIT_DISPOSITIONS: ReadonlySet<unknown> = new Set(["blocked", "awaiting_evidence"]);
+const RECOVERY_WAIT_DISPOSITIONS: ReadonlySet<unknown> = new Set(["blocked", "awaiting_evidence", "same_run_resume"]);
 
 /**
  * Cuts to at most `max` UTF-16 code units without splitting a surrogate pair.

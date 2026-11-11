@@ -418,6 +418,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "gateways-profiles.rotate-token",
     "expectedOutcome"
+  ],
+  [
+    "tasks.share-private-task",
+    "originalQuery"
   ]
 ]);
   for (const change of repair.changedFields) {

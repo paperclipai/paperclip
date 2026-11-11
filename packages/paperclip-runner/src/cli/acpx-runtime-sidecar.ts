@@ -72,7 +72,7 @@ import {
   frameAcpxToolClassification,
   parseAcpxSidecarRequest,
   record,
-  sanitizeAcpxPlanEntries,
+  acpxPlanSnapshot,
   stringifyAcpxSidecarFrame,
   text,
   type AcpxExpectedSessionIdentity,
@@ -114,6 +114,7 @@ import {
 } from "./acpx-sidecar-lifecycle.js";
 
 import { AcpxTurnControlLedger, parseAcpxTurnControl } from "../drivers/acpx/turn-controls.js";
+import { createAcpxTurnDispatchJournal } from "../drivers/acpx/turn-dispatch-journal.js";
 
 const turnControls = new AcpxTurnControlLedger();
 const MAX_PENDING_TOOLS = 512;
@@ -488,6 +489,8 @@ async function dispatch(
         onPermissionRequest: (providerRequest, context) =>
           waitForPermission(currentTurnId, activeAgent, providerRequest, context, toolEvidence),
         onTerminalSessionFailure: (failure) => { sessionFailure.value = failure; },
+        // Lets a Runner that lost this request prove whether the prompt left.
+        dispatchJournal: createAcpxTurnDispatchJournal(openParams!.runtimeDirectory, currentTurnId),
       });
     } catch (error) {
       turnId = null;
@@ -1205,12 +1208,8 @@ function boundRuntimeEventForNormalization(
 
 function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & KimiProjectedMessageEvent<AcpRuntimeEvent>): Record<string, unknown> {
   const runtimeType = text(record(event).type);
-  if (runtimeType === "plan") {
-    return {
-      type: "plan",
-      entries: sanitizeAcpxPlanEntries(record(event).entries),
-    };
-  }
+  const planEntries = acpxPlanSnapshot(event);
+  if (planEntries) return { type: "plan", entries: planEntries };
   const statusNotice = claudeStatusBannerNotice(event);
   if (statusNotice) return statusNotice;
   if (event.type === "text_delta") {

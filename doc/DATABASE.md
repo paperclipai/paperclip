@@ -1,5 +1,28 @@
 # Database
 
+### Better Auth 1.7.16 upgrade
+
+Better Auth 1.7.3 and later identify accounts by `provider_id` and `account_id`.
+They no longer write the `issuer` column that 1.7.0–1.7.2 required. Apply the
+schema migration before starting the updated server. It makes `issuer` nullable,
+keeps its existing values, removes the old issuer index, and adds a unique index
+on the provider/account pair. This permits new credential signups and preserves
+existing accounts.
+
+Before the upgrade, check for duplicate provider/account pairs:
+
+```sql
+SELECT provider_id, account_id, count(*)
+FROM account
+GROUP BY provider_id, account_id
+HAVING count(*) > 1;
+```
+
+Resolve any duplicates before migration. Keep different users separate. A duplicate
+causes index creation to fail rather than leaving an ambiguous login identity.
+Do not restore the issuer `NOT NULL` constraint on rollback while new rows have
+null issuers. See the [Better Auth upgrade guide](https://better-auth.com/docs/guides/1-7-upgrade-guide).
+
 ### Durable native provider backups
 
 `native_harness_backups` journals encrypted provider-session archives in object
@@ -573,6 +596,15 @@ run bindings. When both bindings name the same task, the batch reads its current
 authority once. Different task bindings must both pass. The batch is discarded
 after that delivery; later events still recheck grants, membership, task
 existence, and company boundaries.
+
+Task routes that filter several rows for one actor (summaries, lists, blockers,
+relation edges, and the chat bootstrap) use one fresh authorization batch per
+call. The batch reads the task rows and applies the task-privacy predicate to
+all of them in one statement. It reads membership, agent, and run policy once.
+The number of statements does not grow with the number of tasks. The boundary
+checks of a low-trust agent (ancestry and mention grants) stay per task and run
+at most eight at a time. The batch is discarded after the call; the next
+request reads current grants, membership, and privacy again.
 
 Browser progress events update cached live run status directly. A successful
 patch does not refetch task details, activity, or run history. Unknown runs
@@ -2262,6 +2294,19 @@ named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
 
+An issue list or inbox request reads the waits of all its tasks in one pass.
+That pass checks the requester provenance of every waiting run with
+`chatRunSourceMessageIds`. The runs that need the same kind of provenance read
+share one statement, so the statement count follows the longest requester
+lineage, not the number of waits. Each run gets the decision of a separate
+`chatRunSourceMessageId` call: both use the same walk and the same reads. The
+benchmark counts the statements of one request and measures its wall and CPU
+time against a pre-fix commit:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-review-wait-provenance.ts --baseline-ref=<pre-fix commit>
+```
+
 
 ### Sandbox creation ownership
 
@@ -2360,3 +2405,22 @@ but those values no longer select the active workspace. API reads derive
 retain the existing account and company-audit checks. Replaying the migration
 preserves explicit Classic choices. Agent Chat ignores its retired stored flag
 without rewriting instance settings. No task, agent, or execution state changes.
+
+## Project environment rolling compatibility
+
+New projects select repository storage rather than a persistent run environment.
+The nullable `projects.environment_id` column remains a database compatibility
+field for older servers; the current project API omits it and does not use it
+for placement.
+
+When migrations `0466_drop_project_environment.sql` and
+`0467_fair_human_torch.sql` are both pending, the canonical migration runner
+qualifies their exact SQL hashes and applies them in one transaction. It locks
+`projects`, saves every nonnull legacy environment value, executes both published
+migrations and records both genuine ledger entries, then restores those values
+before commit. Old readers and writers wait for the table lock and continue
+against the retained column. Any failure rolls back the DDL, values and receipts.
+If `0466` was already committed, `0467` adds the nullable column and its original
+`ON DELETE SET NULL` foreign key normally; it cannot recover values previously
+removed by that committed migration. Deployments that pre-stage this pair must
+use this migration runner rather than execute the SQL files independently.

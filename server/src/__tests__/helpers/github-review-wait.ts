@@ -5,14 +5,19 @@ import { agents, chatActions, chatConversations, chatDeliveries, chatEndpointRes
   runIdentityContexts, toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { defaultGitHubReviewPolicy } from "@paperclipai/shared";
 
-export async function seedGitHubReviewWait(db: Db) {
-  const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+/** Seed one published inherited review wait. With `into`, the wait is added to
+ * an existing company and agent. */
+export async function seedGitHubReviewWait(db: Db, into?: { companyId: string; agentId: string }) {
+  const companyId = into?.companyId ?? randomUUID(), agentId = into?.agentId ?? randomUUID();
+  const issueId = randomUUID(), runId = randomUUID();
   const reviewRunId = randomUUID(), reviewId = randomUUID(), endpointId = randomUUID(), resourceId = randomUUID();
   const conversationId = randomUUID(), commentId = randomUUID(), activeIdentityContextId = randomUUID();
   const applicationId = randomUUID(), connectionId = randomUUID(), publicationId = randomUUID();
   const headSha = "1".repeat(40), repository = "synthetic/repository", repositoryId = "42", pullNumber = 7;
-  await db.insert(companies).values({ id: companyId, name: "Synthetic review", issuePrefix: companyId });
-  await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", adapterType: "process" });
+  if (!into) {
+    await db.insert(companies).values({ id: companyId, name: "Synthetic review", issuePrefix: companyId });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", adapterType: "process" });
+  }
   await db.insert(issues).values({ id: issueId, companyId, title: "Review", assigneeAgentId: agentId });
   await db.insert(heartbeatRuns).values([
     { id: runId, companyId, agentId, nativeIssueId: issueId, responsibleUserId: "operator", activeIdentityContextId },
@@ -21,7 +26,7 @@ export async function seedGitHubReviewWait(db: Db) {
   await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: "operator", body: "Review" });
   await db.insert(runIdentityContexts).values({ id: activeIdentityContextId, companyId, runId, revision: 1,
     responsibleUserId: "operator", messageId: commentId, cause: "test", correlationId: "test", status: "accepted" });
-  await db.insert(toolApplications).values({ id: applicationId, companyId, name: "GitHub", type: "chat" });
+  await db.insert(toolApplications).values({ id: applicationId, companyId, name: into ? `GitHub ${applicationId}` : "GitHub", type: "chat" });
   await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "GitHub",
     uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel", enabled: true, status: "active" });
   await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "github",

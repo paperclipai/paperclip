@@ -3,6 +3,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, readReplaceBeforeReuseMarker } from "./native-runtime/predecessor-retirement.js";
 import {
   REUSABLE_SANDBOX_RESUME_BUDGET_MS,
   retireReplacedReusableSandboxLease,
@@ -1806,6 +1807,7 @@ function createSandboxEnvironmentDriver(
           : null;
 
         let providerLease: PluginEnvironmentLease | null = null;
+        let replacingUnretiredOwner = false;
         let replacementReason:
           | "not_found"
           | "expired"
@@ -1831,7 +1833,17 @@ function createSandboxEnvironmentDriver(
               providerLeaseId: reusableLease.providerLeaseId,
             });
           }
-          try {
+          // A run that could not retire its predecessor's Runner on this
+          // sandbox asked for a fresh one. Replace it under the same safety
+          // rule as a failed resume; otherwise resume it as before.
+          replacingUnretiredOwner = readReplaceBeforeReuseMarker(reusableLease.metadata) !== null
+            && await reusableSandboxReplacementIsSafe({
+              db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+              executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType,
+              cause: new Error(NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE),
+            });
+          if (replacingUnretiredOwner) replacementReason = "resume_failed";
+          else try {
             // One run spends a bounded budget resuming, retries included; the
             // provider's own start deadline (five minutes on Daytona) is not it.
             const configuredResumeTimeoutMs = Math.min(
@@ -2023,6 +2035,7 @@ function createSandboxEnvironmentDriver(
               ? {
                   outcome: "replacement",
                   reason: replacementReason ?? "resume_failed",
+                  ...(replacingUnretiredOwner ? { cause: NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE } : {}),
                 }
               : {
                   outcome: "created",
@@ -3840,10 +3853,11 @@ export function environmentRuntimeService(
       )`,
     )).returning(), { companyId: input.leaseRow.companyId, runId: input.leaseRow.heartbeatRunId ?? undefined });
     if (!claimed) return null;
-    crashPoint("environment.teardown.after_claim_before_destroy");
     const lease = toEnvironmentLeaseSnapshot(claimed);
     const renewal = renewCleanupClaim(lease.id, attemptId, "scoped cleanup ownership renewal failed");
     try {
+      // Kill mode leaves the claim in flight; fail mode (restart chaos only) is a provider destroy that did not finish.
+      crashPoint("environment.teardown.after_claim_before_destroy", { fail: () => new Error("sandbox teardown incomplete: provider destroy did not finish") });
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
       const released = await driver.destroyRunLease({

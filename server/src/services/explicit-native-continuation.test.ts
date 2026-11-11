@@ -26,6 +26,7 @@ import {
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "./adapter-execution-control.js";
 import { CONVERSATION_CONTINUATION_POLICY } from "./conversation-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
@@ -2806,7 +2807,28 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       .toMatchObject({ status: "deferred_issue_execution", runId: null });
   });
 
-  it.each(["message", "queued_message", "task_retry"] as const)("continues a terminal retained result after verified copy-back: %s", async origin => {
+  // A Retry asks for the accepted result, which now has its saved files. It is
+  // applied by preserved-result finalization, never replaced by a new turn.
+  it("holds a Retry of a terminal retained result after verified copy-back until its accepted result is applied", async () => {
+    const f = await recoveredCopybackFixture("task_retry");
+    const [before] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
+    const waits: string[] = [];
+    expect(await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db, onBlocked: reason => { waits.push(reason); } });
+    })).toBeNull();
+    expect(waits).toEqual(["finalizing_saved_result"]);
+    expect(await resumePreservedResultFinalization(db, f.companyId, f.sourceRunId)).toBe(true);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.requestId)))[0])
+      .toMatchObject({ status: "coalesced", runId: f.sourceRunId, payload: { taskRetry: { strategy: "finalize_result" } } });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0])
+      .toMatchObject({ phase: "workspace_finalizing", resultId: f.resultId });
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0]).toEqual(before);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.id} <> ${f.sourceRunId}`))).toEqual([]);
+  });
+
+  it.each(["message", "queued_message"] as const)("continues a terminal retained result after verified copy-back: %s", async origin => {
     const f = await recoveredCopybackFixture(origin);
     const [before] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId));
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));

@@ -23,8 +23,9 @@ import { NativeTrigger, nativeTriggerMarkdown, nativeTriggerShortfall, triggered
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
+import { DiskFullFaultSeam, isDiskFullFault, receiptsForIssue, withDiskFullCheck } from "./disk-full-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
-import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
@@ -38,6 +39,10 @@ import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
 import { TaskObserver, childSpeedTasksInTurn } from "./observer.js";
 import { closeJourneyApps } from "./journey-driver.js";
 import { matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
+import { redeployWave } from "./redeploy.js";
+import { withT1CrossingCheck } from "./workloads.js";
+import { parseRecoveryStepReceipts, withRecoveryStepCheck } from "./recovery-step-faults.js";
+import { captureWaveRunnerLogs } from "./daytona-runner-logs.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
@@ -46,6 +51,7 @@ import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
+import { sessionFaultServerEnvironment } from "./session-faults.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -131,6 +137,14 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
   ensureDaytonaPlugin(timeline);
+  if (plan.options.daytonaSandboxImage) {
+    // Prove the sandbox image's preinstalled pack differs, so every fresh sandbox must upload the controller's.
+    const sandbox = await prepareDaytonaImageArtifacts({ image: plan.options.daytonaSandboxImage, cacheRoot: defaultDaytonaImageCacheRoot(),
+      log: line => console.info(`[daytona-image] ${line}`) });
+    assertProviderPackMismatch(artifacts, sandbox);
+    timeline.add("daytona_pack_mismatch", { controllerImage: image, sandboxImage: sandbox.image,
+      controllerProviderPackDigest: artifacts.providerPackDigest, sandboxProviderPackDigest: sandbox.providerPackDigest });
+  }
   timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
     taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
   return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
@@ -200,7 +214,9 @@ async function main(): Promise<number> {
   const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
   if (crashPoint && plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
-    ...(plan.options.upgradeFrom ?? plan.options.serverFrom ? { upgradeFrom: plan.options.upgradeFrom ?? plan.options.serverFrom } : {}) });
+    ...(plan.options.upgradeFrom ?? plan.options.serverFrom ? { upgradeFrom: plan.options.upgradeFrom ?? plan.options.serverFrom } : {}),
+    // K15: every server of the wave runs under an emulated deploy identity; a replay derives the source wave's ones.
+    ...(redeployWave(plan) ? { redeployWaveId: plan.replayOf?.waveId ?? plan.waveId } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
   // its own batch of tasks; the point is armed once the batch launched and the
   // server kills itself at its nth hit (restarted like K1). Invariants are
@@ -229,6 +245,14 @@ async function main(): Promise<number> {
     timeline.add("db_pressure_stopped", { ...stats });
   };
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
+  // `--k15-overlap-seconds`, `--k15-fresh-home`: the staging deploy shape (redeploy.ts).
+  supervisor.deployShape = { overlap: plan.options.k15Overlap === true, freshHome: plan.options.k15FreshHome === true };
+  // `--fail-recovery-step`: fail the nth hit of one recovery step once, after the wave's first restart fault.
+  const recoveryStepReceipts = path.join(waveDir, "recovery-step-receipts.jsonl");
+  if (plan.options.failRecoveryStep) {
+    supervisor.armRecoveryStepOnFirstFault(plan.options.failRecoveryStep, {
+      controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"), receiptPath: recoveryStepReceipts });
+  }
   if (crashPoint) {
     supervisor.crashPointHoldMs = plan.options.crashPointHoldMs ?? 0;
     supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
@@ -236,6 +260,14 @@ async function main(): Promise<number> {
   }
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
+  let runnerLogTarget: { companyId: string; environmentId: string } | null = null;
+  const captureRunnerLogs = async (label: string) => {
+    if (!runnerLogTarget) return;
+    const capture = await captureWaveRunnerLogs({ apiKey: process.env.DAYTONA_API_KEY!, ...runnerLogTarget,
+      outDir: path.join(waveDir, "daytona-runner"), label, secrets: knownSecretValues() });
+    timeline.add("runner_logs_captured", { label: capture.label, error: capture.error,
+      sandboxes: capture.sandboxes.map(sandbox => `${sandbox.id}:${sandbox.state ?? "?"}${sandbox.file ? ":probed" : ""}${sandbox.error ? `:error=${sandbox.error.slice(0, 120)}` : ""}`) });
+  };
   let interrupted = false;
   const onSignal = (signal: NodeJS.Signals) => { if (!interrupted) { interrupted = true; timeline.add("harness_interrupted", { signal }); } };
   process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal);
@@ -261,6 +293,7 @@ async function main(): Promise<number> {
   let storageAuditor: StorageAuditor | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
   let acpxSidecarSeam: AcpxSidecarSeam | null = null;
+  let diskFullSeam: DiskFullFaultSeam | null = null;
   let speedSection: string | null = null;
   let storageSection: string | null = null;
   let harnessError: unknown;
@@ -323,12 +356,21 @@ async function main(): Promise<number> {
       timeline.add("provider_faults_installed", { realCodex: realCodex.command, codexVersion: realCodex.version,
         rules: plan.tasks.flatMap(task => task.providerFault ? [`${task.taskId}:${describeProviderFault(task.providerFault)}`] : []) });
     }
+    if (plan.tasks.some(task => isDiskFullFault(task.fault))) {
+      // DF1: the server's test-only hook reads this control file at each final workspace save.
+      diskFullSeam = await DiskFullFaultSeam.install({ root: supervisor.paths.temporaryRoot, receiptPath: path.join(waveDir, "disk-full-faults.jsonl") });
+      Object.assign(serverEnvironment, diskFullSeam.serverEnvironment);
+      timeline.add("disk_full_faults_installed", { tasks: plan.tasks.filter(task => isDiskFullFault(task.fault)).map(task => task.taskId) });
+    }
     if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
     if (plan.options.rrStopOn) supervisor.rrStopOn = plan.options.rrStopOn;
+    Object.assign(serverEnvironment, sessionFaultServerEnvironment(plan.options.sessionFaults));
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
-    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
+    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted,
+      // The controller keeps daytonaImage's runnerd and pack; a pack-mismatch wave starts sandboxes from another image.
+      daytonaImage: plan.options.daytonaSandboxImage ?? plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
       daytonaReuseLease: plan.options.daytonaReuseLease,
       daytonaWarm: plan.options.daytonaWarm, daytonaInherit: plan.options.daytonaInherit,
       adapters: [...new Set([...plan.tasks.map(task => task.adapter),
@@ -339,6 +381,11 @@ async function main(): Promise<number> {
       adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
+        // K15 on Daytona: the remote Runner's logs, identity and state while the controller is down (daytona-runner-logs.ts).
+        if (redeployWave(plan)) {
+          runnerLogTarget = { companyId: owned.companyId, environmentId: owned.environmentId };
+          supervisor.redeployEvidence = (faultId, phase) => captureRunnerLogs(`${faultId}-${phase}`);
+        }
       } });
     spendTarget = { api, companyId: lab.companyId };
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
@@ -351,6 +398,7 @@ async function main(): Promise<number> {
     board = serverEnvironment.SERVE_UI === "false" ? null
       : new BoardUi(supervisor.baseUrl, undefined, path.join(waveDir, "ui-retry-diagnostics"));
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots, board));
+    for (const observer of observers) if (isDiskFullFault(observer.plan.fault)) observer.diskFullSeam = diskFullSeam;
     const pending = [...observers];
     const launched: TaskObserver[] = [];
     const active: TaskObserver[] = [];
@@ -623,6 +671,7 @@ async function main(): Promise<number> {
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
     await recordWaveSpend();
     timeline.add("wave_sweep", {});
+    if (runnerLogTarget) await captureRunnerLogs("wave-end");
     if (sweeper) {
       sandboxSweep = await (sweeper as DaytonaWaveSweeper).sweep();
       timeline.add("daytona_sweep", { ...sandboxSweep });
@@ -659,7 +708,18 @@ async function main(): Promise<number> {
       const restart = faults.find(receipt => receipt.requestedBy === observer.plan.taskId && receipt.trigger === "provider");
       const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? [], restart?.startedAt ?? null,
         restart?.stoppedAt ?? restart?.startedAt ?? null);
-      const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle, universalByIssue ? {
+      if (observer.record.diskFull) {
+        observer.record.diskFull.appliedSaves = receiptsForIssue(await diskFullSeam?.receipts() ?? [], observer.record.issueId).length;
+      }
+      // T1: a mid-tool fault only counts when one of the task's faults started while its loop ran (workloads.ts).
+      // DF1 restarts nothing, so T1's mid-tool restart check does not apply; the disk-full check replaces it.
+      const t1Oracle = isDiskFullFault(observer.plan.fault) ? withDiskFullCheck(oracle, observer.plan, observer.record)
+        : withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults);
+      // `--fail-recovery-step`: the step failed in the replacement, and no attempt of the task failed (recovery-step-faults.ts).
+      const armedStep = faults.find(receipt => receipt.recoveryStep);
+      const toolOracle = withRecoveryStepCheck(t1Oracle, armedStep?.recoveryStep ? { faultId: armedStep.faultId, ...armedStep.recoveryStep } : null,
+        observer.record.faultIds, parseRecoveryStepReceipts(await readFile(recoveryStepReceipts, "utf8").catch(() => "")), artifacts?.runs ?? []);
+      const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;
       if (!grade.pass) {

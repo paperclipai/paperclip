@@ -11,8 +11,8 @@ import { restConnectorFor } from "../connectors/rest-registry.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
-import { companySkillVersions, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, desc, eq } from "drizzle-orm";
+import { agentInstructionRevisions, agents, companySkillVersions, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import {
@@ -197,6 +197,51 @@ async function materializeSkillAsset(source: string) {
       if (await verifyFileManifest(source, manifest)) rememberSkillAsset(source, manifest, bundle);
     }
     return bundle;
+}
+
+async function localRuntimeAssetPresent(asset: NativeRuntimeAssetReference) {
+  const root = path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets");
+  const manifest = await fs.readFile(path.join(root, "manifests", `${asset.digest}.json`), "utf8").catch(() => null);
+  return manifest !== null && sha256(manifest) === asset.manifestDigest
+    && (await fs.lstat(path.join(root, "bundles", asset.digest)).catch(() => null))?.isDirectory() === true;
+}
+
+function singleFileAssetDigest(entryPath: string, content: Buffer) {
+  return sha256(JSON.stringify([{ path: entryPath, sha256: sha256(content), mode: 0o444, size: content.byteLength }]));
+}
+
+export async function rehydratePinnedInstructionAsset(
+  db: Db,
+  binding: { companyId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+): Promise<NativeRuntimeContextSnapshot> {
+  const pinned = context.instructions.bundle;
+  if (pinned.rootPath !== path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets", "bundles", pinned.digest)) return context;
+  if (await localRuntimeAssetPresent(pinned)) return context;
+  const matches = (bundle: NativeRuntimeAssetReference) => bundle.digest === pinned.digest
+    && bundle.manifestDigest === pinned.manifestDigest && bundle.fileCount === pinned.fileCount && bundle.totalBytes === pinned.totalBytes;
+  if (pinned.fileCount === 1) {
+    const rows = await db.select({ contentBase64: agentInstructionRevisions.contentBase64 }).from(agentInstructionRevisions)
+      .where(and(eq(agentInstructionRevisions.companyId, binding.companyId), eq(agentInstructionRevisions.agentId, binding.agentId),
+        eq(agentInstructionRevisions.entryFile, context.instructions.entryPath)))
+      .orderBy(desc(agentInstructionRevisions.createdAt)).limit(500);
+    for (const row of rows) {
+      const content = Buffer.from(row.contentBase64, "base64");
+      if (singleFileAssetDigest(context.instructions.entryPath, content) !== pinned.digest) continue;
+      const bundle = await materializeAsset([{ path: context.instructions.entryPath, content, mode: 0o444 }]);
+      if (matches(bundle)) return { ...context, instructions: { ...context.instructions, bundle } };
+    }
+  }
+  const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, binding.companyId), eq(agents.id, binding.agentId)));
+  if (agent) {
+    for (const agentFiles of [true, false]) {
+      const rebuilt = await materializeInstructionBundle(db, agent, agentFiles).catch(() => null);
+      if (rebuilt && rebuilt.entryPath === context.instructions.entryPath && matches(rebuilt.bundle)) {
+        return { ...context, instructions: { ...context.instructions, bundle: rebuilt.bundle } };
+      }
+    }
+  }
+  return context;
 }
 
 export async function rehydratePinnedSkillAssets(

@@ -10,6 +10,7 @@
  * share the server with a fault cell (`matrixMayLaunch`).
  */
 import path from "node:path";
+import { k15HoldMs } from "./redeploy.js";
 import { WORKLOAD_TRIGGERS } from "./journeys.js";
 import { withProviderFaultRules } from "./provider-faults.js";
 import { createRng, k4HoldRange, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
@@ -43,7 +44,7 @@ export function matrixMayLaunch(next: Pick<TaskPlan, "fault">, inFlight: Readonl
   return inFlight.every(task => (task.fault === "K0") === baseline);
 }
 
-export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" | "adapters" | "faults" | "providerFaults" | "k4HoldMaxMs" | "faultAfterMs" | "rrGapMs">): TaskPlan[] {
+export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" | "adapters" | "faults" | "providerFaults" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "rrGapMs">): TaskPlan[] {
   const rng = createRng((options.seed ^ 0x6a6d7478) >>> 0);
   return matrixCells(options).map((cell, index) => {
     const definition = workloadDefinitions[cell.workload];
@@ -58,8 +59,10 @@ export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" 
       ...(cell.trigger === "time" ? {} : { trigger: cell.trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[cell.trigger]) }),
       // `--fault-after-seconds` pins time-fired restarts, as it does outside the matrix.
       fireAfterMs: cell.fault === "K0" || cell.fault.startsWith("PV") ? 0 : cell.trigger === "time" ? options.faultAfterMs ?? drawn : drawn,
-      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int)
-        : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int) : 0,
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs))
+        : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
+        : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
+        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
       ...(isRepeatedRestartFault(cell.fault) ? { restartSteps: planRestartSteps(cell.fault, rng.int, options.rrGapMs) } : {}),
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),
@@ -74,6 +77,8 @@ export function applyJourneyOptions(options: WaveOptions, input: { matrix: boole
     if (input.tasksGiven) throw new Error("--matrix runs one task per cell; do not pass --tasks");
     if (input.triggersGiven) throw new Error("--matrix uses each workload's own triggers; do not pass --triggers");
     if (options.faults.includes("K14")) throw new Error("--matrix does not cross K14 (an upgrade happens once per wave)");
+    // The matrix crosses restart and provider faults only; SR1 would silently run as its K0 baseline.
+    if (options.sessionFaults?.length) throw new Error("--matrix does not cross session faults (SR*); run SR1 as its own wave");
     options.matrix = true;
     options.tasks = matrixCells(options).length;
   }
