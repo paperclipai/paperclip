@@ -24,6 +24,11 @@ export class ChatRuntime {
     return [...this.endpoints.values()];
   }
 
+  /** Exact normal retirement ownership, never inferred from get() absence. */
+  isRetiringEndpoint(endpointId: string, expected: object): boolean {
+    return !this.endpoints.has(endpointId) && this.retiringEndpoints.get(endpointId) === expected;
+  }
+
   /** Retirement failures retain their owner even after get/list hide it. */
   hasUnsettledLifecycle(): boolean {
     return this.retiringEndpoints.size > 0 || this.constructionCleanup.has() || this.lifecycleTails.size > 0;

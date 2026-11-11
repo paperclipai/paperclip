@@ -342,6 +342,53 @@ describe("Photon durable event recovery", () => {
     }
   });
 
+  it("accepts retired-local responsibility only after the same close joins every owned resource", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const f = photonFixture(), source = new Error("controlled stopped intake"), lostClose = new Error("controlled close reply lost");
+    let reported!: () => void, releaseLive!: () => void, releaseClose!: () => void;
+    const report = new Promise<void>(resolve => { reported = resolve; });
+    const live = new Promise<void>(resolve => { releaseLive = resolve; });
+    const closeGate = new Promise<void>(resolve => { releaseClose = resolve; });
+    const closes: Array<ReturnType<typeof vi.fn>> = [];
+    for (const resource of [f.client.messages, f.client.chats, f.client.groups, f.client.polls]) {
+      const close = vi.fn(async () => { await closeGate; releaseLive(); }); closes.push(close);
+      resource.subscribeEvents.mockImplementation(() => new TypedEventStream((async function* () { await live; })(), close));
+    }
+    const failure = vi.fn<(error: unknown, cleanup?: { localClosed: true }) => Promise<{ kind: "recorded" | "retired-local" }>>(async (error, cleanup) => {
+      expect(error).toBe(source); reported();
+      return { kind: "retired-local" as const };
+    });
+    const catchUp = vi.fn(() => new TypedEventStream((async function* () { throw source; })()));
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit: guard, failure, catchUp });
+    try {
+      receiver.start(); await report; await new Promise<void>(resolve => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure).toHaveBeenCalledTimes(2); // A retirement receipt is not current reporting authority.
+      expect(failure.mock.calls.every(([, cleanup]) => cleanup === undefined)).toBe(true);
+      f.client.close.mockRejectedValueOnce(lostClose);
+      const firstClose = receiver.close();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(failure).toHaveBeenCalledTimes(2); // Held streams still own their consumers.
+      releaseClose();
+      await expect(firstClose).rejects.toThrow("shutdown remains unconfirmed");
+      expect(failure.mock.calls.every(([, cleanup]) => cleanup === undefined)).toBe(true);
+      const retry = receiver.close(); expect(receiver.close()).toBe(retry); await retry;
+      expect(failure.mock.calls.at(-1)).toEqual([source, { localClosed: true }]);
+      expect(closes.every(close => close.mock.calls.length > 0)).toBe(true);
+      expect(f.client.close).toHaveBeenCalledTimes(2);
+      expect(catchUp).toHaveBeenCalledTimes(1);
+      expect(await f.state.read("checkpoint")).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      releaseClose(); releaseLive();
+      // Unit cleanup records responsibility explicitly; the SQL control below
+      // uses only the actual normal owner callback, never this controlled port.
+      failure.mockImplementation(async () => ({ kind: "recorded" as const }));
+      try { await receiver.close(); } finally { vi.useRealTimers(); }
+    }
+  });
+
   it("initial obsolete failure receipt cannot certify stopped responsibility", async () => {
     const f = photonFixture(); let attempted!: () => void, releaseLive!: () => void;
     const reported = new Promise<void>(resolve => { attempted = resolve; });

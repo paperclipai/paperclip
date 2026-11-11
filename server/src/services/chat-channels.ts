@@ -909,7 +909,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { stageReceiptReaction, addReceiptReaction, processReceiptReaction, processPendingReceiptReactions } = createReceiptReactions(db, { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, runtimeFor, fetchImpl, runtime, runtimeGeneration, credentialFingerprint, redactError, MAX_ERROR_TEXT, receiptReactionTransportBarrier: () => options.receiptReactionTransportBarrier?.() ?? Promise.resolve() });
   const { admitDiscordRootMention, discordRootThreadPending, reconcileDiscordRootThread, promoteDiscordRootReceipt } = createDiscordRootThreads(db, { ensureDiscordGatewayRuntimeIsCurrent, withCredentialMutationLease, runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization, processMessage, redactError, scheduleConversationDrain, lifecycleRuntimeFence, runtimeFor, DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS, discordRootThreadTransportBarrier: () => options.discordRootThreadTransportBarrier?.() ?? Promise.resolve() });
   const { handleDiscordGatewayEvent } = createDiscordGatewayEvents(db, { ensureDiscordGatewayRuntimeIsCurrent, discordGatewayRuntimeIsCurrent, runtimeCallbackRecord, runtimeCallbackEndpoint, applyProviderLifecycleEffect, runtimeGeneration, discordGatewayEventBarrier: (event) => options.discordGatewayEventBarrier?.(event) ?? Promise.resolve() });
-  const { handlePhotonFailure, handlePhotonEvent } = createPhotonEvents(db, { runtimeCallbackRecord, runtimeCallbackEndpoint, invalidateRuntime, ensurePrincipal, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications, questionResponses, redactError, renewDiscordGatewayOwnershipForMessageAdmission, handleSdkMessage });
+  const { handlePhotonFailure, handlePhotonEvent, retiredLocalFailure } = createPhotonEvents(db, { runtimeCallbackRecord, runtimeCallbackEndpoint, invalidateRuntime, ownsRetiringRuntime: (id, context) => context.endpointRuntime !== undefined && runtimeContexts.get(context.endpointRuntime) === context && runtime.isRetiringEndpoint(id, context.endpointRuntime), ensurePrincipal, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications, questionResponses, redactError, renewDiscordGatewayOwnershipForMessageAdmission, handleSdkMessage });
   const photonConnectorConfig = paperclipCloudConnectorConfigFromEnv();
   const photonConnector = photonConnectorConfig ? createPaperclipCloudConnector({ config: photonConnectorConfig }) : undefined;
   const photonExternalRuntimeOwner = createPhotonExternalRuntimeOwner(db, {
@@ -1123,7 +1123,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 return external ? { kind: "cloud", bindingId: external.binding.bindingId } : { kind: "local" };
               },
               onPhotonEvent: (event) => handlePhotonEvent(endpoint.id, event, context),
-              onPhotonFailure: async error => {
+              onPhotonFailure: async (error, cleanup) => {
+                if (cleanup?.localClosed) {
+                  const retired = await retiredLocalFailure(record.endpoint, context, photonConstructionAllocation === null);
+                  if (retired.kind === "retired-local") return retired;
+                }
                 const result = await handlePhotonFailure(endpoint.id, error, context);
                 return result?.kind === "recorded" ? result : photonExternalRuntimeOwner.cleanupFailure(endpoint.id, context);
               },
@@ -3531,7 +3535,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const record = await endpointRecord(endpointId);
       if (record?.endpoint.provider !== "imessage-photon") return "unhandled";
       await photonExternalRuntimeOwner.retire(endpointId, authority);
-      // Also joins local-only/retired-registry resources and their short lease.
+      // Explicit removal must propagate the original close failure before any
+      // credential cleanup. Lease-loss invalidation logs that failure, so join
+      // the existing normal registry first and release its short lease after.
+      await runtime.removeEndpoint(endpointId);
       await invalidateRuntime(endpointId);
       return "settled";
     },

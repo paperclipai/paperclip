@@ -506,6 +506,74 @@ describe("iMessage Photon channel control plane", () => {
     }
   }, 30_000);
 
+  it("settles failed local reporting through authorized pause and repeated removal without new intake", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const t = await setup(); await t.start(); await t.qualify();
+    const source = new PhotonError("network", "controlled local retirement interruption");
+    const persistence = new Error("controlled real local failure-write rollback"), lostClose = new Error("controlled stream-close reply lost");
+    const transaction = db.transaction.bind(db), replay = vi.mocked(PhotonChatAdapter.prototype.recoveryStream);
+    let armed = false, rollbacks = 0, primary: unknown;
+    db.transaction = (work, ...args) => transaction(async tx => {
+      const result = await work(tx);
+      if (armed && result && typeof result === "object" && "kind" in result && result.kind === "recorded") {
+        const [endpoint] = await tx.select({ status: chatEndpoints.status, healthMessage: chatEndpoints.healthMessage })
+          .from(chatEndpoints).where(and(eq(chatEndpoints.companyId, t.companyId), eq(chatEndpoints.id, t.endpoint.id)));
+        if (endpoint?.status === "attention" && endpoint.healthMessage === source.message) { armed = false; throw persistence; }
+      }
+      return result;
+    }, ...args).catch(error => { if (error === persistence) rollbacks++; throw error; });
+    const failIntake = async (expected: number) => {
+      armed = true;
+      replay.mockImplementationOnce(() => new TypedEventStream((async function* () { throw source; })()));
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(rollbacks).toBe(expected), { timeout: 5000 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    };
+    try {
+      const [before] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      const deliveries = await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id));
+      const conversations = await t.service.listConversations(t.endpoint.id), reads = replay.mock.calls.length;
+      await failIntake(1);
+      let pauseFailure: unknown;
+      try { await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId); } catch (error) { pauseFailure = error; }
+      expect(pauseFailure, "the exact durably paused local owner must settle its already-joined reporting debt").toBeUndefined();
+      expect(t.service.runtime.hasUnsettledLifecycle()).toBe(false);
+      expect(replay).toHaveBeenCalledTimes(reads + 1);
+      const [paused] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(paused).toMatchObject({ enabled: false, status: "disabled", credentialSecretRefs: before.credentialSecretRefs });
+      // Only ordinary authorized resume creates the next local owner.
+      await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId);
+      await failIntake(2);
+      const owned = t.f.client.messages.subscribeEvents.mock.results.at(-1)?.value;
+      if (!owned) throw new Error("normal local subscription missing");
+      const close = owned.close.bind(owned);
+      vi.spyOn(owned, "close").mockImplementationOnce(async () => { await close(); throw lostClose; });
+      await expect(t.service.configure(t.endpoint.id, { action: "remove" }, t.userId)).rejects.toThrow(/shutdown|retirement|close/i);
+      const [held] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(held).toMatchObject({ status: "archived", enabled: false, credentialSecretRefs: before.credentialSecretRefs });
+      expect((await t.service.get(t.endpoint.id)).status).toBe("archived");
+      expect(t.service.runtime.hasUnsettledLifecycle()).toBe(true);
+      const readsBeforeRetry = replay.mock.calls.length;
+      await t.service.configure(t.endpoint.id, { action: "remove" }, t.userId);
+      expect(t.service.runtime.hasUnsettledLifecycle()).toBe(false);
+      const [removed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(removed.credentialSecretRefs).toEqual([]);
+      expect(replay).toHaveBeenCalledTimes(readsBeforeRetry);
+      expect(await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id))).toEqual(deliveries);
+      expect((await t.service.listConversations(t.endpoint.id)).map(row => row.id)).toEqual(conversations.map(row => row.id));
+    } catch (error) { primary = error; throw error; }
+    finally {
+      db.transaction = transaction; vi.useRealTimers();
+      try { await t.service.shutdown(); }
+      catch (cleanup) {
+        // Old product retains this same real lifecycle debt after physical
+        // joins. Preserve normal teardown rejection; never fake a receipt or
+        // reset the registry, active status, credentials, or generation.
+        throw new AggregateError([...(primary ? [primary] : []), cleanup], "Photon local retirement causal failure with retained normal cleanup debt");
+      }
+    }
+  }, 30_000);
+
   it("recovers a Photon transport loss through the receiver worker and cancels fatal recovery", async () => {
     const t = await setup();
     const onError = vi.fn();

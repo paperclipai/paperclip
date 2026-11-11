@@ -12,6 +12,8 @@ export function registerDeadlineWork(
     canRun: () => boolean;
     retryMs: number;
     onSettled?: (hints?: ReadonlySet<string>) => void;
+    /** SQL-free cancellation of pending joins while this owner cannot dispatch. */
+    onBlocked?: () => void;
     continuationMs?: number;
     // Optional batching latency for notifications; already-known deadlines still preempt it.
     notificationCoalesceMs?: number;
@@ -19,6 +21,11 @@ export function registerDeadlineWork(
     minimumSpacingMs?: number;
   },
 ) {
+  function canRun() {
+    const allowed = task.canRun();
+    if (!allowed) { try { task.onBlocked?.(); } catch { /* this hint cannot change the gate */ } }
+    return allowed;
+  }
   const ownerRevision = randomUUID();
   let revision = 0, running = false, stopped = false;
   let requested = 1, reconciled = 0;
@@ -29,11 +36,12 @@ export function registerDeadlineWork(
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
     onStop: () => { stopped = true; revision++; },
+    onDispatchBlocked: task.onBlocked,
     onSettled: hints => { revision++; requested++; task.onSettled?.(hints); },
     run: async signal => {
       revision++; running = true;
       try {
-        if (!task.canRun()) { requested++; return; }
+        if (!canRun()) { requested++; return; }
         if (Date.now() < earliest) { next = earliest; return; }
         if (Date.now() < coalesceUntil && (next === null || next > Date.now())) {
           next = next === null ? coalesceUntil : Math.min(next, coalesceUntil);
@@ -43,10 +51,10 @@ export function registerDeadlineWork(
         const startedAt = Date.now();
         earliest = startedAt + Math.max(task.retryMs, task.minimumSpacingMs ?? 0);
         await task.run(signal);
-        if (signal.aborted || !task.canRun()) { next = null; return; }
+        if (signal.aborted || !canRun()) { next = null; return; }
         const deadline = await task.next();
 
-        if (!task.canRun()) { next = null; return; }
+        if (!canRun()) { next = null; return; }
         earliest = deadline === null || deadline > Date.now()
           ? (task.minimumSpacingMs ? Date.now() + task.minimumSpacingMs : 0)
           : startedAt + Math.max(task.continuationMs ?? task.retryMs, task.minimumSpacingMs ?? 0);
@@ -58,8 +66,8 @@ export function registerDeadlineWork(
     // A settled producer must release its admission hold during drain. Keep
     // the unreconciled generation and an in-memory resume wake, without asking
     // the domain to probe its database while dispatch is closed.
-    hasPending: async () => task.canRun() && requested !== reconciled,
-    nextRunAt: () => !task.canRun() && requested !== reconciled
+    hasPending: async () => canRun() && requested !== reconciled,
+    nextRunAt: () => !canRun() && requested !== reconciled
       ? Date.now() + task.retryMs
       : next,
   });

@@ -2,7 +2,7 @@ import { isPassiveSlackAction, normalizeSlackSelectionAction, slackSelectionValu
 import { PhotonChatAdapter, parsePhotonThreadId } from "./photon/adapter.js";
 import { PhotonLineAuthentication } from "./photon/cloud.js";
 import { PhotonState } from "./photon/state.js";
-import { PhotonReceiver, type PhotonFailureResponsibility } from "./photon/receiver.js";
+import { PhotonReceiver, type PhotonFailureResponsibility, type PhotonFailureCleanup } from "./photon/receiver.js";
 import { photonAttachmentLocator, photonAttachmentLocatorSchema, downloadPhotonAttachment, type PhotonAttachmentLocator } from "./photon/attachments.js";
 import type { LiveEvent as PhotonEvent } from "@photon-ai/advanced-imessage";
 import {
@@ -478,7 +478,7 @@ export interface ChatSdkRuntimeCallbacks {
   onPhotonEvent?(event: PhotonEvent): Promise<void>;
   onPhotonAssertOwned?(activeThreadId?: string): Promise<void>;
   onPhotonCheckpoint?(sequence: number): Promise<void>;
-  onPhotonFailure?(error: unknown): Promise<void | PhotonFailureResponsibility>;
+  onPhotonFailure?(error: unknown, cleanup?: PhotonFailureCleanup): Promise<void | PhotonFailureResponsibility>;
   onMessage(event: ChatSdkMessageCallbackEvent): Promise<void> | void;
   onTelegramGenerationStopped?(
     event: ChatSdkCallbackEvent<TelegramGenerationStoppedProof>,
@@ -3274,6 +3274,11 @@ export class ChatSdkRuntime {
   list(): ChatSdkEndpointRuntime[] {
     if (this.shuttingDown) return [];
     return [...this.endpoints.values()];
+  }
+
+  /** Exact normal retirement ownership, never inferred from get() absence. */
+  isRetiringEndpoint(endpointId: string, expected: object): boolean {
+    return !this.endpoints.has(endpointId) && this.retiringEndpoints.get(endpointId) === expected;
   }
 
   /** Retirement failures retain their owner even after get/list hide it. */

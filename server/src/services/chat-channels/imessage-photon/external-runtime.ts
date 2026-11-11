@@ -1,3 +1,4 @@
+import { joinConnectionEventWakeEnrollment } from "../../connection-event-wake.js";
 import { isDeepStrictEqual } from "node:util";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { logActivity } from "../../activity-log.js";
@@ -230,7 +231,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     if (!retained || !sameAllocation(retained)) return;
     try {
       await createPhotonExternalOwner({ store, broker: options.broker(), resources, notify: value => options.notify(value.endpointId) })
-        .confirmSenderClosed(retained, resourceId);
+        .confirmSenderClosed(retained, resourceId, context.endpointRuntime);
     } catch (primary) {
       // Endpoint/company deletion can cascade the row between read and CAS.
       // Keep errors for the SAME extant allocation; do not poison old cleanup
@@ -278,8 +279,13 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         // Recover BUSINESS authority without constructing/capturing an ignored
         // replacement receiver. The normal finite renewable lease fences old writes.
         const originalResourceId = previous.localResourceId;
-        await options.withReceiverLease(record, lease => createPhotonExternalOwner({ store, broker, resources,
-          notify: value => options.notify(value.endpointId) }).reconcile({ identity, lease, config: optionsConfig, localResourceId: originalResourceId }));
+        await options.withReceiverLease(record, async lease => {
+          const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
+          const input = { identity, lease, config: optionsConfig, localResourceId: originalResourceId };
+          const prepared = await owner.prepare(input);
+          if (prepared.phase === "enrolling") await joinConnectionEventWakeEnrollment(db);
+          return owner.reconcile(input);
+        });
         return;
       }
       let external = await placement(record);
@@ -312,7 +318,10 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       // persistence callbacks still see the exact current object/lease; removing
       // it first would turn cleanup debt into an obsolete-context no-op.
       const resourceId = resources.capture(runtime, async () => { await runtime.shutdown(); });
-      await owner.reconcile({ identity: currentIdentity, lease, config: await options.config(record), localResourceId: resourceId });
+      const input = { identity: currentIdentity, lease, config: await options.config(record), localResourceId: resourceId };
+      const prepared = await owner.prepare(input);
+      if (prepared.phase === "enrolling") await joinConnectionEventWakeEnrollment(db);
+      await owner.reconcile(input);
       await options.removeRuntime(id);
       await options.release(lease);
       context.discordGatewayOwned = false;

@@ -1,6 +1,7 @@
 import { photonResourceProcessEnded } from "../../services/chat-channels/imessage-photon/resource-process.js";
 import type { ProcessProbe } from "../../services/owner-proof.js";
 import { randomUUID } from "node:crypto";
+import { queryObjects } from "node:v8";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { ChatSdkStatePersistence, ChatSdkStateRecord } from "../../services/chat-sdk-state.js";
@@ -359,4 +360,129 @@ describe("Photon distinct useful Runtime allocation (controlled process/resource
       expect(f.requests.filter(request => request.kind === "retire")).toHaveLength(0);
     }
   });
+});
+
+
+describe("Photon retained close callbacks (real GC counts, controlled resource and receipt ports)", () => {
+  const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+  it("releases a joined receiver capture only after the exact closure receipt is accepted", async () => {
+    const f = fixture(), resources = new PhotonLocalResources(); let closes = 0;
+    class CapturedReceiver {
+      readonly controlledCredentials = Buffer.alloc(4096);
+      async close() { closes++; }
+    }
+    expect(queryObjects(CapturedReceiver, { format: "count" })).toBe(0);
+    const id = (() => { const runtime = new CapturedReceiver(); return resources.capture(runtime, () => runtime.close()); })();
+    let release!: () => void, joined!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const reached = new Promise<void>(resolve => { joined = resolve; });
+    const retained = f.store.retained;
+    let holdReceipt = true;
+    f.store.retained = async (expected, update, after) => {
+      if (holdReceipt && expected.phase === "joining") {
+        holdReceipt = false; joined(); await gate;
+      }
+      return retained(expected, update, after);
+    };
+    const owner = f.create(resources);
+    const pending = owner.reconcile({ identity, config, lease: { token: "lease" }, localResourceId: id });
+    let primary: { error: unknown } | undefined;
+    try {
+      await reached; await nextTurn();
+      expect(closes).toBe(1);
+      expect((await f.read())?.localClosureConfirmed).toBeUndefined();
+      expect(queryObjects(CapturedReceiver, { format: "count" }), "a joined resource still owes its durable close receipt").toBe(1);
+    } catch (error) { primary = { error }; }
+    finally { release(); }
+    let accepted: PhotonExternalState;
+    try { accepted = await pending; }
+    catch (error) {
+      if (primary) throw new AggregateError([primary.error, error], "Photon retention control and owned join failed");
+      throw error;
+    }
+    if (primary) throw primary.error;
+    expect(accepted.localClosureConfirmed).toBe(true);
+    await nextTurn();
+    expect(queryObjects(CapturedReceiver, { format: "count" }), "accepted closure must release the captured Runtime").toBe(0);
+    await resources.join(id); expect(closes).toBe(1);
+    await expect(resources.join("unknown")).rejects.toThrow("unknown");
+  });
+
+  it("keeps failed and lost-receipt captures until the same join and accepted readback", async () => {
+    const f = fixture(), resources = new PhotonLocalResources(); let closes = 0, failClose = true, loseReply = true;
+    const physical = new Error("controlled physical close failure"), lost = new Error("controlled accepted close receipt reply loss");
+    class CapturedReceiver {
+      readonly controlledCredentials = Buffer.alloc(4096);
+      async close() { closes++; if (failClose) throw physical; }
+    }
+    const id = (() => { const runtime = new CapturedReceiver(); return resources.capture(runtime, () => runtime.close()); })();
+    const owner = f.create(resources), input = { identity, config, lease: { token: "lease" }, localResourceId: id };
+    const retained = f.store.retained;
+    f.store.retained = async (expected, update, after) => {
+      const accepted = await retained(expected, update, after);
+      if (loseReply && accepted.localClosureConfirmed === true && expected.localClosureConfirmed !== true) {
+        loseReply = false; throw lost;
+      }
+      return accepted;
+    };
+    await expect(owner.reconcile(input)).rejects.toBe(physical);
+    expect(closes).toBe(1); expect((await f.read())?.localClosureConfirmed).toBeUndefined();
+    await nextTurn(); expect(queryObjects(CapturedReceiver, { format: "count" })).toBe(1);
+    failClose = false;
+    try { await owner.reconcile(input); throw new Error("lost receipt unexpectedly returned"); }
+    catch (error) {
+      expect(error).toBeInstanceOf(AggregateError);
+      if (!(error instanceof AggregateError)) throw error;
+      expect(error.errors).toContain(lost);
+    }
+    expect(closes).toBe(2);
+    const accepted = await f.read(); if (!accepted) throw new Error("accepted original close receipt absent");
+    expect(accepted.localClosureConfirmed).toBe(true);
+    await nextTurn();
+    expect(queryObjects(CapturedReceiver, { format: "count" }), "a lost reply must not release the captured Runtime").toBe(1);
+    expect((await owner.repair(accepted)).closed).toBe(true);
+    await nextTurn();
+    expect(queryObjects(CapturedReceiver, { format: "count" }), "same accepted readback must release the captured Runtime").toBe(0);
+    await resources.join(id); expect(closes).toBe(2);
+  });
+});
+
+
+it("releases the exact sender only after its post-join callback accepts the receipt without self-joining", async () => {
+  const f = fixture(); await f.reconcile();
+  const resources = new PhotonLocalResources(), owner = f.create(resources), id = randomUUID();
+  const sender = { id, controller: { bootId: "sender-boot", hostHash: "f".repeat(32), pid: 56789,
+    processStartedAt: "2090-02-01T00:00:00.000Z" }, leaseDigest: photonHash("lease"), closed: false };
+  const allocated = await owner.reserveSender(identity, { token: "lease" }, sender);
+  let shutdowns = 0, physicalJoins = 0, rejectReceipt = true;
+  const unavailable = new Error("controlled sender receipt unavailable"), retained = f.store.retained;
+  f.store.retained = async (expected, update, after) => {
+    if (rejectReceipt && expected.senderResource?.id === id) throw unavailable;
+    return retained(expected, update, after);
+  };
+  class CapturedSender {
+    readonly controlledCredentials = Buffer.alloc(4096);
+    private joined = false;
+    async shutdown() {
+      shutdowns++;
+      if (!this.joined) { physicalJoins++; this.joined = true; }
+      // Same order as ChatSdkEndpointRuntime.shutdown: physical resources have
+      // joined, but the shutdown Promise is waiting on this durable callback.
+      await owner.confirmSenderClosed(allocated, id, this);
+    }
+  }
+  (() => { const runtime = new CapturedSender(); resources.attach(id, runtime, () => runtime.shutdown()); })();
+  await expect(owner.confirmSenderClosed(allocated, id, {})).rejects.toThrow("exact runtime owner");
+  expect((await f.read())?.senderResource?.closed).toBe(false); expect(physicalJoins).toBe(0);
+  await expect(resources.join(id)).rejects.toBe(unavailable);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(queryObjects(CapturedSender, { format: "count" }), "failed sender receipt must retain the Runtime").toBe(1);
+  expect((await f.read())?.senderResource?.closed).toBe(false);
+  rejectReceipt = false;
+  await resources.join(id);
+  expect((await f.read())?.senderResource?.closed).toBe(true);
+  expect({ shutdowns, physicalJoins }).toEqual({ shutdowns: 2, physicalJoins: 1 });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(queryObjects(CapturedSender, { format: "count" }), "accepted post-join sender receipt must release the Runtime").toBe(0);
+  await resources.join(id); expect(shutdowns).toBe(2);
 });

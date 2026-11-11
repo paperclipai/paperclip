@@ -1,3 +1,5 @@
+import { photonStateFor, PHOTON_EXTERNAL_STATE } from "./external-store.js";
+import { credentialFingerprint } from "../credential-fingerprint.js";
 import { stagePhotonResponseNotice } from "./response-notices.js";
 import { notifyChatReceiver } from "../runtime/receiver-work-notifications.js";
 import type { EndpointRow, DbTransaction, RuntimeContext, LifecycleRuntimeFence } from "../../chat-channels/runtime-types.js";
@@ -62,6 +64,7 @@ type PhotonEventsOptions = {
   runtimeCallbackRecord: (endpointId: string, context: RuntimeContext, statuses: EndpointRow["status"][]) => Promise<EndpointRecord | null>;
   runtimeCallbackEndpoint: (tx: DbTransaction, endpointId: string, context: LifecycleRuntimeFence, statuses: EndpointRow["status"][]) => Promise<EndpointRow | null>;
   invalidateRuntime: (endpointId: string) => Promise<boolean>;
+  ownsRetiringRuntime: (endpointId: string, context: RuntimeContext) => boolean;
   ensurePrincipal: (endpoint: EndpointRow, author: Author, raw?: unknown) => Promise<{ principal: Pick<typeof chatExternalPrincipals.$inferSelect, "id" | "kind" | "isBot">; userId: string | null; linkedDenied: boolean }>;
   requireCurrentExternalActionAuthorization: (tx: DbTransaction, input: { conversationId: string; endpointId: string; expectedUserId: string; principalId: string; runtimeContext: LifecycleRuntimeFence }) => Promise<void>;
   isExternalActionAuthorizationChange: (error: unknown) => boolean;
@@ -76,6 +79,36 @@ type PhotonEventsOptions = {
 export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
   const { runtimeCallbackRecord, runtimeCallbackEndpoint, invalidateRuntime, ensurePrincipal, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications, questionResponses, redactError, renewDiscordGatewayOwnershipForMessageAdmission, handleSdkMessage } = options;
 
+
+  /** The durable operator ingress fence accepts only cleanup of this exact local owner.
+   * This grants no admission, publication, lease or credential-removal authority. */
+  async function retiredLocalFailure(expected: EndpointRow, context: RuntimeContext, localOnly: boolean) {
+    if (!localOnly || expected.provider !== "imessage-photon" || !options.ownsRetiringRuntime(expected.id, context))
+      return { kind: "obsolete" as const };
+    return db.transaction(async tx => {
+      const [endpoint] = await tx.select().from(chatEndpoints).where(and(
+        eq(chatEndpoints.id, expected.id), eq(chatEndpoints.companyId, expected.companyId),
+      )).for("no key update");
+      if (!endpoint || endpoint.provider !== "imessage-photon" || endpoint.connectionId !== expected.connectionId
+        || endpoint.publicId !== expected.publicId) return { kind: "obsolete" as const };
+      const generation = Number((endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0);
+      const expectedGeneration = Number((expected.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0);
+      if (expectedGeneration !== context.generation || !Number.isSafeInteger(generation)
+        || !(endpoint.status === "paused" && generation === context.generation
+          || endpoint.status === "archived" && generation === context.generation + 1)) return { kind: "obsolete" as const };
+      const [connection] = await tx.select().from(toolConnections).where(and(
+        eq(toolConnections.companyId, expected.companyId), eq(toolConnections.id, expected.connectionId),
+      )).for("share");
+      if (!connection || connection.enabled || connection.status !== (endpoint.status === "paused" ? "disabled" : "archived")
+        || credentialFingerprint(connection.credentialSecretRefs) !== context.credentialFingerprint) return { kind: "obsolete" as const };
+      // A retained external handoff has its own durable cleanup owner. Missing
+      // state only classifies this captured local-only allocation; it is never
+      // evidence of physical closure (the receiver supplies that after joining).
+      if (await photonStateFor(tx, { companyId: expected.companyId, endpointId: expected.id }).read(PHOTON_EXTERNAL_STATE) !== null
+        || !options.ownsRetiringRuntime(expected.id, context)) return { kind: "obsolete" as const };
+      return { kind: "retired-local" as const };
+    });
+  }
 
   async function handlePhotonFailure(
     endpointId: string,
@@ -870,5 +903,5 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
       );
     }
   }
-  return { handlePhotonFailure, handlePhotonEvent };
+  return { handlePhotonFailure, handlePhotonEvent, retiredLocalFailure };
 }

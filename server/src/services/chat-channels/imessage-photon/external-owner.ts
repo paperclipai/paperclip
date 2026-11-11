@@ -50,7 +50,8 @@ export interface PhotonExternalBroker {
 /** Resource IDs identify a retained object; ONLY awaiting its real close confirms
  * closure. An unknown object after restart is attention, never a lease-expiry proof. */
 export class PhotonLocalResources {
-  private readonly resources = new Map<string, { close(): Promise<void>; closing?: Promise<void>; closed: boolean }>();
+  private readonly resources = new Map<string,
+    { close(): Promise<void>; closing?: Promise<void>; closed: boolean } | { closed: true }>();
   private readonly objects = new WeakMap<object, string>();
   capture(object: object, close: () => Promise<void>): string {
     const existing = this.objects.get(object); if (existing) return existing;
@@ -66,6 +67,20 @@ export class PhotonLocalResources {
     if (resource.closed) return;
     resource.closing ??= resource.close().then(() => { resource.closed = true; });
     try { await resource.closing; } catch (error) { resource.closing = undefined; throw error; }
+  }
+  /** Only the exact receipt owner calls this AFTER durable closure acceptance.
+   * The optional object comes from the normal Runtime's already-joined callback;
+   * joining its own pending shutdown from that callback would deadlock. */
+  acceptClosure(id: string, physicallyJoinedObject?: object): void {
+    const resource = this.resources.get(id);
+    if (!resource) throw new Error("Photon original local resource closure is unknown");
+    if (physicallyJoinedObject !== undefined && !this.owns(id, physicallyJoinedObject))
+      throw new Error("Photon closure has no exact runtime owner");
+    if (!resource.closed && physicallyJoinedObject === undefined)
+      throw new Error("Photon original local resource has not joined");
+    // Keep only the original repeat-join proof, never the close callback or its
+    // fulfilled Promise, which capture the retired Runtime and credentials.
+    this.resources.set(id, { closed: true });
   }
   known(id: string): boolean { return this.resources.has(id); }
   owns(id: string, object: object): boolean { return this.objects.get(object) === id && this.resources.has(id); }
@@ -123,9 +138,19 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     });
   }
   async function repair(expected: PhotonExternalState): Promise<{ state: PhotonExternalState; closed: boolean }> {
-    if (expected.localResourceId === null || expected.localClosureConfirmed === true) return { state: expected, closed: true };
+    if (expected.localResourceId === null) return { state: expected, closed: true };
+    if (expected.localClosureConfirmed === true) {
+      // A prior commit may have succeeded while its reply was lost. Rejoin the
+      // exact known object before releasing it on this accepted readback.
+      if (options.resources.known(expected.localResourceId)) {
+        await options.resources.join(expected.localResourceId);
+        options.resources.acceptClosure(expected.localResourceId);
+      }
+      return { state: expected, closed: true };
+    }
     let closed = false;
-    if (options.resources.known(expected.localResourceId)) { await options.resources.join(expected.localResourceId); closed = true; }
+    const known = options.resources.known(expected.localResourceId);
+    if (known) { await options.resources.join(expected.localResourceId); closed = true; }
     else closed = await photonResourceProcessEnded(expected);
     if (!closed) return { state: expected, closed: false };
     const state = await options.store.retained(expected, value => {
@@ -133,17 +158,46 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
         ...(value.localResource ? { localResource: { ...value.localResource, closed: true } } : {}) };
       delete next.localResourceDebt; return next;
     });
+    if (known) {
+      if (state.localResourceId !== expected.localResourceId || state.localClosureConfirmed !== true
+        || state.handoffId !== expected.handoffId || !isDeepStrictEqual(state.identity, expected.identity)
+        || !isDeepStrictEqual(state.binding, expected.binding))
+        throw new Error("Photon accepted receiver closure receipt changed");
+      options.resources.acceptClosure(expected.localResourceId);
+    }
     return { state, closed: true };
   }
-  async function confirmSenderClosed(expected: PhotonExternalState, resourceId: string): Promise<PhotonExternalState> {
-    const current = await options.store.read(expected.identity);
-    const sender = current?.senderResource;
-    if (!current || !sender || current.handoffId !== expected.handoffId || !isDeepStrictEqual(current.binding, expected.binding)
-      || sender.id !== resourceId) throw new Error("Photon original sender close owner changed");
-    if (sender.closed && current.failure?.code !== "sender_close") return current;
-    return options.store.retained(current, value => ({ ...value,
-      senderResource: { ...sender, closed: true },
-      failure: value.failure?.code === "sender_close" ? null : value.failure }));
+  async function confirmSenderClosed(expected: PhotonExternalState, resourceId: string,
+    physicallyJoinedRuntime?: object): Promise<PhotonExternalState> {
+    if (physicallyJoinedRuntime !== undefined && !options.resources.owns(resourceId, physicallyJoinedRuntime))
+      throw new Error("Photon sender close has no exact runtime owner");
+    const exactSender = async () => {
+      const current = await options.store.read(expected.identity);
+      const sender = current?.senderResource;
+      if (!current || !sender || current.handoffId !== expected.handoffId || !isDeepStrictEqual(current.binding, expected.binding)
+        || sender.id !== resourceId) throw new Error("Photon original sender close owner changed");
+      return { current, sender };
+    };
+    let { current, sender } = await exactSender();
+    if (physicallyJoinedRuntime === undefined && options.resources.known(resourceId)) {
+      await options.resources.join(resourceId);
+      // The join can finish a normal Runtime callback or race replacement.
+      // Revalidate the exact durable tuple again before accepting its receipt.
+      ({ current, sender } = await exactSender());
+    }
+    const accepted = sender.closed && current.failure?.code !== "sender_close" ? current
+      : await options.store.retained(current, value => ({ ...value,
+        senderResource: { ...sender, closed: true },
+        failure: value.failure?.code === "sender_close" ? null : value.failure }));
+    if (options.resources.known(resourceId)) {
+      if (accepted.handoffId !== current.handoffId || !isDeepStrictEqual(accepted.identity, current.identity)
+        || !isDeepStrictEqual(accepted.binding, current.binding) || accepted.senderResource?.id !== resourceId
+        || accepted.senderResource.closed !== true
+        || !isDeepStrictEqual({ ...accepted.senderResource, closed: false }, { ...sender, closed: false }))
+        throw new Error("Photon accepted sender closure receipt changed");
+      options.resources.acceptClosure(resourceId, physicallyJoinedRuntime);
+    }
+    return accepted;
   }
   async function repairSender(expected: PhotonExternalState): Promise<{ state: PhotonExternalState; closed: boolean }> {
     const sender = expected.senderResource;

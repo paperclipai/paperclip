@@ -7,7 +7,9 @@ import type {
 import { PhotonError } from "./cloud.js";
 import { PhotonState } from "./state.js";
 
-export type PhotonFailureResponsibility = { kind: "recorded" } | { kind: "obsolete" };
+export type PhotonFailureResponsibility = { kind: "recorded" } | { kind: "obsolete" } | { kind: "retired-local" };
+/** Only the receiver close owner supplies this after all physical joins succeed. */
+export type PhotonFailureCleanup = { localClosed: true };
 
 interface Checkpoint {
   schema: 1;
@@ -24,7 +26,7 @@ export interface PhotonReceiverOptions {
   /** Renewal verifies both the selected identity and the current endpoint lease. */
   assertOwned(): Promise<void>;
   admit(event: LiveEvent): Promise<void>;
-  failure(error: unknown): Promise<void | PhotonFailureResponsibility>;
+  failure(error: unknown, cleanup?: PhotonFailureCleanup): Promise<void | PhotonFailureResponsibility>;
   /** Production persists the cursor under the same transaction as its lease fence. */
   commitCheckpoint?(sequence: number): Promise<void>;
 }
@@ -227,11 +229,11 @@ export class PhotonReceiver {
       this.requested = false;
     }
   }
-  private async retryFailureDebt(): Promise<void> {
+  private async retryFailureDebt(localClosed = false): Promise<void> {
     for (const [error] of this.failureDebt) {
       try {
-        const receipt = await this.options.failure(error);
-        if (receipt?.kind === "recorded") this.failureDebt.delete(error);
+        const receipt = await this.options.failure(error, localClosed ? { localClosed: true } : undefined);
+        if (receipt?.kind === "recorded" || localClosed && receipt?.kind === "retired-local") this.failureDebt.delete(error);
         // A void/stale callback is not proof that current responsibility was
         // durably accepted. Keep the original debt for explicit owner repair.
       } catch (reportingError) { this.failureDebt.set(error, reportingError); }
@@ -256,7 +258,10 @@ export class PhotonReceiver {
       Promise.resolve().then(() => this.options.client.close()),
     ]);
     const joined = await Promise.allSettled([...this.consumers, ...this.reads, ...(this.running ? [this.running] : [])]);
-    await this.retryFailureDebt();
+    // Retirement responsibility is distinct from a current receive/reporting
+    // receipt, and can settle debt only after these actual owned joins.
+    await this.retryFailureDebt(closed.every(result => result.status === "fulfilled")
+      && joined.every(result => result.status === "fulfilled") && this.closeFailures.size === 0);
     const errors = [...new Set([
       ...this.closeFailures.values(),
       ...[...this.failureDebt].map(([error, reportingError]) => new AggregateError([error, reportingError], "Photon failure responsibility remains unconfirmed")),

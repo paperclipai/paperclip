@@ -255,6 +255,57 @@ export function githubConnectionEventService(
   let nextSetupPollAt = 0;
   let inFlight: Promise<GitHubConnectionEventPollResult> | null = null;
 
+  type NegotiationPass = { id: number; leasePending: boolean; negotiated: boolean };
+  type Negotiation = { connector: PaperclipCloudConnector; pass: number; promise: Promise<void>;
+    resolve(): void; reject(error: unknown): void; detach(): void };
+  let passSequence = 0, activeNegotiationPass: NegotiationPass | null = null;
+  // At most the active lease and its next pass; waiting endpoints share promises.
+  const negotiations = new Map<number, Negotiation>();
+  const confirmedEnrollment = Promise.resolve();
+  function finishNegotiation(value: Negotiation, error?: unknown) {
+    if (negotiations.get(value.pass) === value) negotiations.delete(value.pass);
+    value.detach();
+    if (error !== undefined) value.reject(error); else value.resolve();
+  }
+  function settleNegotiation(pass: NegotiationPass, connector: PaperclipCloudConnector | null, error?: unknown) {
+    let current: PaperclipCloudConnector | null;
+    try { current = currentConnector(); }
+    catch (cause) {
+      for (const value of [...negotiations.values()]) if (value.pass <= pass.id) finishNegotiation(value, cause);
+      return;
+    }
+    for (const value of [...negotiations.values()]) {
+      if (value.connector !== current) { finishNegotiation(value, new Error("Connection event connector changed")); continue; }
+      if (value.connector !== connector) continue;
+      const confirmed = error === undefined && connector?.eventWakeVersion?.() === 1;
+      if (confirmed || value.pass <= pass.id)
+        finishNegotiation(value, confirmed ? undefined : error ?? new Error("Cloud did not accept event-wake enrollment"));
+    }
+  }
+  function declineEventWakeEnrollment() {
+    for (const value of [...negotiations.values()])
+      finishNegotiation(value, new Error("Connection event enrollment dispatch is paused"));
+  }
+  function joinEventWakeEnrollment(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    const connector = currentConnector();
+    if (!connector || forcePolling) return Promise.reject(new Error("Authenticated push enrollment is unavailable in polling fallback"));
+    if (connector.eventWakeVersion?.() === 1) return confirmedEnrollment;
+    for (const value of [...negotiations.values()])
+      if (value.connector !== connector) finishNegotiation(value, new Error("Connection event connector changed"));
+    // A response already received by an old pass cannot reject a new request
+    // from that pass's later dispatch/finally. An outstanding lease can serve it.
+    const pass = activeNegotiationPass?.leasePending ? activeNegotiationPass.id : passSequence + 1;
+    const existing = negotiations.get(pass); if (existing) return existing.promise;
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const aborted = () => finishNegotiation(value, signal.reason ?? new Error("Connection event owner stopped"));
+    const value: Negotiation = { connector, pass, promise, resolve, reject,
+      detach: () => signal.removeEventListener("abort", aborted) };
+    negotiations.set(pass, value); signal.addEventListener("abort", aborted, { once: true });
+    return promise;
+  }
+
   async function activeBindings() {
     const rows = await db.select({ grant: connectionGrants, connection: toolConnections })
       .from(connectionGrants)
@@ -509,14 +560,28 @@ export function githubConnectionEventService(
   }
 
   async function runPoll(): Promise<GitHubConnectionEventPollResult> {
-    const connector = currentConnector();
+    const pass: NegotiationPass = { id: ++passSequence, leasePending: false, negotiated: false };
+    activeNegotiationPass = pass;
+    let connector: PaperclipCloudConnector | null;
+    try { connector = currentConnector(); }
+    catch (error) {
+      settleNegotiation(pass, null, error);
+      if (activeNegotiationPass === pass) activeNegotiationPass = null;
+      throw error;
+    }
     if (!connector) {
+      settleNegotiation(pass, null, new Error("Connection event connector is unavailable"));
+      if (activeNegotiationPass === pass) activeNegotiationPass = null;
       nextPollAt = Number.POSITIVE_INFINITY;
       return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
     }
     try {
-      return await drainConnectorEvents(connector);
+      return await drainConnectorEvents(connector, pass);
+    } catch (error) {
+      if (!pass.negotiated) settleNegotiation(pass, connector, error);
+      throw error;
     } finally {
+      if (activeNegotiationPass === pass) activeNegotiationPass = null;
       try {
         nextEnrollmentAt = await reconcilePendingSlackCloudEnrollments(db, now());
       } catch {
@@ -535,7 +600,7 @@ export function githubConnectionEventService(
     }
   }
 
-  async function drainConnectorEvents(connector: PaperclipCloudConnector): Promise<GitHubConnectionEventPollResult> {
+  async function drainConnectorEvents(connector: PaperclipCloudConnector, pass: NegotiationPass): Promise<GitHubConnectionEventPollResult> {
     const bindings = await activeBindings();
     const githubBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
     const slackBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "slack"), sql`${chatEndpoints.setup}->'slackCloudEvents' is not null`, sql`${chatEndpoints.status} in ('active','verifying','attention')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
@@ -582,11 +647,19 @@ export function githubConnectionEventService(
       if (history) identity = { subject: "github-bot-events", companyId: history.companyId };
     }
     if (!identity) {
+      settleNegotiation(pass, connector, new Error("Connection event consumer is unavailable"));
       nextPollAt = Number.POSITIVE_INFINITY;
       return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
     }
     const first = identity;
-    const lease = await connector.leaseEvents({ subject: first.subject, companyId: first.companyId, eventWakeVersion: forcePolling ? 0 : 1 });
+    pass.leasePending = true;
+    let lease: Awaited<ReturnType<PaperclipCloudConnector["leaseEvents"]>>;
+    try { lease = await connector.leaseEvents({ subject: first.subject, companyId: first.companyId, eventWakeVersion: forcePolling ? 0 : 1 }); }
+    finally { pass.leasePending = false; }
+    pass.negotiated = true;
+    // Settle at the signed response BEFORE any event callback can await this
+    // same handoff. The original service still owns all dispatch and ACK work.
+    settleNegotiation(pass, connector);
     if (!lease) {
       emptyPolls += 1;
       nextPollAt = !hasConsumer || (!forcePolling && connector.eventWakeVersion?.() === 1) ? Number.POSITIVE_INFINITY
@@ -671,7 +744,8 @@ export function githubConnectionEventService(
   }
 
   return {
-    nextPollAt: () => { const next = Math.min(nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY); return Number.isFinite(next) ? next : null; },
+    joinEventWakeEnrollment, declineEventWakeEnrollment,
+    nextPollAt: () => { const next = Math.min(negotiations.size ? now().getTime() : Number.POSITIVE_INFINITY, nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY); return Number.isFinite(next) ? next : null; },
     pollOnce(input: { forSetup?: boolean; forDelivery?: boolean } = {}): Promise<GitHubConnectionEventPollResult> {
       // A manager actively awaiting a dedicated App's signed ping must not
       // inherit a personal connection's old empty-queue backoff. This is a
