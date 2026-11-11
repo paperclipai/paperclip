@@ -809,8 +809,13 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    // the saved version in control-plane storage is the source of truth.
    stage='reclaim';const stagingRoot=path.dirname(archive),snapshotsRoot=path.dirname(stagingRoot);
    const discard=async p=>{await open(p);await fs.rm(p,{recursive:true,force:true});};
+   // Uploads are named by the attempt's start time. An older attempt's upload is
+   // abandoned once a newer attempt holds the lock; a newer one is left alone.
+   const attemptOf=name=>name==='workspace.pcws'?0:Number(/^workspace-([0-9]{16})-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pcws$/.exec(name)?.[1]??NaN);
+   const ownAttempt=attemptOf(path.basename(archive));if(!Number.isSafeInteger(ownAttempt)||ownAttempt<1)throw Error('invalid_attempt');
    for(const name of await fs.readdir(stagingRoot))
-    if(/\.pcws\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.consuming$/.test(name))await fs.rm(path.join(stagingRoot,name),{force:true});
+    if(/\.pcws\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.consuming$/.test(name)||attemptOf(name)<ownAttempt)
+     await fs.rm(path.join(stagingRoot,name),{force:true});
    const stagingPrefix=path.basename(root)+'.restoring-';
    for(const name of await fs.readdir(path.dirname(root))){
     if(!name.startsWith(stagingPrefix)||!/^[A-Za-z0-9]{6}$/.test(name.slice(stagingPrefix.length)))continue;
@@ -862,10 +867,6 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    const consuming=archive+'.'+crypto.randomUUID()+'.consuming';
    try{
     await fs.rename(archive,consuming);
-    // Another upload of this operation is from an attempt that died, or one that
-    // will find this restore's receipt; neither needs its archive.
-    for(const name of await fs.readdir(stagingRoot))if(/^workspace(?:-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})?\.pcws$/.test(name))
-     await fs.rm(path.join(stagingRoot,name),{force:true});
     await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',consuming,staged,digest,'consume'],{maxBuffer:1048576});
     stage='write_receipt';const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
     for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
@@ -884,7 +885,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   // Each attempt uploads to its own name, so a delayed command of an earlier
   // attempt with the same identity never removes or consumes this upload.
   const directory = path.posix.join(parent, ".paperclip-runtime", "workspace-snapshots", operationId);
-  const archive = path.posix.join(directory, `workspace-${randomUUID()}.pcws`);
+  const archive = path.posix.join(directory, `workspace-${String(Date.now()).padStart(16, "0")}-${randomUUID()}.pcws`);
   const args = (phase: "reclaim" | "extract") => ["-e", restore, path.posix.join(directory, "archive.cjs"), archive, input.remoteCwd,
     input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
     String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch), phase];

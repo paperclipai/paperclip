@@ -908,9 +908,9 @@ require('node:module').syncBuiltinESMExports();`);
           if (!delayed && command.args?.at(-1) === "extract") {
             delayed = true;
             // The earlier attempt's reclaim reached the sandbox only now. It names its own upload.
-            expect(command.args[3]).toMatch(/workspace-[a-f0-9-]{36}\.pcws$/);
+            expect(command.args[3]).toMatch(/workspace-[0-9]{16}-[a-f0-9-]{36}\.pcws$/);
             const late = command.args.map((arg, index) => index === 3
-              ? path.join(path.dirname(arg), `workspace-${randomUUID()}.pcws`) : index === command.args!.length - 1 ? "reclaim" : arg);
+              ? path.join(path.dirname(arg), `workspace-${String(Date.now() - 60_000).padStart(16, "0")}-${randomUUID()}.pcws`) : index === command.args!.length - 1 ? "reclaim" : arg);
             expect((await bounded({ ...command, args: late })).exitCode).toBe(0);
           }
           return bounded(command);
@@ -919,6 +919,24 @@ require('node:module').syncBuiltinESMExports();`);
           manifestDigest: captured.manifestDigest, restorationIdentity: "b2".repeat(32), restorationEpoch: 1 });
         expect(delayed).toBe(true);
         await expectRestored(root, files);
+      } finally { await captured.cleanup(); }
+    });
+
+    it("reclaims an abandoned upload of the same identity before uploading again", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, root, disk } = await boundedDisk(archiveSize + 1.5 * MiB);
+        const identity = "c3".repeat(32);
+        const operationId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-${identity.slice(12, 16)}-${identity.slice(16, 20)}-${identity.slice(20, 32)}`;
+        // An earlier attempt finished its upload, then the server stopped before extraction.
+        const staging = path.join(disk, ".paperclip-runtime", "workspace-snapshots", operationId);
+        await fs.mkdir(staging, { recursive: true });
+        const abandoned = path.join(staging, `workspace-${String(Date.now() - 60_000).padStart(16, "0")}-${randomUUID()}.pcws`);
+        await fs.copyFile(captured.archivePath, abandoned);
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: identity, restorationEpoch: 1 });
+        await expectRestored(root, files);
+        expect(await fs.lstat(abandoned).catch(() => null)).toBeNull();
       } finally { await captured.cleanup(); }
     });
 
