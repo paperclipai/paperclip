@@ -1,6 +1,6 @@
 {
-  "id": "aaf06ddb-56bd-4455-b2d1-fdb0254445e7",
-  "prevId": "0287d884-1fee-4e8d-9ae0-2be0aac45b71",
+  "id": "958a7490-7c65-42c0-bc4a-9d099a10d837",
+  "prevId": "426d1f42-0983-4c6b-bb8d-5c798eee915a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6233,7 +6233,7 @@
           "name": "issuer",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "account_id": {
           "name": "account_id",
@@ -6309,11 +6309,11 @@
         }
       },
       "indexes": {
-        "account_issuer_account_id_uq": {
-          "name": "account_issuer_account_id_uq",
+        "account_provider_account_id_uq": {
+          "name": "account_provider_account_id_uq",
           "columns": [
             {
-              "expression": "issuer",
+              "expression": "provider_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -51034,6 +51034,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "target_date": {
           "name": "target_date",
           "type": "date",
@@ -51207,6 +51213,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_environment_id_environments_id_fk": {
+          "name": "projects_environment_id_environments_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "projects_git_authorization_grant_id_connection_grants_id_fk": {
@@ -65144,6 +65163,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "dot_device_cutover": {
+          "name": "dot_device_cutover",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",
