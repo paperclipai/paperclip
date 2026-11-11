@@ -11849,15 +11849,19 @@ describe("native warm session supervision", () => {
       await closeIdleWarmNativeSessionsForRestart();
     });
 
-    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound", "pending-semantic"] as const)(
+    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound", "pending-semantic", "stop-unconfirmed-at-close", "suspended-unbound"] as const)(
       "handles a permanently rejected plugin close during reset (%s)", async mode => {
         const { base, next, run } = fixture(`identity-poisoned-close-${mode}`);
         const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: base.binding.runId,
           normalizedSessionId: base.session.normalizedSessionId!, turnId: "turn", itemId: "item" };
         let stopped = false;
+        let stopFailures = mode === "stop-unconfirmed-at-close" ? 1 : 0;
         const task = vi.fn(async (operation: any) => {
           if (operation.kind === "describe") return { kind: "description", taskId: "old-task", launchPreparationVersion: 1,
             projectAuthCheckVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+          // The Launcher RPC can fail while the old owner closes; the successor's
+          // forced retirement must send its own confirmed stop.
+          if (operation.kind === "stop" && stopFailures-- > 0) throw new Error("launcher stop unavailable");
           if (operation.kind === "stop") stopped = true;
           if (operation.kind === "status") return { kind: "status", taskId: "old-task", phase: stopped ? "cancelled" : "running", executionStopped: stopped };
           if (operation.kind === "complete" && mode === "unconfirmed") throw new Error("handoff unconfirmed");
@@ -11877,7 +11881,10 @@ describe("native warm session supervision", () => {
           runnerInstanceId: "runner", runnerIngressAuthorized: true,
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task } });
         const registration = await owner.registration({} as never, base.binding.runId);
-        const failure = mode === "other-error" ? new Error("controller retirement unconfirmed") : new NativeSessionCloseUnrecoverableError(undefined, mode !== "pending-semantic");
+        const failure = mode === "other-error" ? new Error("controller retirement unconfirmed")
+          // A local Runner that durably suspended is contained without a task owner.
+          : mode === "suspended-unbound" ? new NativeSessionCloseUnrecoverableError({ runnerSuspended: true, providerDrained: true }, false)
+          : new NativeSessionCloseUnrecoverableError(undefined, mode !== "pending-semantic");
         let closePromise: Promise<void> | undefined;
         const close = vi.fn(() => closePromise ??= (async () => {
           await registration.release();
@@ -11885,7 +11892,10 @@ describe("native warm session supervision", () => {
           throw failure;
         })());
         const session = { close };
-        if (mode !== "unbound") backend.bindManagedSession(session as never);
+        if (mode !== "unbound" && mode !== "suspended-unbound") backend.bindManagedSession(session as never);
+        // A governed-wait park leaves its Core tool callback unsettled, and a
+        // failed Launcher stop leaves no receipt: neither belongs to the new session.
+        const succeeds = mode === "retired" || mode === "pending-semantic" || mode === "stop-unconfirmed-at-close" || mode === "suspended-unbound";
         const collectStopped = vi.fn(async () => {
           expect(owner.isRetired()).toBe(true);
           if (mode === "collection-failed") throw new Error("file collection failed");
@@ -11916,7 +11926,7 @@ describe("native warm session supervision", () => {
           const attempt = () => mode === "same-session"
             ? executePaperclipNativeSession({ db: leaseDb(replacement), execution: replacement, runnerInstanceId: "runner", refreshTools: true })
             : run(replacement);
-          if (mode === "retired") {
+          if (succeeds) {
             await attempt();
             expect(state.execute).toHaveBeenCalledTimes(2);
             expect(retirementFailed).not.toHaveBeenCalled();
@@ -11934,7 +11944,9 @@ describe("native warm session supervision", () => {
               expect(state.execute).toHaveBeenCalledTimes(2);
             }
           }
-          expect(task.mock.calls.filter(([operation]) => operation.kind === "stop")).toHaveLength(1);
+          // One confirmed stop per owner; a failed Launcher RPC is the only resend.
+          expect(task.mock.calls.filter(([operation]) => operation.kind === "stop"))
+            .toHaveLength(mode === "stop-unconfirmed-at-close" ? 2 : 1);
           expect(task.mock.calls.some(([operation]) => operation.kind === "read_state")).toBe(false);
         } finally {
           collectStopped.mockResolvedValue(undefined);
@@ -17109,7 +17121,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };

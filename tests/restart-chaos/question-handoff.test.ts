@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import { awaitingQuestionAnswer, gradeQuestionHandoff, q1AnswerMarker, q1Code, questionStep, type QuestionArtifacts } from "./question-handoff.js";
+import { planTasks, taskFaultSchedule } from "./scheduler.js";
+import { rotateAgentSession } from "./session-faults.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -93,5 +95,42 @@ describe("Q1 saved question", () => {
     const { api } = fakeApi([{ ...pendingQuestion, createdAt: new Date(400).toISOString() }]);
     await questionStep({ api, issueId: "i1", nonce: NONCE, record: task, sample: sample("running"), now: 1_000, boardMayAct: true, note: () => undefined });
     expect(task.question).toMatchObject({ seenAt: 1_000, savedAt: 400 });
+  });
+
+  describe("SR1: session replaced while the asking owner is retained", () => {
+    it("is a warm Q1-only fault that schedules no restart", () => {
+      const command = parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "SR1", "--lifecycle", "warm", "--tasks", "2", "--concurrency", "2"]);
+      if (command.mode !== "wave") throw new Error("expected a wave");
+      expect(command.options).toMatchObject({ faults: [], sessionFaults: ["SR1"] });
+      const tasks = planTasks(command.options);
+      expect(tasks.map(task => task.fault)).toEqual(["SR1", "SR1"]);
+      expect(tasks.flatMap(taskFaultSchedule)).toEqual([]);
+      expect(() => parseCommand(["--workloads", "Q1", "--faults", "SR1"])).toThrow("--lifecycle warm");
+      expect(() => parseCommand(["--workloads", "A1", "--faults", "SR1", "--lifecycle", "warm"])).toThrow("remove A1");
+      expect(() => parseCommand(["--workloads", "Q1", "--faults", "SR1,K1", "--lifecycle", "warm"])).toThrow("without K* or PV*");
+    });
+
+    it("changes the agent's session configuration after the asking run settles, then answers on a later poll", async () => {
+      const task = record();
+      const { api, posts } = fakeApi([pendingQuestion]);
+      const patches: Array<{ route: string; body: unknown }> = [];
+      const patchApi = { async patch<T>(route: string, body?: unknown) { patches.push({ route, body }); return {} as T; } };
+      const notes: string[] = [];
+      const step = (status: string, now: number) => questionStep({ api, issueId: "i1", nonce: NONCE, record: task, sample: sample(status), now,
+        boardMayAct: true, note: kind => notes.push(kind), beforeAnswer: () => rotateAgentSession(patchApi, "agent-1", 1, now) });
+      await step("running", 1_000);
+      expect(patches).toHaveLength(0);
+      await step("succeeded", 2_000);
+      expect(patches).toEqual([{ route: "/api/agents/agent-1", body: { adapterConfig: { idleTimeoutMs: 300_002 } } }]);
+      expect(posts).toHaveLength(0);
+      await step("succeeded", 3_000);
+      expect(patches).toHaveLength(1);
+      expect(posts).toHaveLength(1);
+      expect(notes).toEqual(["question_pending", "session_rotated", "question_answered"]);
+      const graded = gradeQuestionHandoff(NONCE, artifacts({ rotation: task.question!.rotation }));
+      expect(graded.checks.find(check => check.name === "session_rotated_before_answer")).toMatchObject({ ok: true });
+      const refused = gradeQuestionHandoff(NONCE, artifacts({ rotation: { at: 2_000, idleTimeoutMs: 300_002, httpStatus: 422, error: "invalid" } }));
+      expect(refused.verdict).toBe("fail");
+    });
   });
 });

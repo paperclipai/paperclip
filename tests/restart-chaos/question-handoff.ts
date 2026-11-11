@@ -12,6 +12,7 @@
 import type { ChaosApi } from "./api.js";
 import type { OracleArtifacts, OracleResult, TaskRecord, TaskSample } from "./types.js";
 import type { WorkloadDefinition } from "./workloads.js";
+import type { SessionRotation } from "./session-faults.js";
 
 type Json = Record<string, any>;
 
@@ -28,6 +29,8 @@ export interface QuestionRecord {
   /** The question is pending at the latest poll. */
   pendingNow: boolean;
   answer?: { at: number; interactionId: string; code: string; httpStatus: number | null; error: string | null };
+  /** SR1: the agent configuration change made after the asking run settled, before the answer. */
+  rotation?: SessionRotation;
 }
 
 export interface QuestionArtifacts extends QuestionRecord {
@@ -63,7 +66,9 @@ function questionInteractions(rows: Json[] | null | undefined): Json[] {
 
 /** Q1 board step, called on every poll. */
 export async function questionStep(input: { api: Pick<ChaosApi, "get" | "post">; issueId: string; nonce: string; record: TaskRecord;
-  sample: TaskSample; now: number; boardMayAct: boolean; note: (kind: string, data: Record<string, unknown>) => void }): Promise<void> {
+  sample: TaskSample; now: number; boardMayAct: boolean; note: (kind: string, data: Record<string, unknown>) => void;
+  /** SR1: replace the saved session while the asking run's owner is still retained. */
+  beforeAnswer?: () => Promise<SessionRotation> }): Promise<void> {
   const question = input.record.question ??= { interactionIds: [], seenAt: null, askedByRunId: null, pendingNow: false };
   const rows = await input.api.get<Json[]>(`/api/issues/${input.issueId}/interactions`, 5_000).catch(() => null);
   if (rows === null) return;
@@ -82,6 +87,12 @@ export async function questionStep(input: { api: Pick<ChaosApi, "get" | "post">;
   }
   // The saved question must settle on its own first: answer only once nothing of the task is running.
   if (!input.boardMayAct || (input.sample.runs ?? []).some(run => ACTIVE.has(run.status))) return;
+  if (input.beforeAnswer && !question.rotation) {
+    question.rotation = await input.beforeAnswer();
+    input.note("session_rotated", { ...question.rotation });
+    // Answer on a later poll, so the change is committed before the wake.
+    return;
+  }
   const code = q1Code(input.nonce);
   const questions = (pending.payload?.questions ?? []) as Json[];
   const target = questions[0];
@@ -143,6 +154,9 @@ export function gradeQuestionHandoff(nonce: string, artifacts: OracleArtifacts):
       detail: asked ? `${asked.id} ${asked.status}${asked.errorCode ? ` ${asked.errorCode}` : ""}` : `run=${question?.askedByRunId ?? "unknown"}` },
     { name: "no_failed_attempt", ok: failed.length === 0, detail: failed.map(run => `${run.id}:${run.status}:${run.errorCode ?? ""}`).join(",") || "none" },
     { name: "nothing_ran_before_answer", ok: between.length === 0, detail: between.map(run => run.id).join(",") || "none" },
+    ...(question?.rotation ? [{ name: "session_rotated_before_answer", ok: question.rotation.httpStatus === 200
+      && (answeredAt === null || question.rotation.at < answeredAt),
+      detail: `idleTimeoutMs=${question.rotation.idleTimeoutMs} http=${question.rotation.httpStatus}${question.rotation.error ? ` ${question.rotation.error}` : ""}` }] : []),
     { name: "brief_has_answer", ok: brief.includes(q1AnswerMarker(nonce, code)), detail: q1AnswerMarker(nonce, code) },
     { name: "brief_has_three_bullets", ok: bullets >= 3, detail: `bullets=${bullets}` },
   ];
