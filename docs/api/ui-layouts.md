@@ -44,4 +44,6 @@ Agent graph (`schemaVersion: 1`): `direction` (`TB` or `LR`), `viewport`, `posit
 
 Dashboard (`schemaVersion: 1`): `widgets` (ordered, each with `instanceId`, `widgetId`, `w`, `h` and optional `config`) and `contextualRules`.
 
-A layout is a personal view preference. Saves and resets do not write to the company activity log.
+## Activity Log
+
+The first save of a layout creates the stored row and writes one `ui_layout.created` entry to the company activity log. A reset that removes a stored layout writes one `ui_layout.reset` entry. The saves that follow the first one write no entry, because the apps save automatically after every change. An entry holds the user id and the surface, and never the layout content.

@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_LAYOUT_SAVE_DEBOUNCE_MS } from "@/hooks/useUiLayout";
+import { queryKeys } from "@/lib/queryKeys";
 import { syntheticOrg } from "./lib/synthetic-org";
 
 const AGENT_COUNT = 250;
@@ -109,6 +110,7 @@ beforeEach(() => {
     surface, schemaVersion: 1, layout, updatedAt: null,
   }));
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -221,6 +223,27 @@ describe("AgentGraph with 250 agents", () => {
     expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
     expect(uiLayoutsApi.save.mock.calls[0]![2]).toMatchObject({ direction: "LR", hiddenAgentIds });
   }, 30_000);
+
+  it("shows the layout of the new account after the session changes", async () => {
+    const agents = roster().slice(0, 12);
+    const stored = (hiddenAgentIds: string[]) => ({
+      surface: "agent_graph", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, direction: "TB", viewport: null, positions: {}, hiddenAgentIds, stickies: [], drafts: [] },
+    });
+    uiLayoutsApi.get.mockResolvedValueOnce(stored([agents[5]!.id, agents[6]!.id])).mockResolvedValueOnce(stored([]));
+    await mount(agents);
+    expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(10);
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(12);
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+  });
 
   it("applies the saved viewport when a retry recovers the saved layout", async () => {
     const agents = roster().slice(0, 12);

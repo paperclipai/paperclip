@@ -4,7 +4,7 @@ import { useUiLayout } from "@/hooks/useUiLayout";
 import { defaultAgentGraphLayout } from "./lib/graph-nodes";
 
 export function useAgentGraphDocument(companyId: string) {
-  const { stored, isLoaded, save, stage, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, stage, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad, owner } = useUiLayout({
     companyId,
     surface: "agent_graph",
     resolve: resolveAgentGraphLayout,
@@ -15,18 +15,21 @@ export function useAgentGraphDocument(companyId: string) {
   const [restoreCount, setRestoreCount] = useState(0);
 
   const wasBlocked = useRef(false);
+  const loadedOwner = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isLoaded) return;
     const recovered = wasBlocked.current && blocked === null && stored !== null;
     wasBlocked.current = blocked !== null;
-    if (layoutRef.current && !recovered) return;
+    const ownerChanged = loadedOwner.current !== null && loadedOwner.current !== owner;
+    loadedOwner.current = owner;
+    if (layoutRef.current && !recovered && !ownerChanged) return;
     hadStoredLayout.current = stored !== null;
     const initial = stored ?? defaultAgentGraphLayout();
     layoutRef.current = initial;
     setLayout(initial);
-    if (recovered) setRestoreCount((count) => count + 1);
-  }, [isLoaded, stored, blocked]);
+    if (recovered || ownerChanged) setRestoreCount((count) => count + 1);
+  }, [isLoaded, stored, blocked, owner]);
 
   const apply = useCallback(
     (update: (current: AgentGraphLayout) => AgentGraphLayout) => {
@@ -65,7 +68,7 @@ export function useAgentGraphDocument(companyId: string) {
     restoreCount,
     loadError,
     blocked,
-    allowOverwrite,
+    allowOverwrite: useCallback(() => allowOverwrite(layoutRef.current ?? undefined), [allowOverwrite]),
     retryLoad,
     hadStoredLayout: hadStoredLayout.current,
   };
