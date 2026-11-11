@@ -68,7 +68,10 @@ Run against the same instance as section A.
 ## C. Conversation behavior
 
 All setup methods share one runtime, so run this once on the section A app and
-spot-check C1, C2, and C6 on the section D app.
+spot-check C1, C2, C5, and C6 on the section D app. Cloud handles slash commands
+apart from events, and they need a synchronous response. So for C5 on Cloud, also
+send a slash command while the tenant sleeps, and require both the command response
+and its task thread to arrive.
 
 | # | Check | Pass when | Result |
 | --- | --- | --- | --- |
@@ -104,7 +107,7 @@ Prerequisites (blockers until done):
 | D5 | Workspace requires admin approval | Installation falls back to Slack's admin approval, and the UI explains what is pending | |
 | D6 | Grant revoked in Slack | The next install asks for authorization again, in plain language. Existing bots keep working or report clearly that they are disconnected | |
 | D7 | Sealed events while the tenant sleeps | A message sent while the tenant is idle is delivered once after wake, and the reply arrives | |
-| D8 | Remove and reinstall | Removing a managed bot cleans up its child app. Reinstalling creates a working one | |
+| D8 | Remove and reinstall | Removing a managed bot clears its saved secrets and pending setup attempts, stops Cloud delivery, and keeps the user's manager grant. The child app stays in Slack; delete it separately through its Slack management URL. A fresh managed setup creates a working bot | |
 
 ## E. Distribution questions to answer with evidence
 
