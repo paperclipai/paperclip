@@ -3985,6 +3985,44 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #openingCommandId: string | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
+  #attachmentDownloadSupport?: Promise<boolean>;
+  #attachmentDownloadTail = Promise.resolve();
+
+  downloadAttachment(grant: (turnId: string) => import("../contracts/harness-driver.js").RunnerAttachmentDownloadGrant) {
+    const turnId = this.#durableTurnId;
+    const download = this.#attachmentDownloadTail.then(() => this.#downloadAttachment(turnId, grant));
+    this.#attachmentDownloadTail = download.then(() => undefined, () => undefined);
+    return download;
+  }
+
+  async #downloadAttachment(turnId: string, grant: (turnId: string) => import("../contracts/harness-driver.js").RunnerAttachmentDownloadGrant) {
+    if (!turnId || this.#durableTurnId !== turnId || !this.#core) return null;
+    this.#attachmentDownloadSupport ??= this.#commandResult("session.snapshot", {}, this.#waitNow() + 5_000, true)
+      .then(result => result.attachmentDownloadVersion === 1);
+    if (!await this.#attachmentDownloadSupport || this.#durableTurnId !== turnId) return null;
+    const deadline = this.#waitNow() + 18_000;
+    let result = await this.#commandResult("runner.attachment.download", {
+      ...grant(turnId), turnId,
+    }, deadline, true);
+    const downloadId = result.downloadId;
+    if (result.status !== "pending" || typeof downloadId !== "string") {
+      throw new Error("runner_attachment_download_invalid_receipt");
+    }
+    let pollDelayMs = 25;
+    while (result.status === "pending" && this.#durableTurnId === turnId && this.#waitNow() < deadline) {
+      await new Promise(resolveWait => setTimeout(resolveWait, pollDelayMs));
+      pollDelayMs = 750;
+      result = await this.#commandResult("runner.attachment.download", { downloadId }, deadline, true);
+    }
+    const path = result.path;
+    if (result.status !== "ready" || this.#durableTurnId !== turnId
+      || typeof path !== "string" || path.length > 4096
+      || !path.startsWith("/") || /[\x00-\x1f\x7f]/u.test(path)) {
+      throw new Error("runner_attachment_download_invalid_path");
+    }
+    return path;
+  }
+
   supportsTurnReasoning(): boolean {
     if (this.options.provider !== "opencode") return false;
     // Use the durable selected model on both fresh and recovered sessions.

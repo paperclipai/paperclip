@@ -308,8 +308,7 @@ export interface ExecuteNativeSessionOptions {
   getFreshSessionHandoff?: () => Promise<string | null>;
   /**
    * Seals this run's first-turn input immediately before `turn.start` and
-   * returns user messages that arrived while the run was preparing. Repeated
-   * calls for the same run return the same messages.
+   * returns the additional prompt input prepared for the admitted first turn.
    */
   getFirstTurnQueuedInput?: () => Promise<string | null>;
   /**

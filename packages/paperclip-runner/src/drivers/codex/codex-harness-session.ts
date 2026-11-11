@@ -91,6 +91,10 @@ export class CodexHarnessSession
     }
   }
 
+  downloadAttachment(grant: Parameters<NonNullable<HarnessSession["downloadAttachment"]>>[0]) {
+    return this.transport.downloadAttachment?.(grant) ?? Promise.resolve(null);
+  }
+
   supportsTurnReasoning(): boolean {
     return this.transport.supportsTurnReasoning?.() === true;
   }

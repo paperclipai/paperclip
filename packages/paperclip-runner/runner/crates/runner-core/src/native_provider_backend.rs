@@ -4,7 +4,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
-use crate::attachment_download::{AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND};
+use crate::attachment_download::{AttachmentDownloadPoll, AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND};
 use crate::credential_observer::CredentialObserver;
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
@@ -190,6 +190,7 @@ impl NativeProviderCommandExecutor {
         if self.recovery_checked {
             return Ok(());
         }
+        self.attachments.initialize()?;
         self.recovery_checked = true;
         let codex = self.state_dir.join(CODEX_PROVIDER_STATE_FILE).exists();
         let acpx = self.state_dir.join(ACPX_PROVIDER_STATE_FILE).exists();
@@ -424,10 +425,21 @@ impl CommandExecutor for NativeProviderCommandExecutor {
                     "attachment downloads require a workspace provider",
                 ));
             }
+            let invalid = || DurableRunnerError::invalid("attachment download command is invalid");
+            if command.payload.get("downloadId").is_some() {
+                let poll: AttachmentDownloadPoll = serde_json::from_value(command.payload.clone())
+                    .map_err(|_| invalid())?;
+                let id = uuid::Uuid::parse_str(&poll.download_id).map_err(|_| invalid())?;
+                let result = match self.attachments.poll(id)? {
+                    Some(path) => json!({"status": "ready", "path": path}),
+                    None => json!({"status": "pending"}),
+                };
+                return Ok(CommandExecution::result(result));
+            }
             let grant: AttachmentGrant = serde_json::from_value(command.payload.clone())
-                .map_err(|_| DurableRunnerError::invalid("attachment download grant is invalid"))?;
-            let path = self.attachments.download(grant, &self.config.turn_id)?;
-            return Ok(CommandExecution::result(json!({"path": path})));
+                .map_err(|_| invalid())?;
+            let download_id = self.attachments.start(grant, &self.config.turn_id)?;
+            return Ok(CommandExecution::result(json!({"status": "pending", "downloadId": download_id.to_string()})));
         }
         if self.selected.is_none()
             && matches!(command.command_type.as_str(), "run.prepare" | "run.attach")
@@ -445,7 +457,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         ) {
             self.credentials.poll(true)?;
         }
-        let result = self
+        let mut result = self
             .selected
             .as_mut()
             .ok_or_else(|| {
@@ -454,6 +466,19 @@ impl CommandExecutor for NativeProviderCommandExecutor {
                 )
             })?
             .execute(command);
+        if command.command_type == "turn.start" && result.is_ok() {
+            self.attachments.open_next_turn();
+        }
+        if command.command_type == "session.snapshot"
+            && matches!(
+                self.selected,
+                Some(SelectedExecutor::LocalFacade(_) | SelectedExecutor::Acpx(_))
+            )
+        {
+            if let Ok(execution) = &mut result {
+                execution.result["attachmentDownloadVersion"] = json!(1);
+            }
+        }
         if result.is_ok()
             && matches!(
                 command.command_type.as_str(),

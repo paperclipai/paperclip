@@ -220,6 +220,8 @@ import {
 import { adapterExecutionTargetEnablesSandboxDuplexBridge, type AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import { createRemoteAttachmentStager } from "./remote-attachment-staging.js";
+import { createRunnerAttachmentGrant, runnerAttachmentDownloadUrl } from "./runner-attachment-download.js";
+import type { NativeRunnerAttachmentDownload, NativeRunnerAttachmentStage } from "./native-runner-file-handoff.js";
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -10055,6 +10057,8 @@ export async function executePaperclipNativeSession(input: {
   adapterType?: string;
   /** Internal, run-owned file inspection lifetime; never supplied by tool arguments. */
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
+  bindAttachmentSession?: (session: NativeSession | null) => void;
+  prepareAttachmentPrompt?: () => Promise<string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onPersistedNativeLog?: (cursor: number, chunk: string) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -10239,43 +10243,73 @@ export async function executePaperclipNativeSession(input: {
       const stageRemoteAttachment = target?.kind === "remote" && remoteRunner
         ? createRemoteAttachmentStager(target.remoteCwd, remoteRunner)
         : undefined;
+      const downloadUrl = targetKind === "remote" ? runnerAttachmentDownloadUrl() : null;
+      let attachmentSession: NativeSession | null = null;
+      let useCommandFallback = false;
+      const downloadRemoteAttachment: NativeRunnerAttachmentDownload | undefined = downloadUrl
+        ? async source => {
+            if (!attachmentSession?.downloadAttachment || useCommandFallback) return null;
+            try {
+              const path = await attachmentSession.downloadAttachment(turnId =>
+                createRunnerAttachmentGrant(input.execution.binding, source, turnId, downloadUrl));
+              if (path) return path;
+            } catch {
+              // The bound command transport can still stage files without tenant egress.
+            }
+            useCommandFallback = stageRemoteAttachment !== undefined;
+            return null;
+          }
+        : undefined;
       const chatAttachmentReadScope = new NativeChatAttachmentReadScope({
         db: input.db,
         binding: input.execution.binding,
         workspaceRoot,
         executionTargetKind: targetKind,
         stageRemoteAttachment,
+        downloadRemoteAttachment,
       });
-      preparedInput = { ...input, chatAttachmentReadScope };
-      cleanupStagedAttachments = async () => {
-        try { await chatAttachmentReadScope.close(); }
-        finally { await stageRemoteAttachment?.close(); }
+      let wakeStage: Promise<NativeRunnerAttachmentStage> | undefined;
+      let closed = false;
+      const prepareAttachmentPrompt = async () => {
+        if (closed) throw new Error("paperclip_runner_attachment_staging_scope_closed");
+        wakeStage ??= stageNativeRunnerWakeAttachments({
+          db: input.db,
+          stageRemoteAttachment,
+          downloadRemoteAttachment,
+          binding: {
+            companyId: input.execution.binding.companyId,
+            issueId: input.execution.binding.issueId,
+            runId: input.execution.binding.runId,
+            agentId: input.execution.binding.agentId,
+            workspaceRoot,
+            executionTargetKind: targetKind,
+          },
+        });
+        return renderNativeRunnerStagedAttachmentPrompt((await wakeStage).attachments);
       };
-      const attachmentStage = await stageNativeRunnerWakeAttachments({
-        db: input.db,
-        stageRemoteAttachment,
-        binding: {
-          companyId: input.execution.binding.companyId,
-          issueId: input.execution.binding.issueId,
-          runId: input.execution.binding.runId,
-          agentId: input.execution.binding.agentId,
-          workspaceRoot,
-          executionTargetKind: targetKind,
-        },
-      });
       cleanupStagedAttachments = async () => {
+        closed = true;
         const cleanupResults = await Promise.allSettled([
           chatAttachmentReadScope.close(),
-          attachmentStage.cleanup(),
+          wakeStage?.then(stage => stage.cleanup(), () => undefined),
         ]);
         await stageRemoteAttachment?.close();
-        if (cleanupResults.some((result) => result.status === "rejected")) {
+        if (cleanupResults.some(result => result.status === "rejected")) {
           throw new Error("paperclip_runner_attachment_staging_cleanup_failed");
         }
       };
-      const stagedPrompt = renderNativeRunnerStagedAttachmentPrompt(
-        attachmentStage.attachments,
-      );
+      preparedInput = { ...input, chatAttachmentReadScope };
+      if (downloadRemoteAttachment) {
+        return {
+          ...preparedInput,
+          bindAttachmentSession: (session: NativeSession | null) => {
+            if (session !== attachmentSession) useCommandFallback = false;
+            attachmentSession = session;
+          },
+          prepareAttachmentPrompt,
+        };
+      }
+      const stagedPrompt = await prepareAttachmentPrompt();
       if (nativeSha256(input.execution) !== admissionSha256) throw new Error("native_attachment_admission_changed");
       if (stagedPrompt) {
         const preparedExecution = parseNativeExecutionInput({
@@ -11939,10 +11973,14 @@ async function executePaperclipNativeSessionAttempt(
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
-            getFirstTurnQueuedInput: () => claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
-              logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
-              return null;
-            }),
+            getFirstTurnQueuedInput: async () => {
+              const staged = await input.prepareAttachmentPrompt?.();
+              const queued = await claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
+                logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
+                return null;
+              });
+              return [staged, queued].filter(Boolean).join("\n\n") || null;
+            },
             getUnreadSteeredMessages: () => readUnreadSteeredMessages(input.db, {
               companyId: input.execution.binding.companyId,
               runId: input.execution.binding.runId,
@@ -12112,6 +12150,7 @@ async function executePaperclipNativeSessionAttempt(
               );
             },
             onSession: async (session) => {
+              input.bindAttachmentSession?.(session);
               if (session) runnerdBackend?.bindDiagnosticSession?.(session);
               if (session && input.runnerExecutionTarget?.kind === "remote"
                 && input.runnerExecutionTarget.transport === "sandbox") {

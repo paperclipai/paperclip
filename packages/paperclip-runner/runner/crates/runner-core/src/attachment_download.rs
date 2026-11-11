@@ -1,6 +1,8 @@
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -58,7 +60,7 @@ impl AttachmentGrant {
         Ok(url)
     }
 
-    fn extension(&self) -> &str {
+    fn extension(&self) -> &'static str {
         match self.content_type.as_str() {
             "image/png" => ".png",
             "image/jpeg" => ".jpg",
@@ -70,12 +72,30 @@ impl AttachmentGrant {
     }
 }
 
+pub(crate) struct DownloadedAttachment {
+    bytes: Vec<u8>,
+    extension: &'static str,
+}
+
+struct PendingDownload {
+    id: Uuid,
+    worker: JoinHandle<()>,
+    result: Option<Receiver<Result<DownloadedAttachment, DurableRunnerError>>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AttachmentDownloadPoll {
+    pub(crate) download_id: String,
+}
+
 pub(crate) struct AttachmentDownloads {
     directory: PathBuf,
     ready: bool,
     closed: bool,
     bytes: u64,
     files: usize,
+    pending: Option<PendingDownload>,
 }
 
 impl AttachmentDownloads {
@@ -86,14 +106,20 @@ impl AttachmentDownloads {
             closed: false,
             bytes: 0,
             files: 0,
+            pending: None,
         }
     }
 
-    pub(crate) fn download(
+    pub(crate) fn initialize(&mut self) -> Result<(), DurableRunnerError> {
+        self.clear()
+            .map_err(|_| DurableRunnerError::invalid("attachment download cleanup failed"))
+    }
+
+    pub(crate) fn start(
         &mut self,
         grant: AttachmentGrant,
         turn_id: &str,
-    ) -> Result<PathBuf, DurableRunnerError> {
+    ) -> Result<Uuid, DurableRunnerError> {
         let url = grant.validate(turn_id)?;
         if self.closed
             || self.bytes + grant.byte_size > MAX_TURN_BYTES
@@ -103,30 +129,67 @@ impl AttachmentDownloads {
                 "attachment download scope is closed or full",
             ));
         }
-        let failed = || DurableRunnerError::invalid("attachment download failed");
-        let client = Client::builder()
-            .https_only(true)
-            .no_proxy()
-            .redirect(Policy::none())
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|_| failed())?;
-        let response = client
-            .get(url)
-            .bearer_auth(&grant.token)
-            .send()
-            .map_err(|_| failed())?;
-        if response.status() != StatusCode::OK
-            || response
-                .content_length()
-                .is_some_and(|size| size != grant.byte_size)
-        {
-            return Err(failed());
-        }
-        self.store(&grant, response).map_err(|_| failed())
+        self.start_worker(move || fetch_attachment(url, grant))
     }
 
-    fn store(&mut self, grant: &AttachmentGrant, source: impl Read) -> io::Result<PathBuf> {
+    fn start_worker(
+        &mut self,
+        fetch: impl FnOnce() -> Result<DownloadedAttachment, DurableRunnerError> + Send + 'static,
+    ) -> Result<Uuid, DurableRunnerError> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.result.is_none() && pending.worker.is_finished())
+        {
+            self.pending = None;
+        }
+        if self.pending.is_some() {
+            return Err(DurableRunnerError::invalid(
+                "attachment download already in progress",
+            ));
+        }
+        let id = Uuid::new_v4();
+        let (send, receive) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("attachment-download".to_owned())
+            .spawn(move || {
+                let _ = send.send(fetch());
+            })
+            .map_err(|_| DurableRunnerError::invalid("attachment download could not start"))?;
+        self.pending = Some(PendingDownload {
+            id,
+            worker,
+            result: Some(receive),
+        });
+        Ok(id)
+    }
+
+    pub(crate) fn poll(&mut self, id: Uuid) -> Result<Option<PathBuf>, DurableRunnerError> {
+        let Some(result) = self
+            .pending
+            .as_ref()
+            .filter(|pending| pending.id == id)
+            .and_then(|pending| pending.result.as_ref())
+        else {
+            return Err(DurableRunnerError::invalid(
+                "attachment download is no longer available",
+            ));
+        };
+        let received = match result.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return Ok(None),
+            Err(TryRecvError::Disconnected) => {
+                Err(DurableRunnerError::invalid("attachment download failed"))
+            }
+        };
+        self.pending = None;
+        let downloaded = received?;
+        self.store(downloaded)
+            .map(Some)
+            .map_err(|_| DurableRunnerError::invalid("attachment download write failed"))
+    }
+
+    fn store(&mut self, downloaded: DownloadedAttachment) -> io::Result<PathBuf> {
         if !self.ready {
             self.clear()?;
             let mut builder = DirBuilder::new();
@@ -137,26 +200,38 @@ impl AttachmentDownloads {
         }
         let path = self
             .directory
-            .join(format!("{}{}", Uuid::new_v4(), grant.extension()));
+            .join(format!("{}{}", Uuid::new_v4(), downloaded.extension));
         let mut options = OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]
         options.mode(0o600);
         let mut file = options.open(&path)?;
-        if let Err(error) = copy_verified(source, &mut file, grant) {
+        if let Err(error) = file.write_all(&downloaded.bytes) {
             drop(file);
             fs::remove_file(&path)?;
             return Err(error);
         }
-        self.bytes += grant.byte_size;
+        self.bytes += downloaded.bytes.len() as u64;
         self.files += 1;
         Ok(path)
     }
 
     pub(crate) fn close(&mut self) {
         self.closed = true;
+        if let Some(pending) = &mut self.pending {
+            pending.result = None;
+            if pending.worker.is_finished() {
+                self.pending = None;
+            }
+        }
         if self.clear().is_err() {
             eprintln!("paperclip-runnerd: attachment download cleanup failed");
+        }
+    }
+
+    pub(crate) fn open_next_turn(&mut self) {
+        if self.closed {
+            self.reset();
         }
     }
 
@@ -184,11 +259,38 @@ impl Drop for AttachmentDownloads {
     }
 }
 
-fn copy_verified(
+fn fetch_attachment(
+    url: Url,
+    grant: AttachmentGrant,
+) -> Result<DownloadedAttachment, DurableRunnerError> {
+    let failed = || DurableRunnerError::invalid("attachment download failed");
+    let client = Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|_| failed())?;
+    let response = client
+        .get(url)
+        .bearer_auth(&grant.token)
+        .send()
+        .map_err(|_| failed())?;
+    if response.status() != StatusCode::OK
+        || response
+            .content_length()
+            .is_some_and(|size| size != grant.byte_size)
+    {
+        return Err(failed());
+    }
+    read_verified(response, &grant).map_err(|_| failed())
+}
+
+fn read_verified(
     mut source: impl Read,
-    file: &mut File,
     grant: &AttachmentGrant,
-) -> io::Result<()> {
+) -> io::Result<DownloadedAttachment> {
+    let mut bytes = Vec::with_capacity(grant.byte_size as usize);
     let mut buffer = [0; 16 * 1024];
     let mut digest = Sha256::new();
     let mut remaining = grant.byte_size;
@@ -202,12 +304,15 @@ fn copy_verified(
             .checked_sub(count as u64)
             .ok_or(io::ErrorKind::InvalidData)?;
         digest.update(&buffer[..count]);
-        file.write_all(&buffer[..count])?;
+        bytes.extend_from_slice(&buffer[..count]);
     }
     if remaining != 0 || format!("{:x}", digest.finalize()) != grant.sha256 {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    Ok(())
+    Ok(DownloadedAttachment {
+        bytes,
+        extension: grant.extension(),
+    })
 }
 
 #[cfg(test)]
@@ -264,21 +369,50 @@ mod tests {
         let input = grant(b"image");
         fs::create_dir(&downloads.directory).unwrap();
         fs::write(downloads.directory.join("old.png"), b"old turn").unwrap();
+        downloads.initialize().unwrap();
+        assert!(!downloads.directory.exists());
         for bytes in [b"im".as_slice(), b"images", b"wrong"] {
-            assert!(downloads.store(&input, bytes).is_err());
-            assert_eq!(fs::read_dir(&downloads.directory).unwrap().count(), 0);
+            assert!(read_verified(bytes, &input).is_err());
         }
-        let first = downloads.store(&input, b"image".as_slice()).unwrap();
+        let first = downloads
+            .store(read_verified(b"image".as_slice(), &input).unwrap())
+            .unwrap();
         assert_eq!(first.extension().unwrap(), "png");
         assert_eq!(fs::read(&first).unwrap(), b"image");
         downloads.close();
-        assert!(downloads.download(grant(b"image"), "turn-a").is_err());
+        assert!(downloads.start(grant(b"image"), "turn-a").is_err());
         assert!(!first.exists());
-        downloads.reset();
-        let second = downloads.store(&input, b"image".as_slice()).unwrap();
+        downloads.open_next_turn();
+        let second = downloads
+            .store(read_verified(b"image".as_slice(), &input).unwrap())
+            .unwrap();
         assert_ne!(first, second);
         drop(downloads);
         assert!(!second.exists());
+        fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn cancelling_a_slow_attachment_does_not_wait_for_the_transfer() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir(&root).unwrap();
+        let mut downloads = AttachmentDownloads::new(&root);
+        let (release, blocked) = std::sync::mpsc::channel();
+        let id = downloads
+            .start_worker(move || {
+                blocked.recv().unwrap();
+                Ok(DownloadedAttachment {
+                    bytes: b"image".to_vec(),
+                    extension: ".png",
+                })
+            })
+            .unwrap();
+        assert_eq!(downloads.poll(id).unwrap(), None);
+        downloads.close();
+        assert!(downloads.poll(id).is_err());
+        release.send(()).unwrap();
+        let pending = downloads.pending.take().unwrap();
+        pending.worker.join().unwrap();
+        assert!(!downloads.directory.exists());
         fs::remove_dir(root).unwrap();
     }
 }

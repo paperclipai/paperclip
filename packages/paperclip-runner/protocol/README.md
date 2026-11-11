@@ -161,8 +161,10 @@ no query or fragment, a short-lived opaque bearer `token`, `byteSize`,
 tenant download endpoint and issue a grant redeemable for only the admitted
 file during that turn. Keep grants in private controller state.
 
-Runner makes a bounded HTTPS GET with the grant in the Authorization header,
-verifies the complete file, and returns `{ path }` for use by the provider.
+Runner starts a bounded HTTPS GET with the grant in the Authorization header
+and returns `{ status: "pending", downloadId }`. The controller polls the same
+command with only `{ downloadId }`. Runner can process Stop while the GET runs.
+Once it verifies the complete file, the poll returns `{ status: "ready", path }`.
 The path is local to the Runner, uses a random filename, and is valid only
 during the bound turn. Runner clears its private download directory on turn
 settlement, authority rotation, and shutdown. The next use of that Runner
@@ -170,6 +172,7 @@ state directory also clears residue from interrupted processes. The command
 supports files through 10 MiB and limits live downloads to 128 files or
 128 MiB per turn. Providers should receive only the path and file metadata.
 
-The tenant controller must gate this command on a compatible Runner build.
-The command defines the Runner receiver. Attachment admission and issuance
-of download grants belong to the tenant app.
+The authenticated `session.snapshot` result advertises this command with
+`attachmentDownloadVersion: 1`. The tenant controller uses this capability
+before issuing a grant. Attachment admission and issuance of grants belong
+to the tenant app.
