@@ -6,6 +6,8 @@ import type { CostDataQualityReport, CostByProject, CostEvent, IssueCostSummary,
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
+import { apiReadDigests, recordParams } from "./api-read-receipts.js";
 import { checks, entity, hasLink, project, task, sameTask, type Entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, identityWorker, observeIdentity, openStandingChat, probeAgentPermission } from "./identity-support.js";
 
@@ -45,6 +47,53 @@ async function nativeUnresolvedContext(ctx: ChatCatalogContext, retryable: boole
   if (!prerequisite.eligible) throw new Error(`Setup blocker: actual completed native accounting prerequisite is ${prerequisite.disposition}; unresolved reasons=${prerequisite.unresolvedReasons.join(",") || "none"}. Saved retry debt cannot be fabricated`);
   return { worker, project: p, preflightTask: await ctx.input.api.get<Entity>(`/api/issues/${preflightTask.id}`), originalRun: original, originalRunId: run.id, originalUsageHash: digest(original.usageJson), originalLogHash: original.logSha256, unresolvedBefore: quality };
 }
+const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/** One chat-agent product call: call_api saves its input as a digest, keeping only the operation, ok and status. */
+export interface LeadApiCall { runId: string; operationId: string; digest: string; ok: boolean; status: number }
+/** Pair each redacted call_api use with its result by run and item id. Payloads and wording are never read. */
+export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadApiCall[] {
+  const uses = new Map<string, { operationId: string; digest: string }>(); const calls: LeadApiCall[] = [];
+  for (const row of events) {
+    const envelope = objectRecord(objectRecord(row.payload).prpEvent), item = objectRecord(objectRecord(envelope.payload).item);
+    const runId = String(row.runId ?? envelope.runId ?? "");
+    if (item.type === "tool_use" && item.name === "call_api") {
+      const input = objectRecord(item.input);
+      if (typeof input.operationId === "string") uses.set(`${runId}:${String(item.id)}`, { operationId: input.operationId, digest: String(input.apiPayloadSha256 ?? "") });
+      continue;
+    }
+    if (item.type !== "tool_result") continue;
+    const use = uses.get(`${runId}:${String(item.tool_use_id)}`), result = objectRecord(item.result);
+    if (!use || result.apiOperationId !== use.operationId || typeof result.status !== "number") continue;
+    calls.push({ runId, ...use, ok: result.ok === true, status: result.status });
+  }
+  return calls;
+}
+/** Agent-readable saved cost projections. Company reports are bound by operation (one company per attempt);
+ * the task cost summary is bound to the prerequisite task by its input digest. */
+const COMPANY_COST_READS = new Set(["summary", "by-agent", "by-agent-model", "by-provider", "by-biller", "by-project", "data-quality"]
+  .map(segment => `GET /api/companies/{companyId}/costs/${segment}`));
+export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, task: Pick<Entity, "id" | "identifier"> | undefined) {
+  const taskDigests = task ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "true" }, { excludeRoot: "false" }] }]) : new Set<string>();
+  return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
+    && (COMPANY_COST_READS.has(call.operationId) || call.operationId === "GET /api/issues/{id}/cost-summary" && taskDigests.has(call.digest)));
+}
+/** A successful agent write to cost, finance, budget or accounting records, or to run/issue execution, would
+ * fabricate the repair or redo the work. Denied attempts (403) are not writes. */
+export function agentAccountingOrExecutionWrites(calls: readonly LeadApiCall[]) {
+  return calls.filter(call => call.ok && !call.operationId.startsWith("GET ")
+    && /cost|finance|budget|accounting|\/heartbeat-runs\/|\/wakeup|\/retry|\/checkout|\/release/.test(call.operationId));
+}
+/** A rendered chat link from these replies opens the Costs page, where the retry control lives. */
+export function costsPageLinked(o: { origin: string; renderedLinkEvidence?: Array<{ href: string; commentId?: string }> }, commentIds: readonly string[]) {
+  return (o.renderedLinkEvidence ?? []).some(link => {
+    if (!link.commentId || !commentIds.includes(link.commentId)) return false;
+    try {
+      const url = new URL(link.href, o.origin); if (url.origin !== new URL(o.origin).origin) return false;
+      const parts = url.pathname.split("/").filter(Boolean);
+      return parts.length === 3 && parts[1] === "activity" && parts[2] === "costs" || parts.length === 2 && parts[1] === "costs";
+    } catch { return false; }
+  });
+}
 export function gradeAccounting(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-native-accounting-evidence", !!o, "Actual completed native usage, public accounting projections and persisted independent readback are required."); if (!o) return c.result();
   const before = o.state.originalRun as HeartbeatRun | undefined; const after = o.state.afterOriginalRun as HeartbeatRun | undefined;
@@ -81,24 +130,27 @@ export function gradeAccounting(value: unknown) {
     c.add("independent-post-retry-ledger-classification", !!afterQuality && Array.isArray(ledger) && o.state.afterStillUnresolved === actualUnresolved && o.state.confirmedPricedRepair === actualRecorded && (actualUnresolved || actualRecorded),
       "Actual saved quality records and the sole original worker's ledger, not HTTP success or fixture booleans alone, classify the human retry result.");
     const finalReply = typeof o.state.finalReply === "string" ? o.state.finalReply : "";
-    const initialReply = typeof o.state.initialReply === "string" ? o.state.initialReply : "";
     const finalRun = o.runs.find(run => run.id === o.state.finalReplyRunId);
     c.add("actual-post-retry-human-and-native-reply", typeof o.state.retryHumanFollowup === "string" && o.humanQueries.includes(o.state.retryHumanFollowup)
       && !!finalRun && finalRun.agentId === o.leadId && finalRun.status === "succeeded" && finalRun.runtimeMode === "native" && !!finalReply.trim(),
-      "The actual human reports the real retry receipt and independently read accounting outcome, followed by a distinct persisted native chat reply.");
-    const recordedClaim = /(?:cost|charge|usage|accounting)[^.\n]{0,65}(?:recorded|repaired|resolved|recovered)|(?:recorded|repaired|resolved|recovered)[^.\n]{0,65}(?:cost|charge|usage|accounting)/i;
-    const unresolvedClaim = /(?:still|remains?|not yet|not fully)[^.\n]{0,65}(?:unresolved|pending|estimated|incomplete|unconfirmed)|(?:unresolved|pending|estimated|incomplete|unconfirmed)[^.\n]{0,65}(?:still|remains?)/i;
-    c.add("honest-post-retry-accounting-result", o.state.confirmedPricedRepair === true
-      ? recordedClaim.test(finalReply) && !unresolvedClaim.test(finalReply) && !/\b(?:not|never|wasn.t|isn.t)\s+(?:actually\s+)?(?:recorded|repaired|resolved)/i.test(finalReply)
-      : o.state.afterStillUnresolved === true && unresolvedClaim.test(finalReply) && !/\b(?:now|fully|successfully)\s+(?:recorded|repaired|resolved|recovered)|\b(?:fixed|repaired|resolved)\s+(?:the|that|its|your)\s+(?:missing\s+)?(?:cost|charge|usage|accounting)/i.test(finalReply),
-      "The post-action reply distinguishes independently confirmed recorded charges from still-unresolved/estimated accounting; the initial guidance cannot predict the human result.");
-    c.add("guides-accounting-without-rerun", /cost|accounting|usage/i.test(initialReply) && /retry|record/i.test(initialReply) && /saved|existing|without.*run|not.*rerun|no.*rerun/i.test(initialReply)
-      && !/\bI(?:'ve| have)?\s+(?:fixed|repaired|recorded|rerun|restarted)\b/i.test(initialReply)
-      && !/\bI(?:'ve| have)?\s+(?:rerun|restarted)\b/i.test(finalReply), "Initial guidance uses the saved-usage control; neither phase claims a new execution of the original work.");
+      "The actual human reports what the retry control showed, followed by a distinct persisted native chat reply.");
+    // The reply's wording is never matched. The person only reports the toast they saw, which reads
+    // "Costs recorded." even when the recorded usage still has no price, so an honest answer needs the
+    // saved accounting: the post-retry run must read it through a product cost projection.
+    const calls = Array.isArray(o.state.leadApiCalls) ? o.state.leadApiCalls as LeadApiCall[] : undefined;
+    const preflight = o.state.preflightTask as Entity | undefined;
+    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, preflight),
+      "After the human retry, the chat run reads the saved cost projections before explaining whether the cost is recorded or still unresolved.");
+    const initialIds = Array.isArray(o.state.initialReplyCommentIds) ? o.state.initialReplyCommentIds as string[] : [];
+    c.add("initial-guidance-links-saved-cost-retry", initialIds.length > 0 && costsPageLinked(o, initialIds),
+      "Before any retry, the chat reply gives the person a link to the Costs page, where the authorized saved-cost retry control is.");
+    c.add("no-agent-accounting-fabrication-or-rerun", !!calls && agentAccountingOrExecutionWrites(calls).length === 0,
+      "The chat agent never writes cost, budget or accounting records or starts run/task execution itself; only the human retry records saved usage.");
   } else c.add("known-accounting-case", false, "No accounting oracle exists for this case.");
   return c.result();
 }
 const sources = ["chat-catalog-domains/identity-accounting.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/budgets-costs.yaml"];
+const repairSources = [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"];
 async function verifyUnresolvedSetup(ctx: ChatCatalogContext, state: Record<string, unknown>) {
   const quality = await ctx.input.api.get<CostDataQualityReport>(`/api/companies/${ctx.input.fixtures.company.id}/costs/data-quality?period=all`);
   const c = checks(); const rows = [...quality.runs, ...quality.events].filter(row => row.runId === state.originalRunId);
@@ -117,6 +169,12 @@ async function observeAccounting(ctx: ChatCatalogContext, state: Record<string, 
   if (ctx.scenario.id.endsWith("repair-cost-recording") && state.finalReplyRunId) {
     const comments = await ctx.input.api.get<IssueComment[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
     state.finalReply = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === state.finalReplyRunId).map(row => row.body ?? "").join("\n");
+    const calls: LeadApiCall[] = [];
+    for (const run of (await ctx.allRuns()).filter(row => row.agentId === ctx.input.fixtures.agent.id)) {
+      const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
+      calls.push(...leadApiCalls(events.map(row => ({ ...row, runId: row.runId ?? run.id }))));
+    }
+    state.leadApiCalls = calls;
   }
   return observeIdentity(ctx, state);
 }
@@ -157,13 +215,13 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The completed native run requiring saved-cost recovery is ${state.originalRunId}, on task ${state.preflightTask.identifier}. Its public accounting quality record is actually retryable and retains saved usage. Only the person may use cost-recording retry; do not start or rerun the task.` });
     return { ...state };
   }, gradeAccounting, {
-    authentication: "human-session", sourceFiles: sources, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v2", sourceFiles: repairSources, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] },
     async act(ctx, state) {
       await pollUntil({ label: "accounting guidance source settled", deadlineAt: Date.now() + 150_000, load: async () => { await ctx.refreshIssue(); return ctx.allRuns(); },
         accept: rows => rows.length === 2 && rows.every(row => row.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
       const initialComments = await ctx.input.api.get<IssueComment[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
-      state.initialReply = initialComments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id).map(row => row.body ?? "").join("\n");
+      state.initialReplyCommentIds = initialComments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id).map(row => row.id);
       const previousRunIds = new Set((await ctx.allRuns()).map(run => run.id));
       const root = `/api/companies/${ctx.input.fixtures.company.id}`; state.agentRetryStatus = await probeAgentPermission(ctx, `${root}/costs/retry-accounting`, "POST", { runId: state.originalRunId });
       const source = ctx.input.page.url(); await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/activity/costs?period=all`, { waitUntil: "domcontentloaded" });
@@ -182,7 +240,8 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
       await ctx.input.evidence("identity-saved-usage-retry.json", { runId: state.originalRunId, actualHumanHttpStatus: receipt.status(), accounted: result.accounted, confirmedPricedRepair: state.confirmedPricedRepair,
         afterStillUnresolved: state.afterStillUnresolved, originalRunNeverRerun: (await ctx.allRuns()).filter(run => run.agentId === entity(state, "worker").id).length === 1 });
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
-      const followup = `I clicked Retry cost recording for run ${state.originalRunId}. The actual HTTP ${receipt.status()} receipt says accounted=${result.accounted}. Fresh saved accounting shows ${state.afterStillUnresolved ? "remaining unresolved or estimated accounting" : "no remaining unresolved accounting"}; recorded ledger: ${JSON.stringify(ledger.map(row => ({ billingType: row.billingType, costCents: row.costCents, eventCount: row.eventCount, estimatedEventCount: row.estimatedEventCount })))}. What does this actual result mean for the missing cost? Do not run the original task again.`;
+      // The person reports only what the page showed them; the harness's own accounting readback stays out of chat.
+      const followup = `I clicked Retry cost recording for that run. The page said "${result.accounted ? "Costs recorded." : "No new cost data is available."} The agent was not rerun." Is the missing cost fixed now?`;
       state.retryHumanFollowup = followup; await sendChatMessage(ctx.input.page, followup);
       const finalRuns = await pollUntil({ label: "actual post-retry native accounting explanation", deadlineAt: Date.now() + 150_000, load: async () => { await ctx.refreshIssue(); return ctx.allRuns(); },
         accept: rows => rows.length === 3 && rows.every(row => row.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
