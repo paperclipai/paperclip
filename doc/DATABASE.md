@@ -2285,6 +2285,19 @@ named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
 
+An issue list or inbox request reads the waits of all its tasks in one pass.
+That pass checks the requester provenance of every waiting run with
+`chatRunSourceMessageIds`. The runs that need the same kind of provenance read
+share one statement, so the statement count follows the longest requester
+lineage, not the number of waits. Each run gets the decision of a separate
+`chatRunSourceMessageId` call: both use the same walk and the same reads. The
+benchmark counts the statements of one request and measures its wall and CPU
+time against a pre-fix commit:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-review-wait-provenance.ts --baseline-ref=<pre-fix commit>
+```
+
 
 ### Sandbox creation ownership
 

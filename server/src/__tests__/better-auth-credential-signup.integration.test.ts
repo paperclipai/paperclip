@@ -89,7 +89,7 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     const signUp = await request(app)
       .post("/api/auth/sign-up/email")
       .set("origin", ORIGIN)
-      .send({ email: EMAIL, password: PASSWORD, name: "Founder" });
+      .send({ email: EMAIL, password: PASSWORD, name: "Founder", issuer: "client-forged-issuer" });
 
     // A missing `account` column fails here with a 500 and an empty body.
     expect(signUp.status).toBe(200);
@@ -102,9 +102,14 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatchObject({
       providerId: "credential",
-      issuer: null,
+      issuer: "local:credential",
     });
     expect(accounts[0]?.password).toBeTruthy();
+    // Frozen Better Auth 1.7.2 dist/api/routes/sign-in.mjs:320, SHA256
+    // 04b21b699fd3f63a6c437eaa8514bd22284a49117d428a037c84f9ab89764916.
+    const oldReaderAccount = accounts.find(account => account.providerId === "credential"
+      && account.issuer === "local:credential" && account.accountId === signUp.body.user.id);
+    expect(oldReaderAccount?.id).toBe(accounts[0]?.id);
 
     const signIn = await request(app)
       .post("/api/auth/sign-in/email")
@@ -115,13 +120,13 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     expect(signIn.body?.user?.email).toBe(EMAIL);
     expect(sessionCookies(signIn).length).toBeGreaterThan(0);
 
-    await db.update(authAccounts).set({ issuer: "local:credential" });
-    const legacySignIn = await request(app)
+    await db.update(authAccounts).set({ issuer: null });
+    const nullableIssuerSignIn = await request(app)
       .post("/api/auth/sign-in/email")
       .set("origin", ORIGIN)
       .send({ email: EMAIL, password: PASSWORD });
-    expect(legacySignIn.status).toBe(200);
-    expect(legacySignIn.body?.user?.email).toBe(EMAIL);
+    expect(nullableIssuerSignIn.status).toBe(200);
+    expect(nullableIssuerSignIn.body?.user?.email).toBe(EMAIL);
 
     await expect(db.insert(authAccounts).values({ ...accounts[0]!, id: "duplicate-credential" }))
       .rejects.toMatchObject({ cause: { code: "23505", constraint_name: "account_provider_account_id_uq" } });
