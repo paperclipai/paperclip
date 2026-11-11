@@ -1,4 +1,5 @@
 import { imagePreparationReceiptIds } from "./task-chat/image-resources";
+import { createUuid } from "@/lib/uuid";
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
@@ -2905,7 +2906,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const hasAgentAssignee = Boolean(submissionAgentId ?? issueAssigneeAgentId);
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      args[4] ??= crypto.randomUUID();
+      args[4] ??= createUuid();
       const attempt = beginSubmission(args[4], args[2] ? {
         agentId: args[2].assigneeAgentId,
         agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
