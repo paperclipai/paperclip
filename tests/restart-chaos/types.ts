@@ -27,8 +27,9 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
  * G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave).
  * Q1: a saved question (question-handoff.ts). Q2, Q3: journeys.ts.
  * L1: high-output, high-accounting run for database contention (contention.ts).
+ * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "F1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;

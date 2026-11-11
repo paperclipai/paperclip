@@ -337,6 +337,31 @@ Limits:
 - Combine K15 with `--adapters opencode` and `--daytona-reuse-lease` or
   `--daytona-warm` to match staging's workload mix.
 
+## Absolute symlink in the workspace (F1)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters codex,opencode --workloads F1 --faults K2 --storage s3 --concurrency 2 --tasks 2 --seed 9304
+```
+
+F1 is opt-in. The agent creates `hosts-link-<nonce>`, which is an absolute
+symlink to `/etc/hosts`, in its repository workspace and keeps it. It also
+writes a notes file, and then marks the task done.
+
+On staging, a remote save-back refused such a link
+(`remote_workspace_archive_unsafe_symlink`). The save-back then used up its
+retries and left the task blocked. Agents create absolute links in ordinary
+work, for example in tool caches or `node_modules/.bin`.
+
+The oracle passes when:
+
+- the task is `done`;
+- the notes file is saved, without a Retry.
+
+How the product saves the link itself (skip it, keep it, or record it) is not
+graded. F1 is meaningful with a remote workspace (`--env daytona`, with
+`--storage s3` as on staging). Locally it is a plain repository task.
+
 ## Config faults (CF1–CF3, `config-wave.ts`)
 
 ```sh
@@ -1036,7 +1061,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `grader.ts` | Pure R1–R6 grading over the samples, plus the universal checks. |
 | `universal.ts`, `universal-audit.ts` | U1–U4 on every task, and their audit over saved waves. |
 | `contention.ts` | L1 workload, its accounting oracle and the `--db-pressure` writers. |
-| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
+| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, with their T-oracles. |
 | `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
