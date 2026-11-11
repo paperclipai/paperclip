@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, type LeadApiCall } from "./identity-accounting.js";
+import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, isCostsPagePath, type LeadApiCall } from "./identity-accounting.js";
 import { callApiInputDigest } from "./api-read-receipts.js";
 import type { IdentityObservation } from "./identity-support.js";
 const costRead = (runId: string, operationId: string, status = 200, digest = "d"): LeadApiCall => ({ runId, operationId, digest, ok: status < 300, status });
@@ -144,4 +144,8 @@ describe("company cost reads and task summaries bound to the repaired run", () =
     expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: "other" } })], "final", { companyId: company })).toBe(false);
     expect(readSavedAccounting([read("GET /api/issues/{id}/cost-summary", { pathParams: { id: task.id }, query: { excludeRoot: "true" } })], "final", { task })).toBe(false);
   });
+});
+it("the browser check opens the same Costs links the grader accepts", () => {
+  for (const path of ["/ACO/activity/costs", "/ACO/costs"]) expect(isCostsPagePath(path)).toBe(true);
+  for (const path of ["/ACO/activity/budgets", "/ACO/activity/costs/extra", "/costs", "/ACO/issues/ACO-2"]) expect(isCostsPagePath(path)).toBe(false);
 });

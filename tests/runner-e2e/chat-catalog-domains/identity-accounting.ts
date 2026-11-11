@@ -120,13 +120,17 @@ export function agentAccountingOrExecutionWrites(calls: readonly LeadApiCall[]) 
     && /cost|finance|budget|accounting|\/heartbeat-runs\/|\/wakeup|\/retry|\/checkout|\/release/.test(call.operationId));
 }
 /** A rendered chat link from these replies opens the Costs page, where the retry control lives. */
+/** The Costs page (`/<prefix>/activity/costs`) or its `/<prefix>/costs` redirect. */
+export function isCostsPagePath(pathname: string) {
+  const parts = pathname.split("/").filter(Boolean);
+  return parts.length === 3 && parts[1] === "activity" && parts[2] === "costs" || parts.length === 2 && parts[1] === "costs";
+}
 export function costsPageLinked(o: { origin: string; renderedLinkEvidence?: Array<{ href: string; commentId?: string }> }, commentIds: readonly string[]) {
   return (o.renderedLinkEvidence ?? []).some(link => {
     if (!link.commentId || !commentIds.includes(link.commentId)) return false;
     try {
       const url = new URL(link.href, o.origin); if (url.origin !== new URL(o.origin).origin) return false;
-      const parts = url.pathname.split("/").filter(Boolean);
-      return parts.length === 3 && parts[1] === "activity" && parts[2] === "costs" || parts.length === 2 && parts[1] === "costs";
+      return isCostsPagePath(url.pathname);
     } catch { return false; }
   });
 }
@@ -219,7 +223,7 @@ async function verifyAccountingLink(ctx: ChatCatalogContext, state: Record<strin
   const href = o?.links.find(link => { const url = new URL(link, ctx.input.api.baseURL); return url.origin === ctx.input.api.baseURL
     && (ctx.scenario.id.endsWith("spend-breakdown")
       ? [entity(state, "morganReceiptTask"), entity(state, "rileyReceiptTask")].some(row => [row.id, row.identifier].some(id => id && url.pathname.includes(`/issues/${id}`)))
-      : url.pathname.includes("/activity/costs") || url.pathname.includes(`/runs/${state.originalRunId}`)); });
+      : isCostsPagePath(url.pathname) || url.pathname.includes(`/runs/${state.originalRunId}`)); });
   if (!href) throw new Error("Actual supporting cost/task/run link is required");
   await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).first().click();
   if (ctx.scenario.id.endsWith("spend-breakdown")) await expect(ctx.input.page.getByText(/Launch imported (?:Morgan|Riley) API usage/, { exact: true }).first()).toBeVisible();
