@@ -15,6 +15,13 @@
  * callback settles as interrupted with an unknown outcome. It is never
  * executed again. A callback that this process is still running, or that this
  * process dispatched and saw fail, stays pending.
+ *
+ * Exception: an authority may settle a transactional write itself, for any
+ * admission, when its effect and receipt commit in one locked transaction
+ * (server `TRANSACTIONAL_RECEIPT_OPERATIONS`, today only `write_document`).
+ * Its `recover` then runs the receipt-guarded write, which replays the saved
+ * result or applies it once; the owner-gone guard here is not what makes that
+ * safe.
  */
 
 import type { SemanticInputAdmission } from "./durable-prp-control-plane.js";

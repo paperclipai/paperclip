@@ -1579,6 +1579,8 @@ An explicit recovery action is a typed liveness repair path for a source issue. 
 
 A terminal native failure can retain a result accepted before checkpoint or cleanup failed. That result is historical evidence, not a live controller. New user input may start a fresh turn after the controller and execution environment have stopped and ordinary admission checks pass. Preserve the failed run, its result, and its recovery budget. Do not commit the old result, infer action outcomes, or replay the failed turn. A message saved while cleanup is pending must be reconsidered after verified cleanup and delivered once. External chat messages retain their original inbound action, wake receipt and actor. Cleanup delegates reconsideration to the live inbound owner, which revalidates the endpoint, conversation generation, principal and exact saved source before normal admission. The existing stranded-queue sweep uses the same owner after a lost callback or restart; it cannot substitute a generic assignment wake. A rejected source must not prevent other saved messages from being reconsidered. Admission must consume its deferred receipt in the same transaction that creates the new run, including in agent chat, where later messages keep their separate turns. Completing that run must not promote the consumed receipt again. Workspace-export repair retains its separate saved-result recovery path.
 
+When a native run's accepted result reports a failed turn without a classified provider error (`run_failed_partial_evidence_preserved`, for example an OpenCode server that was killed or ended without an answer), the status decision keeps the task's status and queues one same-agent `schedule_retry` wake. The wake dispatcher accepts that committed decision effect as the continuation's provenance, exactly like an `enqueue_continuation` effect, so the task always has queued work, and the retry answers the same external chat conversation. The automatic continuation is used once per chain: if the run started from that wake fails the same way, the decision is `native_run_failed_continuation_exhausted`, the task is blocked with a board blocker, and the visible Retry starts the next attempt.
+
 A host-verified workspace copy-back receipt also permits new user input after
 a native coordinator reaches terminal failure with a retained result. The receipt
 must bind the company, task, run, allocation, descriptor and final file digest.
@@ -3258,6 +3260,26 @@ admission applies the same checks as for a per-turn owner. The journal of a
 warm owner has no `runner.suspend` command. A local warm Runner and a resumed
 sandbox that still holds the Runner keep the live adoption path.
 
+A remote Runner whose sandbox lease for the prior run ended (`released` or
+`expired`, with a release time) on a different sandbox than this run's is gone
+by record. No process remains that could act on a command it never
+acknowledged. For such an owner, these unfinished commands do not hold the
+retirement:
+
+- its own lifecycle commands (`runner.suspend`, `runner.drain`,
+  `runner.shutdown`);
+- deliveries that only that Runner could receive: `run.attach`,
+  `semantic_tool.result`, `session.snapshot` and `session.goal.get`. A
+  journaled `semantic_tool.result` also answers its tool input, because the
+  controller journals the answer after the tool ran.
+
+Retirement replays none of these commands. Any other unfinished command, such
+as `turn.start`, `turn.steer`, `request.resolve` or
+`external_provider.operation`, still holds the owner. A tool input with no
+journaled answer still holds it with `journal_tool_input_unanswered`. A
+retained lease, a lease on this run's sandbox, or a missing lease record keeps
+every unfinished command decisive.
+
 The provider session then follows the normal resume-or-replace policy. A
 resumed sandbox, a local warm session, a plugin task, a restart claim, or any
 missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
@@ -3349,9 +3371,14 @@ that process is gone. Second, the resume claimed a provider attempt within the
 three-attempt budget from a `retryable_failure` coordinator. Third, that failure
 saved `recoveryMode: "exact_checkpoint_resume"`, `recoverable`,
 `providerSessionEstablished` and `checkpointExists`, with no replacement recorded,
-and the runner restores that same checkpointed conversation. A remote run, a
-bootstrap retry, an ambiguous state, a missing or superseded stop record, an
-exhausted budget, or a replacement session keeps the existing failure.
+and the runner restores that same checkpointed conversation. The resume reconciler
+clears the saved failure when it claims the run. So it first appends a
+`same_run_resume` entry to `recovery_history` that copies those fields, together
+with its controller boot. The executor then reads that entry. It must be the last
+entry, and it must name the executor's boot. A remote run, a bootstrap retry, an
+ambiguous state, a missing or superseded stop record, an exhausted budget, a
+replacement session, or a claim entry from another boot or followed by another
+entry keeps the existing failure.
 
 A restart can also land after the agent proposed its result but before the
 provider turn ended. When the restored runner proves that turn ended with the
@@ -4540,7 +4567,15 @@ That transfer can stream without another sandbox archive. Provider exclusions ca
 also omit a nested entry with the same name; credentials remain excluded. Other
 copy failures and timeouts still fail. Workspace capture itself still needs free
 sandbox space. Its failed save operation names `remote_workspace_sandbox_disk_full`
-when that capacity is exhausted, without changing retry or ownership rules.
+when that capacity is exhausted, without changing ownership rules. Finalization
+does not retry that copy-back: nothing frees the sandbox between its attempts.
+The first full-disk failure ends finalization as
+`native_workspace_sync_out_retry_exhausted` and keeps the accepted result. Saved-work
+recovery then reclaims the retained sandbox's inactive provider cache and saves the
+files again with no provider turn. The export Retry stays available. A read-only
+fallback that only lost its connection (a closed transport, a provider 5xx or rate
+limit, or a sandbox state change) reports its own cause instead, and finalization
+keeps its bounded retry for it.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in

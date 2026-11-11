@@ -112,6 +112,47 @@ unconfirmed cleanup do not qualify. Error messages cannot authorize recovery.
 An arbitrary `closed` provider state stays closed. This path does not establish
 recovery for a Runner killed during an accepted turn.
 
+## ACPX turn starts cut off before the prompt left
+
+A turn start can fail without a definite answer: the sidecar's reply is lost or
+late (for example, a host freeze outlasts the request deadline), or the sidecar
+or Runner dies while the start is in flight. Resending the prompt could
+duplicate it, and a continuation could lose it.
+
+The sidecar's runtime port keeps a prompt-dispatch journal,
+`paperclip-turn-dispatch.jsonl`, in the session's private runtime directory
+(`turnDispatchJournalFile` and `turnDispatchJournalRecord` in the sidecar
+schema). When it starts a turn, before any provider work, it truncates the file
+and writes a `received` record. Immediately before ACPX writes the turn's first
+`session/prompt` request to the provider, it appends a `dispatched` record and
+fsyncs it. ACPX calls the host's `onAcpMessage("outbound")` hook synchronously
+before it writes the bytes, so a failed journal write aborts the prompt write.
+
+The Runner reads the journal only after it acquires the provider lifetime fence,
+which proves that the sidecar and the provider are gone.
+
+- A lone, complete `received` record for the turn proves that the prompt never
+  reached the provider. A start that failed in flight saves the session
+  `prepared`, with no active turn, and fails the command with
+  `ACPX turn start failed before its prompt reached the provider`. The run's
+  next `turn.start` reopens the conversation and sends the prompt once. A
+  Runner that died while the session was `turn_starting` restores the session
+  idle, emits `session.resumed` and no `turn.failed`, and the same-run resume
+  starts the turn once.
+- A `dispatched` record, a record of another turn, a torn or malformed file, or
+  no file (an older sidecar) proves nothing. The earlier behavior applies
+  unchanged: a failed start closes the session, and a killed Runner uses
+  lost-turn recovery.
+
+Until a proof settles it, the saved session stays `turn_starting`, so a Runner
+killed during the proof restores through the same check. The cut-off command is
+never executed again. Saved state gains no field, so an older Runner reading it
+mid-deploy sees only lifecycles it already handles.
+
+On the normal path the journal costs one small unsynced write when the turn
+starts and one append and fsync just before the prompt is written. It adds no
+wait, round trip or file transfer.
+
 ## ACPX cancellation without a reply
 
 The Runner serves controller commands one at a time. It therefore waits at most
@@ -603,6 +644,18 @@ callback that this process is not running (`dispatchToolCallback`) as
 earlier controller can never record a result, so this is the callback's only
 settlement, and it never executes the operation again. Every other unresolved
 input stays unsettled.
+
+`write_document` needs neither fallback. Its revision and its idempotency
+receipt commit in one transaction under the run and issue row locks, and the
+revision is compare-and-swap on `baseRevisionId`. The receipt is therefore the
+durable outcome record: present means the write applied, absent means it did
+not. Recovery runs the same receipt-guarded mutation, whichever controller
+admitted the callback. It returns the saved result when the receipt exists and
+applies the write once when it does not. A stale base, a reused key or invalid
+input is the call's real outcome and settles as a tool error. Any other failure
+leaves the call unsettled. A late original callback then replays the receipt,
+so the document is never written twice.
+
 A different case is a runner crash after the controller saved the result but
 before its delivery command completed. Codex/OpenCode explicitly opt in to
 reconciling that exact `semantic_tool.result` command through their durable tool

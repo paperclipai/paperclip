@@ -16,6 +16,7 @@ import {
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
   remoteWorkspaceFailureCause,
+  REMOTE_WORKSPACE_SANDBOX_DISK_FULL,
   removeRemoteRecoveryAttachment,
   restoreRemoteWorkspaceDirectory,
   type RemoteWorkspaceTarget,
@@ -1054,6 +1055,28 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
       await saved?.cleanup();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
+  });
+
+  it.each([
+    ["socket hang up", "transport_closed", true],
+    ["503 service unavailable", "provider_unavailable", true],
+    ["synthetic transfer unavailable", "provider_error", false],
+  ] as const)("keeps a full disk only when the read-only fallback did not just lose its connection (%s)", async (thrown, label, transient) => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained work\n");
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: REMOTE_WORKSPACE_SANDBOX_DISK_FULL,
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    remote.runner!.syncOut = async () => { throw new Error(thrown); };
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => { throw new Error("expected the capture to fail"); }, (error: Error) => error);
+    const fallback = `remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=${label}`;
+    // Finalization retries a dropped connection; a full disk goes straight to saved-work recovery.
+    if (transient) {
+      expect(failure.message).toBe(fallback);
+      // The save records where the fallback stopped.
+      expect(remoteWorkspaceFailureCause(failure)).toBe(fallback);
+    } else expect(failure).toMatchObject({ message: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, cause: { message: fallback } });
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained work\n");
   });
 
   it.each(["source changed", "copy changed", "extra file"])("rejects a read-only fallback when %s", async fault => {
