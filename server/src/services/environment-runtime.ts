@@ -24,7 +24,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { historicalProviderCredentials } from "./historical-provider-credentials.js";
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
+import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -1116,7 +1116,8 @@ async function waitForSettlingReusableLease(db: Db, input: {
         eq(environmentLeases.companyId, input.companyId),
         eq(environmentLeases.environmentId, input.environmentId),
         eq(environmentLeases.leasePolicy, "reuse_by_environment"),
-        eq(environmentLeases.status, "active"),
+        or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
+          sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${SANDBOX_STOP_AND_RETAIN_KEY}`)),
         ne(environmentLeases.heartbeatRunId, input.heartbeatRunId),
         input.executionWorkspaceId
           ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)

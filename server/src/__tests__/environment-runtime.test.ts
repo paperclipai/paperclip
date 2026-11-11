@@ -4922,7 +4922,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  async function seedSettlingWarmLease(predecessorFinishedAt: Date, predecessorStatus: "succeeded" | "failed" = "succeeded") {
+  async function seedSettlingWarmLease(predecessorFinishedAt: Date, predecessorStatus: "succeeded" | "failed" = "succeeded", stopReplyDelayMs = 0) {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
     const warmEnvironment = resolveRunnerEnvironmentForRun(seeded.environment, "paperclip_runner", { lifecycleMode: "warm" }, undefined, "selected-account:generation");
@@ -4930,6 +4930,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const call = vi.fn(async (_pluginId: string, method: string, input: any) => {
       if (method === "environmentResumeLease") return { providerLeaseId: input.providerLeaseId, metadata: { remoteCwd: "/workspace" } };
       if (method === "environmentAcquireLease") return { providerLeaseId: `warm-${++created}`, metadata: { remoteCwd: "/workspace" } };
+      if (method === "environmentStopLease") await new Promise(resolve => setTimeout(resolve, stopReplyDelayMs));
       if (method === "environmentDestroyLease" || method === "environmentStopLease" || method === "environmentReleaseLease") return {
         providerLeaseId: input.providerLeaseId, state: method === "environmentDestroyLease" ? "destroyed" : "stopped",
       };
@@ -4950,8 +4951,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     return { runtime, call, input, predecessor, predecessorRunId, nextRunId };
   }
 
-  it.each(["succeeded", "failed"] as const)("resumes a warm lease that its %s predecessor is still releasing instead of creating a fresh sandbox", async predecessorStatus => {
-    const f = await seedSettlingWarmLease(new Date(), predecessorStatus);
+  it.each([["succeeded", 0], ["failed", 0], ["failed", 1_500]] as const)("resumes a warm lease that its %s predecessor is still releasing (stop reply after %i ms) instead of creating a fresh sandbox", async (predecessorStatus, stopReplyDelayMs) => {
+    const f = await seedSettlingWarmLease(new Date(), predecessorStatus, stopReplyDelayMs);
     const released = new Promise<void>(resolve => setTimeout(() => {
       void f.runtime.releaseRunLeases(f.predecessorRunId, "released", undefined, "stop_and_retain").then(() => resolve());
     }, 400));
