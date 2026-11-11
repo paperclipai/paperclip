@@ -12651,6 +12651,11 @@ export function issueService(db: Db) {
             status: "in_progress",
             startedAt: now,
             updatedAt: now,
+            ...(expectedStatuses.includes("blocked") ? {
+              unblockDescriptor: sql`case when ${issues.status} = 'blocked' then null else ${issues.unblockDescriptor} end`,
+              blockedTransitionAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedTransitionAt} end`,
+              blockedOwnerNotifiedAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedOwnerNotifiedAt} end`,
+            } : {}),
           })
           .where(
             and(

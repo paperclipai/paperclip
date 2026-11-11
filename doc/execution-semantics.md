@@ -4106,6 +4106,19 @@ An absent, changed, pending, or agent-resolved response grants no such exception
 That bounded response remains a continuation after a workspace or AI-account wait,
 so final dispatch still verifies it. Finishing a dependency during preparation
 does not turn the admitted response into an attempt to check out the task.
+
+A person's answer to the agent's own question also continues a task that the same
+agent blocked while it waited for that answer. The agent can report such a wait as
+a blocker, for example after a later comment from the person moved the question
+into history. Dispatch accepts the Blocked task only through durable linkage: the
+interaction was created by the assignee on this task and resolved by a person,
+and the task's current Blocked status is the applied status decision
+(`current_track_blocker_waiting` or `task_wide_blocker_bound`) of a run of the
+same agent, recorded after the question was asked and before it was answered,
+with no later move into Blocked. The continuation then checks the task out to
+`in_progress` and clears its blocker fields. A task blocked by a person, blocked
+before the question existed, reassigned, done or cancelled still cancels the
+answer's continuation as before.
 Task interruption notices ignore Retry receipts for a superseded run. A later
 successful conversation must not inherit the old failure banner. This read-only
 projection neither retires Retry authority nor acknowledges independent saved input.

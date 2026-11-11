@@ -44,6 +44,7 @@ import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInT
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
 import { isVerifiedDependencyInteractionResponse } from "../../../services/queued-interaction-response.js";
+import { isAnswerToAgentBlockingQuestion } from "../../../services/blocked-question-answer.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -705,6 +706,9 @@ export function createPostgresRunDispatchAdapter(
       isDependencyBlockedInteractionResponse: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
         && context.dependencyBlockedInteraction === true
         && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
+      isAgentBlockingQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && await isAnswerToAgentBlockingQuestion(dbOrTx, { companyId: input.companyId, issueId,
           agentId: input.agentId, context })),
       isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
         await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),

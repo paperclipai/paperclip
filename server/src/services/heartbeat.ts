@@ -7,6 +7,7 @@ import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
+import { isAnswerToAgentBlockingQuestion } from "./blocked-question-answer.js";
 import { isVerifiedDependencyInteractionResponse } from "./queued-interaction-response.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { registerProviderLimitResumeWork, type PrepareChatRetry } from "./native-runtime/provider-limit-resume.js";
@@ -2304,10 +2305,13 @@ export function heartbeatService(
           await timePreparation("issue_checkout", async () => {
             const startsUnstartedTask = issueStatus === "todo" &&
               await isUnstartedTaskQuestionAnswer(db, { companyId: agent.companyId, issueId, interactionId: context.interactionId });
+            const answersAgentBlockingQuestion = issueStatus === "blocked" &&
+              await isAnswerToAgentBlockingQuestion(db, { companyId: agent.companyId, issueId, agentId: agent.id, context });
             await issuesSvc.checkout(
               issueId,
               agent.id,
-              [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : [])],
+              [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : []),
+                ...(answersAgentBlockingQuestion ? ["blocked"] : [])],
               run.id,
             );
           });
