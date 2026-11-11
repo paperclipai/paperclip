@@ -206,6 +206,7 @@ export function remoteRunnerWorkingDirectoryMoved(
       isNormalizedRemotePath(assigned) &&
       assigned !== posix.parse(assigned).root &&
       isNormalizedRemotePath(savedWorkingDirectory) &&
+      savedWorkingDirectory !== posix.parse(savedWorkingDirectory).root &&
       savedWorkingDirectory !== assigned,
   );
 }

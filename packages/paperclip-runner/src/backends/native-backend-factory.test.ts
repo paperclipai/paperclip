@@ -437,6 +437,16 @@ describe("native backend factory", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a filesystem root", "/", "Codex working directory cannot be a filesystem root"],
+    ["an unnormalized path", "/home/daytona/../root", "normalized absolute path"],
+  ])("keeps refusing a saved session whose working directory is %s", async (_label, workingDirectory, message) => {
+    const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
+    await expect(backend.recoverSession!({ ...snapshot, workingDirectory } as never, { signal: new AbortController().signal }))
+      .rejects.toThrow(message);
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   function movedRootRecovery(input: NativeExecutionInputV1) {
     const parent = "/home/daytona/paperclip-workspace/.paperclip-workspaces";
     const workspaceId = "a5a34403-04fe-4e7e-97cf-d8f371a802a4";
