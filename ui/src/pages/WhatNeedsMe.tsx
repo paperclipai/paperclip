@@ -406,10 +406,14 @@ function ClassicWhatNeedsMe() {
   // card once the feed lands, then drop the param so a later manual collapse is
   // not re-forced on the next refetch. Wins over the generic auto-expand below.
   useEffect(() => {
-    if (deepLinkConsumed || !deepLinkDecisionId || allItems.length === 0) return;
+    if (deepLinkConsumed || !deepLinkDecisionId || isLoading) return;
     const target = allItems.find(
       (item) => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId,
     );
+    if (!target) {
+      if (everyone && view !== "all") setView("all");
+      return;
+    }
     setDeepLinkConsumed(true);
     setAutoExpandDone(true);
     if (target) {
@@ -425,7 +429,7 @@ function ClassicWhatNeedsMe() {
         { replace: true },
       );
     }
-  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams]);
+  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams, isLoading, everyone, view, setView]);
 
   // Auto-expand the topmost inline-capable decision, once.
   useEffect(() => {

@@ -197,7 +197,11 @@ export function CoordinatorNeedsYou() {
     return groupBy === "type" ? [...result].sort(([a], [b]) => (a === "decisions" ? 0 : 1) - (b === "decisions" ? 0 : 1)) : [...result];
   }, [currentItems, groupBy, renderLimit]);
   useEffect(() => {
-    if (!deepLinkDecisionId || !selectedCompanyId || !pendingItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) return;
+    if (!deepLinkDecisionId || !selectedCompanyId) return;
+    if (!pendingItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) {
+      if (!feedWaiting && everyone && view !== "all") setView("all");
+      return;
+    }
     // A saved decision link takes precedence over local toolbar filters and the
     // rendering window. Consume it only after its actual card has mounted.
     if (query || agentFilter || projectFilter) { setQuery(""); setAgentFilter(""); setProjectFilter(""); return; }
@@ -210,7 +214,7 @@ export function CoordinatorNeedsYou() {
     card.focus({ preventScroll: true });
     card.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete("decisionId"); return next; }, { replace: true });
-  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, query, agentFilter, projectFilter, forUserId, setView, renderLimit, reducedMotion, setSearchParams]);
+  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, agentFilter, projectFilter, forUserId, setView, renderLimit, reducedMotion, setSearchParams]);
   const projects = useMemo(() => [...new Map([
     ...pendingItems.flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
     ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),

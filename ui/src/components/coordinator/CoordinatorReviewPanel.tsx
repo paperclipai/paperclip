@@ -10,6 +10,8 @@ import { attentionDetailImages, attentionImageUrl, isInlineResolvable } from "@/
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
 import { ApprovalPayloadRenderer } from "@/components/ApprovalPayload";
 import { ApprovalResolver } from "@/components/AttentionQueueRow";
+import { Button } from "@/components/ui/button";
+import { useQueryView } from "@/components/QueryView";
 import { MarkdownBody } from "@/components/MarkdownBody";
 
 /** The document a card asks you to review, when it has one (a plan approval today). */
@@ -25,7 +27,7 @@ export function attentionReviewDocumentKey(item: AttentionItem): string | null {
  * screenshots attached to the task.
  */
 export type NeedsYouArtifact =
-  | { kind: "document"; key: string; issueId: string; title?: string; documentTarget?: DocumentAnnotationHashTarget }
+  | { kind: "document"; key: string; issueId: string; title?: string; documentTarget?: DocumentAnnotationHashTarget; requestIssueId?: string }
   | { kind: "approval"; approvalId?: string }
   | { kind: "images" }
   | { kind: "attachment"; assetId: string; name?: string };
@@ -33,7 +35,7 @@ export type NeedsYouArtifact =
 export function needsYouArtifact(item: AttentionItem): NeedsYouArtifact | null {
   const issueId = item.relatedIssue?.id ?? (typeof item.subject.metadata?.issueId === "string" ? item.subject.metadata.issueId : null);
   const key = attentionReviewDocumentKey(item);
-  if (key && issueId) return { kind: "document", key, issueId };
+  if (key && issueId) return { kind: "document", key, issueId, requestIssueId: issueId };
   if (item.sourceKind === "approval") return { kind: "approval" };
   if (attentionDetailImages(item).length > 0) return { kind: "images" };
   return null;
@@ -64,6 +66,7 @@ export function needsYouMentionedArtifact(href: string, name?: string | null): N
 
 /** One id per artifact, so the same plan or approval never opens twice. */
 export function needsYouArtifactId(artifact: NeedsYouArtifact, item: AttentionItem) {
+  if (artifact.kind === "document" && artifact.requestIssueId) return `document:interaction:${item.subject.id}`;
   if (artifact.kind === "document") return `document:${artifact.issueId}:${artifact.key}${artifact.documentTarget?.revisionId ? `:${artifact.documentTarget.revisionId}` : ""}`;
   if (artifact.kind === "approval") return `approval:${artifact.approvalId ?? item.subject.id}`;
   if (artifact.kind === "attachment") return `attachment:${artifact.assetId}`;
@@ -95,14 +98,38 @@ export interface CoordinatorReviewPanelProps {
  * card's own actions to the bottom. Both read the same record, so answering
  * here or on the card resolves both (one record, many views).
  */
-export function CoordinatorReviewPanel({ companyId, item, artifact, agentMap, currentUserId, userLabelMap, onOpenTask, onResolved }: CoordinatorReviewPanelProps) {
+export function CoordinatorReviewPanel(props: CoordinatorReviewPanelProps) {
+  const { artifact, item } = props;
+  const requestIssueId = artifact.kind === "document" ? artifact.requestIssueId : undefined;
+  const request = useQuery({
+    queryKey: queryKeys.issues.interactions(requestIssueId ?? ""),
+    queryFn: () => issuesApi.listInteractions(requestIssueId!),
+    enabled: Boolean(requestIssueId),
+  });
+  const requestView = useQueryView(request);
+  if (!requestIssueId) return <CoordinatorReviewPanelContent {...props} />;
+  if (requestView.kind === "loading" || requestView.kind === "reconnecting") {
+    return <p role="status" className="text-sm text-muted-foreground">Loading the requested document…</p>;
+  }
+  const interaction = request.data?.find(entry => entry.id === item.subject.id);
+  const target = interaction?.kind === "request_confirmation" ? interaction.payload.target : null;
+  if (requestView.kind === "error" || !target || target.type !== "issue_document") {
+    return <div role="alert" className="space-y-2 text-sm"><p>The requested document could not be loaded.</p><Button variant="outline" onClick={() => void request.refetch()}>Retry</Button></div>;
+  }
+  const resolved: NeedsYouArtifact = { kind: "document", key: target.key, issueId: target.issueId ?? requestIssueId, requestIssueId,
+    documentTarget: { documentKey: target.key, revisionId: target.revisionId, interactionId: interaction!.id,
+      documentIssueId: target.issueId ?? requestIssueId, threadId: null, commentId: null, viewer: null } };
+  return <CoordinatorReviewPanelContent {...props} artifact={resolved} />;
+}
+
+function CoordinatorReviewPanelContent({ companyId, item, artifact, agentMap, currentUserId, userLabelMap, onOpenTask, onResolved }: CoordinatorReviewPanelProps) {
   const task = item.relatedIssue;
   const label = needsYouArtifactLabel(artifact);
-  const ownDocument = artifact.kind === "document" && artifact.issueId === task?.id;
+  const ownDocument = artifact.kind === "document" && (artifact.issueId === task?.id || artifact.requestIssueId === task?.id);
   const approvalId = artifact.kind === "approval" ? artifact.approvalId ?? item.subject.id : null;
   // "/NEE": the company prefix of the card's own links, for a mentioned artifact's link.
   const prefix = (task?.href ?? item.subject.href ?? "").match(/^\/[^/]+/)?.[0] ?? "";
-  const exactHref = artifact.kind === "document" ? `${ownDocument && task?.href ? task.href : `${prefix}/issues/${artifact.issueId}`}${buildDocumentAnnotationHash(artifact.documentTarget ?? { documentKey: artifact.key, threadId: null, commentId: null })}`
+  const exactHref = artifact.kind === "document" ? `${ownDocument && task?.href ? task.href : `${prefix}/issues/${artifact.requestIssueId ?? artifact.issueId}`}${buildDocumentAnnotationHash(artifact.documentTarget ?? { documentKey: artifact.key, threadId: null, commentId: null })}`
     : artifact.kind === "approval" ? (approvalId === item.subject.id ? item.subject.href : `${prefix}/approvals/${approvalId}`)
       : artifact.kind === "attachment" ? attachmentUrl(artifact.assetId)
         : task?.href ?? item.subject.href;

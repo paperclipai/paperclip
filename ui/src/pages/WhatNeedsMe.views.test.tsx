@@ -104,6 +104,15 @@ async function render(url = "/decisions") {
 }
 
 describe("classic Decisions views", () => {
+  it("finds a linked decision outside Mine before consuming its URL", async () => {
+    fixture.boardAccess = { userId: "scott", source: "session", memberships: [{ companyId: "company", status: "active", membershipRole: "admin" }] };
+    fixture.byView.all = [{ ...card("decision-target", { kind: "pool", userId: null, reason: "none" }), sourceKind: "decision", subject: { id: "target", kind: "decision", title: "Linked decision" } } as AttentionItem];
+    await render("/decisions?decisionId=target");
+    for (let tick = 0; tick < 5; tick++) await flush();
+    expect(fixture.calls).toContainEqual(expect.objectContaining({ view: "all" }));
+    expect(container.querySelector("[data-location]")?.textContent).not.toContain("decisionId");
+  });
+
   it("shows personal receipts even when there are no pending cards", async () => {
     fixture.byView = { mine: [] };
     fixture.receipts = [{

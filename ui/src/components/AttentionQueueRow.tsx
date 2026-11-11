@@ -858,6 +858,8 @@ export function ApprovalResolver({ item, companyId, toggle, onResolved, shareDra
   onViewDetails?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const onError = (error: unknown) => setActionError(error instanceof Error ? error.message : "The decision could not be saved.");
   // Keyed by the request's last (re)submission: a revised request starts clean.
   const draftKey = shareDraft ? reviseDraftKey(`approval:${item.subject.id}`, item.updatedAt) : null;
   const [sharedDraft, updateSharedDraft] = useReviseDraft(draftKey);
@@ -877,14 +879,20 @@ export function ApprovalResolver({ item, companyId, toggle, onResolved, shareDra
   const approve = useMutation({
     mutationFn: send("accept", (decisionNote) => approvalsApi.approve(item.subject.id, decisionNote)),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const reject = useMutation({
     mutationFn: send("reject", (decisionNote) => approvalsApi.reject(item.subject.id, decisionNote)),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const revise = useMutation({
     mutationFn: send("revise", (decisionNote) => approvalsApi.requestRevision(item.subject.id, decisionNote)),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   // Either view sending disables both.
   const working = approve.isPending ? "accept" : reject.isPending ? "reject" : revise.isPending ? "revise" : sharedDraft.working;
@@ -895,6 +903,7 @@ export function ApprovalResolver({ item, companyId, toggle, onResolved, shareDra
     return <>
       <ApprovalCardPanel item={item} companyId={companyId} artifactRow={artifactRow} onViewDetails={onViewDetails} />
       {footerContext}
+      {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
       <DecisionCardFooter leading={toggle}>
         {onViewDetails ? <Button size="sm" variant="ghost" onClick={onViewDetails}>{hire ? "View configuration" : "View details"}</Button> : null}
         <Button size="sm" variant="outline" onClick={() => reject.mutate()} disabled={pending}>
@@ -913,6 +922,7 @@ export function ApprovalResolver({ item, companyId, toggle, onResolved, shareDra
   // so expanding never moves the button the operator was already aiming at.
   return (
     <>
+      {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
       <Textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
@@ -948,14 +958,20 @@ export function JoinRequestResolver({ item, companyId, toggle, onResolved, prese
   presentation?: "card" | "panel";
 }) {
   const queryClient = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const onError = (error: unknown) => setActionError(error instanceof Error ? error.message : "The join request could not be saved.");
   const invalidate = () => { invalidateAttentionRecordViews(queryClient, companyId, item); onResolved?.(); };
   const approve = useMutation({
     mutationFn: () => accessApi.approveJoinRequest(companyId, item.subject.id),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const reject = useMutation({
     mutationFn: () => accessApi.rejectJoinRequest(companyId, item.subject.id),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const pending = approve.isPending || reject.isPending;
 
@@ -968,6 +984,7 @@ export function JoinRequestResolver({ item, companyId, toggle, onResolved, prese
           meta={agent ? ["Agent access", adapter ? getAdapterLabel(adapter) : null].filter(Boolean).join(" · ") : "Member access"} />
         <NeedsYouPanelNote>{agent ? "Approval adds this agent to the company." : "Approval adds them to the company as a member."}</NeedsYouPanelNote>
       </NeedsYouPanel>
+      {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
       <DecisionCardFooter leading={toggle}>
         <Button size="sm" variant="ghost" onClick={() => reject.mutate()} disabled={pending}>
           {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -982,6 +999,8 @@ export function JoinRequestResolver({ item, companyId, toggle, onResolved, prese
   }
 
   return (
+    <>
+    {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
     <ResolverFooter toggle={toggle}>
       <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
         {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -992,5 +1011,6 @@ export function JoinRequestResolver({ item, companyId, toggle, onResolved, prese
         Approve
       </Button>
     </ResolverFooter>
+    </>
   );
 }

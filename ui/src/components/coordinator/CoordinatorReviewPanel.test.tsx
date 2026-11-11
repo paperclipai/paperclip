@@ -5,13 +5,15 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem } from "@paperclipai/shared";
+import { pendingRequestConfirmationInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { issuesApi } from "@/api/issues";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { approvalsApi } from "@/api/approvals";
 import { ApprovalResolver } from "@/components/AttentionQueueRow";
-import { CoordinatorReviewPanel, needsYouMentionedArtifact } from "./CoordinatorReviewPanel";
+import { CoordinatorReviewPanel, needsYouArtifact, needsYouMentionedArtifact } from "./CoordinatorReviewPanel";
 
-vi.mock("@/api/issues", () => ({ issuesApi: { getDocument: vi.fn(), getDocumentRevision: vi.fn() } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { getDocument: vi.fn(), getDocumentRevision: vi.fn(), listInteractions: vi.fn() } }));
+vi.mock("@/components/AttentionInteractionResolver", () => ({ AttentionInteractionResolver: () => null }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async () => [{ id: "mgr", name: "Dottabot" }]) } }));
 vi.mock("@/api/approvals", () => ({ approvalsApi: { approve: vi.fn(), reject: vi.fn(), requestRevision: vi.fn(), get: vi.fn() } }));
 
@@ -96,6 +98,26 @@ describe("ApprovalResolver shared between a card and its side panel (PAP-775)", 
     expect(container.textContent).toContain("Revision under review");
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Open in"))!.click());
     expect(onOpen.mock.calls[0]?.[0]).toContain("#document-plan&thread=thread-2&revision=rev-1&interaction=req-1&documentIssue=NEE-9");
+    client.clear();
+  });
+
+  it("reviews the exact target of a plan request owned by another task", async () => {
+    const request = { ...pendingRequestConfirmationInteraction, id: "request-1", issueId: "request-task", payload: {
+      ...pendingRequestConfirmationInteraction.payload, target: { type: "issue_document" as const, issueId: "document-owner", key: "plan", revisionId: "pinned-revision" },
+    } };
+    vi.mocked(issuesApi.listInteractions).mockResolvedValue([request]);
+    vi.mocked(issuesApi.getDocumentRevision).mockClear().mockResolvedValue({ title: "Correct plan", body: "The plan being approved" } as never);
+    vi.mocked(issuesApi.getDocument).mockClear().mockResolvedValue({ title: "Wrong plan", body: "The request task's current plan" } as never);
+    const plan = { ...item, id: "plan-request", sourceKind: "issue_thread_interaction", subject: { ...item.subject, id: request.id, metadata: { issueId: "request-task", targetDocumentKey: "plan" } },
+      relatedIssue: { id: "request-task", kind: "issue", companyId: "company", title: "Request task", identifier: "NEE-12", status: "in_progress", href: "/NEE/issues/NEE-12", metadata: {} } } as AttentionItem;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><ThemeProvider>
+      <CoordinatorReviewPanel companyId="company" item={plan} artifact={needsYouArtifact(plan)!} agentMap={new Map()} currentUserId="scott" onOpenTask={vi.fn()} onResolved={vi.fn()} />
+    </ThemeProvider></QueryClientProvider>));
+    for (let tick = 0; tick < 5; tick++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(issuesApi.getDocumentRevision).toHaveBeenCalledExactlyOnceWith("document-owner", "plan", "pinned-revision");
+    expect(issuesApi.getDocument).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("The plan being approved");
     client.clear();
   });
 

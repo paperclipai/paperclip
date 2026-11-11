@@ -6,12 +6,13 @@ import { useState, type AnchorHTMLAttributes, type ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
+import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { ToastViewport } from "./ToastViewport";
 import { ToastProvider } from "../context/ToastContext";
-import { AttentionQueueRow } from "./AttentionQueueRow";
+import { ApprovalResolver, JoinRequestResolver, AttentionQueueRow } from "./AttentionQueueRow";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
@@ -19,6 +20,7 @@ vi.mock("@/lib/router", () => ({
   ),
 }));
 
+vi.mock("../api/access", () => ({ accessApi: { approveJoinRequest: vi.fn(), rejectJoinRequest: vi.fn() } }));
 vi.mock("../api/approvals", () => ({
   approvalsApi: {
     approve: vi.fn(),
@@ -1060,5 +1062,24 @@ describe("AttentionQueueRow", () => {
     expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
     expect(container?.querySelector('[data-testid="attention-train-inline"]')).toBeNull();
     expect(container?.querySelector('[data-testid="attention-train-button"]')).toBeNull();
+  });
+});
+
+
+describe("decision write failures", () => {
+  it.each(["approve", "reject", "requestRevision"] as const)("shows a failed approval %s beside its controls", async (method) => {
+    vi.mocked(approvalsApi[method]).mockRejectedValueOnce(new Error("Decision could not be saved"));
+    const host = render(<ApprovalResolver item={buildItem()} companyId="c1" toggle={null} presentation={method === "requestRevision" ? "panel" : "card"} />);
+    const label = method === "approve" ? "Approve" : method === "reject" ? "Reject" : "Request revision";
+    act(() => [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === label)!.click());
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain("Decision could not be saved"));
+  });
+  it.each(["approve", "reject"] as const)("shows a failed join-request %s beside its controls", async (action) => {
+    const method = action === "approve" ? "approveJoinRequest" : "rejectJoinRequest";
+    vi.mocked(accessApi[method]).mockRejectedValueOnce(new Error("Join request could not be saved"));
+    const host = render(<JoinRequestResolver item={buildItem({ sourceKind: "join_request" })} companyId="c1" toggle={null} presentation="card" />);
+    const label = action === "approve" ? "Approve access" : "Decline";
+    act(() => [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === label)!.click());
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain("Join request could not be saved"));
   });
 });

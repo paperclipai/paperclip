@@ -254,6 +254,21 @@ describe("Coordinator Needs You", () => {
     expect(scroll).not.toHaveBeenCalled();
     client.clear();
   });
+  it("opens a decision link outside the personal feed before focusing it", async () => {
+    fixture.url = "/decisions?decisionId=target";
+    fixture.boardAccess = { userId: "reviewer", source: "session", memberships: [{ companyId: "company", status: "active", membershipRole: "admin" }] };
+    fixture.byView = { mine: [], all: [{ ...fixture.pending[0], id: "linked-decision", sourceKind: "decision", subject: { id: "target", kind: "decision", title: "Linked decision" } } as AttentionItem] };
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, writable: true, value: scroll });
+    const client = await renderPage(fixture.url);
+    for (let tick = 0; tick < 5; tick++) await flush();
+    expect(fixture.listCalls).toContainEqual(expect.objectContaining({ view: "all" }));
+    expect(container.querySelector("#coordinator-decision-target")).not.toBeNull();
+    expect(container.querySelector("[data-location]")?.textContent).not.toContain("decisionId");
+    expect(scroll).toHaveBeenCalled();
+    client.clear();
+  });
+
   it("opens searchable history in the main pane from the View menu, never in the side panel (PAP-770, PAP-775)", async () => {
     fixture.mobile = true;
     fixture.pending = [];
@@ -564,6 +579,20 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect([...card.querySelectorAll("a, button")].map((entry) => entry.textContent).slice(-2)).toEqual(["View run", "Retry run"]);
     await click("Retry run");
     expect(fixture.retryTask).toHaveBeenCalledWith("task-7", { idempotencyKey: expect.any(String), observedRunId: "run-7" });
+    client.clear();
+  });
+
+  it("explains when retry does not start new work", async () => {
+    fixture.url = "/decisions?view=company";
+    fixture.retryTask.mockResolvedValueOnce({ accepted: false, requestId: "stale", stale: true, presentation: null });
+    fixture.byView = { company: [{ id: "stale-run", sourceKind: "failed_run", inlineResolvable: true,
+      subject: { id: "run-old", kind: "run", title: "Previous attempt", metadata: { issueId: "task-old" } },
+      relatedIssue: { id: "task-old", identifier: "PAP-7", href: "/PAP/issues/PAP-7" }, activityAt: new Date().toISOString(),
+      audience: { kind: "company", userId: null, reason: "none" } } as unknown as AttentionItem] };
+    const client = await renderPage(fixture.url);
+    await click("Retry run");
+    expect(container.textContent).toContain("Retry did not start new work");
+    expect(container.textContent).not.toContain("A retry is already running");
     client.clear();
   });
 

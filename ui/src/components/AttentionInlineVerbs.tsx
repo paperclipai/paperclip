@@ -7,6 +7,7 @@ import { budgetsApi } from "../api/budgets";
 import { issuesApi } from "../api/issues";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { invalidateAttentionRecordViews } from "../lib/attention-record-views";
+import { taskRetryNotStartedReason } from "../hooks/useTaskRetry";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatCents } from "../lib/utils";
 import { DecisionCardFooter } from "./DecisionCardFooter";
@@ -73,20 +74,24 @@ export function FailedRunActions({
   const issueId = metadataString(item, "issueId") ?? item.relatedIssue?.id ?? null;
   // One idempotency key per card, so a double click or a lost response asks once.
   const idempotencyKey = useRef<string | null>(null);
+  const [retryNotice, setRetryNotice] = useState<string | null>(null);
   const retry = useMutation({
     mutationFn: () => {
       idempotencyKey.current ??= crypto.randomUUID();
       return issuesApi.retryTask(issueId!, { idempotencyKey: idempotencyKey.current, observedRunId: item.subject.id });
     },
+    onMutate: () => setRetryNotice(null),
     onSuccess: (result) => {
+      const notStarted = taskRetryNotStartedReason(result);
+      setRetryNotice(notStarted);
       toasts?.pushToast({
-        title: result.accepted ? "Retry requested" : "A retry is already running",
-        body: item.relatedIssue?.identifier ?? undefined,
-        tone: "success",
+        title: notStarted ? "Retry did not start" : "Retry requested",
+        body: notStarted ?? item.relatedIssue?.identifier ?? undefined,
+        tone: notStarted ? "info" : "success",
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
       if (issueId) void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
-      onResolved?.();
+      if (!notStarted) onResolved?.();
     },
     onError: (error) => {
       idempotencyKey.current = null;
@@ -104,6 +109,7 @@ export function FailedRunActions({
         {note ? <NeedsYouPanelNote>{note}</NeedsYouPanelNote> : null}
       </NeedsYouPanel>
       {footerContext}
+      {retryNotice ? <p role="status" className="text-sm text-muted-foreground">{retryNotice}</p> : null}
       <DecisionCardFooter leading={leading}>
         {item.subject.href && (
           <Button asChild variant={issueId ? "outline" : "default"} size="sm">
@@ -121,6 +127,8 @@ export function FailedRunActions({
   }
 
   return (
+    <>
+    {retryNotice ? <p role="status" className="text-sm text-muted-foreground">{retryNotice}</p> : null}
     <ActionsFooter leading={leading}>
       {item.subject.href && (
         <Button asChild variant="outline" size="sm">
@@ -137,6 +145,7 @@ export function FailedRunActions({
         </Button>
       )}
     </ActionsFooter>
+    </>
   );
 }
 
