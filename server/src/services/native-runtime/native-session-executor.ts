@@ -14600,7 +14600,7 @@ export { resolveRemoteRunnerTransportMode } from "./native-runner-execution-driv
 
 export function remoteCheckpointIncompleteFailure(
   settlement: "settled" | "unsettled",
-  incompleteReason: "unavailable" | "not_suspended" | null,
+  incompleteReason: "unavailable" | "not_suspended" | "provider_unopened" | null,
 ): Error | null {
   // A transport that never completed provider bootstrap has no provider state
   // to preserve; its original launch failure remains authoritative. Once
@@ -15675,7 +15675,7 @@ async function createRunnerdBackendWithinSessionClaim(
     complete: boolean;
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
-    incompleteReason: "unavailable" | "not_suspended" | null;
+    incompleteReason: "unavailable" | "not_suspended" | "provider_unopened" | null;
     notSuspendedRunId?: string | null;
   }> => {
     if (!remoteCommandRunner || !remoteStateDirectory) {
@@ -15763,6 +15763,22 @@ async function createRunnerdBackendWithinSessionClaim(
         providerState,
       });
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
+      // This run's own interrupted bootstrap suspended its Runner before the
+      // provider opened a session (for example a provider rate limit at
+      // session.open). The controller's durable state already proved that no
+      // provider turn ran, so the restart may set it aside like a Runner that
+      // never suspended. Any other run's state stays fail-closed.
+      if (source === "host_preparation" && input.restartRecovery?.kind === "bootstrap_incomplete"
+        && runnerState.runId === input.execution.binding.runId
+        && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+        return {
+          complete: false,
+          runnerState: null,
+          providerSessionIdentity: null,
+          incompleteReason: "provider_unopened",
+          notSuspendedRunId: input.execution.binding.runId,
+        };
+      }
       throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
@@ -16102,7 +16118,8 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      const provenRestart = state.incompleteReason === "not_suspended" && !backupAvailable
+                      const provenRestart = (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
+                        && !backupAvailable
                         && input.restartRecovery?.kind === "bootstrap_incomplete"
                         && state.notSuspendedRunId === input.execution.binding.runId
                         && hasRemoteBootstrapRestartProof(input.execution.binding.runId)
@@ -16184,7 +16201,7 @@ async function createRunnerdBackendWithinSessionClaim(
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
                       throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
-                    } else if (state.incompleteReason === "not_suspended"
+                    } else if ((state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
                       && input.restartRecovery?.kind === "bootstrap_incomplete"
                       && state.notSuspendedRunId === input.execution.binding.runId
                       && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
