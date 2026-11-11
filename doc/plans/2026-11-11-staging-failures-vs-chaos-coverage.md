@@ -67,7 +67,7 @@ blocked at census time.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | W: wake loop on a held shared workspace | 103 | 37% | 4 | 1 | A parent shares a legacy execution workspace with a child that stranded a writer hold on Nov 5. The new stall-wake feature (#20098) woke the parent every 10 min. Each wake failed setup with no backoff. T01 had 99 runs from 07:27 to 15:53Z. | **Fixed:** #20273, #20295, #20314 | Fresh database every wave, so there was no legacy shared-workspace state. The feature landed between waves. U2 would have caught the loop. | None (fixed). If needed: K14 from a pre-2026-11-07 build with M1. |
 | R: remote recovery refuses after a deploy | 34 | 12% | 32 | **24** | After a deploy, the new controller cannot prove that the prior owner stopped. The cause is a different process space or a reused-sandbox runner identity from another run. Codes include `runner_remote_process_identity_unavailable` (9), `native_remote_recovery_lease_mismatch …identity_run_id` (8), `prior_owner_terminal_state_indeterminate` (6), `cleanup_quarantined` (4) and `missing_evidence` (3). 27 of 34 failed within 10 min of a process start. | **Partly fixed:** #20639, #20631, #20666, #20662 and #20650 address parts. `identity_unavailable` and `lease_mismatch` have no fix. | Harness restarts keep the same process space, so PID proofs succeed. There were no OpenCode cells on Daytona (19 of 34 are OpenCode). Reusable sandboxes are not in the matrix. | **K15 redeploy**: SIGTERM, then a replacement in a new process space with a new deployment identity (implemented). Run on Daytona with `--adapters opencode --daytona-reuse-lease`. |
-| F: finalization and workspace save-back | 24 | 9% | 15 | 8 | A saved result cannot be copied back or restored. Causes: sandbox disk full (ENOSPC in 2 runs), unsafe symlink in the archive, `recovery_receipt_invalid` (7), a stuck "Recovering saved work…" phase (8) and an exhausted finalization budget (3). | **Partly fixed:** #20666 (receipt), #20578 (re-finalize). Nothing for disk full or symlinks. | Workloads write small files. They never fill the sandbox disk and never create symlinks. ST faults hit S3, not the sandbox disk. | **DF1 sandbox disk full** and an **SY1 symlink** workload (proposed, not built). |
+| F: finalization and workspace save-back | 24 | 9% | 15 | 8 | A saved result cannot be copied back or restored. Causes: sandbox disk full (ENOSPC in 2 runs), unsafe symlink in the archive, `recovery_receipt_invalid` (7), a stuck "Recovering saved work…" phase (8) and an exhausted finalization budget (3). | **Partly fixed:** #20666 (receipt), #20578 (re-finalize). Nothing for disk full or symlinks. | Workloads write small files. They never fill the sandbox disk and never create symlinks. ST faults hit S3, not the sandbox disk. | **F1 symlink** workload (built; passes on master). **DF1 sandbox disk full** (proposed). |
 | E: Daytona capacity outage | 18 | 7% | 13 | 4 | Daytona returned HTTP 502 and the worker hit SIGKILL from 16:36 to 17:02Z on Nov 10. Reusable sandbox resume failed, plus a git clone network failure. | **Mostly recovers:** 8 tasks recovered automatically and bounded retry works. 4 tasks still blocked. | The harness has no environment-provider fault. All faults hit the control plane or S3. | **EP1 environment provider 5xx window** (proposed, not built). |
 | U: provider usage limit | 17 | 6% | 12 | 8 | `provider_limit_wait` waits as designed. The ACPX "terminal limit failure" (7) fails the run, where it should wait. | **Open:** ACPX limit classification. | Not a restart class. Provider shims have no usage-limit message. | Add a usage-limit message to PV faults (proposed). |
 | P: provider session resume after a deploy | 16 | 6% | 16 | **11** | The runner or provider cannot resume its session after the controller moved. Codes: `PRP provider resume state is unavailable` (5), `runner_harness_state_mismatch` (8) with sub-codes `provider_identity_incomplete`, `resumed_unavailable` and `backup_without_reusable_lease`, plus `ingress_auth_failed` and `run.attach provider_side_effect_pending`. 8 of the 16 are ACPX and 5 are OpenCode. | **Partly fixed:** #20627 (warm backup). `resume state unavailable` is open. | Same as R: same process space, no OpenCode, no reusable warm sandboxes across deploys. | K15 with `--daytona-warm` and `--adapters claude,opencode`. |
@@ -169,8 +169,11 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
   scenario.
 - Why the harness missed it: **missing workload.** The workloads write a few KB, never fill the
   sandbox disk and never create symlinks. ST faults break S3, not the sandbox file system.
-- Proposed (not built in this pass): `DF1` (fill the sandbox disk to ENOSPC before result
-  copy-back) and an `SY1` workload that creates a symlink pointing out of the workspace.
+- Built: the **F1** workload (`--workloads F1`). The agent keeps an absolute symlink to `/etc/hosts`
+  in its repository workspace. Wave `w-20261111T012523-s9304` (Daytona, `--storage s3`, K2, Codex
+  and OpenCode) passed 2 of 2 on master. The save-back did not block the task. The harness keeps no
+  evidence for passing tasks, so it is not verified that the link existed at save-back time.
+- Proposed (not built): `DF1`, which fills the sandbox disk to ENOSPC before result copy-back.
 
 ### E: Daytona capacity outage (18 runs, mostly self-healing)
 
@@ -254,7 +257,8 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 | --- | --- | --- | --- |
 | K15 redeploy into a new process space and deployment identity | R, P, L (and A with `--upgrade-from`) | `--faults K15` | Implemented, unit-tested. Five Daytona waves are recorded below. |
 | EP1 environment-provider 5xx window | E | — | Proposed |
-| DF1 sandbox disk full, SY1 symlink workload | F | — | Proposed |
+| F1 absolute symlink kept in the repository workspace | F (unsafe-symlink save-back) | `--workloads F1` | Implemented, unit-tested. Daytona wave: 2 of 2 pass on master. |
+| DF1 sandbox disk full | F (ENOSPC save-back) | — | Proposed |
 
 ### Waves on master 8f6ca25976
 
