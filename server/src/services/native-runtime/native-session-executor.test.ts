@@ -1693,7 +1693,8 @@ fs.readFileSync = function(path, ...args) {
     });
     await expect(handle.completion).resolves.toMatchObject({
       code: null,
-      stderr: "paperclip-runnerd: provider transport closed",
+      // The durable exit state comes first, then the sandbox-local exit evidence.
+      stderr: 'runner_remote_process_exited lifecycle=ready diagnostics=["last durable diagnostic"]\npaperclip-runnerd: provider transport closed',
     });
 
     const launch = execute.mock.calls.find(
