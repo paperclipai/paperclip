@@ -22,7 +22,7 @@ it("creates a named pool with ordered models on the same account and leaves othe
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   try {
   flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
-  const click=(text:string)=>{ const button=Array.from(host.querySelectorAll("button")).find(item=>item.textContent===text)!; expect(button).toBeTruthy(); flushSync(()=>button.click()); };
+  const click=(text:string)=>{ const button=Array.from(host.querySelectorAll("button")).find(item=>item.textContent===text || item.getAttribute("aria-label")===text)!; expect(button).toBeTruthy(); flushSync(()=>button.click()); };
   click("Add pool");
   const name = host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!;
   flushSync(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "My pool"); name.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -52,7 +52,7 @@ it("starts unselected and opens an empty custom draft without templates or write
     expect(host.querySelector('[aria-label="Pool name"]')).toBeNull();
     expect(host.querySelector('[aria-label="Pools"]')).toBeTruthy();
     expect(host.textContent).not.toContain("Cheap"); expect(host.textContent).not.toContain("Mid");
-    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Add pool")!.click());
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.getAttribute("aria-label")==="Add pool")!.click());
     expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe("");expect(mocks.save).not.toHaveBeenCalled();
   } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
 });
@@ -64,7 +64,7 @@ it("can add the first member before any accounts are connected", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
     flushSync(() => root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
-    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Add pool")!.click());
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Add pool")!.click());
     const add = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Add member")!;
     expect(add.disabled).toBe(false); flushSync(() => add.click()); await settle();
     expect(host.querySelector('[aria-label="Harness"]')).toBeTruthy();
@@ -91,7 +91,7 @@ it.each(["loading", "error"])("blocks archive when affected-agent inspection is 
   mocks.pools.mockResolvedValue([{id:"used-pool",name:"Used pool",revision:1,schemaVersion:2,kind:"harness_pool",enabled:true,mode:"failover",members:[]}]);
   if(state==="loading") mocks.inspect.mockImplementation(()=>new Promise(()=>{}));else mocks.inspect.mockRejectedValue(new Error("Inspection unavailable"));
   const host=document.createElement("div");const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
-  try{flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent?.startsWith("Used pool ·"))!.click());await settle();expect(host.textContent).not.toContain("No agents");expect(Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Archive pool")!.disabled).toBe(true);expect(mocks.archive).not.toHaveBeenCalled();}
+  try{flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.getAttribute("aria-label")?.startsWith("Used pool ·"))!.click());await settle();expect(host.textContent).not.toContain("No agents");expect(Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Archive pool")!.disabled).toBe(true);expect(mocks.archive).not.toHaveBeenCalled();}
   finally{flushSync(()=>root.unmount());client.clear();}
 });
 
@@ -103,7 +103,7 @@ it("retains cached affected agents after an inspection refresh fails while block
   client.setQueryData(["harness-pool-inspection","company","used-pool"], { members:{},usedBy:[{id:"agent",name:"Morgan"}] });
   try {
     flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
-    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent?.startsWith("Used pool ·"))!.click()); await settle();
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.getAttribute("aria-label")?.startsWith("Used pool ·"))!.click()); await settle();
     expect(host.textContent).toContain("Used by: Morgan");
     expect(host.querySelector('[role="alert"]')).toBeTruthy();
     expect(Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Archive pool")!.disabled).toBe(true);
@@ -121,10 +121,58 @@ it("edits an existing pool with its revision and preserves member runtime settin
   try {
     flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
     expect(host.querySelector('[aria-label="Pool name"]')).toBeNull();
-    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent?.startsWith("Existing pool ·"))!.click());await settle();
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.getAttribute("aria-label")?.startsWith("Existing pool ·"))!.click());await settle();
     expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe("Existing pool");
     expect(host.querySelector('[aria-label="Runner"]')?.textContent).toContain("Legacy");
     flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Save pool")!.click());await settle();
     expect(mocks.save).toHaveBeenCalledWith("company",{id,expectedRevision:7,config});
+  } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
+});
+
+it("searches the pool sidebar, clears no matches and opens blank creation from its icon action", async () => {
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]});mocks.legacy.mockResolvedValue([]);mocks.inspect.mockResolvedValue({members:{},usedBy:[]});
+  mocks.pools.mockResolvedValue(["Engineering", "Design"].map((name,index)=>({id:`pool-${index}`,name,revision:1,schemaVersion:2,kind:"harness_pool",enabled:true,mode:"failover",members:[]})));
+  const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  const button=(label:string)=>host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+  try {
+    flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();
+    const sidebar=host.querySelector('aside[aria-label="Pools"]')!;
+    expect(sidebar).toBeTruthy();
+    expect(sidebar.classList).toContain("md:border-r");
+    expect(host.querySelector('[aria-label="Pool name"]')).toBeNull();
+    const search=host.querySelector<HTMLInputElement>('[aria-label="Search pools"]')!;
+    const type=(value:string)=>flushSync(()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(search,value);search.dispatchEvent(new Event("input",{bubbles:true}));});
+    type("engineering");
+    const rows=()=>Array.from(sidebar.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'));
+    expect(rows().map(row=>row.getAttribute("aria-label"))).toEqual(["Engineering · 0 members"]);
+    flushSync(()=>rows()[0]!.click());await settle();
+    expect(rows()[0]!.getAttribute("aria-pressed")).toBe("true");
+    expect(rows()[0]!.classList).toContain("bg-accent");
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe("Engineering");
+    type("missing"); expect(sidebar.textContent).toContain("No pools found");
+    flushSync(()=>button("Clear pool search").click());
+    expect(search.value).toBe("");expect(rows()).toHaveLength(2);
+    expect(button("Add pool").querySelector("svg")).toBeTruthy();
+    flushSync(()=>button("Add pool").click());
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe("");
+    expect(rows().every(row=>row.getAttribute("aria-pressed")==="false")).toBe(true);
+    expect(mocks.save).not.toHaveBeenCalled();
+  } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
+});
+
+it("filters hundreds of pools without repeatedly normalizing every name", async () => {
+  let nameReads=0;
+  const pools=Array.from({length:500},(_,index)=>({id:`pool-${index}`,get name(){if(++nameReads>6000)throw new Error("Pool names rescanned too often");return `Pool ${String(index).padStart(4,"0")}`;},revision:1,schemaVersion:2,kind:"harness_pool",enabled:true,mode:"failover",members:[]}));
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]});mocks.legacy.mockResolvedValue([]);mocks.pools.mockResolvedValue(pools);
+  const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  try {
+    flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();
+    nameReads=0;
+    const search=host.querySelector<HTMLInputElement>('[aria-label="Search pools"]')!;
+    for(const value of ["pool 0499","POOL 0498"]){
+      flushSync(()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(search,value);search.dispatchEvent(new Event("input",{bubbles:true}));});
+      expect(host.querySelectorAll('button[aria-pressed]')).toHaveLength(1);
+    }
+    expect(nameReads).toBeLessThan(20);
   } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
 });

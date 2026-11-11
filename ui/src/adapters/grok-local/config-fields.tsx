@@ -13,6 +13,7 @@ const instructionsFileHint =
 
 export function GrokLocalConfigFields({
   section,
+  allowedConfigKeys,
   isCreate,
   values,
   set,
@@ -24,7 +25,7 @@ export function GrokLocalConfigFields({
   if (hideInstructionsFile) return null;
   return configFieldsForSection(section, (
     <>
-      <Field label="Agent instructions file" hint={instructionsFileHint}>
+      <Field configKey="instructionsFilePath" label="Agent instructions file" hint={instructionsFileHint}>
         <div className="flex items-center gap-2">
           <DraftInput
             value={
@@ -49,5 +50,5 @@ export function GrokLocalConfigFields({
         </div>
       </Field>
     </>
-  ));
+  ), allowedConfigKeys);
 }

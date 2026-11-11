@@ -21,6 +21,8 @@ export type AdapterConfigSection = "adapter" | "configuration" | "advanced" | "r
 export interface AdapterConfigFieldsProps {
   /** Render only fields belonging to this shared form section. Omit for all fields. */
   section?: AdapterConfigSection;
+  /** Constrain reusable runtime fields to this host-authorized configuration surface. */
+  allowedConfigKeys?: ReadonlySet<string>;
   /** The shared local-adapter model picker is already rendered by the form. */
   hideModel?: boolean;
   companyId?: string;

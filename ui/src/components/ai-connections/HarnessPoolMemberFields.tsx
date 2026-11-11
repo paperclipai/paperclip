@@ -70,7 +70,7 @@ export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange 
           if (type && next !== adapter) { setRefreshError(undefined); onChange({ harness: { type }, connection: undefined, model: "", effort: undefined, adapterConfig: undefined }); }
         }} />
     </Field>
-    <HarnessPoolRuntimeFields key={`${member.harness.type}-${member.runner ?? "historical"}`} member={member} onChange={onChange} />
+    <HarnessPoolRuntimeFields key={`${member.harness.type}-${member.runner ?? "historical"}`} member={member} companyId={companyId} onChange={onChange} />
     <AiConnectionField key={adapter} companyId={companyId} agentName="this pool member" adapterType={adapter}
       value={member.connection} model={member.model} readOnly={readOnly} explicitAccount
       onChange={binding => {

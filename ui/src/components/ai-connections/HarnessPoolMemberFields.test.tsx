@@ -28,13 +28,22 @@ let root: Root, host: HTMLDivElement, client: QueryClient;
 let latest: HarnessPoolMemberDraft;
 
 async function settle() { for (let i = 0; i < 6; i++) { await new Promise(resolve => setTimeout(resolve, 0)); flushSync(() => {}); } }
+let nativeChoice: HTMLSelectElement | null = null;
+async function expandPolicy() { const button = [...host.querySelectorAll("button")].find(button => button.textContent?.trim() === "Advanced Run Policy")!; if (button.getAttribute("aria-expanded") !== "true") flushSync(() => button.click()); await settle(); }
 async function open(label: string) {
   const trigger = host.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
   expect(trigger).toBeTruthy();
+  nativeChoice = trigger instanceof HTMLSelectElement ? trigger : null;
+  if (nativeChoice) return;
   flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
   await settle();
 }
 async function choose(label: string) {
+  if (nativeChoice) {
+    const select = nativeChoice;
+    const option = [...select.options].find(option => option.textContent === label)!;
+    expect(option).toBeTruthy(); flushSync(() => { select.value = option.value; select.dispatchEvent(new Event("change", { bubbles: true })); }); nativeChoice = null; await settle(); return;
+  }
   const options = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
   const option = options.find(item => item.textContent === label) ?? options.find(item => item.textContent?.includes(label))!;
   expect(option, label).toBeTruthy(); flushSync(() => option.click()); await settle();
@@ -48,7 +57,7 @@ async function mount(initial = draft()) {
   flushSync(() => root.render(<QueryClientProvider client={client}><TooltipProvider><Form /></TooltipProvider></QueryClientProvider>)); await settle();
 }
 beforeEach(() => {
-  vi.clearAllMocks(); setup = undefined;
+  vi.clearAllMocks(); setup = undefined; nativeChoice = null;
   mocks.accounts.mockResolvedValue({ currentUserId: "owner", canManageConnections: true, connections: [account("First"), account("Second")] });
   mocks.models.mockResolvedValue([{ id: "gpt-6-sol", label: "GPT-6 Sol" }, { id: "gpt-6-luna", label: "GPT-6 Luna" }]);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -226,14 +235,15 @@ it("preserves historical runner omission until explicitly changed and edits lega
   expect(latest.runner).toBe("legacy");
   await open("Execution engine"); await choose("Claude CLI");
   expect(latest.adapterConfig).toMatchObject({ engine: "cli" });
-  expect(host.querySelector('[aria-label="Permissions"]')).toBeNull();
-  expect(host.querySelector('[aria-label="Permissions"]')).toBeNull();
+  expect(host.querySelector('[aria-label="ACP permissions"]')).toBeNull();
   await open("Execution engine"); await choose("ACP");
   expect(latest.adapterConfig).toMatchObject({ engine: "acp" });
+  await expandPolicy();
   expect(host.querySelector('[aria-label="ACP session mode"]')).toBeTruthy();
   await open("Runner"); await choose("Paperclip Runner");
   expect(latest.runner).toBe("paperclip");
   expect(host.querySelector('[aria-label="Execution engine"]')).toBeNull();
+  await expandPolicy();
   expect(host.querySelector('[aria-label="Runner lifecycle"]')).toBeTruthy();
   expect(host.textContent).not.toContain("instructions file");
 });
@@ -243,6 +253,7 @@ it("edits the Codex engine and clears incompatible settings when choosing the na
   expect(host.querySelector('[aria-label="Execution engine"]')?.textContent).toContain("Codex CLI");
   await open("Execution engine"); await choose("ACP");
   expect(latest.adapterConfig).toMatchObject({ engine: "acp", fastMode: true });
+  await expandPolicy();
   await open("ACP session mode"); await choose("One-shot");
   expect(latest.adapterConfig?.mode).toBe("oneshot");
   await open("Runner"); await choose("Paperclip Runner");
@@ -262,18 +273,19 @@ it("uses the native provider permission capability and keeps legacy-only control
 
 it("offers ACP settings for the default legacy Claude engine and confirms removing them", async () => {
   await mount({ ...draft(), harness: { type: "claude_code" }, runner: "legacy", connection: undefined });
+  await expandPolicy();
   expect(host.querySelector('[aria-label="ACP session mode"]')).toBeTruthy();
-  await open("Permissions"); await choose("Approve reads");
+  await open("ACP permissions"); await choose("Approve reads");
   expect(latest.adapterConfig?.permissionMode).toBe("approve-reads");
   await open("Execution engine"); await choose("Claude CLI");
   expect(latest.adapterConfig?.permissionMode).toBe("approve-reads");
   flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Switch to CLI")!.click());
   expect(latest.adapterConfig).toEqual({engine:"cli"});
-  expect(host.querySelector('[aria-label="Permissions"]')).toBeNull();
+  expect(host.querySelector('[aria-label="ACP permissions"]')).toBeNull();
 });
 
 it.each([undefined, false])("matches actual Codex bypass policy for saved setting %s", async dangerouslyBypassApprovalsAndSandbox => {
   await mount({ ...draft(), runner:"legacy", adapterConfig:{dangerouslyBypassApprovalsAndSandbox} });
-  const toggle=host.querySelector('[aria-label="Bypass approvals and sandbox"]');
+  const toggle=host.querySelector('[aria-label="Bypass sandbox"]');
   expect(toggle?.getAttribute("aria-checked")).toBe(String(dangerouslyBypassApprovalsAndSandbox !== false));
 });

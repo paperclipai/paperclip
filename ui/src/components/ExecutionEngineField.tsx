@@ -3,6 +3,7 @@ import { SelectPopover } from "./ui/select";
 
 export function ExecutionEngineField({ harness, value, onChange }: {
   harness: "claude" | "codex";
+  configKey?: string;
   value: string;
   onChange: (value: "auto" | "cli" | "acp") => void;
 }) {

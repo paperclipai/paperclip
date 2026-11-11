@@ -11,13 +11,15 @@ import type { AdapterConfigSection } from "./types";
 export function configFieldsForSection(
   section: AdapterConfigSection | undefined,
   children: ReactNode,
+  allowedConfigKeys?: ReadonlySet<string>,
 ): ReactNode {
-  if (!section) return children;
+  if (!section && !allowedConfigKeys) return children;
   return Children.map(children, (child) => {
     if (
       !isValidElement<{
         children?: ReactNode;
         configSection?: AdapterConfigSection;
+        configKey?: string;
       }>(child)
     )
       return null;
@@ -25,9 +27,10 @@ export function configFieldsForSection(
       return cloneElement(
         child,
         undefined,
-        configFieldsForSection(section, child.props.children),
+        configFieldsForSection(section, child.props.children, allowedConfigKeys),
       );
-    return (child.props.configSection ?? "configuration") === section
+    if (allowedConfigKeys && (!child.props.configKey || !allowedConfigKeys.has(child.props.configKey))) return null;
+    return (!section || (child.props.configSection ?? "configuration") === section)
       ? child
       : null;
   });
@@ -52,4 +55,9 @@ export function schemaFieldSection(key: string): AdapterConfigSection {
   )
     return "runPolicy";
   return "configuration";
+}
+
+/** Attach configuration identity to explanatory content without adding layout. */
+export function ConfigFieldGroup({ children }: { configKey: string; children: ReactNode }) {
+  return <>{children}</>;
 }

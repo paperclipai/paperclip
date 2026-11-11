@@ -38,12 +38,12 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.modelReasoningEffort = v.thinkingEffort;
   if (v.codexEngine === "cli" || v.codexEngine === "acp") ac.engine = v.codexEngine;
-  if (v.codexEngine === "acp") {
+  if (v.codexEngine !== "cli") {
     if (v.codexAcpAgentCommand) ac.agentCommand = v.codexAcpAgentCommand;
-    ac.mode = v.codexAcpMode ?? "persistent";
-    ac.nonInteractivePermissions = v.codexAcpNonInteractivePermissions ?? "deny";
+    if (v.codexEngine === "acp" || v.codexAcpMode !== undefined) ac.mode = v.codexAcpMode ?? "persistent";
+    if (v.codexEngine === "acp" || v.codexAcpNonInteractivePermissions !== undefined) ac.nonInteractivePermissions = v.codexAcpNonInteractivePermissions ?? "deny";
     if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
-    ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
+    if (v.codexEngine === "acp" || v.codexAcpWarmHandleIdleMs !== undefined) ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
   }
   ac.timeoutSec = 0;
   ac.graceSec = 15;

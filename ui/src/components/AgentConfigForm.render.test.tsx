@@ -741,7 +741,9 @@ describe("AgentConfigForm environment selector", () => {
       roots.push(edited.root);
       expect(edited.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Pool");
       expect(edited.container.querySelector('[aria-label="Harness pool"]')).not.toBeNull();
-      expect(edited.container.textContent).toContain("Runner: Paperclip Runner");
+      expect(edited.container.textContent).toContain("Runners, models and accounts come from the pool.");
+      expect(edited.container.querySelector('[aria-label="Connection"]')).toBeNull();
+      expect(edited.container.querySelector('[aria-label="Model"]')).toBeNull();
       await act(async () => { const select = edited.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; select.value = "mid"; select.dispatchEvent(new Event("change", { bubbles: true })); });
       await clickByText(edited.container, "Save");
       expect(edited.onSave).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: expect.objectContaining({ harnessPool: { poolId: "mid" } }) }));

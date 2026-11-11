@@ -30,17 +30,21 @@ export const harnessPoolAdapterConfigSchema = z.object({
   lifecycleMode: z.enum(["warm", "per_turn"]).optional(),
 }).strict();
 
-export function invalidHarnessPoolRuntimeSetting(
-  member: { runner?: "legacy" | "paperclip"; adapterConfig?: z.infer<typeof harnessPoolAdapterConfigSchema> },
-  harness: "claude_code" | "codex" | "grok" | "opencode",
-): string | undefined {
+export function harnessPoolRuntimeConfigKeys(harness: "claude_code" | "codex" | "grok" | "opencode", runner: "legacy" | "paperclip" = "paperclip"): readonly string[] {
   const common = ["timeoutSec", "graceSec"];
   const native = ["lifecycleMode", "idleTimeoutMs", harness === "codex" ? "codexPermissionMode" : harness === "opencode" ? "opencodePermissionMode" : "acpxPermissionMode"];
   const legacy = harness === "claude_code" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "permissionMode", "chrome", "maxTurnsPerRun", "dangerouslySkipPermissions"]
     : harness === "codex" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "fastMode", "dangerouslyBypassApprovalsAndSandbox"]
     : harness === "opencode" ? ["dangerouslySkipPermissions"] : [];
+  return [...common, ...(runner === "legacy" ? legacy : native)];
+}
+
+export function invalidHarnessPoolRuntimeSetting(
+  member: { runner?: "legacy" | "paperclip"; adapterConfig?: z.infer<typeof harnessPoolAdapterConfigSchema> },
+  harness: "claude_code" | "codex" | "grok" | "opencode",
+): string | undefined {
   if (member.runner === "legacy" && member.adapterConfig?.engine === "cli" && member.adapterConfig.permissionMode !== undefined) return "permissionMode";
-  const allowed = new Set([...common, ...(member.runner === "legacy" ? legacy : native)]);
+  const allowed = new Set(harnessPoolRuntimeConfigKeys(harness, member.runner));
   return Object.keys(member.adapterConfig ?? {}).find(key => !allowed.has(key));
 }
 
