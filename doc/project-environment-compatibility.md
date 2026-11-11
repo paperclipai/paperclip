@@ -63,8 +63,12 @@ The hidden repository-free “My private tasks” project is independent of
 environment/storage availability, so creating a private note never requires
 repairing an environment.
 
-An unavailable configured default produces an error and permits an explicit
-available choice. It does not silently select another storage owner. Existing
+When the configured default is unavailable and only one storage owner is
+available, that owner becomes the default, because there is nothing to choose.
+When two or more owners are available, an unavailable default produces an error
+and permits an explicit available choice. It does not silently select another
+storage owner. The UI shows the **Available in** selector only when there are two
+or more storage owners. Existing
 projects keep their stored owner. This change does not migrate managed storage
 or detach projects that contain existing work. A managed project run in an
 incompatible environment fails with `project_environment_incompatible` before a

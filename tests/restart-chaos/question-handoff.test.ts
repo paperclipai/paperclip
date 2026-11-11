@@ -6,7 +6,7 @@ import {
   questionStep, type QuestionArtifacts,
 } from "./question-handoff.js";
 import { planTasks, taskFaultSchedule } from "./scheduler.js";
-import { rotateAgentSession } from "./session-faults.js";
+import { rotateAgentSession, sessionFaultServerEnvironment } from "./session-faults.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -210,6 +210,35 @@ describe("Q1 saved question", () => {
       expect(gradeQuestionHandoff(NONCE, artifacts({ rotation: task.question!.rotation, runs: sessions("s1", "s1") })).verdict).toBe("fail");
       const refused = gradeQuestionHandoff(NONCE, artifacts({ rotation: { at: 2_000, idleTimeoutMs: 300_002, httpStatus: 422, error: "invalid" } }));
       expect(refused.verdict).toBe("fail");
+    });
+  });
+
+  describe("SR1U: the retained owner cannot be retired", () => {
+    it("is a Daytona warm-only variant that arms its server fault for the wave", () => {
+      const command = parseCommand(["--env", "daytona", "--daytona-warm", "--daytona-image", "img@sha256:" + "a".repeat(64),
+        "--adapters", "codex", "--workloads", "Q1", "--faults", "SR1U", "--tasks", "1", "--concurrency", "1"]);
+      if (command.mode !== "wave") throw new Error("expected a wave");
+      expect(command.options).toMatchObject({ faults: [], sessionFaults: ["SR1U"] });
+      expect(sessionFaultServerEnvironment(command.options.sessionFaults)).toEqual({ PAPERCLIP_TEST_WARM_RETIREMENT_FAULT: "unconfirmed" });
+      expect(sessionFaultServerEnvironment(["SR1"])).toEqual({});
+      // Locally there is no reused sandbox to drop.
+      expect(() => parseCommand(["--workloads", "Q1", "--faults", "SR1U", "--lifecycle", "warm"])).toThrow("--env daytona --daytona-warm");
+    });
+
+    it("passes only when the follow-up finished on a fresh sandbox after the pre-provider fallback", () => {
+      const rotation = { at: 2_000, idleTimeoutMs: 300_002, httpStatus: 200, error: null, predecessorUnretirable: true };
+      const run = (id: string, status: string, createdAt: number, providerLeaseId: string, failureCause: string | null = null) =>
+        ({ id, status, errorCode: status === "failed" ? "adapter_failed" : null, createdAt: new Date(createdAt).toISOString(),
+          nativeSessionId: id === "run-1" ? "s1" : "s2", providerLeaseId, failureCause });
+      const fellBack = run("run-2", "failed", 6_000, "sandbox-a", "native_predecessor_retirement_unproven");
+      const passed = gradeQuestionHandoff(NONCE, artifacts({ rotation, runs: [run("run-1", "succeeded", 500, "sandbox-a"), fellBack,
+        run("run-3", "succeeded", 7_000, "sandbox-b")] }));
+      expect(passed).toMatchObject({ verdict: "pass" });
+      // A follow-up that stayed on the reused sandbox, or any other failure, fails the cell.
+      expect(gradeQuestionHandoff(NONCE, artifacts({ rotation, runs: [run("run-1", "succeeded", 500, "sandbox-a"), fellBack,
+        run("run-3", "succeeded", 7_000, "sandbox-a")] })).checks.find(check => check.name === "follow_up_fresh_sandbox")?.ok).toBe(false);
+      expect(gradeQuestionHandoff(NONCE, artifacts({ rotation, runs: [run("run-1", "succeeded", 500, "sandbox-a"),
+        run("run-2", "failed", 6_000, "sandbox-a", "native_session_interrupted"), run("run-3", "succeeded", 7_000, "sandbox-b")] })).verdict).toBe("fail");
     });
   });
 });

@@ -32,8 +32,9 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskF
  * L1: high-output, high-accounting run for database contention (contention.ts).
  * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
  * T1: a 100-second shell tool in the agent's workspace, so a fault lands while the remote Runner runs a tool (staging class R).
+ * W2, W2Q, W2C: the same task woken again 0–60 s after its run succeeded (rewake.ts), many tasks on one agent.
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -77,8 +78,21 @@ export interface WaveOptions {
   daytonaInherit?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
-  /** `--k15-hold-seconds`: the seeded K15 outage range (redeploy.ts); absent restarts at once. */
+  /** `--k15-hold-seconds`: the seeded K15 outage range (redeploy.ts); absent restarts at once. With `--k15-overlap-seconds`, the overlap range. */
   k15HoldMs?: [number, number];
+  /** `--k15-overlap-seconds`: a K15 boots the next deploy beside the old server and SIGTERMs the old one after the seeded overlap (redeploy.ts). */
+  k15Overlap?: boolean;
+  /** `--k15-fresh-home`: each deploy generation gets a new, empty instance home and no volume (redeploy.ts). */
+  k15FreshHome?: boolean;
+  /** `--faults K0`: cells with no fault, for workloads whose shape is the fault (W2, W2Q, W2C). */
+  baseline?: boolean;
+  /**
+   * `--fail-recovery-step <point>[:<nth>]` (recovery-step-faults.ts): once the wave's first restart fault fired, the
+   * nth hit of that crash point in the replacement throws its step's own error, once.
+   */
+  failRecoveryStep?: string;
+  /** `--long-turn-minutes`: every task's first turn does this much real tool work before its workload (long-turn.ts). */
+  longTurnMinutes?: number;
   /** `--tm1-hold-seconds`: the seeded TM1 stall range (time-faults-config.ts); absent uses 95–150 s. */
   tm1HoldMs?: [number, number];
   faultAfterMs?: number;
@@ -190,6 +204,8 @@ export interface TaskPlan {
   providerFault?: ProviderFaultRule;
   /** RR1–RR3: the seeded restarts after the first kill. */
   restartSteps?: RestartStep[];
+  /** `--long-turn-minutes`: the first turn's tool work before the workload (long-turn.ts). */
+  longTurnMinutes?: number;
 }
 
 export interface ScheduledFault {
@@ -305,6 +321,8 @@ export interface FaultReceipt {
   upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
   /** K15: the deploy generation, emulated host name and deployment id before and after. */
   redeploy?: ReturnType<typeof import("./redeploy.js").redeployReceipt>;
+  /** `--fail-recovery-step`: the step armed (fail mode) when this fault's replacement started. */
+  recoveryStep?: { spec: string; token: string };
   /** TM1–TM3: what was frozen and which rows were aged. */
   timeFault?: TimeFaultRecord;
   /** RR1–RR3: every stop and replacement of the sequence, the first kill included. */
@@ -341,6 +359,10 @@ export interface OracleArtifacts {
   contention?: import("./contention.js").ContentionEvidence;
   /** Q2, Q3: what the board did and what the task, its runs and the harness's app saw. */
   journey?: import("./journeys.js").JourneyArtifacts;
+  /** W2, W2Q, W2C: the re-wake and the task's runs (rewake.ts). */
+  rewake?: import("./rewake.js").RewakeArtifacts;
+  /** `--long-turn-minutes`: the task's runs, for the harness's own long-turn evidence (long-turn.ts). */
+  runs?: import("./rewake.js").RewakeArtifacts["runs"];
 }
 
 /** What the board did for a governance task (G1, H1), and what the observer saw. */
@@ -429,6 +451,8 @@ export interface TaskRecord {
   question?: QuestionRecord;
   /** Q2, Q3: the board's journey actions (journey-driver.ts). */
   journey?: import("./journeys.js").JourneyRecord;
+  /** W2, W2Q, W2C: the first run, the board's wake and the run that served it (rewake.ts). */
+  rewake?: import("./rewake.js").RewakeRecord;
   /** PV with `--provider-fault-restart`: when the shim logged the task's fault (arms the `provider` trigger). */
   providerFaultAppliedAt?: number;
   /** DF1: when the fault was armed and cleared, and what the board showed at the disk-full rest. */

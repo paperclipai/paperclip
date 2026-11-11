@@ -21,6 +21,8 @@ export interface RemoteRunnerRecoveryDiagnostic {
   reason: typeof reasons[number];
   runnerLifecycle?: typeof runnerLifecycles[number];
   runnerSettled?: boolean;
+  /** Present only as `false`: the controller journal proves no turn command was ever issued. */
+  providerTurnIssued?: false;
 }
 
 export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick<RemoteRunnerRecoveryDiagnostic,
@@ -55,12 +57,13 @@ export class RemoteRunnerRecoveryError extends Error {
 export function readRemoteRunnerRecoveryDiagnostic(value: unknown): RemoteRunnerRecoveryDiagnostic | null {
   if (!value || typeof value !== "object") return null;
   try {
-    const { stage, reason, runnerLifecycle, runnerSettled } = value as Record<string, unknown>;
+    const { stage, reason, runnerLifecycle, runnerSettled, providerTurnIssued } = value as Record<string, unknown>;
     if (!stages.some(candidate => candidate === stage) || !reasons.some(candidate => candidate === reason)) return null;
     return {
       stage, reason,
       ...(runnerLifecycles.some(candidate => candidate === runnerLifecycle) ? { runnerLifecycle } : {}),
       ...(typeof runnerSettled === "boolean" ? { runnerSettled } : {}),
+      ...(providerTurnIssued === false ? { providerTurnIssued } : {}),
     } as RemoteRunnerRecoveryDiagnostic;
   } catch {
     return null;

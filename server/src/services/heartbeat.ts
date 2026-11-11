@@ -31,7 +31,7 @@ import { registerCancelledWorkspacePreservationWork } from "./native-runtime/nat
 import { readUpgradeReadiness } from "./heartbeat/upgrade-readiness.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
-import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { readFreshWorkspaceReadiness, verifyRetryWorkspace } from "./fresh-workspace-continuation.js";
 import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
@@ -43,6 +43,7 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
+import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
 import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
@@ -2254,7 +2255,7 @@ export function heartbeatService(
       const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
       const sessionCodec = getAdapterSessionCodec(agent.adapterType);
       const issueId = readNonEmptyString(context.issueId);
-      const freshWorkspace = await timePreparation("workspace_selection", async () => {
+      let freshWorkspace = await timePreparation("workspace_selection", async () => {
         const readiness = await readFreshWorkspaceReadiness(db, run);
         if (issueId && canApplyTaskWorkspaceSelectionAtAdmission({ admittedInput: parseObject(run.runnerProfileJson).nativeExecutionInput, restarting: Boolean(runOptions.nativeRestartRecovery), hasLeaseOwner: Boolean(runOptions.nativeLeaseOwner) })) {
           const changed = await executionWorkspacesSvc.applyPendingTaskWorkspaceSelection({ companyId: agent.companyId,
@@ -2537,6 +2538,11 @@ export function heartbeatService(
       // Initialization has persisted the active context, including an explicit
       // absence of identity inherited from an automatic continuation.
       responsibleUserId = identityContext.responsibleUserId;
+      if (issueId && freshWorkspace?.mode === "fresh_isolated_workspace") {
+        const fallback = freshWorkspace;
+        freshWorkspace = await timePreparation("workspace_verification", () =>
+          verifyRetryWorkspace(db, options.pluginWorkerManager, run, issueId, responsibleUserId, fallback));
+      }
       run = {
         ...run,
         activeIdentityContextId: identityContext.id,
@@ -3841,7 +3847,13 @@ export function heartbeatService(
           return;
         }
         if (await leaveToNextController(err)) return;
-        if (!(await preserveNativeWorkspaceOnFailure())) {
+        // An unretired predecessor on a reused sandbox: no provider work ran,
+        // so the next attempt starts on a fresh sandbox restored from the save.
+        const predecessorRetirementFallback = await preparePredecessorRetirementFallback(db, run, err).catch(error => {
+          logger.warn({ err: error, runId: run.id }, "could not prepare a fresh sandbox for the next attempt; keeping the failed workspace");
+          return null;
+        });
+        if (!predecessorRetirementFallback && !(await preserveNativeWorkspaceOnFailure())) {
           const claim = runOptions.nativeRestartRecovery;
           let releaseFailed = false;
           restartClaimLapsed = claim !== undefined && await releaseLapsedNativeRestartClaim({ db, companyId: run.companyId, runId: run.id,
@@ -3858,15 +3870,17 @@ export function heartbeatService(
               : "native run failure left to the workspace owner that holds the run");
           return;
         }
-        await runCompletion.failRun({
+        const failed = await runCompletion.failRun({
           run, agent, issueId, issueRef, signal: executionControl.controller.signal,
           output: runOutput,
           session: { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata },
           readFailureReportSecrets,
           runId, err, identityRedactor, requiredWorkspaceRestoreEvidence, legacyAdapterEntered,
           nativeDispatchMayHaveStarted: nativeDispatchMayHaveStarted(),
-          goalCheckpointSession, previousSessionDisplayId, taskSession,
+          goalCheckpointSession, previousSessionDisplayId, taskSession, predecessorRetirementFallback,
         });
+        // The failed run's workspace could not be proven unchanged: keep it as today.
+        if (failed?.preserveFailedWorkspace) await preserveNativeWorkspaceOnFailure();
       }
     } catch (outerErr) {
       if (nativeStartupCleanupScheduled || nativeStartupCleanupError || outerErr instanceof NativeStartupCleanupPendingError) {
