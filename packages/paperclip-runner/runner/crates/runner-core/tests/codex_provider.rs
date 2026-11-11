@@ -632,8 +632,12 @@ fn ordinary_recovery_preserves_command_replay_and_collision_checks() {
 #[test]
 fn delegates_command_isolation_to_an_explicit_external_sandbox() {
     let directory = temporary_directory("external-sandbox");
-    let mut config = provider_config(&directory, &["--require-external-sandbox"]);
+    let mut config = provider_config(
+        &directory,
+        &["--require-external-sandbox", "--forbid-plan-collaboration"],
+    );
     config.externally_sandboxed = true;
+    config.read_only = false;
 
     let mut provider = CodexProvider::start(&config, None)
         .expect("start Codex with an externally owned sandbox boundary");
