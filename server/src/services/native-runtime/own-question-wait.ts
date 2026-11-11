@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { issueThreadInteractions, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueThreadInteractions, issues, statusDecisions, type Db } from "@paperclipai/db";
 import { ordinaryQuestionCondition } from "../issue-question-context.js";
 
 const PROVIDER_MESSAGE_REF = /^provider:[a-z0-9_-]+:agent-message$/i;
@@ -29,4 +29,42 @@ export async function pendingOwnQuestionId(db: Pick<Db, "select">, input: {
     ordinaryQuestionCondition(),
   )).limit(1);
   return row?.id ?? null;
+}
+
+export const OWN_QUESTION_UNANSWERED_REASON = "own_question_unanswered";
+
+export async function ownQuestionWaitReleasedByDismissal(db: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; interactionId: string;
+}): Promise<{ agentId: string } | null> {
+  const [row] = await db.select({ agentId: issues.assigneeAgentId })
+    .from(issues)
+    .innerJoin(statusDecisions, and(
+      eq(statusDecisions.id, issues.lastStatusDecisionId),
+      eq(statusDecisions.companyId, issues.companyId),
+      eq(statusDecisions.issueId, issues.id),
+    ))
+    .innerJoin(heartbeatRuns, and(
+      eq(heartbeatRuns.id, statusDecisions.runId),
+      eq(heartbeatRuns.companyId, statusDecisions.companyId),
+      eq(heartbeatRuns.agentId, issues.assigneeAgentId),
+    ))
+    .innerJoin(issueThreadInteractions, and(
+      eq(issueThreadInteractions.id, input.interactionId),
+      eq(issueThreadInteractions.companyId, issues.companyId),
+      eq(issueThreadInteractions.issueId, issues.id),
+      eq(issueThreadInteractions.createdByAgentId, issues.assigneeAgentId),
+    ))
+    .where(and(
+      eq(issues.id, input.issueId),
+      eq(issues.companyId, input.companyId),
+      eq(issues.status, "in_review"),
+      isNull(issues.assigneeUserId),
+      eq(statusDecisions.applicationState, "applied"),
+      eq(statusDecisions.toStatus, "in_review"),
+      eq(statusDecisions.reasonCode, OWN_QUESTION_UNANSWERED_REASON),
+    ))
+    .limit(1);
+  if (!row?.agentId) return null;
+  if (await pendingOwnQuestionId(db, { companyId: input.companyId, issueId: input.issueId, agentId: row.agentId })) return null;
+  return { agentId: row.agentId };
 }

@@ -58,6 +58,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async (_agentId: string, _options: { payload?: unknown; contextSnapshot?: unknown }) => undefined),
   cancelRun: vi.fn(async () => null),
 }));
+const mockOwnQuestionWaitReleasedByDismissal = vi.hoisted(() => vi.fn(async (): Promise<{ agentId: string } | null> => null));
+vi.mock("../services/native-runtime/own-question-wait.js", () => ({
+  ownQuestionWaitReleasedByDismissal: mockOwnQuestionWaitReleasedByDismissal,
+}));
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
   vi.fn(async () => null as string | null)
 );
@@ -803,6 +807,19 @@ describe("issue thread interaction routes", () => {
     mockInteractionService.dismissInteraction.mockClear();
     expect((await request(await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: RUN_1 })).post(path).send({})).status).toBe(403);
     expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+  });
+
+  it("wakes the assignee when the dismissed question was the only thing its task waited on", async () => {
+    mockInteractionService.dismissInteraction.mockResolvedValue({ id: "request-1", kind: "ask_user_questions", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
+    mockOwnQuestionWaitReleasedByDismissal.mockResolvedValueOnce({ agentId: CREATED_AGENT_ID });
+    const path = "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss";
+    expect((await request(await createApp()).post(path).send({})).status).toBe(200);
+    expect(mockOwnQuestionWaitReleasedByDismissal).toHaveBeenCalledWith(expect.anything(),
+      { companyId: "company-1", issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", interactionId: "request-1" });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(CREATED_AGENT_ID, expect.objectContaining({
+      reason: "issue_question_dismissed", idempotencyKey: "issue_question_dismissed:request-1",
+      contextSnapshot: expect.objectContaining({ issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", wakeReason: "issue_question_dismissed" }),
+    }));
   });
 
   it("hides private task requests from same-company members without task access before dismissal", async () => {

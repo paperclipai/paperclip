@@ -16,7 +16,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
 import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
-import { pendingOwnQuestionId, reportsOnlyProviderMessage } from "./own-question-wait.js";
+import { OWN_QUESTION_UNANSWERED_REASON, pendingOwnQuestionId, reportsOnlyProviderMessage } from "./own-question-wait.js";
 import { conversationTurnPresentsAnswer, pendingNativeGovernance } from "./native-governance.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
@@ -1713,7 +1713,7 @@ export async function finalizeNativeRun(input: {
           companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId,
         })) {
       proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
-        reasonCode: "own_question_unanswered", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+        reasonCode: OWN_QUESTION_UNANSWERED_REASON, unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
     }
     if (proposedDecision.statusAction === "done") {
       const continuation = record(run.contextSnapshot?.executionContinuation);

@@ -205,9 +205,12 @@ no artifact or verification. If the same agent still has its own pending,
 undismissed ordinary question on the task, native status finalization does not
 close the task. The decision is `in_review` with reason
 `own_question_unanswered`, the checkout is released, and the question stays
-pending. The person's answer continues the task as usual. A completion report
-with its own evidence, a dismissed question, and an answered question keep the
-historical-question rule above.
+pending. The person's answer continues the task as usual. If the person dismisses
+the question instead, and no other pending, undismissed question of that agent
+remains, the dismiss route wakes the assignee (`issue_question_dismissed`) so it
+continues without the answer. A completion report with its own evidence, a
+dismissed question, and an answered question keep the historical-question rule
+above.
 
 A permission denial is not, by itself, a blocker. If an instructed step is denied at an authorization boundary but the issue's own deliverable is complete, the right disposition is `done`, not `blocked` (see the review-delegation rules in §6).
 

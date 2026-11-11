@@ -46,6 +46,7 @@ import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { ownQuestionWaitReleasedByDismissal } from "../services/native-runtime/own-question-wait.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
@@ -19102,6 +19103,22 @@ export function issueRoutes(
         action: "issue.thread_interaction_dismissed", entityType: "issue", entityId: issue.id,
         details: { interactionId: interaction.id, interactionKind: interaction.kind },
       });
+      const released = await ownQuestionWaitReleasedByDismissal(db, {
+        companyId: issue.companyId, issueId: issue.id, interactionId: interaction.id,
+      });
+      if (released) {
+        await heartbeat.wakeup(released.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_question_dismissed",
+          payload: { issueId: issue.id, interactionId: interaction.id },
+          idempotencyKey: `issue_question_dismissed:${interaction.id}`,
+          requestedByActorType: actor.actorType === "user" ? "user" : "system",
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_question_dismissed",
+            source: "issue.interaction.dismiss", dismissedInteractionId: interaction.id },
+        });
+      }
       res.json(interaction);
     },
   );

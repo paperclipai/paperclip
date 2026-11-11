@@ -10,6 +10,7 @@ import { readTaskQuestionContext } from "../issue-question-context.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { finalizeNativeRun, pendingNativeGovernance } from "./native-run-finalizer.js";
+import { ownQuestionWaitReleasedByDismissal } from "./own-question-wait.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -260,6 +261,15 @@ describe("historical task questions", () => {
     if (waits) {
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))[0])
         .toMatchObject({ status: "pending", resolvedAt: null });
+      const scope = { companyId: f.companyId, issueId: f.issueId, interactionId: f.question.id };
+      expect(await ownQuestionWaitReleasedByDismissal(db, scope)).toBeNull();
+      const [second] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+        kind: "ask_user_questions", status: "pending", sourceRunId: f.runId, createdByAgentId: f.agentId,
+        title: "Second question", payload: f.question.payload }).returning();
+      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
+      expect(await ownQuestionWaitReleasedByDismissal(db, scope)).toBeNull();
+      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, second!.id, { userId: "board-user" });
+      expect(await ownQuestionWaitReleasedByDismissal(db, { ...scope, interactionId: second!.id })).toEqual({ agentId: f.agentId });
     }
   });
 
