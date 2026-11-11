@@ -132,6 +132,7 @@ import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { startEventLoopStallMonitor } from "./event-loop-stall-monitor.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
   StartupRefusalError,
@@ -1090,6 +1091,11 @@ async function startServerWithDatabaseTeardown(
     });
   });
   startupListenerBound = true;
+  // A blocked event loop lapses every controller lease and freezes every
+  // request, so record each long block with the deltas that name its class.
+  const eventLoopStallMonitor = startEventLoopStallMonitor({
+    log: (stall) => logger.warn({ eventLoopStall: stall }, `event loop blocked for ${stall.stallMs} ms (likely ${stall.likelyCause})`),
+  });
   // The factory publishes the verified numeric endpoint on listening. Native
   // recovery must never fall back to a configured/public URL if it is absent.
   resolveLocalRuntimeApiUrl();
@@ -2062,6 +2068,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     const shutdownStartedAt = Date.now();
     logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
+    eventLoopStallMonitor.stop();
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
