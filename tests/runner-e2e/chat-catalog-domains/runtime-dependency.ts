@@ -29,7 +29,9 @@ export function readTaskState(events: readonly Record<string, unknown>[], task: 
 }
 async function chooseStatus(page: Page, status: "Todo" | "Done") {
   await page.getByRole("button", { name: /^Change status \(current:/ }).first().click();
-  await page.getByRole("button", { name: status, exact: true }).click();
+  // Each option's accessible name also carries its status icon's label, so match the visible option text.
+  // (gha-42937394973: the exact-name locator never resolved while the menu showed "Todo".)
+  await page.getByRole("button").filter({ visible: true, hasText: new RegExp(`^\\s*${status}\\s*$`) }).first().click();
 }
 export function gradeDesignDependency(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -61,7 +63,7 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     description: `Implement the approved Design as a small website plan. Once eligible, read the actual Design task and save a task document with the exact reference ${marker}, accessible labels and a clear primary action, then finish normally. Do not deploy, create other tasks or invent approval.` });
   return { worker, task, design, marker };
 }, gradeDesignDependency, {
-  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v6",
+  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v7",
   sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
     await pollUntil({ label: "Saved dependency and canonical reply before human approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),

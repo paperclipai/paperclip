@@ -5158,7 +5158,7 @@
       "../../ui/src/pages/CompanySkills.tsx",
       "../../ui/src/lib/company-skill-routes.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v8",
+    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v9",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
@@ -5673,7 +5673,7 @@
       "run-observations.ts",
       "chat-scenarios/task-coordination.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v6",
+    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v7",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,

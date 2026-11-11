@@ -183,7 +183,14 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   // From the skill, the Skills section's own My Skills link shows it in the person's library.
   await ctx.input.page.getByRole("link", { name: "My Skills", exact: true }).first().click({ timeout: remaining() });
   const card = ctx.input.page.getByRole("button").filter({ has: ctx.input.page.getByText(skill.name, { exact: true }) }).first();
-  await expect(card).toBeVisible({ timeout: remaining() }); await card.click({ timeout: remaining() });
+  await expect(card).toBeVisible({ timeout: remaining() });
+  // Retained gha-42937394973: a click on the freshly rendered library card sometimes leaves the list open
+  // (the card highlights, no navigation). A person clicks again; the opened page must still be this skill.
+  const opened = (url: URL) => url.origin === new URL(source).origin && (url.pathname === studioRoute || url.pathname === detailRoute);
+  await expect(async () => {
+    if (!opened(new URL(ctx.input.page.url()))) await card.click({ timeout: 5_000 });
+    await expect(ctx.input.page).toHaveURL(opened, { timeout: 5_000 });
+  }).toPass({ timeout: remaining() });
   const openSavedEditor = async () => {
     await expect(ctx.input.page).toHaveURL(url => url.origin === new URL(source).origin
       && (url.pathname === studioRoute || url.pathname === detailRoute), { timeout: remaining() });
@@ -216,7 +223,7 @@ const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase =>
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
   base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
   if (id === "skills.explicit-restriction") return { ...base, oracleVersion: "paperclip.chat-catalog.skill-restriction.structural.v2" };
-  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v8", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
+  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v9", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
     async act(ctx, state) { remainingIdentityObservationBudget(ctx); await waitForReply(ctx, ctx.observationDeadlineAt); await inspectAuthoredSkill(ctx, state, await observeSkills(ctx, state)); },
     async verifyResult(ctx, state, value) {
       const o = skillsObservation(value); if (!o) throw new Error("Missing authored skill inspection evidence");
