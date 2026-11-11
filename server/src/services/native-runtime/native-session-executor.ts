@@ -12173,6 +12173,18 @@ async function executePaperclipNativeSessionAttempt(
           .from(heartbeatRuns).where(eq(heartbeatRuns.id, input.execution.binding.runId))
           .then(rows => rows.some(row => nativeCheckpointRecordsCompletedTurn(row.runnerProfileJson, input.execution.binding.runId)))
           .catch(() => false);
+      // An exhausted provider allowance is not ambiguous session state: the
+      // provider ended its turn. Say when it resets and whether Paperclip will
+      // retry then. A failed read only loses that detail.
+      const providerLimit = sourceFailureCode === "native_provider_usage_limit" && phase === "terminal_failure"
+        ? await import("./provider-limit-resume.js").then(async ({ planProviderLimitResume, providerLimitNextAction }) => {
+          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId);
+          return { plan, nextAction: providerLimitNextAction(plan) };
+        }).catch((failure: unknown) => {
+          logger.warn({ err: failure, runId: input.execution.binding.runId }, "provider limit reset unavailable");
+          return null;
+        })
+        : null;
       const recoveryProjection = nativeSessionRecoveryProjection({
         phase,
         failureCode,
@@ -12240,9 +12252,12 @@ async function executePaperclipNativeSessionAttempt(
               providerEventsExist: recoveryEvidence.providerEventsExist,
               checkpointExists: recoveryEvidence.checkpointExists,
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
+              ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
               nextAction:
-                sourceFailureCode === "native_permission_declined"
+                providerLimit
+                  ? providerLimit.nextAction
+                  : sourceFailureCode === "native_permission_declined"
                   ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
                   : sourceFailureCode === "native_provider_approval_required"
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
@@ -12476,6 +12491,9 @@ async function executePaperclipNativeSessionAttempt(
             .where(eq(issues.id, input.execution.binding.issueId));
         }
         if (!stillOwnsTask) return;
+        // The hold's reset deadline belongs to the provider-limit owner.
+        if (providerLimit?.plan.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerLimitResume,
+          JSON.stringify({ companyId: input.execution.binding.companyId }));
         await issueRecoveryActionService(
           tx as unknown as Db,
         ).upsertSourceScoped({
@@ -12503,9 +12521,12 @@ async function executePaperclipNativeSessionAttempt(
             providerSessionEstablished:
               recoveryEvidence.providerSessionEstablished,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
+            ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
           },
           nextAction:
-            sourceFailureCode === "native_permission_declined"
+            providerLimit
+              ? providerLimit.nextAction
+              : sourceFailureCode === "native_permission_declined"
               ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
               : sourceFailureCode === "native_provider_approval_required"
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
