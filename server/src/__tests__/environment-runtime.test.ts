@@ -4922,6 +4922,55 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
+  async function seedSettlingWarmLease(predecessorFinishedAt: Date, predecessorStatus: "succeeded" | "failed" = "succeeded") {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const warmEnvironment = resolveRunnerEnvironmentForRun(seeded.environment, "paperclip_runner", { lifecycleMode: "warm" }, undefined, "selected-account:generation");
+    let created = 0;
+    const call = vi.fn(async (_pluginId: string, method: string, input: any) => {
+      if (method === "environmentResumeLease") return { providerLeaseId: input.providerLeaseId, metadata: { remoteCwd: "/workspace" } };
+      if (method === "environmentAcquireLease") return { providerLeaseId: `warm-${++created}`, metadata: { remoteCwd: "/workspace" } };
+      if (method === "environmentDestroyLease" || method === "environmentStopLease" || method === "environmentReleaseLease") return {
+        providerLeaseId: input.providerLeaseId, state: method === "environmentDestroyLease" ? "destroyed" : "stopped",
+      };
+      throw new Error(`Unexpected plugin method: ${method}`);
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentStopLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    const input = { companyId: seeded.companyId, agentId: seeded.agentId, issueId: null, adapterType: "paperclip_runner",
+      environment: warmEnvironment, persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" as const } };
+    const predecessorRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: predecessorRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+    const predecessor = await runtime.acquireRunLease({ ...input, heartbeatRunId: predecessorRunId });
+    await db.update(heartbeatRuns).set({ status: predecessorStatus, finishedAt: predecessorFinishedAt }).where(eq(heartbeatRuns.id, predecessorRunId));
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+    return { runtime, call, input, predecessor, predecessorRunId, nextRunId };
+  }
+
+  it.each(["succeeded", "failed"] as const)("resumes a warm lease that its %s predecessor is still releasing instead of creating a fresh sandbox", async predecessorStatus => {
+    const f = await seedSettlingWarmLease(new Date(), predecessorStatus);
+    const released = new Promise<void>(resolve => setTimeout(() => {
+      void f.runtime.releaseRunLeases(f.predecessorRunId, "released", undefined, "stop_and_retain").then(() => resolve());
+    }, 400));
+    const next = await f.runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId });
+    await released;
+    expect(next.lease.providerLeaseId).toBe(f.predecessor.lease.providerLeaseId);
+    expect(next.lease.heartbeatRunId).toBe(f.nextRunId);
+    expect(f.call.mock.calls.filter(call => call[1] === "environmentAcquireLease")).toHaveLength(1);
+  });
+
+  it("does not wait for a warm lease that a predecessor finished long ago and never released", async () => {
+    const f = await seedSettlingWarmLease(new Date(Date.now() - 10 * 60_000));
+    const startedAt = Date.now();
+    const next = await f.runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId });
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(next.lease.providerLeaseId).not.toBe(f.predecessor.lease.providerLeaseId);
+    await expect(environmentService(db).getLeaseById(f.predecessor.lease.id)).resolves.toMatchObject({ status: "active" });
+  });
+
   it("does not retain or resume plugin-backed sandbox leases unless the provider opts in", async () => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();

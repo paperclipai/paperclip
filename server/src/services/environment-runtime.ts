@@ -1100,6 +1100,36 @@ function reusableSandboxLeaseScopeMatches(input: {
   });
 }
 
+const SETTLING_REUSABLE_LEASE_WAIT_MS = 20_000;
+const SETTLING_REUSABLE_LEASE_RECENT_MS = 2 * 60_000;
+
+async function waitForSettlingReusableLease(db: Db, input: {
+  companyId: string; environmentId: string; executionWorkspaceId: string | null; issueId: string | null;
+  agentId: string; heartbeatRunId: string;
+}) {
+  const deadline = Date.now() + SETTLING_REUSABLE_LEASE_WAIT_MS;
+  for (;;) {
+    const [settling] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId),
+        eq(heartbeatRuns.companyId, environmentLeases.companyId)))
+      .where(and(
+        eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.environmentId, input.environmentId),
+        eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+        eq(environmentLeases.status, "active"),
+        ne(environmentLeases.heartbeatRunId, input.heartbeatRunId),
+        input.executionWorkspaceId
+          ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)
+          : and(sql`${environmentLeases.executionWorkspaceId} is null`, eq(environmentLeases.issueId, input.issueId!)),
+        sql`${environmentLeases.metadata}->>'agentId' = ${input.agentId}`,
+        inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+        sql`${heartbeatRuns.finishedAt} > now() - make_interval(secs => ${SETTLING_REUSABLE_LEASE_RECENT_MS / 1000})`,
+      )).limit(1);
+    if (!settling || Date.now() >= deadline) return;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+
 function reusableLeaseCanBeResumed(input: {
   lease: Pick<EnvironmentLease, "status" | "heartbeatRunId">;
   heartbeatRunId: string | null;
@@ -1748,6 +1778,12 @@ function createSandboxEnvironmentDriver(
         // We also filter out leases whose policy is not reuse_by_environment
         // and whose status is not reusable so non-reusable, cleanup-pending,
         // or terminal rows cannot be matched.
+        if (supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
+          && (input.executionWorkspaceId !== null || input.issueId !== null) && input.agentId !== null) {
+          await waitForSettlingReusableLease(db, { companyId: input.companyId, environmentId: input.environment.id,
+            executionWorkspaceId: input.executionWorkspaceId, issueId: input.issueId, agentId: input.agentId,
+            heartbeatRunId: input.heartbeatRunId });
+        }
         const reusableCandidateLeases =
           supportsReusableLeases &&
           parsed.config.reuseLease &&
@@ -2119,6 +2155,12 @@ function createSandboxEnvironmentDriver(
               providerConfig: providerConfigForLease,
             })
           : null;
+      if (supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
+        && (input.executionWorkspaceId !== null || input.issueId !== null) && input.agentId !== null) {
+        await waitForSettlingReusableLease(db, { companyId: input.companyId, environmentId: input.environment.id,
+          executionWorkspaceId: input.executionWorkspaceId, issueId: input.issueId, agentId: input.agentId,
+          heartbeatRunId: input.heartbeatRunId });
+      }
       const reusableCandidateLeases =
         supportsReusableLeases &&
         parsed.config.reuseLease &&
