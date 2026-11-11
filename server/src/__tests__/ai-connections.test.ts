@@ -69,10 +69,6 @@ beforeAll(async () => {
   home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-")));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
-  // A managed AI run carries the host's deny-side Claude gate into its private
-  // config dir, so point the host settings source at a fixture dir. A real
-  // ~/.claude/settings.json on the machine running these tests must not change
-  // what they observe.
   hostClaudeDir = path.join(home, "host-claude");
   await mkdir(hostClaudeDir, { recursive: true });
   vi.stubEnv("CLAUDE_CONFIG_DIR", hostClaudeDir);
@@ -2377,9 +2373,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await writeFile(hookPath, "#!/bin/sh\nexit 0\n");
     await chmod(hookPath, 0o644);
     await writeFile(path.join(hostClaudeDir, "settings.json"), JSON.stringify({
-      // Host-only keys that must not reach the run: PATH and apiKeyHelper can
-      // re-inject a provider credential the managed home exists to isolate,
-      // and defaultMode would widen the run's permission posture.
       env: { PATH: "/host/only" },
       apiKeyHelper: "/host/only/print-a-key.sh",
       permissions: { defaultMode: "bypassPermissions", deny: ["Bash(gh pr merge:*)"] },
@@ -2387,16 +2380,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     }));
     const runInput = { companyId, agentId: gateAgentId, adapterType: "claude_local", binding, responsibleUserId: userId, config: {} };
     try {
-      // The gate hook is declared but not executable, so the run must not
-      // start ungated. Root ignores the executable bit, so only a non-root
-      // runner can observe this half.
       if (process.getuid?.() !== 0)
         await expect(prepareManagedAiRuntime(db, runInput)).rejects.toThrow(/not an executable file/);
       await chmod(hookPath, 0o755);
-      // The agent's own config names a config dir that holds no settings.json.
-      // It must not become the gate source: the run's env overrides that key
-      // with the managed home regardless, so honouring it would carry no gate
-      // and change nothing else about the run.
       const agentChosenDir = path.join(home, "agent-chosen-empty-dir");
       await mkdir(agentChosenDir, { recursive: true });
       const runtime = await prepareManagedAiRuntime(db, { ...runInput, config: { env: { CLAUDE_CONFIG_DIR: agentChosenDir } } });

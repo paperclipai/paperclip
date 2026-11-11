@@ -2926,12 +2926,6 @@ export function heartbeatService(
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
         catch (error) { throw classifyManagedProjectAuthFailure(error, agent.id); }
-        // The gate seeded into the private config dir was checked against this
-        // server, because the execution target is only known here. A remote
-        // target stages that config dir into its sandbox but nothing else from
-        // the host, so re-assert the carried hooks now. Outside the catch
-        // above on purpose: an unreachable gate is not a project-auth conflict,
-        // and it must fail with its own message.
         if (executionTarget?.kind === "remote" && managedAiRuntime.gate)
           assertManagedAiGateReachesRemoteTarget({
             hookCommands: managedAiRuntime.gate.hookCommands,

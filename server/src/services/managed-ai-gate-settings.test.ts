@@ -72,13 +72,10 @@ describe("managed AI gate settings", () => {
     expect(result.denyRules).toEqual(["Bash(gh pr merge:*)"]);
 
     const written = JSON.parse(await readFile(result.settingsPath!, "utf8")) as Record<string, unknown>;
-    // The gate is carried.
     expect(written.hooks).toEqual({
       PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: hookPath }] }],
     });
     expect(written.permissions).toEqual({ deny: ["Bash(gh pr merge:*)"] });
-    // Nothing that could re-inject a provider credential, repoint the runner's
-    // PATH, or widen the run's permission posture comes along with it.
     expect(Object.keys(written).sort()).toEqual(["hooks", "permissions"]);
   });
 
@@ -136,8 +133,6 @@ describe("managed AI gate settings", () => {
     expect(error.message).toContain(missing);
   });
 
-  // Root ignores the executable bit, so the unreadable-mode case cannot be
-  // observed from a root test runner.
   it.skipIf(process.getuid?.() === 0)("fails loudly when a carried hook command exists but is not executable", async () => {
     const hookPath = path.join(root, "not-executable.sh");
     await writeFile(hookPath, "#!/bin/sh\nexit 0\n");
@@ -174,9 +169,6 @@ describe("managed AI gate settings", () => {
   });
 
   it("carries a hooks block whose handlers have no command to check", async () => {
-    // Whether the gate is carried must not depend on it naming a path this
-    // module knows how to verify. A prompt-type PreToolUse handler is still a
-    // declared gate, and dropping it would start the run ungated.
     await writeHostSettings({
       hooks: {
         PreToolUse: [{ matcher: "Bash", hooks: [{ type: "prompt", prompt: "Refuse main writes" }] }],
@@ -253,9 +245,6 @@ describe("managed AI gate settings", () => {
     });
 
     it("takes only one argument, so agent config cannot name the gate source", () => {
-      // A configured CLAUDE_CONFIG_DIR is overridden by the managed home when
-      // the run's env is built, so letting it choose the gate source would be a
-      // one-way bypass: point it at a dir with no settings.json, carry no gate.
       expect(resolveHostClaudeSettingsDir.length).toBe(1);
     });
   });
@@ -266,10 +255,6 @@ describe("managed AI gate settings", () => {
     });
 
     it("is false for a paperclip runner, which builds its own agent home", () => {
-      // drivers/acpx/runtime-sandbox.ts repoints CLAUDE_CONFIG_DIR at a per-run
-      // agent home unconditionally, and Claude Managed is an API lane with no
-      // settings source at all. Seeding for either would report a dead gate as
-      // a live one.
       expect(runReadsClaudeUserSettings("paperclip_runner")).toBe(false);
       expect(runReadsClaudeUserSettings("codex_local")).toBe(false);
     });
