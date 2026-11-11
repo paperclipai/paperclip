@@ -4281,6 +4281,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
   tags: ["adapters"],
   summary: "Start a company-scoped adapter device login",
+  description: "For a managed AI Connection, omit agentId to select an eligible computer in the sign-in environment.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     body: jsonBody(startAdapterLoginSessionSchema),
@@ -8327,6 +8328,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/setup-token-login-sessions",
   tags: ["companies"],
   summary: "Start a company-and-environment Claude setup-token login session",
+  description: "For a managed AI Connection, omit agentId to select an eligible computer in the sign-in environment.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(startClaudeSetupTokenSessionRequestSchema),
