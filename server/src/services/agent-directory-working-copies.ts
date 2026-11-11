@@ -1,10 +1,6 @@
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import fs from "node:fs/promises";
-import { AsyncLocalStorage } from "node:async_hooks";
-import { setTimeout } from "node:timers/promises";
 import path from "node:path";
-import type { Socket } from "node:net";
-import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, environmentLeases, environments, agentInstructionWorkingCopies as copies, withDedicatedDbConnection, type Db } from "@paperclipai/db";
@@ -22,6 +18,7 @@ import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { agentDirectoryBaselineDigest, agentDirectoryProbeProgram, observeLocalAgentDirectory } from "./agent-directory-probe.js";
 import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "./remote-execution-termination.js";
 import { cachedAgentFileManifest, captureAgentFileCheckpoint, checkpointBaseline, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
+import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 import { logger } from "../middleware/logger.js";
 
 type Copy = typeof copies.$inferSelect;
@@ -31,163 +28,8 @@ function adoptionAuthority(row: Copy) {
 }
 
 export class AgentDirectoryReuseInvalidatedError extends Error {}
-export const agentDirectoryOperationLockTiming = { waitMs: 300_000, ownerSilenceMs: 60_000, retryMinMs: 250, retryMaxMs: 5_000, attemptTimeoutMs: 5_000, maxConcurrentAttempts: 4 };
-const agentDirectoryBusy = () => conflict("Agent directory operation is already active");
-const lockAttemptSlots = new Map<string, { inFlight: number; queue: Array<() => void> }>();
-async function takeLockAttemptSlot(key: string, deadline: number): Promise<() => void> {
-  let slots = lockAttemptSlots.get(key);
-  if (!slots) lockAttemptSlots.set(key, slots = { inFlight: 0, queue: [] });
-  const current = slots;
-  if (current.inFlight < agentDirectoryOperationLockTiming.maxConcurrentAttempts) current.inFlight++;
-  else {
-    const granted = await new Promise<boolean>(resolve => {
-      const wake = () => { clearTimeout(timer); resolve(true); };
-      const timer = globalThis.setTimeout(() => {
-        const index = current.queue.indexOf(wake);
-        if (index >= 0) current.queue.splice(index, 1);
-        resolve(false);
-      }, Math.max(0, deadline - Date.now()));
-      current.queue.push(wake);
-    });
-    if (!granted) throw agentDirectoryBusy();
-  }
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const next = current.queue.shift();
-    if (next) return next();
-    current.inFlight--;
-    if (current.inFlight === 0 && lockAttemptSlots.get(key) === current) lockAttemptSlots.delete(key);
-  };
-}
-export async function tryAcquireAgentDirectoryOperationLock(tx: Pick<Db, "execute">, companyId: string, agentId: string): Promise<number | null> {
-  const { ownerSilenceMs } = agentDirectoryOperationLockTiming;
-  const [lock] = await tx.execute(sql`with current_timeout as (
-      select case when setting::bigint > 0 and setting::bigint < ${ownerSilenceMs} then setting::bigint else ${ownerSilenceMs}::bigint end as ms
-      from pg_settings where name = 'idle_in_transaction_session_timeout')
-    select ms as idle_timeout_ms, set_config('idle_in_transaction_session_timeout', ms::text, true) as idle_timeout,
-      pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0)) as acquired from current_timeout`);
-  return lock?.acquired === true ? Number(lock.idle_timeout_ms ?? ownerSilenceMs) : null;
-}
-export async function withAgentDirectoryOperationLock<T>(db: Db, companyId: string, agentId: string, work: (tx: Db, idleTimeoutMs: number) => Promise<T>): Promise<T> {
-  const { waitMs, retryMinMs, retryMaxMs, attemptTimeoutMs } = agentDirectoryOperationLockTiming;
-  const deadline = Date.now() + waitMs;
-  let delay = retryMinMs;
-  for (;;) {
-    if (Date.now() >= deadline) throw agentDirectoryBusy();
-    const releaseSlot = await takeLockAttemptSlot(`${companyId}:${agentId}`, deadline);
-    let abandoned = false;
-    let attemptSettled = false;
-    let connection: Db | undefined;
-    const sockets = new Set<Socket>();
-    const openSockets = new Set<Socket>();
-    const releaseIfClosed = () => { if (abandoned && attemptSettled && openSockets.size === 0) releaseSlot(); };
-    let decided!: (outcome: "acquired" | "busy") => void;
-    const decision = new Promise<"acquired" | "busy">(resolve => { decided = resolve; });
-    const attempt = withDedicatedDbConnection(db, dedicated => {
-      connection = dedicated;
-      return dedicated.transaction(async tx => {
-        const idleTimeoutMs = await tryAcquireAgentDirectoryOperationLock(tx, companyId, agentId);
-        if (abandoned || idleTimeoutMs === null) {
-          decided("busy");
-          return null;
-        }
-        decided("acquired");
-        return { value: await work(tx as unknown as Db, idleTimeoutMs) };
-      });
-    }, { connectTimeoutSeconds: Math.max(1, Math.ceil(attemptTimeoutMs / 1000)), onSocket: socket => {
-      sockets.add(socket);
-      openSockets.add(socket);
-      socket.once("close", () => {
-        openSockets.delete(socket);
-        releaseIfClosed();
-      });
-      if (abandoned) socket.destroy();
-    } });
-    void attempt.then(() => undefined, () => undefined).then(() => {
-      attemptSettled = true;
-      releaseIfClosed();
-    });
-    const releaseWhenClosed = () => {
-      abandoned = true;
-      void connection?.$client.end({ timeout: 0 }).catch(() => undefined);
-      for (const socket of sockets) socket.destroy();
-      releaseIfClosed();
-    };
-    const stop = new AbortController();
-    let outcome: "acquired" | "busy" | "stalled";
-    try {
-      outcome = await Promise.race([
-        decision,
-        attempt.then(() => "busy" as const),
-        setTimeout(Math.max(1, Math.min(attemptTimeoutMs, deadline - Date.now())), "stalled" as const, { signal: stop.signal, ref: false }),
-      ]);
-    } catch (error) {
-      releaseWhenClosed();
-      throw error;
-    } finally { stop.abort(); }
-    if (outcome === "acquired") {
-      releaseSlot();
-      const result = await attempt;
-      if (result) return result.value;
-    } else {
-      attempt.catch(() => undefined);
-      releaseWhenClosed();
-    }
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw agentDirectoryBusy();
-    await setTimeout(Math.min(remaining, delay / 2 + Math.random() * delay / 2), undefined, { ref: false });
-    delay = Math.min(retryMaxMs, delay * 2);
-  }
-}
-export function agentDirectoryLockOwnerCheck(lock: Pick<Db, "execute">, signal: AbortSignal): () => Promise<void> {
-  return async () => {
-    signal.throwIfAborted();
-    try { await lock.execute(sql`select 1`); } catch { throw conflict("Agent directory operation lock was lost"); }
-    signal.throwIfAborted();
-  };
-}
-export async function withAgentDirectoryLockKeepalive<T>(lock: Pick<Db, "execute">, idleTimeoutMs: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const owned = new AbortController();
-  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return work(owned.signal);
-  const stop = new AbortController();
-  const interval = Math.max(1, Math.min(30_000, Math.floor(idleTimeoutMs / 4)));
-  const retryDelay = Math.max(1, Math.min(1_000, Math.floor(interval / 4)));
-  let lost!: (error: Error) => void;
-  const lockLost = new Promise<never>((_resolve, reject) => { lost = reject; });
-  lockLost.catch(() => undefined);
-  const keeper = (async () => {
-    let confirmedAt = Date.now();
-    let delay = interval;
-    while (!stop.signal.aborted) {
-      await setTimeout(delay, undefined, { signal: stop.signal, ref: false });
-      try {
-        await lock.execute(sql`select 1`);
-        confirmedAt = Date.now();
-        delay = interval;
-      } catch {
-        if (stop.signal.aborted) return;
-        if (Date.now() - confirmedAt + retryDelay >= idleTimeoutMs) {
-          const error = conflict("Agent directory operation lock was lost");
-          owned.abort(error);
-          lost(error);
-          return;
-        }
-        delay = retryDelay;
-      }
-    }
-  })().catch(() => undefined);
-  const running = work(owned.signal);
-  try {
-    return await Promise.race([running, lockLost]);
-  } catch (error) {
-    if (owned.signal.aborted) await running.catch(() => undefined);
-    throw error;
-  } finally {
-    stop.abort();
-    await keeper;
-  }
+export class AgentDirectoryOperationBusyError extends HttpError {
+  constructor() { super(409, "Agent directory operation is already active"); }
 }
 const completed = new Set(["saved", "unchanged", "resolved", "unavailable"]);
 const transports = new Map<string, PreparedAdapterExecutionTargetRuntime>();
@@ -207,31 +49,7 @@ function baseline(row: Copy) {
 function actor(row: Copy): AuthorizationActor {
   return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
 }
-export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patchRow: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
-  const lockOwnership = new AsyncLocalStorage<{ signal: AbortSignal; verify: () => Promise<void> }>();
-  const assertDirectoryLockHeld = async () => { await lockOwnership.getStore()?.verify(); };
-  const whileDirectoryLockHeld = async (fn: () => Promise<unknown>) => {
-    if (await assertDirectoryLockHeld().then(() => true, () => false)) await fn();
-  };
-  const patch = async (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => {
-    await assertDirectoryLockHeld();
-    return patchRow(row, values, condition);
-  };
-  async function fencedRemoteDelete(row: Copy, paths: string[], execute: (script: string) => Promise<boolean>): Promise<boolean> {
-    const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-    const cleanup = (row.receipt?.cleanup ?? {}) as Record<string, unknown>;
-    const recorded = typeof cleanup.deletingSuffix === "string" && /^\.deleting-[0-9a-f-]{36}$/.test(cleanup.deletingSuffix) ? cleanup.deletingSuffix : null;
-    const suffix = recorded ?? `.deleting-${randomUUID()}`;
-    const quoted = paths.map(quote).join(" ");
-    await assertDirectoryLockHeld();
-    if (!recorded) await patch(row, { receipt: { ...row.receipt, cleanup: { ...cleanup, deletingSuffix: suffix } } });
-    if (!await execute(`for p in ${quoted}; do if [ -e "$p" ] || [ -L "$p" ]; then mv -- "$p" "$p${suffix}" || exit 1; fi; done`)) return false;
-    try { await assertDirectoryLockHeld(); } catch (error) {
-      await execute(`for p in ${quoted}; do if [ -e "$p${suffix}" ] && [ ! -e "$p" ]; then mv -- "$p${suffix}" "$p"; fi; done`);
-      throw error;
-    }
-    return execute(`rm -rf -- ${paths.map(p => quote(`${p}${suffix}`)).join(" ")}`);
-  }
+export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patch: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
   const store = agentFileStore(db);
   async function insertCopy(values: typeof copies.$inferInsert) {
     return db.transaction(async tx => {
@@ -388,18 +206,17 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       const inspected = await inspectAgentDirectory(canonical, false);
       // A stopped lifecycle has already accounted for all its bytes. No live
       // or pending candidate ever enters this replacement path.
-      await assertDirectoryLockHeld();
       await fs.rm(localRoot, { recursive: true, force: true });
       await fs.mkdir(path.dirname(localRoot), { recursive: true, mode: 0o700 });
       try {
         await fs.cp(canonical, localRoot, { recursive: true, preserveTimestamps: true });
         return inspected;
       } catch (error) {
-        await whileDirectoryLockHeld(() => fs.rm(path.dirname(localRoot), { recursive: true, force: true }));
+        await fs.rm(path.dirname(localRoot), { recursive: true, force: true });
         throw error;
       }
     }).catch(async error => {
-      await whileDirectoryLockHeld(() => fs.rm(path.dirname(localRoot), { recursive: true, force: true }));
+      await fs.rm(path.dirname(localRoot), { recursive: true, force: true });
       throw error;
     });
     const loadedEntry = snapshot.entries.get(deriveBundleState(agent).entryFile);
@@ -412,7 +229,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       row = await patch(row, values);
       if (input.warm) await fs.writeFile(ownerFile(row), JSON.stringify({ runId: row.runId }));
     } catch (error) {
-      await whileDirectoryLockHeld(() => fs.rm(path.dirname(localRoot), { recursive: true, force: true }));
+      await fs.rm(path.dirname(localRoot), { recursive: true, force: true });
       throw error;
     }
     try {
@@ -422,7 +239,6 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
           `node -e ${quote(instructionGitExcludeProgram)} ${quote(input.target.remoteCwd)}`,
           { cwd: input.target.remoteCwd, env: {}, timeoutSec: 15 });
         if (excluded.exitCode !== 0 || excluded.timedOut) throw new Error("Could not exclude agent files from task Git staging");
-        await assertDirectoryLockHeld();
         const runtime = await transport(row, input.target, false);
         transports.set(key(row), runtime);
         if (input.target.transport === "sandbox") {
@@ -458,7 +274,6 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // Reconstruct a private mirror without applying save quotas to admission.
     // An empty merge baseline downloads all remote bytes without uploading any;
     // the original save baseline remains unchanged in Postgres.
-    await assertDirectoryLockHeld();
     await fs.mkdir(row.localRoot, { recursive: true, mode: 0o700 });
     let projection: PreparedAdapterExecutionTargetRuntime | undefined;
     try {
@@ -471,9 +286,9 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       await inspectAgentDirectory(row.localRoot, false);
       if (row.receipt?.warm === true) await fs.writeFile(ownerFile(row), JSON.stringify({ runId: row.runId }));
     } catch (error) {
-      await whileDirectoryLockHeld(() => fs.rm(row.localRoot, { recursive: true, force: true }));
+      await fs.rm(row.localRoot, { recursive: true, force: true });
       throw error;
-    } finally { await whileDirectoryLockHeld(async () => projection?.cleanupWorkspaceSnapshot?.()); }
+    } finally { await projection?.cleanupWorkspaceSnapshot?.(); }
   }
   async function retrieve(row: Copy, target?: AdapterExecutionTarget | null) {
     if (row.location !== "local") {
@@ -603,17 +418,15 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       let captured: Awaited<ReturnType<typeof captureAgentFileCheckpoint>> | undefined;
       try {
         const previous = row.receipt?.checkpointManifest as AgentFileManifest | undefined ?? checkpointBaseline(baseline(row));
-        await assertDirectoryLockHeld();
         captured = await captureAgentFileCheckpoint({ runId: row.runId, localRoot: row.localRoot, executionRoot: row.executionRoot, previous, target });
         const snapshot = checkpointSnapshot(captured.manifest);
         const nextHash = directorySnapshotSha256(snapshot);
         const changed = nextHash !== row.baseHash;
         const { storageWarning } = changed
-          ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest, assertOwner: assertDirectoryLockHeld }, actor(row))
-          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => {
-            await assertDirectoryLockHeld();
-            return { storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null };
-          });
+          ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest }, actor(row))
+          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => ({
+            storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null,
+          }));
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
           candidateHash: nextHash, errorCode: null, errorMessage: null, attempts: 0, nextAttemptAt: null,
           ...(stopped ? { processStoppedAt: new Date() } : {}),
@@ -668,7 +481,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         if (candidateHash === row.baseHash) {
           row = await patch(row, { state: "unchanged", errorCode: null, errorMessage: null, nextAttemptAt: null });
         } else {
-          ({ storageWarning } = await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: row.localRoot, baseline: baseline(row), assertOwner: assertDirectoryLockHeld }, actor(row)));
+          ({ storageWarning } = await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: row.localRoot, baseline: baseline(row) }, actor(row)));
           row = await patch(row, { state: "saved", candidateHash, errorCode: null, errorMessage: null, nextAttemptAt: null });
         }
         row = await patch(row, { receipt: { ...row.receipt, storageWarning } });
@@ -711,7 +524,6 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     const runtime = transports.get(key(row));
     transports.delete(key(row));
     let cleanupPending = false;
-    await assertDirectoryLockHeld();
     await runtime?.cleanupWorkspaceSnapshot?.().catch(() => { cleanupPending = true; });
     const cleanupTarget = target ?? runtime?.target;
     const lease = row.location !== "local" ? await ownedRemoteLease(row) : null;
@@ -728,16 +540,15 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       const expected = path.posix.join(cleanupTarget.remoteCwd, ".paperclip-runtime", "agent-files", row.agentId, typeof row.receipt?.materializationRunId === "string" ? row.receipt.materializationRunId : String(row.receipt?.directoryRunId ?? row.runId));
       if (row.executionRoot !== expected) throw new Error("Agent directory cleanup path changed");
       const paths = cleanupTarget.transport === "sandbox" ? [expected, sandboxTransferRoot(row, cleanupTarget.remoteCwd)] : [expected];
-      const removed = await fencedRemoteDelete(row, paths, script => runAdapterExecutionTargetShellCommand(row.runId, cleanupTarget, script,
-        { cwd: cleanupTarget.remoteCwd, env: {}, timeoutSec: 15 }).then(result => result.exitCode === 0 && !result.timedOut, () => false));
-      cleanupPending ||= !removed;
+      const quoted = paths.map(p => `'${p.replaceAll("'", `'"'"'`)}'`).join(" ");
+      const remoteCleanupFailed = await runAdapterExecutionTargetShellCommand(row.runId, cleanupTarget, `rm -rf -- ${quoted}`,
+        { cwd: cleanupTarget.remoteCwd, env: {}, timeoutSec: 15 }).then(result => result.exitCode !== 0 || result.timedOut, () => true);
+      cleanupPending ||= remoteCleanupFailed;
     } else if (!destroyed && row.processStoppedAt && completed.has(row.state) && row.location !== "local") {
       // Rebind only the current host-owned lease. Never acquire a replacement.
       cleanupPending ||= !await cleanupRemoteAfterRestart(row).catch(() => false);
     }
-    row = (await get(row.companyId, row.runId)) ?? row;
     if (completed.has(row.state) && row.processStoppedAt) {
-      await assertDirectoryLockHeld();
       try { await fs.rm(path.dirname(row.localRoot), { recursive: true, force: true }); }
       catch {
         // Leave the baseline marker so restart recovery retries failed cleanup.
@@ -824,11 +635,9 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     const remoteCwd = cleanup?.remoteCwd ?? lease.metadata?.remoteCwd;
     if (typeof remoteCwd !== "string" || row.executionRoot !== path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", row.agentId, typeof row.receipt?.materializationRunId === "string" ? row.receipt.materializationRunId : String(row.receipt?.directoryRunId ?? row.runId))) return false;
     const paths = environment.driver === "sandbox" ? [row.executionRoot, sandboxTransferRoot(row, remoteCwd)] : [row.executionRoot];
-    return fencedRemoteDelete(row, paths, async script => {
-      const result = await environmentRuntime.execute({ environment: environment as Environment, lease: lease as EnvironmentLease, command: "sh", args: ["-c", script],
-        cwd: remoteCwd, env: {}, timeoutMs: 15_000, bypassSession: true });
-      return result.exitCode === 0 && !result.timedOut;
-    });
+    const result = await environmentRuntime.execute({ environment: environment as Environment, lease: lease as EnvironmentLease, command: "rm", args: ["-rf", "--", ...paths],
+      cwd: remoteCwd, env: {}, timeoutMs: 15_000, bypassSession: true });
+    return result.exitCode === 0 && !result.timedOut;
   }
   async function serial<T>(row: Copy, fn: (current: Copy) => Promise<T>, operation: DirectoryMergeLockOperation): Promise<T> {
     const run = async () => {
@@ -848,12 +657,12 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     if (!disposableRemoteCopy(row)) return run();
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
-    return withAgentDirectoryOperationLock(db, row.companyId, row.agentId, (tx, idleTimeoutMs) =>
-      withAgentDirectoryLockKeepalive(tx, idleTimeoutMs, signal => lockOwnership.run({ signal, verify: agentDirectoryLockOwnerCheck(tx, signal) }, async () => {
-        const result = await run();
-        signal.throwIfAborted();
-        return result;
-      })));
+    return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
+      const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
+        (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
+      if (lock?.acquired !== true) throw new AgentDirectoryOperationBusyError();
+      return withWorkspaceLockKeepalive(tx as unknown as Db, Number(lock.idle_timeout_ms), run);
+    }));
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,
     recoverStoppedRemote: (row: Copy) => serial(row, current => current.receipt?.retainedByRunId ? Promise.resolve(current) : recoverStoppedRemote(current), "agent_directory_collect"),

@@ -15,9 +15,11 @@ import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
-import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, deferNativeRunForBusyAgentDirectory, NATIVE_AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, NATIVE_AGENT_DIRECTORY_BUSY_WAIT, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { deferRunForBusyAgentDirectory } from "../heartbeat/agent-directory-busy.js";
+import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
 import { inspectRemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
 
@@ -270,6 +272,64 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       expect(await resolveNativeControllerRecovery(db, { ...fixture.scope, currentRunId }))
         .toMatchObject({ kind: "missing_evidence", reason: "snapshot_digest_or_checkpoint_binding" });
     }
+  });
+
+  it.each([
+    ["a first run", 0, null],
+    ["a resumed run", 3, { recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true, providerEventsExist: true }],
+  ] as const)("defers %s whose agent directory is busy and resumes it after the delay", async (_label, attempt, failureDetail) => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Busy agent directory", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: { binding: { companyId, agentId, issueId, runId } },
+        ...(attempt > 0 ? { sessionCheckpoint: { backendKind: "mock", sessionId: randomUUID(), providerSessionId: "provider-session",
+          identity: { companyId, agentId, issueId, runId } } } : {}) } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed", attempt, failureDetail });
+    const retryAt = new Date(Date.now() + 10_000);
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId, retryAt })).toBe(true);
+    const read = async () => (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]!;
+    expect(await read()).toMatchObject({ phase: "retryable_failure", attempt, leaseOwner: null, nextAttemptAt: retryAt,
+      failureCode: NATIVE_AGENT_DIRECTORY_BUSY_WAIT, failureDetail: { agentDirectoryBusyDeferrals: 1, ...(failureDetail ?? {}) } });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "running", errorCode: null });
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: retryAt })).toHaveLength(1);
+  });
+
+  it("defers a run that meets a busy agent directory instead of failing it", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Contended agent directory", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: { binding: { companyId, agentId, issueId, runId } } } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed" });
+    const schedule = vi.fn(), record = vi.fn(async () => undefined);
+    const run = { id: runId, companyId };
+    const started = Date.now();
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: new Error("unrelated"), schedule, record })).toBe(false);
+    expect(schedule).not.toHaveBeenCalled();
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: new AgentDirectoryOperationBusyError(), schedule, record, random: () => 0.5 })).toBe(true);
+    const [, retryAt] = schedule.mock.calls[0]! as [string, Date];
+    expect(schedule).toHaveBeenCalledWith(runId, retryAt);
+    expect(record).toHaveBeenCalledWith(retryAt);
+    expect(retryAt.getTime() - started).toBeGreaterThanOrEqual(10_000);
+    expect(retryAt.getTime() - started).toBeLessThan(11_000);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "running", errorCode: null, finishedAt: null });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress", executionRunId: runId });
+  });
+
+  it("stops deferring a busy agent directory after its bound or once the run is no longer running", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Busy agent directory bound", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "running", runtimeMode: "native" });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "retryable_failure", attempt: 1,
+      failureDetail: { agentDirectoryBusyDeferrals: NATIVE_AGENT_DIRECTORY_BUSY_MAX_DEFERRALS } });
+    const retryAt = new Date(Date.now() + 10_000);
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId, retryAt })).toBe(false);
+    await db.update(nativeRunFinalizations).set({ failureDetail: null }).where(eq(nativeRunFinalizations.runId, runId));
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId, retryAt })).toBe(false);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]).toMatchObject({ nextAttemptAt: null });
   });
 
   it("keeps an unstarted follow-up on the same run until the retained owner's deadline", async () => {

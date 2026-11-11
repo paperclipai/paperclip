@@ -43,6 +43,7 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
+import { deferRunForBusyAgentDirectory } from "./heartbeat/agent-directory-busy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
 import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
@@ -3706,6 +3707,16 @@ export function heartbeatService(
         }));
       } catch (err) {
         await persistUsageCaptureFailure?.();
+        if (await deferRunForBusyAgentDirectory(db, {
+          run, error: err,
+          schedule: (runId, retryAt) => scheduleNativeSessionResumeDispatch(runId, retryAt),
+          record: retryAt => appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+            message: "Another operation on this agent's files is running; this run will start when it finishes",
+            payload: { retryReasonCode: "agent_directory_operation_busy", nextAttemptAt: retryAt.toISOString() } }),
+        })) {
+          nativeSessionResumeScheduled = true;
+          return;
+        }
         if (err instanceof NativeStartupCleanupPendingError) {
           await requestStartupCleanup(err);
           return;

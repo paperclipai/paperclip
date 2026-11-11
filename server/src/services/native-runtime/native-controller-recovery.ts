@@ -122,6 +122,40 @@ export async function deferNativeControllerRecovery(db: Db, input: {
   });
 }
 
+export const NATIVE_AGENT_DIRECTORY_BUSY_WAIT = "agent_directory_operation_busy";
+export const NATIVE_AGENT_DIRECTORY_BUSY_MAX_DEFERRALS = 30;
+
+export async function deferNativeRunForBusyAgentDirectory(db: Db, input: {
+  companyId: string; runId: string; retryAt: Date;
+}): Promise<boolean> {
+  return db.transaction(async tx => {
+    const [run] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId))).for("update");
+    const [owner] = await tx.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId))).for("update");
+    if (!run || run.runtimeMode !== "native" || run.status !== "running" || !run.nativeIssueId
+      || !owner || owner.resultId || !["observed", "retryable_failure"].includes(owner.phase)) return false;
+    const detail = record(owner.failureDetail);
+    const deferrals = typeof detail.agentDirectoryBusyDeferrals === "number" ? detail.agentDirectoryBusyDeferrals : 0;
+    if (deferrals >= NATIVE_AGENT_DIRECTORY_BUSY_MAX_DEFERRALS) return false;
+    await notifyNativeFinalizationWork(tx, { companyId: input.companyId, issueId: run.nativeIssueId, runId: input.runId });
+    await tx.update(nativeRunFinalizations).set({
+      phase: "retryable_failure", leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null,
+      nextAttemptAt: input.retryAt, recoveryState: "resuming_session", failureCode: NATIVE_AGENT_DIRECTORY_BUSY_WAIT,
+      failureDetail: {
+        recoveryMode: record(run.runnerProfileJson).sessionCheckpoint ? "same_session_resume" : "bootstrap_retry",
+        providerSessionEstablished: false, providerEventsExist: false,
+        ...detail,
+        originalFailureCode: detail.originalFailureCode ?? NATIVE_AGENT_DIRECTORY_BUSY_WAIT,
+        message: "Waiting for another operation on this agent's files to finish.",
+        agentDirectoryBusyDeferrals: deferrals + 1,
+      },
+      updatedAt: new Date(),
+    }).where(eq(nativeRunFinalizations.runId, input.runId));
+    return true;
+  });
+}
+
 /** The retained Runner keeps its state under the directory its own lease
  * recorded. A workspace can move to a new allocation of the SAME sandbox: its
  * prior epoch was abandoned, so the last save was restored into a fresh root
