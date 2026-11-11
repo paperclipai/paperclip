@@ -2,7 +2,7 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import { checkpointDb, environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
-import { assertNativeRunnerCheckpointOwner, readNativePreparationPublication } from "./native-runner-checkpoint.js";
+import { assertNativeRunnerCheckpointOwner, readNativeCheckpointPublicationIdentity, readNativePreparationPublication } from "./native-runner-checkpoint.js";
 import type { NativePreparationPublication } from "./native-preparation-checkpoint.js";
 import { inspectPendingBootstrapTicket } from "../../vendor/paperclip-runner/index.js";
 import { isDeepStrictEqual } from "node:util";
@@ -52,13 +52,40 @@ export async function recordNativeRunnerLaunchIntent(db: Db, input: Scope & {
   await checkpointDb(db).transaction(async tx => {
     await assertNativeRunnerCheckpointOwner(tx, { ...input, authorityRunId: input.runId,
       generation: owner.controllerGeneration, leaseOwner: owner.leaseOwner! }, true);
-    const publication = await readNativePreparationPublication(tx as unknown as Db, input);
     const prior = await readNativeRunnerLaunchIntent(tx as unknown as Db, input);
     const replay = prior?.environmentLeaseId === input.environmentLeaseId && prior.taskId === input.taskId
       && isDeepStrictEqual(prior.operation, operation);
+    if (prior) {
+      if (!operation.launch || !replay || prior.bootId !== intent.bootId || prior.generation !== intent.generation || prior.leaseOwner !== intent.leaseOwner
+        || operation.runner.runId !== input.runId || operation.runner.leaseId !== input.environmentLeaseId) {
+        throw new Error("native_runner_launch_authority_unproven");
+      }
+      const identity = { runnerInstanceId: operation.runner.runnerId, environmentLeaseId: operation.runner.leaseId,
+        runId: operation.runner.runId, normalizedSessionId: operation.runner.sessionId,
+        turnId: operation.runner.turnId, itemId: operation.runner.itemId };
+      const checkpoint = await readNativeCheckpointPublicationIdentity(tx as unknown as Db, input, identity);
+      if (!checkpoint) throw new Error("native_runner_launch_authority_unproven");
+      const header = JSON.parse(checkpoint.header);
+      if (header?.schema !== "paperclip.runner.controller-checkpoint.v3" || !header.state || typeof header.state !== "object"
+        || Array.isArray(header.state) || header.state.preparationHandoff?.version !== 1
+        || !Array.isArray(header.state.preparedLaunchConfigurations)
+        || header.state.preparedLaunchConfigurations.some((entry: { identity?: unknown; configurationId?: unknown } | null) =>
+          !entry || typeof entry !== "object" || Array.isArray(entry) || !entry.identity || typeof entry.identity !== "object"
+          || Array.isArray(entry.identity) || typeof entry.configurationId !== "string" || !entry.configurationId)) {
+        throw new Error("native_runner_launch_authority_unproven");
+      }
+      const configurations = header.state.preparedLaunchConfigurations?.filter((entry: { identity: unknown }) =>
+        isDeepStrictEqual(entry.identity, identity));
+      if (header.runnerVersion !== operation.launch.runnerVersion || header.runnerDigest !== operation.launch.runnerDigest
+        || configurations?.length !== 1 || configurations[0].configurationId !== operation.preparedLaunchId) {
+        throw new Error("native_runner_launch_authority_unproven");
+      }
+      return;
+    }
+    const publication = await readNativePreparationPublication(tx as unknown as Db, input);
     if (publication?.kind !== "published" || publication.publication.kind !== "launching"
       || !nativeRunnerLaunchMatchesPublication(intent, publication.publication)
-      || !replay && !inspectPendingBootstrapTicket(publication.header, operation.bootstrapTicket)) throw new Error("native_runner_launch_authority_unproven");
+      || !inspectPendingBootstrapTicket(publication.header, operation.bootstrapTicket)) throw new Error("native_runner_launch_authority_unproven");
     const material = createLocalEncryptedCipher("write").encrypt(JSON.stringify(intent));
     await tx.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb)
       || ${JSON.stringify({ nativeRunnerLaunchIntent: material })}::jsonb` })
