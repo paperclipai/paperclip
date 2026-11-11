@@ -100,9 +100,9 @@ describeEmbeddedPostgres("durable native provider backups", () => {
   // your request rate."). The upload was a single stream PUT that nothing
   // retried, so the only provider-session backup was lost when the sandbox was
   // released, and the follow-up could not resume.
-  it.each(["Codex backup", "OpenCode backup with provider artifacts"])("backs off and publishes when object storage throttles each %s upload once", async label => {
+  it.each(["Codex backup", "OpenCode backup with provider artifacts"])("backs off and publishes when object storage throttles each %s upload and read-back once", async label => {
     const f = label.startsWith("OpenCode") ? await artifactFixture() : await fixture();
-    const objects = new Map<string, Buffer>(), throttled = new Set<string>(); let puts = 0;
+    const objects = new Map<string, Buffer>(), throttled = new Set<string>(), throttledReads = new Set<string>(); let puts = 0, reads = 0;
     const server = createServer((request, response) => {
       const key = new URL(request.url!, "http://localhost").pathname;
       const chunks: Buffer[] = [];
@@ -120,6 +120,15 @@ describeEmbeddedPostgres("durable native provider backups", () => {
           response.writeHead(200, { ETag: `"${createHash("md5").update(objects.get(key)!).digest("hex")}"` }).end();
         } else if (request.method === "GET" || request.method === "HEAD") {
           const body = objects.get(key);
+          if (request.method === "GET" && body) {
+            reads++;
+            if (!throttledReads.has(key)) {
+              throttledReads.add(key);
+              response.writeHead(503, { "Content-Type": "application/xml" }).end(
+                "<Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message><RequestId>throttled-read</RequestId></Error>");
+              return;
+            }
+          }
           if (!body) { response.writeHead(404, { "Content-Type": "application/xml" }).end("<Error><Code>NoSuchKey</Code></Error>"); return; }
           response.writeHead(200, { "Content-Length": body.length, ETag: `"${createHash("md5").update(body).digest("hex")}"`,
             "Content-Type": "application/octet-stream" }).end(request.method === "GET" ? body : undefined);
@@ -141,6 +150,10 @@ describeEmbeddedPostgres("durable native provider backups", () => {
       expect(throttled.size).toBe(label.startsWith("OpenCode") ? 2 : 1);
       expect(puts).toBe(2 * throttled.size);
       expect(objects.size).toBe(throttled.size);
+      // The verification read after each upload was refused once and repeated
+      // (the S3 client already resends a bodiless GET after SlowDown).
+      expect(throttledReads.size).toBe(throttled.size);
+      expect(reads).toBe(2 * throttled.size);
       const [current] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
         eq(nativeHarnessBackups.status, "current")));
       expect(current).toBeDefined();
