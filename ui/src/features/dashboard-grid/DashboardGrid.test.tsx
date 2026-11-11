@@ -190,6 +190,25 @@ describe("DashboardGrid", () => {
     expect(host.querySelector('[data-widget-id="agent-errors"]')!.getAttribute("data-highlighted")).toBe("true");
   });
 
+  it("disables pinning and says why when the dashboard already holds the maximum number of widgets", async () => {
+    const widgets = Array.from({ length: 60 }, (_, index) => ({ instanceId: `m${index}`, widgetId: "metric-agents", w: 1, h: 1 }));
+    uiLayoutsApi.get.mockResolvedValue({
+      surface: "dashboard", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, contextualRules: {}, widgets },
+    });
+    data.liveRuns = [{ status: "running" }];
+    await render();
+    const contextual = host.querySelector('[data-widget-id="live-runs"]')!;
+    expect(contextual.getAttribute("data-contextual")).toBe("true");
+    const pin = button("Pin to dashboard", contextual);
+    expect(pin.disabled).toBe(true);
+    expect(contextual.textContent).toContain("The dashboard is full (60 widgets). Remove a widget to pin this one.");
+    await act(async () => pin.click());
+    await waitForSave();
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+    expect(contextual.getAttribute("data-contextual")).toBe("true");
+  });
+
   it("does not show a contextual widget whose rule is turned off", async () => {
     uiLayoutsApi.get.mockResolvedValue({
       surface: "dashboard", schemaVersion: 1, updatedAt: null,

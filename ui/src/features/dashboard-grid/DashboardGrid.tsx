@@ -254,6 +254,7 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
                     onResize={onResize}
                     onRemove={onRemove}
                     onPin={onPin}
+                    pinDisabled={atLimit}
                     onConfigChange={onConfigChange}
                   />
                 );
