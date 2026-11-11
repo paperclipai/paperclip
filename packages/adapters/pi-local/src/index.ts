@@ -28,6 +28,15 @@ Core fields:
 - thinking (string, optional): thinking level (off, minimal, low, medium, high, xhigh)
 - command (string, optional): defaults to "pi"
 - env (object, optional): KEY=VALUE environment variables
+- tools (string, optional): comma-separated strict allowlist of tool names or
+  patterns to enable. Default is "read,bash,edit,write,grep,find,ls,ctx_*".
+  The trailing "ctx_*" re-enables the context-mode extension tool family
+  (ctx_batch_execute, ctx_execute_file, ctx_search, ...). pi's --tools flag is
+  a strict allowlist, so omitting a tool from this list removes it from the
+  agent's registry; an agent instructed to use ctx_* tools will silently emit
+  them as unexecuted prose if the family is absent, so keep "ctx_*" in the
+  allowlist unless you intentionally want to disable the extension tools.
+  MCP tools stay enabled unless an entry starts with "mcp__".
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds

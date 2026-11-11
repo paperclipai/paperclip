@@ -66,6 +66,83 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
 const PI_AGENT_SKILLS_DIR = path.join(os.homedir(), ".pi", "agent", "skills");
 
+// Tool-surface policy for headless pi runs. The decisive defect behind the
+// EYW-746/747/750 board-blocks was a *closed* --tools allowlist. In the
+// fabric/codemode regime pi runs against (the host ~/.pi/agent dir; the control
+// plane sets no PAPERCLIP_PI_PROVIDERS / PI_CODING_AGENT_DIR, so no managed dir
+// is written), the model's registered DIRECT tool universe is the fabric
+// gateway `fabric_exec` -- which carries the paperclip MCP + ctx_* families
+// through codemode -- plus `powershell`, NOT the native builtins. A closed
+// allowlist of native-builtin names (read,bash,edit,write,grep,find,ls)
+// therefore intersects to NOTHING: the model is handed a zero-tool surface,
+// improvises `ctx_batch_execute` / `paperclip_issue_list` calls as literal
+// prose (the real camelCase paperclip tool names are only visible inside the
+// fabric system prompt the model never got), and the run parks with no recorded
+// disposition.
+//
+// Fix: only constrain the surface when the agent explicitly configures it.
+// An unset `tools` config -> omit --tools entirely -> pi's permissive default
+// surfaces the full registered set for that regime (fabric_exec here, native
+// builtins elsewhere). An agent's own `tools` config is honored as-is (a
+// closed allowlist is a deliberate restriction) but gets a fail-fast preflight
+// warning when it would strip the fabric/ctx gateway the prompt references.
+
+// Fail-fast preflight for the closed-allowlist defect. It fires only when the
+// agent explicitly set a `tools` config (the sole case in which we pass
+// --tools at all) AND that closed allowlist strips the fabric/ctx gateway that
+// the rendered prompt actually references. In this regime the model can reach
+// the paperclip MCP + ctx_* families ONLY through the fabric_exec gateway tool;
+// with it stripped, those calls degrade to literal prose and the run parks
+// with no recorded disposition. Surface it at launch so the failure is a
+// logged, diagnosable notice instead of a silent multi-minute dead loop.
+// Non-fatal by design: it warns. The default path (no `tools` config) omits
+// --tools entirely and is immune, so this only fires for an agent that set a
+// restrictive allowlist.
+const PI_FABRIC_GATEWAY = "fabric_exec";
+
+// Kernel argv limit guard. Linux caps each argv element at MAX_ARG_STR
+// (128 KiB) and the total at ARG_MAX. The CMO/fabric regime renders a
+// multi-hundred-KB paperclip context snapshot into the prompt and carries a
+// large execution-continuation message payload; passing either as a single
+// argv element trips `spawn E2BIG` and kills the run before the model starts.
+// Below this threshold we keep the value inline (byte-for-byte the old
+// behaviour); above it we materialize the system prompt to a temp file
+// (pi's --append-system-prompt reads files from disk) and feed the user
+// prompt through the child's stdin (pi -p reads piped stdin raw, identical
+// to a positional message but argv-free). Both keep argv tiny and are no-ops
+// when the payloads are small.
+const ARGV_SAFE_BYTES = 96 * 1024;
+function allowlistCoversGateway(allowlist: string): boolean {
+  const tokens = allowlist.split(",").map((token) => token.trim()).filter(Boolean);
+  return tokens.some(
+    (token) =>
+      token === "*" ||
+      token === PI_FABRIC_GATEWAY ||
+      token.startsWith("fabric_") ||
+      token.startsWith("ctx_") ||
+      token.startsWith("paperclip"),
+  );
+}
+function promptReferencesGatewayTooling(renderedPrompt: string): boolean {
+  return (
+    renderedPrompt.includes("ctx_") ||
+    renderedPrompt.includes(PI_FABRIC_GATEWAY) ||
+    renderedPrompt.includes("paperclipListIssues") ||
+    renderedPrompt.includes("paperclip_")
+  );
+}
+function preflightToolRegistryWarning(renderedPrompt: string, allowlist: string): string | null {
+  if (!promptReferencesGatewayTooling(renderedPrompt)) return null;
+  if (allowlistCoversGateway(allowlist)) return null;
+  return (
+    `[paperclip] tool-registry preflight: the prompt references the paperclip/ctx gateway tools, ` +
+    `but the agent's explicit --tools allowlist "${allowlist}" strips the fabric/ctx gateway ` +
+    `(${PI_FABRIC_GATEWAY}). The model will emit those tool calls as text and the run may fail to ` +
+    `record a disposition. Add "${PI_FABRIC_GATEWAY}" (or "*") to the allowlist, or omit the tools ` +
+    `config so pi surfaces its full default tool set.`
+  );
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -415,6 +492,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let remoteRuntimeRootDir: string | null = null;
     let localSkillsDir: string | null = null;
     let remoteSkillsDir: string | null = null;
+    let systemPromptTempDir: string | null = null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTargetIsRemote) {
@@ -641,30 +719,98 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return notes;
     })();
 
-    const buildArgs = (sessionFile: string, userPrompt: string): string[] => {
+    // --- argv limit guard (spawn E2BIG) ----------------------------------
+    // The CMO/fabric regime renders a multi-hundred-KB paperclip context
+    // snapshot into the system prompt and carries a large execution-continuation
+    // payload in the user prompt. A single argv element over MAX_ARG_STR
+    // (128 KiB on Linux) makes child_process.spawn fail with E2BIG before the
+    // model ever starts. For local targets we move each oversized payload off
+    // argv: the system prompt to a temp file that pi's --append-system-prompt
+    // reads from disk, and the user prompt through the child's stdin (pi -p
+    // reads piped stdin raw, byte-identical to a positional message). Both are
+    // no-ops when the payloads stay under ARGV_SAFE_BYTES and are skipped for
+    // remote targets (a host temp path is invisible to a remote pi process).
+    let systemPromptArgCache: string | null = null;
+    const resolveSystemPromptArg = async (): Promise<string> => {
+      if (systemPromptArgCache !== null) return systemPromptArgCache;
+      if (!executionTargetIsRemote && renderedSystemPromptExtension.length > ARGV_SAFE_BYTES) {
+        const dir =
+          systemPromptTempDir ??
+          (systemPromptTempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-prompt-")));
+        const file = path.join(dir, "append-system-prompt.txt");
+        await fs.writeFile(file, renderedSystemPromptExtension, "utf8");
+        systemPromptArgCache = file;
+        await onLog(
+          "stdout",
+          `[paperclip] System prompt is ${renderedSystemPromptExtension.length} chars (> ${ARGV_SAFE_BYTES} bytes); passing via file ${file} to avoid spawn E2BIG.\n`,
+        );
+      } else {
+        systemPromptArgCache = renderedSystemPromptExtension;
+      }
+      return systemPromptArgCache;
+    };
+
+    const buildArgs = async (
+      sessionFile: string,
+      userPrompt: string,
+    ): Promise<{ args: string[]; stdinPrompt: string | undefined }> => {
       const args: string[] = [];
 
       // Use JSON mode for structured output with print mode (non-interactive)
       args.push("--mode", "json");
       args.push("-p"); // Non-interactive mode: process prompt and exit
 
-      // Use --append-system-prompt to extend Pi's default system prompt
-      args.push("--append-system-prompt", renderedSystemPromptExtension);
+      // Use --append-system-prompt to extend Pi's default system prompt. When
+      // the rendered prompt is oversized (local target) this is a temp-file
+      // path that pi reads from disk instead of an inline argv element.
+      args.push("--append-system-prompt", await resolveSystemPromptArg());
 
       if (provider) args.push("--provider", provider);
       if (modelId) args.push("--model", modelId);
       if (thinking) args.push("--thinking", thinking);
 
-      args.push("--tools", "read,bash,edit,write,grep,find,ls");
+      // Tool-surface policy: only constrain when the agent explicitly sets a
+      // `tools` config. In the fabric/codemode regime a closed allowlist of
+      // native-builtin names intersects to nothing and leaves the model a
+      // zero-tool surface (the EYW-746/747/750 defect). An unset `tools` config
+      // omits --tools entirely, so pi surfaces its full default tool set for
+      // that regime (fabric_exec gateway + powershell here; native builtins
+      // elsewhere). An explicit `tools` config is honored as a deliberate
+      // restriction but is preflight-checked against the prompt.
+      const explicitTools = asString(config.tools, "").trim();
+      if (explicitTools.length > 0) {
+        args.push("--tools", explicitTools);
+        const preflightWarning = preflightToolRegistryWarning(
+          renderedSystemPromptExtension + "\n" + userPrompt,
+          explicitTools,
+        );
+        if (preflightWarning) {
+          commandNotes.push(preflightWarning);
+        }
+      }
+
       args.push("--session", sessionFile);
       args.push("--skill", remoteSkillsDir ?? PI_AGENT_SKILLS_DIR);
 
       if (extraArgs.length > 0) args.push(...extraArgs);
 
-      // Add the user prompt as the last argument
-      args.push(userPrompt);
+      // Deliver the user prompt. Normally the last positional argv element. For
+      // an oversized payload on a local target, omit it from argv and hand it to
+      // the child through stdin (pi -p reads piped stdin raw) so a single argv
+      // element never exceeds the kernel MAX_ARG_STR cap.
+      const useStdinPrompt = !executionTargetIsRemote && userPrompt.length > ARGV_SAFE_BYTES;
+      let stdinPrompt: string | undefined = undefined;
+      if (useStdinPrompt) {
+        stdinPrompt = userPrompt;
+        await onLog(
+          "stdout",
+          `[paperclip] User prompt is ${userPrompt.length} chars (> ${ARGV_SAFE_BYTES} bytes); passing via stdin to avoid spawn E2BIG.\n`,
+        );
+      } else {
+        args.push(userPrompt);
+      }
 
-      return args;
+      return { args, stdinPrompt };
     };
 
     const runAttempt = async (sessionFile: string) => {
@@ -704,14 +850,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionHandoffChars: sessionHandoffNote.length,
         heartbeatPromptChars: attemptRenderedHeartbeatPrompt.length,
       };
-      const args = buildArgs(sessionFile, userPrompt);
+      const { args: attemptArgs, stdinPrompt: attemptStdinPrompt } = await buildArgs(sessionFile, userPrompt);
       if (onMeta) {
         await onMeta({
           adapterType: "pi_local",
           command: resolvedCommand,
           cwd: effectiveExecutionCwd,
           commandNotes,
-          commandArgs: args,
+          commandArgs: attemptArgs,
           env: loggedEnv,
           prompt: userPrompt,
           promptMetrics: { ...promptMetrics, promptChars: userPrompt.length },
@@ -755,7 +901,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const parsed = consumeAccounting(stdout);
         return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
       });
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, attemptArgs, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env: executionTargetIsRemote ? env : runtimeEnv,
@@ -766,6 +912,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog: accountingLog,
         runLogTail: paperclipBridge?.runLogTail,
         settleRunDisposition: paperclipBridge?.settleRunDisposition,
+        // Oversized user prompt (local target) is handed to the child via stdin
+        // instead of as a last argv element to stay under the kernel MAX_ARG_STR
+        // cap. null keeps the legacy inline-argv path untouched.
+        stdin: attemptStdinPrompt,
       });
       await accountingLog.flush();
 
