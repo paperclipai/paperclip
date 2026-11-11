@@ -5983,7 +5983,7 @@
       "chat-catalog-domains/internal-privacy.ts",
       "chat-catalog-domains/identity-auth.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.share-private-task.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
