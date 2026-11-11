@@ -66,6 +66,6 @@ describe("owner-routed routine change", () => {
 });
 
 it("recognizes every-hour cron forms and rejects other frequencies", () => {
-  for (const cron of ["0 * * * *", "15 */1 * * *", "0 0-23 * * *", "5 0-23/1 * * ?"]) expect(runsHourly(cron)).toBe(true);
-  for (const cron of ["* * * * *", "0 */2 * * *", "0 9-17 * * *", "0 * * * 1-5", "*/30 * * * *", "0 *"]) expect(runsHourly(cron)).toBe(false);
+  for (const cron of ["0 * * * *", "15 */1 * * *", "0 0-23 * * *", "5 0-23/1 * * *", "0 0-11,12-23 * * *", "30 * 1-31 * 0-6"]) expect(runsHourly(cron)).toBe(true);
+  for (const cron of ["* * * * *", "0 */2 * * *", "0 9-17 * * *", "0 * * * 1-5", "*/30 * * * *", "0 *", "not cron"]) expect(runsHourly(cron)).toBe(false);
 });

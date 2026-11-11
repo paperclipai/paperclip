@@ -2,6 +2,7 @@ import type { RoutineDetail, RoutineListItem, RoutineRevision, RoutineRunSummary
 import type { ChatCatalogContext, ChatCatalogCase } from "../chat-catalog-contract.js";
 import { checks, hasLink, project, observation, type Entity, type InternalObservation } from "./internal-support.js";
 import { runIssueId } from "./run-roles.js";
+import { parseCron } from "../../../server/src/services/cron.js";
 import { fixtureWorker } from "./internal-definition.js";
 import { integratorDefinition, groundedStatement, inspectResult, observeInternal } from "./integrator-support.js";
 interface RoutinesObservation extends InternalObservation {
@@ -22,12 +23,12 @@ function routineObservation(value: unknown): RoutinesObservation | undefined {
   return observation(value) && Array.isArray(o.routines) && !!o.histories && !!o.routineRevisions && typeof o.browserTimezone === "string" ? o : undefined;
 }
 type Activity = Entity & { runId?: string | null };
-/** Fires once in every hour of every day: one fixed minute, and an hour field that covers every hour
- * (`*`, `*\/1`, `0-23`, `0-23/1`). Day, month and weekday fields are unrestricted. */
+/** Fires once in every hour of every day, judged by the product's own cron parser rather than one spelling:
+ * exactly one minute, all 24 hours, and unrestricted day of month, month and weekday. */
 export function runsHourly(cron: string) {
-  const [minute, hour, ...rest] = cron.trim().split(/\s+/);
-  return rest.length === 3 && rest.every(field => field === "*" || field === "?") && /^(?:[0-5]?\d)$/.test(minute ?? "")
-    && /^(?:\*|0-23)(?:\/1)?$/.test(hour ?? "");
+  let parsed: ReturnType<typeof parseCron>;
+  try { parsed = parseCron(cron); } catch { return false; }
+  return parsed.minutes.length === 1 && parsed.hours.length === 24 && parsed.daysOfMonth.length === 31 && parsed.months.length === 12 && parsed.daysOfWeek.length === 7;
 }
 function linksTo(o: InternalObservation, href: string, segment: string, ids: Array<string | null | undefined>) {
   try { const url = new URL(href, o.origin), parts = url.pathname.split("/").map(decodeURIComponent), index = parts.indexOf(segment);
@@ -97,6 +98,6 @@ export const integratorRoutinesCases: readonly ChatCatalogCase[] = [
     const created = await ctx.input.api.post<RoutineDetail>(`${root(ctx)}/routines`, { title: "Morgan's launch summary", description: "Summarize Launch without changing project tasks.", projectId: p.id, assigneeAgentId: worker.id });
     await ctx.input.api.post(`/api/routines/${created.id}/triggers`, { kind: "schedule", enabled: true, cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" });
     return { project: p, worker, routine: await ctx.input.api.get<RoutineDetail>(`/api/routines/${created.id}`), originalRevisions: await ctx.input.api.get<RoutineRevision[]>(`/api/routines/${created.id}/revisions`) };
-  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v4", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
-    sourceFiles: ["chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-routines.ts", "chat-catalog-domains/run-roles.ts", "chat-scenarios/routines.yaml"] }),
+  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v5", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
+    sourceFiles: ["chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-routines.ts", "chat-catalog-domains/run-roles.ts", "../../server/src/services/cron.ts", "chat-scenarios/routines.yaml"] }),
 ];

@@ -4650,9 +4650,10 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/integrator-routines.ts",
       "chat-catalog-domains/run-roles.ts",
+      "../../server/src/services/cron.ts",
       "chat-scenarios/routines.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.manage-other-owner.v4",
+    "oracleVersion": "paperclip.chat-catalog.integrator.manage-other-owner.v5",
     "expectedRunCount": 2,
     "minimumRunCount": 1,
     "expectedHumanMessageCount": 1,
