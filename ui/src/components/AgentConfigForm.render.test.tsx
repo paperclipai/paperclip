@@ -1220,6 +1220,20 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
   });
 
+  it("clears dirty state when a runtime toggle is restored", async () => {
+    const dirty = vi.fn();
+    const result = await renderForm([], {}, { content: "configuration", onDirtyChange: dirty });
+    roots.push(result.root);
+    const toggle = result.container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
     const dirty = vi.fn();
     let save: (() => void) | null = null;

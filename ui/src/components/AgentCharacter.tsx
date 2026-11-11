@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { resolveAgentAppearance, type CharacterState } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
-import { characterSlot } from "@/lib/agent-character-slot";
+import { characterSlot, orgChartCharacterSlots } from "@/lib/agent-character-slot";
 import { AgentAvatar, avatarSizeClasses, type AgentAvatarProps } from "./AgentAvatar";
 import type { createCharacter } from "@paperclipai/shared/cliplab/runtime";
 
 type Player = ReturnType<typeof createCharacter>;
+let characterModules: Promise<[typeof import("@paperclipai/shared/cliplab/runtime"), typeof import("@paperclipai/shared/cliplab/definition")]> | undefined;
+function loadCharacterModules() {
+  return characterModules ??= Promise.all([import("@paperclipai/shared/cliplab/runtime"), import("@paperclipai/shared/cliplab/definition")]).catch(error => {
+    characterModules = undefined;
+    throw error;
+  });
+}
 export interface AgentCharacterProps extends Omit<AgentAvatarProps, "pose"> {
   state?: CharacterState;
   motion?: "auto" | "still";
@@ -13,12 +20,16 @@ export interface AgentCharacterProps extends Omit<AgentAvatarProps, "pose"> {
   trackingScope?: "region" | "page";
   followCursor?: boolean;
   followRotation?: boolean;
+  /** Org leadership cards may animate together, within a bounded canvas budget. */
+  animationGroup?: "hero" | "org-chart";
 }
-export function AgentCharacter({ agent, appearance, size = 256, state = "idle", muted = false, motion = "auto", trackingRegion, trackingScope = "region", followCursor = true, followRotation = true, className, label, name }: AgentCharacterProps) {
+export function AgentCharacter({ agent, appearance, size = 256, state = "idle", muted = false, motion = "auto", trackingRegion, trackingScope = "region", followCursor = true, followRotation = true, animationGroup = "hero", className, label, name }: AgentCharacterProps) {
   const identity = useMemo(() => resolveAgentAppearance(appearance ?? agent?.appearance, agent?.id), [appearance, agent?.appearance, agent?.id]);
   const root = useRef<HTMLSpanElement>(null), host = useRef<HTMLSpanElement>(null), player = useRef<Player | null>(null);
   const slotId = useRef(Symbol("agent-character"));
-  const owner = useSyncExternalStore(characterSlot.subscribe, characterSlot.getSnapshot, () => null);
+  const slots = animationGroup === "org-chart" ? orgChartCharacterSlots : characterSlot;
+  const owners = useSyncExternalStore(slots.subscribe, slots.getSnapshot, slots.getSnapshot);
+  const ownsSlot = owners.has(slotId.current);
   const [visible, setVisible] = useState(false), [reduced, setReduced] = useState(true), [failed, setFailed] = useState(false), [ready, setReady] = useState(false);
   const active = !identity.customAvatarAssetId && visible && !reduced && !failed && motion === "auto" && state !== "rest";
   useEffect(() => {
@@ -30,15 +41,15 @@ export function AgentCharacter({ agent, appearance, size = 256, state = "idle", 
     return () => { observer.disconnect(); media.removeEventListener("change", change); };
   }, []);
   useEffect(() => {
-    if (active && owner === null) characterSlot.acquire(slotId.current);
-    if (!active) characterSlot.release(slotId.current);
-  }, [active, owner]);
-  useEffect(() => () => characterSlot.release(slotId.current), []);
+    if (active && !ownsSlot) slots.acquire(slotId.current);
+    if (!active) slots.release(slotId.current);
+  }, [active, owners, ownsSlot, slots]);
+  useEffect(() => () => slots.release(slotId.current), [slots]);
   useEffect(() => {
-    if (!active || owner !== slotId.current) return;
+    if (!active || !ownsSlot) return;
     let disposed = false;
     setReady(false);
-    void Promise.all([import("@paperclipai/shared/cliplab/runtime"), import("@paperclipai/shared/cliplab/definition")]).then(([runtime, library]) => {
+    void loadCharacterModules().then(([runtime, library]) => {
       if (disposed || !host.current) return;
       player.current = runtime.createCharacter(host.current, library.characterDefinition(identity, muted), {
         animation: library.animationId(state), trackingRegion: trackingRegion?.current ?? root.current ?? undefined,
@@ -47,10 +58,10 @@ export function AgentCharacter({ agent, appearance, size = 256, state = "idle", 
       setReady(true);
     }).catch(() => { if (!disposed) setFailed(true); });
     return () => { disposed = true; player.current?.destroy(); player.current = null; setReady(false); };
-  }, [active, owner, trackingRegion, trackingScope, size, followCursor, followRotation]);
+  }, [active, ownsSlot, trackingRegion, trackingScope, size, followCursor, followRotation]);
   useEffect(() => {
     if (!player.current) return;
-    void import("@paperclipai/shared/cliplab/definition").then(library => {
+    void loadCharacterModules().then(([, library]) => {
       player.current?.setDefinition(library.characterDefinition(identity, muted));
       player.current?.setAnimation(library.animationId(state));
     });
