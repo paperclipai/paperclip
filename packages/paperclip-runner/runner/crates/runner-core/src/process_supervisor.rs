@@ -27,6 +27,10 @@ use sha2::{Digest, Sha256};
 use crate::local_runner::LocalRunnerError;
 
 const PROCESS_OUTPUT_QUEUE_CAPACITY: usize = 256;
+/// How long, after the shutdown grace, teardown keeps sending KILL to the
+/// processes a supervised process started before it reports them as alive.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const LINEAGE_KILL_PROOF_WINDOW: Duration = Duration::from_secs(5);
 const VERIFIED_RUNTIME_EXECUTABLE_ENV: &str = "PAPERCLIP_VERIFIED_RUNTIME_EXECUTABLE";
 const VERIFIED_COMMONJS_ARTIFACT_LOADER: &str = r#"const fs=require("node:fs");const Module=require("node:module");const filename=process.argv[1];const source=fs.readFileSync(filename,"utf8").replace(/^#![^\r\n]*(?:\r?\n|$)/,"");const artifact=new Module(filename);artifact.filename=filename;artifact.paths=[];artifact._compile(source,filename);"#;
 
@@ -40,6 +44,8 @@ pub(crate) fn is_node_interpreter(path: &Path) -> bool {
 pub struct VerifiedProcessArtifact {
     display_path: PathBuf,
     file: Arc<File>,
+    #[cfg(target_os = "macos")]
+    executable: Option<Arc<NamedExecutableSnapshot>>,
 }
 
 impl VerifiedProcessArtifact {
@@ -65,7 +71,265 @@ impl VerifiedProcessArtifact {
         Ok(Self {
             display_path,
             file: Arc::new(file),
+            #[cfg(target_os = "macos")]
+            executable: None,
         })
+    }
+
+    /// Executable snapshots need a named image on Darwin. Construct that image
+    /// once, beside the source runtime for loader-relative shared libraries.
+    pub fn snapshot_verified_executable(
+        display_path: PathBuf,
+        file: File,
+        expected_sha256: &str,
+    ) -> Result<Self, LocalRunnerError> {
+        #[cfg(target_os = "macos")]
+        {
+            let mut file = file;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|error| snapshot_error(&display_path, error))?;
+            let executable = Arc::new(NamedExecutableSnapshot::create(
+                &display_path,
+                &mut file,
+                expected_sha256,
+            )?);
+            Ok(Self {
+                display_path,
+                file: executable.file.clone(),
+                executable: Some(executable),
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        Self::snapshot_verified(display_path, file, expected_sha256)
+    }
+
+    /// Hold a launch artifact open in place instead of snapshotting it.
+    ///
+    /// Only `qualified_launch` calls this, and only after the trusted launch
+    /// root proved that this open descriptor itself lies on an immutable
+    /// mount under that root. The process then executes this descriptor
+    /// through `/proc/self/fd/N`, so a later path swap cannot change what
+    /// runs and nested launches reopen the same file.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn in_place_on_trusted_root(display_path: PathBuf, file: File) -> Self {
+        Self {
+            display_path,
+            file: Arc::new(file),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held_file(&self) -> &File {
+        &self.file
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct NamedExecutablePath {
+    parent: File,
+    path: PathBuf,
+    basename: std::ffi::OsString,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl NamedExecutablePath {
+    fn open_image(&self) -> Result<File, LocalRunnerError> {
+        use rustix::fs::{openat, Mode, OFlags};
+        let fd = openat(
+            &self.parent,
+            &self.basename,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| snapshot_error(&self.path, error))?;
+        Ok(File::from(fd))
+    }
+
+    fn validate(&self) -> Result<File, LocalRunnerError> {
+        let parent_path = self.path.parent().expect("named image has a parent");
+        let visible_parent =
+            fs::symlink_metadata(parent_path).map_err(|error| snapshot_error(&self.path, error))?;
+        let held_parent = self
+            .parent
+            .metadata()
+            .map_err(|error| snapshot_error(&self.path, error))?;
+        if !visible_parent.is_dir()
+            || visible_parent.dev() != held_parent.dev()
+            || visible_parent.ino() != held_parent.ino()
+            || visible_parent.permissions().mode() & 0o022 != 0
+        {
+            return Err(snapshot_error(&self.path, "executable parent changed"));
+        }
+        let image = self.open_image()?;
+        let metadata = image
+            .metadata()
+            .map_err(|error| snapshot_error(&self.path, error))?;
+        if !metadata.is_file()
+            || metadata.dev() != self.device
+            || metadata.ino() != self.inode
+            || metadata.permissions().mode() & 0o777 != 0o500
+        {
+            return Err(snapshot_error(&self.path, "executable image changed"));
+        }
+        Ok(image)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for NamedExecutablePath {
+    fn drop(&mut self) {
+        // Resolve relative to the retained directory, never through a replaced
+        // parent pathname. A substituted image does not belong to this guard.
+        if let Ok(file) = self.open_image() {
+            if let Ok(metadata) = file.metadata() {
+                if metadata.is_file()
+                    && metadata.dev() == self.device
+                    && metadata.ino() == self.inode
+                {
+                    let _ = rustix::fs::unlinkat(
+                        &self.parent,
+                        &self.basename,
+                        rustix::fs::AtFlags::empty(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct NamedExecutableSnapshot {
+    image: NamedExecutablePath,
+    file: Arc<File>,
+    expected_sha256: String,
+    expected_len: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl NamedExecutableSnapshot {
+    fn create(
+        display_path: &Path,
+        source: &mut File,
+        expected_sha256: &str,
+    ) -> Result<Self, LocalRunnerError> {
+        use rustix::fs::{open, openat, Mode, OFlags};
+        let parent_path = display_path
+            .parent()
+            .ok_or_else(|| snapshot_error(display_path, "executable has no parent"))?;
+        let parent = File::from(
+            open(
+                parent_path,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| snapshot_error(display_path, error))?,
+        );
+        let parent_metadata = parent
+            .metadata()
+            .map_err(|error| snapshot_error(display_path, error))?;
+        if parent_metadata.permissions().mode() & 0o022 != 0 {
+            return Err(snapshot_error(
+                display_path,
+                "executable parent is group- or world-writable",
+            ));
+        }
+        let basename = std::ffi::OsString::from(format!(
+            ".paperclip-verified-executable-{}",
+            Uuid::new_v4().simple()
+        ));
+        let path = parent_path.join(&basename);
+        let mut writable = File::from(
+            openat(
+                &parent,
+                &basename,
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR | Mode::XUSR,
+            )
+            .map_err(|error| snapshot_error(display_path, error))?,
+        );
+        // If fstat itself fails, ownership cannot be proven. Fail closed and
+        // leave the randomized entry rather than unlink a possibly substituted
+        // name without its inode identity.
+        let metadata = writable
+            .metadata()
+            .map_err(|error| snapshot_error(display_path, error))?;
+        let image = NamedExecutablePath {
+            parent,
+            path,
+            basename,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        copy_verified(source, &mut writable, display_path, expected_sha256)?;
+        writable
+            .sync_all()
+            .map_err(|error| snapshot_error(display_path, error))?;
+        rustix::fs::fchmod(&writable, Mode::RUSR | Mode::XUSR)
+            .map_err(|error| snapshot_error(display_path, error))?;
+        let file = Arc::new(image.validate()?);
+        drop(writable);
+        let expected_len = file
+            .metadata()
+            .map_err(|error| snapshot_error(display_path, error))?
+            .len();
+        Ok(Self {
+            image,
+            file,
+            expected_sha256: expected_sha256.to_owned(),
+            expected_len,
+        })
+    }
+
+    fn validate_before_spawn(&self) -> Result<(), LocalRunnerError> {
+        self.image.validate()?;
+        let before = self
+            .file
+            .metadata()
+            .map_err(|error| snapshot_error(&self.image.path, error))?;
+        if before.len() != self.expected_len {
+            return Err(snapshot_error(
+                &self.image.path,
+                "executable length changed",
+            ));
+        }
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut offset = 0;
+        while offset < self.expected_len {
+            let remaining = (self.expected_len - offset).min(buffer.len() as u64) as usize;
+            let count = self
+                .file
+                .read_at(&mut buffer[..remaining], offset)
+                .map_err(|error| snapshot_error(&self.image.path, error))?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+            offset += count as u64;
+        }
+        let after = self
+            .file
+            .metadata()
+            .map_err(|error| snapshot_error(&self.image.path, error))?;
+        if format!("sha256:{:x}", digest.finalize()) != self.expected_sha256
+            || before.len() != after.len()
+            || offset != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+        {
+            return Err(snapshot_error(
+                &self.image.path,
+                "executable digest or metadata changed",
+            ));
+        }
+        self.image.validate()?;
+        Ok(())
     }
 }
 
@@ -214,6 +478,25 @@ impl VerifiedProcessLaunch {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn spawn_stdio(
+        &self,
+        environment: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Child, LocalRunnerError> {
+        let inherited = self.inherited_command()?;
+        let child = Command::new(&inherited.program)
+            .args(&inherited.args)
+            .env_clear()
+            .envs(environment)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|_| LocalRunnerError::invalid("failed to spawn verified stdio MCP server"))?;
+        crate::oom_score::release_supervised_process(child.id());
+        Ok(child)
+    }
+
     pub fn with_inherited_runtime_executable(mut self) -> Self {
         self.inherit_runtime_executable = true;
         self
@@ -232,11 +515,18 @@ impl VerifiedProcessLaunch {
         #[cfg(target_os = "linux")]
         inherited.push(program_fd);
         #[cfg(target_os = "macos")]
-        let program_snapshot = materialize_executable(&self.program)?;
+        let named_executable = self.program.executable.clone();
         #[cfg(target_os = "macos")]
-        let program = program_snapshot.path.clone();
+        let mut temporary_executables = Vec::new();
         #[cfg(target_os = "macos")]
-        let mut temporary_executables = vec![program_snapshot];
+        let program = if let Some(executable) = &named_executable {
+            executable.image.path.clone()
+        } else {
+            let snapshot = materialize_executable(&self.program)?;
+            let path = snapshot.path.clone();
+            temporary_executables.push(snapshot);
+            path
+        };
         let mut args = Vec::with_capacity(self.args.len());
         for argument in &self.args {
             match argument {
@@ -269,12 +559,18 @@ impl VerifiedProcessLaunch {
                 }
             }
         }
+        #[cfg(target_os = "macos")]
+        if let Some(executable) = &named_executable {
+            executable.validate_before_spawn()?;
+        }
         Ok(InheritedCommand {
             program,
             args,
             _inherited: inherited,
             #[cfg(target_os = "macos")]
             temporary_executables,
+            #[cfg(target_os = "macos")]
+            named_executable,
         })
     }
 }
@@ -286,6 +582,8 @@ struct InheritedCommand {
     _inherited: Vec<rustix::fd::OwnedFd>,
     #[cfg(target_os = "macos")]
     temporary_executables: Vec<TemporaryExecutable>,
+    #[cfg(target_os = "macos")]
+    named_executable: Option<Arc<NamedExecutableSnapshot>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -639,8 +937,13 @@ pub struct SupervisedProcess {
     process_group_id: u32,
     shutdown_grace: Duration,
     finished: bool,
+    /// Every process this one starts, including tools that leave its group.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    lineage: Option<crate::process_lineage::LineageTracker>,
     #[cfg(target_os = "macos")]
     _temporary_executables: Vec<TemporaryExecutable>,
+    #[cfg(target_os = "macos")]
+    _named_executable: Option<Arc<NamedExecutableSnapshot>>,
 }
 
 impl SupervisedProcess {
@@ -722,6 +1025,7 @@ impl SupervisedProcess {
             if let Ok(process) = result.as_mut() {
                 process._temporary_executables =
                     std::mem::take(&mut inherited.temporary_executables);
+                process._named_executable = inherited.named_executable.take();
             }
             drop(inherited);
             result
@@ -760,6 +1064,8 @@ impl SupervisedProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for key in [
+            "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+            "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
             "PATH",
             "PATHEXT",
             "SystemRoot",
@@ -780,6 +1086,9 @@ impl SupervisedProcess {
                 command.env(key, value);
             }
         }
+        crate::configured_environment::apply_configured_environment(&mut command, |key| {
+            std::env::var(key).ok()
+        })?;
         if let Some(executable) = verified_runtime_executable {
             // Node reports a sealed memfd launch as `/memfd:... (deleted)` via
             // process.execPath. Give descriptor-loaded runtimes the inherited,
@@ -797,6 +1106,34 @@ impl SupervisedProcess {
             ))
         })?;
         let process_group_id = child.id();
+        // Record the lineage from the start. Without it, teardown could not
+        // stop tools that leave the group, so a process is never supervised
+        // without it: stop the one just started and report the failure.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let lineage = match crate::process_lineage::LineageTracker::start(process_group_id) {
+            Ok(lineage) => lineage,
+            Err(reason) => {
+                // The host may be out of threads or processes, so signal with
+                // a direct system call rather than a `kill` child process. The
+                // new process has had no time to start tools of its own.
+                let group = i32::try_from(process_group_id)
+                    .ok()
+                    .and_then(rustix::process::Pid::from_raw);
+                let signalled = group.is_some_and(|group| {
+                    rustix::process::kill_process_group(group, rustix::process::Signal::KILL)
+                        .is_ok()
+                });
+                if !signalled {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+                return Err(LocalRunnerError::invalid(format!(
+                    "failed to start supervised process {}: {reason}",
+                    program.display()
+                )));
+            }
+        };
+        crate::oom_score::release_supervised_process(process_group_id);
         let stdin = child
             .stdin
             .take()
@@ -822,8 +1159,12 @@ impl SupervisedProcess {
             process_group_id,
             shutdown_grace,
             finished: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            lineage: Some(lineage),
             #[cfg(target_os = "macos")]
             _temporary_executables: Vec::new(),
+            #[cfg(target_os = "macos")]
+            _named_executable: None,
         })
     }
 
@@ -936,21 +1277,51 @@ impl SupervisedProcess {
 
     pub fn wait(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
         if self.finished {
-            return self.child.wait().map(exit_fact).map_err(|error| {
+            let fact = self.child.wait().map(exit_fact).map_err(|error| {
                 LocalRunnerError::invalid(format!("failed to inspect retired child: {error}"))
-            });
+            })?;
+            self.terminate_lineage(self.shutdown_grace)?;
+            return Ok(fact);
         }
         let status = self.child.wait().map_err(|error| {
             LocalRunnerError::invalid(format!("failed to wait for process: {error}"))
         })?;
         // The group leader can exit while descendants remain alive. Reap the
-        // leader first, then clear any remaining members of its private group.
-        // A caller that must exclude escaped or re-parented descendants still
-        // needs a separately inherited lifetime fence.
+        // leader first, then clear any remaining members of its private group,
+        // then every recorded process that left the group.
         #[cfg(unix)]
         signal_process_group(self.process_group_id, "KILL");
         self.finished = true;
+        self.terminate_lineage(self.shutdown_grace)?;
         Ok(exit_fact(status))
+    }
+
+    /// Stops the processes this one started outside its own group, such as a
+    /// tool that a provider ran in a new session and that outlived its
+    /// wrapper. Fails while any recorded process is still alive, so a caller
+    /// never treats the provider as stopped while its tools still run.
+    fn terminate_lineage(&mut self, grace: Duration) -> Result<(), LocalRunnerError> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(lineage) = self.lineage.as_mut() {
+            lineage
+                .terminate(grace, grace + LINEAGE_KILL_PROOF_WINDOW)
+                .map_err(|reason| {
+                    LocalRunnerError::invalid(format!(
+                        "processes started by the supervised process were not proven stopped: {reason}"
+                    ))
+                })?;
+            self.lineage = None;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = grace;
+        Ok(())
+    }
+
+    fn sample_lineage(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(lineage) = self.lineage.as_ref() {
+            lineage.sample();
+        }
     }
 
     pub fn terminate_group(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
@@ -958,6 +1329,8 @@ impl SupervisedProcess {
             return self.wait();
         }
         self.stdin.take();
+        // Record the lineage visible now, before signals start re-parenting it.
+        self.sample_lineage();
         #[cfg(unix)]
         signal_process_group(self.process_group_id, "TERM");
         #[cfg(not(unix))]
@@ -969,6 +1342,7 @@ impl SupervisedProcess {
                 #[cfg(unix)]
                 signal_process_group(self.process_group_id, "KILL");
                 self.finished = true;
+                self.terminate_lineage(self.shutdown_grace)?;
                 return Ok(fact);
             }
             if Instant::now() >= deadline {
@@ -983,12 +1357,105 @@ impl SupervisedProcess {
         let _ = self.child.kill();
         self.wait()
     }
+
+    /// Fence this owned process group when an existing deadline leaves no grace.
+    pub fn terminate_group_immediately(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
+        let fact = self.fence_group_immediately()?;
+        self.terminate_lineage(Duration::ZERO)?;
+        Ok(fact)
+    }
+
+    fn fence_group_immediately(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
+        if self.finished {
+            return self.wait();
+        }
+        self.stdin.take();
+        self.sample_lineage();
+        #[cfg(unix)]
+        let signal = {
+            use rustix::process::{kill_process_group, Pid, Signal};
+            let group = i32::try_from(self.process_group_id)
+                .ok()
+                .and_then(Pid::from_raw)
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid("owned process group identity is invalid")
+                })?;
+            match kill_process_group(group, Signal::KILL) {
+                Ok(()) => Ok(()),
+                Err(rustix::io::Errno::SRCH) => {
+                    if let Some(exit) = self.try_wait()? {
+                        self.finished = true;
+                        return Ok(exit);
+                    }
+                    Err(LocalRunnerError::invalid(
+                        "owned process group disappeared before leader exit was observed",
+                    ))
+                }
+                // macOS refuses to signal a group whose only member is the
+                // exited, unreaped leader. Reaping it settles the group; the
+                // lineage pass that follows proves no other member remains.
+                Err(rustix::io::Errno::PERM) => {
+                    if let Some(exit) = self.try_wait()? {
+                        self.finished = true;
+                        return Ok(exit);
+                    }
+                    Err(LocalRunnerError::invalid(format!(
+                        "failed to signal owned process group: {}",
+                        rustix::io::Errno::PERM
+                    )))
+                }
+                Err(error) => Err(LocalRunnerError::invalid(format!(
+                    "failed to signal owned process group: {error}"
+                ))),
+            }
+        };
+        #[cfg(not(unix))]
+        let signal = {
+            if let Some(exit) = self.try_wait()? {
+                self.finished = true;
+                return Ok(exit);
+            }
+            let signal = self.child.kill().map_err(|error| {
+                LocalRunnerError::invalid(format!("failed to stop owned process: {error}"))
+            });
+            if signal.is_err() {
+                if let Some(exit) = self.try_wait()? {
+                    self.finished = true;
+                    return Ok(exit);
+                }
+            }
+            signal
+        };
+        self.reap_after_immediate_signal(signal)
+    }
+
+    fn reap_after_immediate_signal(
+        &mut self,
+        signal: Result<(), LocalRunnerError>,
+    ) -> Result<ProcessExitFact, LocalRunnerError> {
+        signal?;
+        let deadline = Instant::now() + Duration::from_millis(100);
+        loop {
+            if let Some(exit) = self.try_wait()? {
+                self.finished = true;
+                return Ok(exit);
+            }
+            if Instant::now() >= deadline {
+                return Err(LocalRunnerError::invalid(
+                    "owned process termination remains unconfirmed",
+                ));
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 impl Drop for SupervisedProcess {
     fn drop(&mut self) {
         if !self.finished {
             let _ = self.terminate_group();
+        } else {
+            let _ = self.terminate_lineage(self.shutdown_grace);
         }
     }
 }
@@ -1031,6 +1498,180 @@ fn exit_fact(status: ExitStatus) -> ProcessExitFact {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Plays a provider whose tool runs `nohup job &` in a new session, the
+    /// way Claude Code runs a Bash tool command. The wrapper reports the job's
+    /// PID and exits, so the job is re-parented and outside the owned group.
+    fn spawn_provider_with_escaped_tool_job(
+        name: &str,
+    ) -> (
+        SupervisedProcess,
+        PathBuf,
+        paperclip_process_table::ProcessEntry,
+    ) {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-escaped-tool-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let pid_file = directory.join("job.pid");
+        let tool = r#"sleep 0.3; nohup /bin/sh -c 'while :; do sleep 1; done' >/dev/null 2>&1 & echo $! > "$0.tmp"; mv "$0.tmp" "$0"; exit 0"#;
+        let wrapper = format!(
+            "use POSIX (); POSIX::setsid() or die; exec '/bin/sh', '-c', q{{{tool}}}, $ARGV[0];"
+        );
+        let provider = r#"perl -e "$1" "$2" & printf 'ready\n'; while :; do sleep 1; done"#;
+        let process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_owned(),
+                provider.to_owned(),
+                "provider".to_owned(),
+                wrapper,
+                pid_file.display().to_string(),
+            ],
+            Duration::from_millis(500),
+            1024,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let job = loop {
+            if let Some(pid) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                let job = paperclip_process_table::read(pid)
+                    .entry()
+                    .expect("tool job is running");
+                // Wait until the wrapper has exited and the job is orphaned.
+                if paperclip_process_table::read(job.ppid)
+                    .entry()
+                    .is_none_or(|parent| parent.pgid != job.pgid)
+                {
+                    break job;
+                }
+            }
+            assert!(Instant::now() < deadline, "tool job did not start");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert_ne!(job.pgid, i32::try_from(process.process_group_id()).unwrap());
+        (process, directory, job)
+    }
+
+    fn assert_stopped_and_clean_up(job: paperclip_process_table::ProcessEntry, directory: &Path) {
+        let alive = paperclip_process_table::read(job.pid)
+            .entry()
+            .is_some_and(|current| current.started == job.started && !current.zombie);
+        if alive {
+            // Never leave the escaped job behind when the assertion fails.
+            if let Some(group) = rustix::process::Pid::from_raw(job.pgid) {
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
+        }
+        let _ = fs::remove_dir_all(directory);
+        assert!(!alive, "tool job {} outlived its provider", job.pid);
+    }
+
+    #[test]
+    fn terminating_the_group_stops_a_tool_job_that_left_its_session() {
+        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("terminate");
+        process.terminate_group().unwrap();
+        assert_stopped_and_clean_up(job, &directory);
+    }
+
+    #[test]
+    fn immediate_fence_stops_a_tool_job_that_left_its_session() {
+        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("immediate");
+        process.terminate_group_immediately().unwrap();
+        assert_stopped_and_clean_up(job, &directory);
+    }
+
+    #[test]
+    fn dropping_the_provider_stops_a_tool_job_that_left_its_session() {
+        let (process, directory, job) = spawn_provider_with_escaped_tool_job("drop");
+        drop(process);
+        assert_stopped_and_clean_up(job, &directory);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn immediate_group_fence_does_not_wait_for_shutdown_grace() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_owned(),
+                "trap '' TERM; printf 'ready\\n'; while :; do read -r line; done".to_owned(),
+            ],
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(
+            process
+                .receive_stdout_line(Duration::from_secs(1))
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+        let started = Instant::now();
+        let exit = process.terminate_group_immediately().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!exit.success);
+        assert_eq!(
+            process.terminate_group_immediately().unwrap().exit_code,
+            exit.exit_code
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn immediate_group_fence_accepts_observed_leader_exit_and_missing_group() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &["-c".to_owned(), "exit 0".to_owned()],
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!process.finished);
+        assert!(process.terminate_group_immediately().unwrap().success);
+        assert!(process.finished);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_immediate_signal_does_not_wait_or_claim_process_exit() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_owned(),
+                "trap '' TERM; printf 'ready\\n'; while :; do read -r line; done".to_owned(),
+            ],
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert!(process
+            .receive_stdout_line(Duration::from_secs(1))
+            .unwrap()
+            .is_some());
+        let started = Instant::now();
+        assert!(process
+            .reap_after_immediate_signal(Err(LocalRunnerError::invalid("injected signal failure")))
+            .is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!process.finished);
+        assert!(process.try_wait().unwrap().is_none());
+        process.terminate_group_immediately().unwrap();
+    }
 
     #[test]
     #[cfg(unix)]
@@ -1098,6 +1739,260 @@ mod tests {
         assert!(!process.stdout_drained());
     }
 
+    // These tests exercise file admission and ownership only. They never launch
+    // a native runner, shell, Node executable, provider, or child process.
+    #[cfg(target_os = "macos")]
+    mod darwin_named_snapshot {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        struct Fixture {
+            directory: PathBuf,
+        }
+        impl Fixture {
+            fn new() -> Self {
+                let directory = std::env::temp_dir().join(format!(
+                    "paperclip-darwin-snapshot-{}",
+                    Uuid::new_v4().simple()
+                ));
+                fs::create_dir(&directory).unwrap();
+                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+                Self {
+                    directory: fs::canonicalize(directory).unwrap(),
+                }
+            }
+            fn artifact(&self) -> VerifiedProcessArtifact {
+                let path = self.directory.join("node");
+                fs::write(&path, b"authenticated executable bytes").unwrap();
+                VerifiedProcessArtifact::snapshot_verified_executable(
+                    path.clone(),
+                    File::open(path).unwrap(),
+                    &format!(
+                        "sha256:{:x}",
+                        Sha256::digest(b"authenticated executable bytes")
+                    ),
+                )
+                .unwrap()
+            }
+            fn image_count(&self) -> usize {
+                fs::read_dir(&self.directory)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".paperclip-verified-executable-")
+                    })
+                    .count()
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.directory);
+            }
+        }
+
+        #[test]
+        fn source_changes_and_closed_source_do_not_change_single_image() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            let source = fixture.directory.join("node");
+            fs::write(&source, b"overwrite original inode").unwrap();
+            fs::rename(&source, fixture.directory.join("retired-node")).unwrap();
+            fs::write(&source, b"replacement source inode").unwrap();
+            fs::remove_file(&source).unwrap();
+            executable.validate_before_spawn().unwrap();
+            assert_eq!(
+                executable.image.path.parent(),
+                Some(fixture.directory.as_path())
+            );
+            assert_eq!(fixture.image_count(), 1);
+            let launch = VerifiedProcessLaunch::new(artifact, vec![]);
+            let inherited = launch.inherited_command().unwrap();
+            assert_eq!(
+                fixture.image_count(),
+                1,
+                "admission must not materialize another image"
+            );
+            assert_eq!(
+                fs::read(&inherited.program).unwrap(),
+                b"authenticated executable bytes"
+            );
+        }
+
+        #[test]
+        fn same_inode_mutation_is_rejected_even_after_restoring_readonly_mode() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(
+                &executable.image.path,
+                vec![b'X'; executable.expected_len as usize],
+            )
+            .unwrap();
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o500)).unwrap();
+            assert!(executable.validate_before_spawn().is_err());
+        }
+
+        #[test]
+        fn replacement_image_is_rejected_and_not_removed_by_drop() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let path = artifact.executable.as_ref().unwrap().image.path.clone();
+            fs::rename(&path, fixture.directory.join("retired-image")).unwrap();
+            fs::write(&path, b"replacement").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o500)).unwrap();
+            assert!(artifact
+                .executable
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .is_err());
+            drop(artifact);
+            assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        }
+
+        #[test]
+        fn symlink_image_is_rejected_and_its_target_and_link_survive_drop() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let path = artifact.executable.as_ref().unwrap().image.path.clone();
+            fs::remove_file(&path).unwrap();
+            let target = fixture.directory.join("unrelated");
+            fs::write(&target, b"unrelated").unwrap();
+            symlink(&target, &path).unwrap();
+            assert!(artifact
+                .executable
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .is_err());
+            drop(artifact);
+            assert!(fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read(&target).unwrap(), b"unrelated");
+        }
+
+        #[test]
+        fn directory_image_is_rejected_and_survives_drop() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            let path = executable.image.path.clone();
+            fs::remove_file(&path).unwrap();
+            // rustix does not expose safe FIFO creation on Darwin. This tests
+            // nonregular-entry rejection; FIFO-specific calibration remains
+            // separate. Production opens retain NONBLOCK for FIFO substitution.
+            fs::create_dir(&path).unwrap();
+            assert!(executable.validate_before_spawn().is_err());
+            drop(artifact);
+            assert!(fs::symlink_metadata(&path).unwrap().is_dir());
+        }
+
+        #[test]
+        fn writable_mode_is_rejected_even_with_original_bytes() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(executable.validate_before_spawn().is_err());
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o500)).unwrap();
+            executable.validate_before_spawn().unwrap();
+        }
+
+        #[test]
+        fn replaced_parent_fails_admission_and_cleanup_uses_held_parent() {
+            let fixture = Fixture::new();
+            let parent = fixture.directory.join("runtime");
+            fs::create_dir(&parent).unwrap();
+            let source = parent.join("node");
+            fs::write(&source, b"original").unwrap();
+            let artifact = VerifiedProcessArtifact::snapshot_verified_executable(
+                source.clone(),
+                File::open(&source).unwrap(),
+                &format!("sha256:{:x}", Sha256::digest(b"original")),
+            )
+            .unwrap();
+            let path = artifact.executable.as_ref().unwrap().image.path.clone();
+            let retired = fixture.directory.join("retired-runtime");
+            fs::rename(&parent, &retired).unwrap();
+            fs::create_dir(&parent).unwrap();
+            fs::write(&path, b"replacement parent image").unwrap();
+            assert!(artifact
+                .executable
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .is_err());
+            drop(artifact);
+            assert_eq!(fs::read(&path).unwrap(), b"replacement parent image");
+            assert!(!retired.join(path.file_name().unwrap()).exists());
+        }
+
+        #[test]
+        fn launch_clones_and_inherited_owner_keep_image_until_last_drop() {
+            let fixture = Fixture::new();
+            let launch = VerifiedProcessLaunch::new(fixture.artifact(), vec![]);
+            let clone = launch.clone();
+            let mut inherited = launch.inherited_command().unwrap();
+            let path = inherited.program.clone();
+            // This is the same ownership transfer performed after spawn succeeds.
+            let process_owner = inherited.named_executable.take();
+            drop(inherited);
+            drop(launch);
+            assert!(path.exists());
+            drop(clone);
+            assert!(
+                path.exists(),
+                "descendant runtime pathname must remain live"
+            );
+            process_owner
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .unwrap();
+            drop(process_owner);
+            assert!(!path.exists());
+        }
+
+        #[test]
+        fn digest_failure_and_late_abort_remove_owned_image() {
+            let fixture = Fixture::new();
+            let source = fixture.directory.join("node");
+            fs::write(&source, b"original").unwrap();
+            assert!(VerifiedProcessArtifact::snapshot_verified_executable(
+                source.clone(),
+                File::open(source).unwrap(),
+                "sha256:wrong"
+            )
+            .is_err());
+            assert_eq!(fixture.image_count(), 0);
+            let launch = VerifiedProcessLaunch::new(fixture.artifact(), vec![]);
+            let inherited = launch.inherited_command().unwrap();
+            let path = inherited.program.clone();
+            drop(launch);
+            assert!(path.exists());
+            drop(inherited); // Includes the spawn-error/late-abort ownership path.
+            assert!(!path.exists());
+        }
+
+        #[test]
+        fn commonjs_snapshots_stay_anonymous() {
+            let fixture = Fixture::new();
+            let script = verified_artifact(
+                &fixture.directory.join("sidecar.cjs"),
+                b"module.exports = {};\n",
+            );
+            assert!(script.executable.is_none());
+            assert_eq!(script.file.metadata().unwrap().nlink(), 0);
+        }
+    }
+
     fn verified_artifact(path: &Path, bytes: &[u8]) -> VerifiedProcessArtifact {
         fs::write(path, bytes).unwrap();
         let digest = format!("sha256:{:x}", Sha256::digest(bytes));
@@ -1135,6 +2030,52 @@ mod tests {
         assert!(inherited.args[2].starts_with("/proc/self/fd/"));
         #[cfg(target_os = "macos")]
         assert!(inherited.args[2].starts_with("/dev/fd/"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trusted_root_artifacts_execute_the_held_file_and_reopen_it_for_nested_launches() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-trusted-root-launch-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let shell = fs::canonicalize(directory.join(".")).unwrap().join("sh");
+        fs::copy(fs::canonicalize("/bin/sh").unwrap(), &shell).unwrap();
+        let program = VerifiedProcessArtifact::in_place_on_trusted_root(
+            shell.clone(),
+            File::open(&shell).unwrap(),
+        );
+        let launch = VerifiedProcessLaunch::new(
+            program,
+            vec![
+                VerifiedProcessArgument::Literal("-c".to_owned()),
+                VerifiedProcessArgument::Literal(format!(
+                    "readlink /proc/$$/exe; \"${VERIFIED_RUNTIME_EXECUTABLE_ENV}\" -c 'readlink /proc/$$/exe'"
+                )),
+            ],
+        );
+
+        let inherited = launch.inherited_command().unwrap();
+        assert!(inherited.program.starts_with("/proc/self/fd/"));
+        let output = Command::new(&inherited.program)
+            .args(&inherited.args)
+            .env(VERIFIED_RUNTIME_EXECUTABLE_ENV, &inherited.program)
+            .output()
+            .unwrap();
+        drop(inherited);
+
+        assert!(output.status.success(), "{output:?}");
+        let expected = format!("{}\n", shell.display());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected.repeat(2)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

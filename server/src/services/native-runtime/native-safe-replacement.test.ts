@@ -1,7 +1,10 @@
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { getExecutionBlocker } from "../execution-blocker.js";
 import { createRunDispatch, deriveCommentId } from "../../modules/run-dispatch/index.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { issueService } from "../issues.js";
 import { activityService } from "../activity.js";
+import { instanceSettingsService } from "../instance-settings.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../heartbeat.js";
 import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { deliverExecutionStatuses } from "../execution-status-delivery.js";
@@ -13,6 +16,11 @@ import {
   deliverReconciledExecutions,
 } from "../execution-recovery-resolution.js";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { persistHeartbeatRunProcessMetadata } from "../heartbeat/run-lifecycle.js";
+import { hasNativeLocalProcessStop, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { executionControlSchedule } from "../execution-control-work.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -23,10 +31,15 @@ import {
   agents,
   companies,
   createDb,
+  subscribeDatabaseWork,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueThreadInteractions,
+  issueDocuments,
+  documents,
+  documentRevisions,
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
@@ -34,7 +47,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
+import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl
@@ -96,7 +109,21 @@ const support = externalDatabaseUrl
         nativeIssueId: issueId,
         runtimeMode: "native",
         status: "failed",
-        contextSnapshot: { issueId },
+        contextSnapshot: {
+          issueId,
+          preservedRecoveryContext: true,
+          paperclipWake: { comments: [{ id: "stale-comment" }] },
+          paperclipWakeComment: { id: "stale-comment" },
+          paperclipTaskMarkdown: "stale historical task",
+          paperclipTaskMarkdownCompact: "stale historical compact task",
+          paperclipTaskMarkdownAssignment: "stale assignment task",
+          paperclipTaskMarkdownAssignmentCompact: "stale assignment compact task",
+          paperclipTurnContext: {
+            version: 1,
+            assignment: { owner: "task_markdown" },
+            events: { owner: "wake_prompt", comments: [{ id: "stale-comment" }] },
+          },
+        },
         runnerProfileJson: {
           recoveryEventInventoryVersion: 1,
           nativeExecutionInput: {
@@ -164,6 +191,21 @@ const support = externalDatabaseUrl
           if (mode === "verified") {
             expect(retire).toHaveBeenCalledOnce();
             expect(task!.status).toBe("in_progress");
+            expect(successors[0]!.contextSnapshot).toMatchObject({
+              issueId: source.issueId,
+              preservedRecoveryContext: true,
+            });
+            for (const key of [
+              "paperclipWake",
+              "paperclipWakeComment",
+              "paperclipTaskMarkdown",
+              "paperclipTaskMarkdownCompact",
+              "paperclipTaskMarkdownAssignment",
+              "paperclipTaskMarkdownAssignmentCompact",
+              "paperclipTurnContext",
+            ]) {
+              expect(successors[0]!.contextSnapshot).not.toHaveProperty(key);
+            }
             const continuation = await buildExecutionContinuation({
               db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId,
               context: successors[0]!.contextSnapshot!, summary: null, exposeLowTrustRaw: false,
@@ -183,6 +225,103 @@ const support = externalDatabaseUrl
         }
       },
     );
+    it("wakes a completed replacement scan after actual local stop proof commits", async () => {
+      const source = await seed(2);
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-stop-"));
+      const child = spawn(process.execPath, ["-e", "process.exit(0)"], { detached: true, stdio: "ignore" });
+      const pid = child.pid!;
+      await new Promise<void>((resolve, reject) => { child.once("exit", () => resolve()); child.once("error", reject); });
+      await persistHeartbeatRunProcessMetadata(db, source.runId, { pid, processGroupId: pid,
+        startedAt: new Date().toISOString(), targetKind: "local" });
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(), runnerProfileJson: {
+        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+      } }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed" })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+        eventType: "harness.ready", stream: "system", message: "Provider started before its transport failed." });
+      const verifyStoppedSession = async () => await hasNativeLocalProcessStop(db, source.companyId, source.runId)
+        ? { evidence: {}, retire: () => true } : null;
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      let wakes = 0;
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+      });
+      try {
+        await db.transaction(async tx => {
+          expect(await releaseSettledNativeRunProcess(tx as unknown as typeof db, source.runId)).toBe("released");
+          expect(wakes).toBe(0);
+        });
+        expect(wakes).toBeGreaterThan(0);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 1 });
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+        expect(successors).toHaveLength(1);
+      } finally { unsubscribe(); await rm(workspace, { recursive: true, force: true }); }
+    });
+    it("wakes completed recovery when the real task becomes eligible", async () => {
+      const source = await seed();
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-eligibility-"));
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { recoveryEventInventoryVersion: 1,
+        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+      } }).where(eq(heartbeatRuns.id, source.runId));
+      await issueService(db).update(source.issueId, { status: "backlog" });
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      let wakes = 0;
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+      });
+      try {
+        await issueService(db).update(source.issueId, { status: "in_progress" });
+        expect(wakes).toBeGreaterThan(0);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 1 });
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(1);
+      } finally { unsubscribe(); await rm(workspace, { recursive: true, force: true }); }
+    });
+    it("advances past a failed full page and retries it after later work progresses", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-failed-page-"));
+      const sources: Awaited<ReturnType<typeof seed>>[] = [];
+      for (let index = 0; index < 26; index++) {
+        const source = await seed(); sources.push(source);
+        await db.update(heartbeatRuns).set({ runnerProfileJson: {
+          nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+        } }).where(eq(heartbeatRuns.id, source.runId));
+        await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed" })
+          .where(eq(nativeRunFinalizations.runId, source.runId));
+      }
+      sources.sort((a, b) => a.runId.localeCompare(b.runId));
+      const later = sources.at(-1)!;
+      let failing = true;
+      const verifyStoppedSession = vi.fn(async (run: typeof heartbeatRuns.$inferSelect) => {
+        if (failing && run.id !== later.runId) throw new Error("Controlled stopped-session verifier failure");
+        return { evidence: {}, retire: () => true };
+      });
+      invalidateNativeReplacementDiscovery(db);
+      try {
+        await expect(reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession }))
+          .rejects.toThrow("native_replacement_decision_retry_required");
+        expect(verifyStoppedSession).toHaveBeenCalledTimes(25);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 1 });
+        expect(verifyStoppedSession).toHaveBeenCalledTimes(26);
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, later.runId))).toHaveLength(1);
+        failing = false;
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 25 });
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        const successors = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.retryOfRunId, sources.map(source => source.runId)));
+        expect(successors).toHaveLength(26);
+      } finally { await rm(workspace, { recursive: true, force: true }); }
+    }, 60_000);
     it.each(["unproven", "changed", "verified"] as const)("requires stopped-session proof through commit (%s)", async (mode) => {
       const source = await seed(2);
       await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" }).where(eq(nativeRunFinalizations.runId, source.runId));
@@ -199,8 +338,11 @@ const support = externalDatabaseUrl
         eventType: "tool.execution.started", stream: "system",
         payload: { name: "paperclip_finish", executionId: "completion", transport: "process" },
       });
-      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
-      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      for (let sweep = 0; sweep < 2; sweep++) {
+        const decision = reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+        if (mode === "changed") await expect(decision).rejects.toThrow("native_replacement_decision_retry_required");
+        else await decision;
+      }
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
       expect(successors).toHaveLength(mode === "verified" ? 1 : 0);
       const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
@@ -361,6 +503,76 @@ const support = externalDatabaseUrl
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(false);
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", scheduledRetryAttempt: 2, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(true);
     });
+
+    it.each(["pending", "accepted", "rejected", "expired"] as const)("preserves %s approval and saved work while unsafe restore recovery is repeated", async (status) => {
+      const source = await seed();
+      const documentId = randomUUID(), revisionId = randomUUID(), interactionId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId: source.companyId, title: "Plan", latestBody: "Only the two approved changes.", latestRevisionId: revisionId });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: source.companyId, documentId, revisionNumber: 1, body: "Only the two approved changes.", createdByRunId: source.runId });
+      await db.insert(issueDocuments).values({ companyId: source.companyId, issueId: source.issueId, documentId, key: "plan" });
+      await db.insert(issueComments).values({ companyId: source.companyId, issueId: source.issueId, authorAgentId: source.agentId, createdByRunId: source.runId, body: "The plan is saved." });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId: source.companyId, issueId: source.issueId, kind: "request_confirmation", status,
+        sourceRunId: source.runId, createdByAgentId: source.agentId,
+        resolvedByUserId: status === "accepted" || status === "rejected" ? "board-user" : null,
+        resolvedAt: status === "pending" ? null : new Date(),
+        payload: { version: 1, prompt: "Review the scoped plan.", target: { type: "issue_document", key: "plan", revisionId } },
+        result: status === "pending" ? null : { version: 1, outcome: status === "expired" ? "superseded_by_comment" : status },
+      });
+      const [run] = await db.update(heartbeatRuns).set({
+        runtimeMode: "legacy", errorCode: "workspace_restore_failed", scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure",
+        runnerProfileJson: { adapterDispatch: { adapterType: "grok_local" } },
+        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", conversationContinuation: "continue_conversation_v1", summary: "The plan is saved.", workspaceRestorePath: "/tmp/private-clone/file", savedPlanRevisionId: randomUUID() },
+      }).where(eq(heartbeatRuns.id, source.runId)).returning();
+      const [resetComment] = await db.insert(issueComments).values({ companyId: source.companyId, issueId: source.issueId, authorUserId: "board-user", body: "/new" }).returning();
+      await db.update(issues).set({ conversationAgentId: source.agentId, conversationUserId: "board-user", conversationState: "active", conversationBoundaryCommentId: resetComment.id }).where(eq(issues.id, source.issueId));
+      const activityRuns = await activityService(db).runsForIssue(source.companyId, source.issueId);
+      expect(activityRuns.find((row) => row.runId === source.runId)?.resultJson).toMatchObject({ workspaceRestoreFailure: "restore_unsafe_archive", savedPlanRevisionId: revisionId, workspaceRestorePath: null });
+      const before = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+      const savedComments = await db.select().from(issueComments).where(eq(issueComments.issueId, source.issueId));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await terminalizeLegacyExecution({ db, run, status: "failed" });
+        await settleUnrecoverableExecutions(db);
+      }
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task.status).toBe("blocked");
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(actions).toHaveLength(1);
+      const [action] = actions;
+      expect(action).toMatchObject({ outcome: "blocked", evidence: { automaticRecovery: { replay: "blocked" }, workspaceRestoreFailure: "restore_unsafe_archive" } });
+      expect(action.nextAction).toContain("Workspace repair required");
+      expect(await getExecutionBlocker(db, source.companyId, source.issueId, { conversationResetCommentId: resetComment.id })).toMatchObject({ runId: source.runId });
+      const decision = { runId: source.runId, providerStopped: true as const, actionOutcome: "mixed" as const, outcomeEvidence: "Verified saved plan and comment. Workspace copy-back failed." };
+      const input = { db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId, sourceRunId: source.runId, decision };
+      await expect(validateExecutionReconciliation(input)).rejects.toThrow("workspaceRepairEvidence");
+      const verified = { ...decision, workspaceRepairEvidence: "Verified fresh confined staging after repairing the unsafe fixture link." };
+      await expect(validateExecutionReconciliation({ ...input, decision: verified })).resolves.toMatchObject({ id: source.runId });
+      await markExecutionReconciliation(db, action, verified, "operator");
+      // Occupy the only agent slot. Exercise real admission without a provider.
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+      await db.update(agents).set({ status: "active", adapterType: "grok_local", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.update(issues).set({ responsibleUserId: "board-user" }).where(eq(issues.id, source.issueId));
+      await db.insert(heartbeatRuns).values({ companyId: source.companyId, agentId: source.agentId, status: "running" });
+      const heartbeat = heartbeatService(db);
+      const wake = vi.fn(heartbeat.wakeup);
+      await deliverReconciledExecutions(db, wake as unknown as Parameters<typeof deliverReconciledExecutions>[1]);
+      await deliverReconciledExecutions(db, wake as unknown as Parameters<typeof deliverReconciledExecutions>[1]);
+      expect(wake).toHaveBeenCalledTimes(1);
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      expect(successor).toMatchObject({ status: "queued", scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure" });
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, successor.id));
+      const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+      expect(original).toMatchObject({ status: "failed", errorCode: "workspace_restore_failed", resultJson: run.resultJson });
+      const continuation = await buildExecutionContinuation({ db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId, context: { previousRunId: source.runId }, summary: null, exposeLowTrustRaw: false });
+      if (status === "accepted" || status === "rejected") expect(continuation.humanResponses).toContainEqual(expect.objectContaining({ id: interactionId, status }));
+      else expect(continuation.humanResponses).not.toContainEqual(expect.objectContaining({ id: interactionId }));
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toEqual(before);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, source.issueId))).toEqual(savedComments);
+      expect(await db.select().from(documentRevisions).where(eq(documentRevisions.documentId, documentId))).toHaveLength(1);
+      const [savedDocument] = await db.select().from(documents).where(eq(documents.id, documentId));
+      expect(savedDocument).toMatchObject({ latestBody: "Only the two approved changes.", latestRevisionId: revisionId });
+    });
+
     it("does not reopen a reconciled legacy run while continuation is pending", async () => {
       const source = await seed();
       const [run] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled" }).where(eq(heartbeatRuns.id, source.runId)).returning();
@@ -472,7 +684,12 @@ const support = externalDatabaseUrl
     });
     it("persists exactly one linked successor under competing sweepers and restarts", async () => {
       const source = await seed(2);
+      const owner = heartbeatService(db);
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const worker = owner.registerRunDispatchWork(coordinator, () => true);
+      await worker.ready;
       const now = new Date();
+      try {
       await Promise.all([
         reconcileSafeNativeReplacements(db, now),
         reconcileSafeNativeReplacements(db, now),
@@ -503,6 +720,10 @@ const support = externalDatabaseUrl
             .where(eq(nativeRunFinalizations.runId, source.runId))
         )[0]?.failureDetail?.successorRunId,
       ).toBe(children[0]!.id);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(children[0]!.scheduledRetryAt!.getTime()), { timeout: 5_000 });
+      } finally {
+        await worker.stop(); await coordinator.stop(); await owner.drainActiveRunExecutions();
+      }
     });
     it("retries status publication after a crash without dispatching provider work", async () => {
       await deliverExecutionStatuses(db);

@@ -4,6 +4,7 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agents,
@@ -94,6 +95,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -329,6 +331,25 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     await request(app)
       .post(`/api/companies/${companyId}/issues`)
       .send({ title: "Get started", onboardingFirstTask: true, assigneeAgentId: agentId })
+      .expect(201);
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toHaveLength(0);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it.each(["done", "cancelled"])("does not queue an assignment wake for an issue created already %s", async (status) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const app = createApp();
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Historical record", status, assigneeAgentId: agentId })
       .expect(201);
 
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));

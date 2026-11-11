@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { chatEndpointLeases, type Db } from "@paperclipai/db";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const TTL_SECONDS = 90;
@@ -113,13 +114,12 @@ export async function withGitHubPublicationLease<T>(
   } finally {
     clearInterval(timer);
     await renewal;
-    await db
-      .delete(chatEndpointLeases)
-      .where(
-        and(
-          eq(chatEndpointLeases.id, claimed.id),
-          eq(chatEndpointLeases.token, token),
-        ),
-      );
+    await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubReviewChecks, JSON.stringify(scope));
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubTerminalResponses, JSON.stringify(scope));
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubAcknowledgements, JSON.stringify(scope));
+      await tx.delete(chatEndpointLeases).where(and(eq(chatEndpointLeases.id, claimed.id), eq(chatEndpointLeases.token, token)));
+    });
   }
 }

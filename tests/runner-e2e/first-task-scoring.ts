@@ -1,8 +1,11 @@
-import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "./non-execution-wake.js";
+import { firstTaskRejection, firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } from "./first-task-rejection.js";
 import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { sanitizeJson } from "./redaction.js";
 import { createHash } from "node:crypto";
 import { firstTaskScenario } from "./first-task-cases.js";
+import { completionDelivery } from "./completion-updates.js";
+import { APPROVAL_HISTORY_CASE, approvalHistoryWriter, gradeApprovalHistory } from "./first-task-approval-history.js";
 export type Row = { id: string; [key: string]: any };
 export interface FirstTaskCheckpoint {
   id: string;
@@ -12,6 +15,10 @@ export interface FirstTaskCheckpoint {
     | "response"
     | "clarified"
     | "revised"
+    | "plan-accepted"
+    | "hiring-proposed"
+    | "hiring-accepted"
+    | "execution-proposed"
     | "accepted"
     | "rejected"
     | "finished";
@@ -219,7 +226,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   const last = e.checkpoints.at(-1);
   const approval = e.checkpoints.find((c) => c.phase === "accepted");
   const rejection =
-    e.caseId === "reject-no-execution"
+    firstTaskRejection(e)
       ? e.checkpoints.find((c) => c.phase === "rejected")
       : undefined;
   const extras = (c: FirstTaskCheckpoint) =>
@@ -309,7 +316,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       "Propose a task for the concrete request",
       [first.id],
     );
-  if (scenario.opening === "plan" || e.caseId === "interview-plan-accept") {
+  if (scenario.opening === "plan" || ["interview-plan-accept", APPROVAL_HISTORY_CASE].includes(e.caseId)) {
     const proposal =
       e.checkpoints.find((c) => c.phase === "clarified") ?? first;
     add(
@@ -326,7 +333,9 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       c.phase !== "opening" &&
       (!approval || Date.parse(c.at) < Date.parse(approval.at)),
   );
-  if (scenario.opening !== "ordinary") {
+  if (e.caseId === APPROVAL_HISTORY_CASE) {
+    checks.push(...gradeApprovalHistory(e, scenario.marker));
+  } else if (scenario.opening !== "ordinary") {
     add(
       "no-premature-work",
       before.every(
@@ -390,7 +399,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       approval ? [approval.id] : [],
       notReached,
     );
-    if (e.caseId === "interview-plan-accept") {
+    if (["interview-plan-accept", "plan-only-accept"].includes(e.caseId)) {
       add(
         "accepted-plan-retained",
         last.documents.some((d) => isPlanDocument(d) && String(d.body).trim()),
@@ -398,14 +407,36 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
         [last.id],
         notReached,
       );
+    }
+    if (e.caseId === "plan-only-accept") {
+      add(
+        "plan-only-no-execution",
+        e.checkpoints.every((checkpoint) =>
+          extras(checkpoint).length === 0 &&
+          checkpoint.agents.every((agent) => e.checkpoints[0].agents.some((initial) => initial.id === agent.id)) &&
+          checkpoint.documents.every(isPlanningDocument) &&
+          (checkpoint.attachments ?? []).every(isPlanningAttachment)),
+        "Explicit plan-only approval does not authorize hires, execution tasks, or finished output",
+        e.checkpoints.map((checkpoint) => checkpoint.id),
+        notReached,
+      );
+      add(
+        "plan-only-complete",
+        last.tasks.find((task) => task.id === e.onboardingIssueId)?.status === "done",
+        "Retaining the accepted plan completes the explicitly plan-only request",
+        [last.id],
+        notReached,
+      );
     } else {
       const children = extras(last);
+      const expectedAssignee = e.caseId === APPROVAL_HISTORY_CASE
+        ? last.agents.find(agent => agent.name === approvalHistoryWriter(scenario.marker))?.id : e.agentId;
       add(
         "one-scoped-subtask",
         children.length === 1 &&
           children[0].parentId === e.onboardingIssueId &&
-          children[0].assigneeAgentId === e.agentId,
-        "Exactly one approved subtask belongs to this onboarding issue and agent",
+          Boolean(expectedAssignee) && children[0].assigneeAgentId === expectedAssignee,
+        "Exactly one approved subtask belongs to this onboarding issue and its intended agent",
         [last.id],
         notReached,
       );
@@ -443,11 +474,12 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   if (e.caseId === "reject-no-execution")
     add(
       "rejection-respected",
-      extras(last).length === 0 &&
+      firstTaskRejectionReplyRecorded(e, last.comments, last.runs) &&
+        extras(last).length === 0 &&
         last.documents.every(isPlanningDocument) &&
         (last.attachments ?? []).every(isPlanningAttachment) &&
         activeRuns(last.runs).length === 0,
-      "Rejected work never executes",
+      "Persisted refusal receives a response without execution tasks, finished output, or remaining runs",
       [last.id],
       rejection
         ? undefined
@@ -456,13 +488,22 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   add(
     "provider-runs-succeeded",
     last.runs.length > 0 && last.runs.every((r) => r.status === "succeeded" || isBlockedUnstartedWake(r) ||
+      isTerminalUnstartedWake(r, last.tasks) ||
+      (isFirstTaskRejectionCancellation(r, e, last.tasks) && firstTaskRejectionReplyRecorded(e, last.comments, [r])) ||
       (scenario.firstResponseOnly && r.status === "running" && answerableRuntimeRunIds(last.interactions).has(r.id))),
-    "Provider runs succeeded, or a first-response run is paused on its recorded answerable native question",
+    "Runs succeeded, were suppressed before execution, stopped with a recorded refusal response, or paused on an answerable first-response native question",
     [last.id],
   );
   if (e.runtimeSettings?.adapterType === "paperclip_runner" &&
     ["task-reply-accept", "task-card-accept"].includes(e.caseId) && last.phase === "finished") {
     checks.push({ ...gradeNativeSessionContinuity(e.checkpoints.flatMap((checkpoint) => checkpoint.runs), e.onboardingIssueId), evidence: [last.id] });
+  }
+  if (e.runtimeSettings?.completionDeliveryProbe && last) {
+    const worker = last.tasks.find(t => t.parentId === e.onboardingIssueId) ?? {};
+    checks.push(...completionDelivery({ sourceId: e.onboardingIssueId, worker, documents: last.documents,
+      comments: last.comments, runs: last.runs, marker: scenario.marker,
+      renderedLinks: e.runtimeSettings.completionRenderedLinks as Array<{ commentId: string; href: string }> | undefined,
+    }).checks.map(check => ({ ...check, evidence: [last.id] })));
   }
   return checks;
 }

@@ -20,7 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { summarySlotService } from "../services/summary-slots.ts";
-import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
+import { withBuiltInAgentMarker } from "../lib/built-in-agent-metadata.ts";
 import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

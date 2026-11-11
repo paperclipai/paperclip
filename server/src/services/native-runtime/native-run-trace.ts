@@ -1,5 +1,7 @@
+import { getRunExecutionTraceContext } from "../execution-preparation-timing.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import { isSpanContextValid, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 
 import { runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
@@ -7,9 +9,16 @@ import {
   getStartupTraceContext,
   type StartupTraceContextHandle,
 } from "../../instrumentation.js";
+import {
+  evaluateSpeedBudget,
+  SPEED_BUDGET_EXCEEDED_EVENT_TYPE,
+  type SpeedBudgetAdapter,
+  type SpeedBudgetBreach,
+  type SpeedBudgetStart,
+} from "./native-speed-budgets.js";
 
 export const NATIVE_RUN_SPAN_EVENT_TYPE = "run.performance.span";
-export const NATIVE_RUN_TRACE_SCHEMA_VERSION = 2;
+export const NATIVE_RUN_TRACE_SCHEMA_VERSION = 3;
 
 export type NativeRunSpanOutcome = "ok" | "failed";
 
@@ -41,7 +50,7 @@ export function buildNativeWakeIngressSpan(input: {
   if (answeredAt !== null && Number.isFinite(answeredAt) && answeredAt >= 0) {
     return {
       name: "question_response.to_run_created",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: answeredAt,
       endedAtMs: Math.max(answeredAt, input.runCreatedAtMs),
     };
@@ -60,7 +69,7 @@ export function buildNativeWakeIngressSpan(input: {
     ? null
     : {
         name: "comment.to_run_created",
-        parentName: "task.run",
+        parentName: "task.provider_session",
         startedAtMs: createdAt,
         endedAtMs: Math.max(createdAt, input.runCreatedAtMs),
       };
@@ -77,13 +86,13 @@ export function buildNativeHeartbeatPreparationSpans(input: {
   return [
     {
       name: "heartbeat.queue",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: input.runCreatedAtMs,
       endedAtMs: Math.max(input.runCreatedAtMs, input.runStartedAtMs),
     },
     {
       name: "heartbeat.prepare_before_environment",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       // A same-run resume retains startedAt for wall-time accounting; it is
       // not the beginning of this dispatch attempt's preparation.
       startedAtMs: input.attemptStartedAtMs,
@@ -94,7 +103,7 @@ export function buildNativeHeartbeatPreparationSpans(input: {
     },
     {
       name: "heartbeat.prepare_after_environment",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: Math.min(
         input.nativeDispatchAtMs,
         input.environmentRealizeEndedAtMs,
@@ -102,6 +111,58 @@ export function buildNativeHeartbeatPreparationSpans(input: {
       endedAtMs: input.nativeDispatchAtMs,
     },
   ];
+}
+
+/** Which accepted input `task.time_to_first_token` is measured from. */
+export type NativeTimeToFirstTokenAnchor =
+  | "question_response"
+  | "comment"
+  | "wake_request"
+  | "run_created";
+
+/**
+ * Resolve the start of `task.time_to_first_token`: the earliest accepted input
+ * that caused this run. A question answer or a wake comment is already a root
+ * historical span. Otherwise the run row's creation time is the fallback. A
+ * durable wake request accepted earlier (deferred, coalesced or retried wakes)
+ * moves the start back to that request, so queueing before the run row exists
+ * is part of the measured latency.
+ *
+ * Run-log only. The wake request time is read after the first deliverable
+ * text, never before `turn.start`.
+ */
+export function resolveNativeTimeToFirstTokenStart(input: {
+  traceStartedAtMs: number;
+  preparationSpans: readonly NativeRunHistoricalSpan[];
+  wakeRequestedAtMs: number | null;
+}): { startedAtMs: number; anchor: NativeTimeToFirstTokenAnchor } {
+  const ingress = input.preparationSpans.find(
+    (span) =>
+      span.name === "question_response.to_run_created" ||
+      span.name === "comment.to_run_created",
+  );
+  // The trace starts at the earliest preparation span. A comment coalesced
+  // into an already-queued run starts after run creation, so it names the
+  // start only when it is that earliest span.
+  const ingressIsStart = ingress !== undefined && ingress.startedAtMs <= input.traceStartedAtMs;
+  let anchor: NativeTimeToFirstTokenAnchor =
+    !ingressIsStart
+      ? "run_created"
+      : ingress.name === "question_response.to_run_created"
+        ? "question_response"
+        : "comment";
+  let startedAtMs = input.traceStartedAtMs;
+  const wakeAt = input.wakeRequestedAtMs;
+  if (
+    wakeAt !== null &&
+    Number.isFinite(wakeAt) &&
+    wakeAt >= 0 &&
+    wakeAt < startedAtMs
+  ) {
+    startedAtMs = wakeAt;
+    anchor = "wake_request";
+  }
+  return { startedAtMs, anchor };
 }
 
 export function nativeRunPreparationStarts(
@@ -136,6 +197,7 @@ interface NativeRunSpanScopeState extends NativeRunSpanScope {
   context: unknown;
   attributes: Record<string, string | number | boolean>;
   ended: boolean;
+  persistRunLog: boolean;
 }
 
 const NOOP_SPAN: SpanHandle = {
@@ -146,7 +208,9 @@ const NOOP_SPAN: SpanHandle = {
 
 const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "adapter",
+  "anchor",
   "bytesTransferred",
+  "inputBytes", "toolSchemaBytes", "toolCount", "contextReused", "tokenDataAvailable",
   "connectionOwner",
   "driver",
   "duration_ms",
@@ -198,19 +262,38 @@ function safeAttributes(
  * seams inherit that context. The persisted run-event copy retains the same
  * semantic parent name for developer installs without an OTLP collector.
  */
+/** The runner span for the provider loading its saved session on resume. */
+const PROVIDER_SESSION_LOAD_SPAN = "provider.session.load";
+
 export function createNativeRunTrace(input: {
   runId: string;
   startedAtMs?: number;
   onEvent?: NativeRunTraceSink;
   traceContext?: StartupTraceContextHandle;
+  /** Called once when the trace finishes. */
+  onFinish?: () => void;
+  /** Speed-budget subject (invariant 8). Absent or remote means no check. */
+  budget?: {
+    adapter: SpeedBudgetAdapter | null;
+    environment: "local" | "remote";
+    /** A restart-recovery dispatch: its TTFT and boot span the outage, so only
+     * `restart_recovery` is judged. */
+    restartRecovery?: boolean;
+  };
 }) {
   const tracing =
     input.traceContext ?? getStartupTraceContext("paperclip.native-runner");
   const traceStartedAtMs = finiteMs(input.startedAtMs ?? Date.now());
+  /** Start times of the provider's saved-session loads (restart recovery split). */
+  const providerLoadStartsMs: number[] = [];
   const runIdHash = hashedId(input.runId);
   let rootSpan: SpanHandle;
   try {
-    rootSpan = tracing.tracer.startSpan("task.run", {
+    const owned = getRunExecutionTraceContext(input.runId);
+    const trigger = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()
+      ? (owned ? trace.getSpan(owned) : trace.getActiveSpan())?.spanContext()
+      : undefined;
+    rootSpan = tracing.tracer.startSpan("task.provider_session", {
       startTime: traceStartedAtMs,
       attributes: {
         "paperclip.task.run.run_id": runIdHash,
@@ -218,7 +301,8 @@ export function createNativeRunTrace(input: {
         "paperclip.task.run.trace_schema_version":
           NATIVE_RUN_TRACE_SCHEMA_VERSION,
       },
-    });
+      ...(trigger && isSpanContextValid(trigger) ? { links: [{ context: trigger }] } : {}),
+    }, ROOT_CONTEXT);
   } catch {
     rootSpan = NOOP_SPAN;
   }
@@ -249,19 +333,19 @@ export function createNativeRunTrace(input: {
       ? { name: active.name, context: active.context }
       : runtimeParentScope && !runtimeParentScope.ended
         ? { name: runtimeParentScope.name, context: runtimeParentScope.context }
-        : { name: "task.run", context: rootContext };
+        : { name: "task.provider_session", context: rootContext };
   };
 
   const parentFor = (
     parentName?: string,
   ): { name: string; context: unknown } => {
-    if (parentName && parentName !== "task.run") {
+    if (parentName && parentName !== "task.provider_session") {
       const named = namedScopes.get(parentName);
       if (named) return { name: named.name, context: named.context };
       return currentParent();
     }
-    if (parentName === "task.run")
-      return { name: "task.run", context: rootContext };
+    if (parentName === "task.provider_session")
+      return { name: "task.provider_session", context: rootContext };
     return currentParent();
   };
 
@@ -275,6 +359,55 @@ export function createNativeRunTrace(input: {
       } catch {
         // Tracing is diagnostic-only and must never change runner control flow.
       }
+    }
+  };
+
+  // Speed budgets (invariant 8). Breaches are written detached, after the
+  // measurement, so the check never adds a wait to the turn path.
+  let budgetStart: SpeedBudgetStart | null = null;
+  let queueEndedAtMs: number | null = null;
+  // When the run row was created (start of heartbeat.queue, end of the
+  // ingress span). Input accepted before it waited for a run to exist, for
+  // example a comment posted while the previous turn was still running.
+  let runCreatedAtMs: number | null = null;
+  let attemptStartedAtMs: number | null = null;
+  let bootChecked = false;
+  const reportBudgetBreach = (breach: SpeedBudgetBreach | null): void => {
+    if (!breach || !input.onEvent) return;
+    defer(async () => {
+      await input.onEvent?.({
+        eventType: SPEED_BUDGET_EXCEEDED_EVENT_TYPE,
+        stream: "system",
+        level: "warn",
+        message: `speed budget exceeded: ${breach.metric} ${breach.measuredMs}ms > p95 ${breach.budgetP95Ms}ms (${breach.adapter}, ${breach.startKind})`,
+        payload: breach,
+      });
+    });
+  };
+  const checkSpanBudget = (name: string, startedAtMs: number, endedAtMs: number): void => {
+    if (!input.budget || input.budget.restartRecovery) return;
+    const subject = { adapter: input.budget.adapter, environment: input.budget.environment };
+    if (name === "heartbeat.queue") { queueEndedAtMs = endedAtMs; runCreatedAtMs ??= startedAtMs; }
+    if (name === "comment.to_run_created" || name === "question_response.to_run_created") runCreatedAtMs ??= endedAtMs;
+    // A resumed attempt keeps the run's original queue span; its own claim is
+    // the start of this attempt's preparation.
+    if (name === "heartbeat.prepare_before_environment") attemptStartedAtMs = startedAtMs;
+    if (name === "task.time_to_first_agent_activity") {
+      // The span keeps the full user-visible latency. The budget (baseline:
+      // idle follow-ups) judges it from run creation: time the input spent
+      // waiting for a run to exist (behind a live turn) is reported, not judged.
+      // Time to first text (task.time_to_first_token) is reported, not budgeted.
+      const inputWaitMs = runCreatedAtMs !== null && runCreatedAtMs > startedAtMs ? runCreatedAtMs - startedAtMs : 0;
+      reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "time_to_first_activity", start: budgetStart,
+        measuredMs: endedAtMs - startedAtMs - inputWaitMs, ...(inputWaitMs > 0 ? { inputWaitMs } : {}) }));
+    }
+    // Agent boot: run claimed (end of heartbeat.queue) to the provider session
+    // accepting turn.start (end of runner.turn.submit or runner.session.resume).
+    if ((name === "runner.turn.submit" || name === "runner.session.resume") && !bootChecked && queueEndedAtMs !== null) {
+      bootChecked = true;
+      const claimedAtMs = Math.max(queueEndedAtMs, attemptStartedAtMs ?? queueEndedAtMs);
+      reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "agent_boot", start: budgetStart,
+        measuredMs: endedAtMs - claimedAtMs }));
     }
   };
 
@@ -298,11 +431,14 @@ export function createNativeRunTrace(input: {
           schema: "paperclip.run-performance-span.v1",
           traceSchemaVersion: NATIVE_RUN_TRACE_SCHEMA_VERSION,
           span: span.name,
-          parentSpan: span.parentName ?? "task.run",
+          parentSpan: span.parentName ?? "task.provider_session",
           startOffsetMs: startedAtMs - traceStartedAtMs,
           durationMs,
           outcome,
           ...attributes,
+          // The span's own start time. The row can be written late (deferred
+          // diagnostics), so readers must not infer the start from its write time.
+          wallStartedAtMs: startedAtMs,
         },
       });
     } catch {
@@ -316,9 +452,16 @@ export function createNativeRunTrace(input: {
       parentName?: string;
       startedAtMs?: number;
       attributes?: Record<string, string | number | boolean>;
+      /** False only when an existing durable diagnostic batch already contains the measurements. */
+      persistRunLog?: boolean;
     } = {},
   ): NativeRunSpanScope => {
     const startedAtMs = finiteMs(options.startedAtMs ?? Date.now());
+    if (name === PROVIDER_SESSION_LOAD_SPAN) {
+      providerLoadStartsMs.push(startedAtMs);
+      // The measurement can arrive before its provider span is recorded; judge now.
+      if (pendingRecovery) judgeRestartRecovery();
+    }
     const attributes = safeAttributes(options.attributes);
     const parent = parentFor(options.parentName);
     let span: SpanHandle;
@@ -338,7 +481,7 @@ export function createNativeRunTrace(input: {
             ),
           },
         },
-        parent.context,
+        parent.context ?? ROOT_CONTEXT,
       );
     } catch {
       span = NOOP_SPAN;
@@ -357,6 +500,7 @@ export function createNativeRunTrace(input: {
       context,
       attributes,
       ended: false,
+      persistRunLog: options.persistRunLog !== false,
     };
     scopes.add(state);
     openScopes.add(state);
@@ -387,6 +531,8 @@ export function createNativeRunTrace(input: {
       endedAtMs?: number;
       outcome?: NativeRunSpanOutcome;
       attributes?: Record<string, string | number | boolean>;
+      /** Write the run-log row after the caller continues; `finish` settles it. */
+      deferRunLog?: boolean;
     } = {},
   ): Promise<void> => {
     const state = scopeState(scope);
@@ -404,20 +550,21 @@ export function createNativeRunTrace(input: {
       duration_ms: durationMs,
       outcome,
     });
-    try {
-      if (outcome === "failed") state.span.setStatus({ code: 2 });
-      state.span.end(endedAtMs);
-    } catch {
-      // Tracing is diagnostic-only and must never change runner control flow.
+    if (outcome === "failed") { try { state.span.setStatus({ code: 2 }); } catch {} }
+    try { state.span.end(endedAtMs); } catch {}
+    if (state.persistRunLog) {
+      const completed: NativeRunHistoricalSpan = {
+        name: state.name,
+        parentName: state.parentName,
+        startedAtMs: state.startedAtMs,
+        endedAtMs,
+        outcome,
+        attributes: state.attributes,
+      };
+      if (options.deferRunLog) deferRunLogRow(completed);
+      else await emitCompletedSpanEvent(completed);
     }
-    await emitCompletedSpanEvent({
-      name: state.name,
-      parentName: state.parentName,
-      startedAtMs: state.startedAtMs,
-      endedAtMs,
-      outcome,
-      attributes: state.attributes,
-    });
+    checkSpanBudget(state.name, state.startedAtMs, endedAtMs);
   };
 
   const activate = (scope: NativeRunSpanScope): void => {
@@ -455,15 +602,17 @@ export function createNativeRunTrace(input: {
     );
   };
 
-  const record = async (span: NativeRunHistoricalSpan): Promise<void> => {
+  const record = async (span: NativeRunHistoricalSpan, options: { persistRunLog?: boolean; deferRunLog?: boolean } = {}): Promise<void> => {
     const scope = start(span.name, {
       parentName: span.parentName,
       startedAtMs: span.startedAtMs,
       attributes: span.attributes,
+      persistRunLog: options.persistRunLog,
     });
     await end(scope, {
       endedAtMs: span.endedAtMs,
       outcome: span.outcome,
+      deferRunLog: options.deferRunLog,
     });
   };
 
@@ -487,29 +636,60 @@ export function createNativeRunTrace(input: {
     }
   };
 
+  /**
+   * Diagnostic work that must not block the caller (for example a read that
+   * anchors a span). It runs detached; `finish` settles it before the root
+   * span closes. The work must bound its own waits.
+   */
+  const pendingDiagnostics = new Set<Promise<void>>();
+  const defer = (work: () => Promise<void>): void => {
+    if (ended) return;
+    const pending: Promise<void> = Promise.resolve()
+      .then(work)
+      .catch(() => {
+        // Diagnostics cannot change runner control flow.
+      })
+      .finally(() => {
+        pendingDiagnostics.delete(pending);
+      });
+    pendingDiagnostics.add(pending);
+  };
+
+  // Deferred run-log rows are written one at a time, in the order their spans
+  // ended, so the sink sees the same sequence as the awaited path.
+  let runLogRows: Promise<void> = Promise.resolve();
+  const deferRunLogRow = (span: NativeRunHistoricalSpan): void => {
+    if (ended) return;
+    const written = runLogRows.then(() => emitCompletedSpanEvent(span));
+    runLogRows = written;
+    defer(() => written);
+  };
+
   const finish = async (outcome: NativeRunSpanOutcome): Promise<void> => {
+    if (ended) return;
+    try { input.onFinish?.(); } catch { /* Diagnostics cannot change runner control flow. */ }
+    // Settled diagnostics can defer more (a budget breach after a deferred
+    // measurement), so drain until none remain. Judge restart recovery after
+    // the first drain, so a deferred provider span is counted, then drain its
+    // breach report.
+    while (pendingDiagnostics.size > 0) await Promise.all([...pendingDiagnostics]);
+    judgeRestartRecovery();
+    while (pendingDiagnostics.size > 0) await Promise.all([...pendingDiagnostics]);
     if (ended) return;
     ended = true;
     const endedAtMs = Date.now();
     for (const scope of [...openScopes].reverse()) {
       await end(scope, { endedAtMs, outcome });
     }
-    try {
-      rootSpan.setAttribute(
-        "paperclip.task.run.wall_ms",
-        endedAtMs - traceStartedAtMs,
-      );
-      rootSpan.setAttribute("paperclip.task.run.outcome", outcome);
-      if (outcome === "failed") rootSpan.setStatus({ code: 2 });
-      rootSpan.end(endedAtMs);
-    } catch {
-      // Tracing is diagnostic-only and must never change runner control flow.
-    }
+    try { rootSpan.setAttribute("paperclip.task.run.wall_ms", endedAtMs - traceStartedAtMs); } catch {}
+    try { rootSpan.setAttribute("paperclip.task.run.outcome", outcome); } catch {}
+    if (outcome === "failed") { try { rootSpan.setStatus({ code: 2 }); } catch {} }
+    try { rootSpan.end(endedAtMs); } catch {}
     // Preserve the historical run-log record without emitting a duplicate
     // full-width child span into the OpenTelemetry waterfall.
     await emitCompletedSpanEvent({
-      name: "task.run.measured",
-      parentName: "task.run",
+      name: "task.provider_session.measured",
+      parentName: "task.provider_session",
       startedAtMs: traceStartedAtMs,
       endedAtMs,
       outcome,
@@ -517,8 +697,56 @@ export function createNativeRunTrace(input: {
     });
   };
 
+  /** Labels the run cold (fresh provider session) or warm (reused). */
+  const setBudgetStart = (kind: SpeedBudgetStart): void => {
+    budgetStart ??= kind;
+  };
+
+  /** Restart recovery latency: control plane ready to the recovered run's
+   * next provider event, checked once per run. Only Paperclip's share is
+   * judged: ready to the start of the provider's session load (or to the
+   * event when nothing reloads). It is judged as soon as both are known: at
+   * the check when the load span is already recorded or nothing reloads (a
+   * reattached runner, whose dispositions launch nothing), when the load span is recorded, and otherwise when
+   * the run finishes. A run that detaches for another restart therefore keeps
+   * its warning unless the detach lands between the event and a deferred span. */
+  let recoveryChecked = false;
+  let pendingRecovery: RestartRecoveryMeasurement | null = null;
+  const judgeRestartRecovery = (): void => {
+    const measurement = pendingRecovery;
+    pendingRecovery = null;
+    if (!input.budget || !measurement || measurement.readyAtMs === null) return;
+    const readyAtMs = measurement.readyAtMs;
+    const loads = providerLoadStartsMs.filter(at => at >= readyAtMs && at <= measurement.committedAtMs);
+    const loadStartedAtMs = loads.length ? Math.min(...loads) : null;
+    const totalMs = measurement.committedAtMs - readyAtMs;
+    reportBudgetBreach(evaluateSpeedBudget({ adapter: input.budget.adapter, environment: input.budget.environment,
+      metric: "restart_recovery_control_plane", start: null, measuredMs: (loadStartedAtMs ?? measurement.committedAtMs) - readyAtMs,
+      disposition: measurement.disposition, restartTotalMs: totalMs,
+      providerLoadMs: loadStartedAtMs === null ? 0 : measurement.committedAtMs - loadStartedAtMs }));
+  };
+  const checkRestartRecovery = (measurement: RestartRecoveryMeasurement): void => {
+    if (!input.budget || recoveryChecked || measurement.readyAtMs === null) return;
+    // An event emitted before ready (buffered by a surviving runner and
+    // committed late) is not the recovered run's next event; it must not use
+    // the one check.
+    if (measurement.emittedAtMs !== null && measurement.emittedAtMs < measurement.readyAtMs) return;
+    if (measurement.committedAtMs < measurement.readyAtMs) return;
+    recoveryChecked = true;
+    pendingRecovery = measurement;
+    const readyAtMs = measurement.readyAtMs;
+    // Only a launched runner reloads a provider session (native-restart-recovery).
+    if (!["resume_dead_runner", "bootstrap_incomplete"].includes(measurement.disposition)
+      || providerLoadStartsMs.some(at => at >= readyAtMs && at <= measurement.committedAtMs)) judgeRestartRecovery();
+  };
+
   return {
     traceStartedAtMs,
+    setBudgetStart,
+    checkRestartRecovery,
+    /** Judge a pending restart-recovery check now (the controller is detaching
+     * this run for another restart and will not finish the trace). */
+    flushRestartRecovery: () => judgeRestartRecovery(),
     start,
     annotate,
     activate,
@@ -526,11 +754,64 @@ export function createNativeRunTrace(input: {
     run,
     record,
     measure,
+    defer,
     finish,
   };
 }
 
 export type NativeRunTrace = ReturnType<typeof createNativeRunTrace>;
+
+/** Restart recovery latency: control plane ready to the recovered run's
+ * next provider event. The event is filtered on when it was emitted and
+ * measured to when it was committed (the baseline's run-log `created_at`). */
+export type RestartRecoveryMeasurement = {
+  readyAtMs: number | null;
+  emittedAtMs: number | null;
+  committedAtMs: number;
+  disposition: string;
+};
+
+/** Group already-normalized provider measurements without exporting provider attributes. */
+export async function recordNativeProviderPerformanceSpans(trace: NativeRunTrace, spans: NativeRunHistoricalSpan[]): Promise<void> {
+  if (!spans.length) return;
+  try {
+    const scope = trace.start("provider.runtime", { parentName: "native.session.execute",
+      startedAtMs: Math.min(...spans.map(span => span.startedAtMs)), persistRunLog: false });
+    try {
+      for (const span of spans) await trace.record({ name: span.name, parentName: "provider.runtime",
+        startedAtMs: span.startedAtMs, endedAtMs: span.endedAtMs, outcome: span.outcome }, { persistRunLog: false });
+    } finally {
+      await trace.end(scope, { endedAtMs: Math.max(...spans.map(span => span.endedAtMs)),
+        outcome: spans.some(span => span.outcome === "failed") ? "failed" : "ok" });
+    }
+  } catch { /* Diagnostics cannot replace the work's result. */ }
+}
+
+/** One local runner startup sub-step measured by the runner transport. */
+export interface NativeRunnerStartupStep {
+  name: "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
+  mode: "bootstrap" | "resume";
+  startedAtMs: number;
+  endedAtMs: number;
+  outcome: NativeRunSpanOutcome;
+}
+
+/**
+ * Record a local runner startup sub-step under `runner.session.startup`.
+ * Run log (and Observability when an operator endpoint is set) only, never
+ * Telemetry. Detached: the run-log write never delays `turn.start`; the
+ * trace settles it at finish.
+ */
+export function recordNativeRunnerStartupStep(trace: NativeRunTrace | undefined, step: NativeRunnerStartupStep): void {
+  trace?.defer(() => trace.record({
+    name: step.name,
+    parentName: "runner.session.startup",
+    startedAtMs: step.startedAtMs,
+    endedAtMs: step.endedAtMs,
+    outcome: step.outcome,
+    attributes: { mode: step.mode, target: "local" },
+  }));
+}
 
 /** Emit preparation failure even when execution aborts before a native session exists. */
 export async function recordFailedSkillPreparation(input: {
@@ -541,7 +822,7 @@ export async function recordFailedSkillPreparation(input: {
 }): Promise<void> {
   try {
     const trace = createNativeRunTrace(input);
-    const preparation = trace.start("task.prepare", { parentName: "task.run", startedAtMs: input.startedAtMs });
+    const preparation = trace.start("task.prepare", { parentName: "task.provider_session", startedAtMs: input.startedAtMs });
     const endedAtMs = Date.now();
     await trace.record({ name: "skills.prepare", parentName: "task.prepare", startedAtMs: input.startedAtMs, endedAtMs, outcome: "failed" });
     await trace.end(preparation, { endedAtMs, outcome: "failed" });

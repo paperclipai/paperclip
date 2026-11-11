@@ -7,6 +7,16 @@ export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
 export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
 
+/** Operator diagnostics are untrusted provider data, not model handoff prose. */
+export function summarizeRunErrorForModel(error: string | null, terminalFailureCategory?: unknown): string | null {
+  if (terminalFailureCategory == null) return error;
+  const category = typeof terminalFailureCategory === "string"
+    && ["connection", "access", "limit", "service", "request", "unknown"].includes(terminalFailureCategory)
+    ? terminalFailureCategory
+    : "unknown";
+  return `ACP agent reported a terminal ${category} failure. Provider diagnostics are available in the run record.`;
+}
+
 function truncateSummaryText(
   value: unknown,
   maxLength = HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
@@ -17,6 +27,63 @@ function truncateSummaryText(
 
 function readNumericField(record: Record<string, unknown>, key: string) {
   return key in record ? (record[key] ?? null) : undefined;
+}
+
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
+      };
+    }
+  }
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
+}
+
+/**
+ * Marker the runner appends when it cuts provider text to a run-log display
+ * preview. Text ending with it is an incomplete copy, never a final reply.
+ */
+export const RUN_EVENT_TEXT_BOUND_MARKER = "…[truncated]";
+
+export function isBoundedRunEventText(value: unknown): boolean {
+  return typeof value === "string" && value.endsWith(RUN_EVENT_TEXT_BOUND_MARKER);
+}
+
+/**
+ * The posted reply leaves a proposal to its Plan document. A stored message
+ * preview can be cut inside the block; its cut-off remainder is hidden too.
+ */
+function withoutProposedPlanBlock(value: string): string {
+  const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
+  if (plan !== null) return rest;
+  if (!isBoundedRunEventText(value) || unclosedStart === null) return value;
+  return value.slice(0, unclosedStart).trim();
 }
 
 function readCommentText(value: unknown) {
@@ -120,7 +187,7 @@ const NARRATION_OPENERS =
 export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
-export const RUN_PRESENTATION_RESOLVER_VERSION = "1";
+export const RUN_PRESENTATION_RESOLVER_VERSION = "2";
 export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
   "allow_chat_run_presentation";
 
@@ -137,6 +204,8 @@ export interface CompletedFinalAgentMessageCandidate {
   text: string;
   sourceEventId: string | null;
   channel: "final" | "unknown";
+  /** The run log kept only a display preview of this message. */
+  bounded?: boolean;
 }
 
 /**
@@ -182,6 +251,12 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function requiresChatOriginProof(source: string): boolean {
+  return source === "tool_action_review" || source === "issue.monitor" || source === "native_status_decision" ||
+    source.startsWith("issue.comment") || source.startsWith("issue.interaction.") ||
+    source === "external_chat.interaction.resolve" || source === "connection_intent.resolved" || source === "issue.update";
+}
+
 export function isExternalChatPresentationContext(
   contextSnapshot: unknown,
   verifiedToolReviewChatOrigin = false,
@@ -190,14 +265,21 @@ export function isExternalChatPresentationContext(
   const wake = record(context.paperclipWake);
   const source =
     typeof context.source === "string" ? context.source.trim() : "";
-  // Tool approvals also resume ordinary board tasks. Only durable source-run
-  // authorization can classify those continuations as external chat.
-  if (source === "tool_action_review") return verifiedToolReviewChatOrigin;
+  // Approvals and Board comments also resume ordinary internal tasks. Only
+  // durable source-run or mirrored-comment proof authorizes an external reply.
+  if (requiresChatOriginProof(source))
+    return verifiedToolReviewChatOrigin;
   return (
     source.startsWith("chat:") ||
     context.externalChatContinuation === true ||
     wake.externalInteractionContinuation === true
   );
+}
+
+export function isChatOriginPublicationCandidate(contextSnapshot: unknown): boolean {
+  const context = record(contextSnapshot);
+  const source = typeof context.source === "string" ? context.source.trim() : "";
+  return requiresChatOriginProof(source) || isExternalChatPresentationContext(contextSnapshot);
 }
 
 /**
@@ -206,9 +288,26 @@ export function isExternalChatPresentationContext(
  * solely for the compatibility fallback selected by the resolver. Other
  * channels and item kinds remain activity, never durable reply candidates.
  */
+/**
+ * Item ids whose `<proposed_plan>` block became a completed `plan.proposed`
+ * event. Only those replies leave the plan to its Plan document.
+ */
+export function completedPlanProposalIds(rows: readonly { payload: unknown }[]): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const payload = record(record(record(row.payload).prpEvent).payload);
+    if (payload.status === "completed" && typeof payload.proposalId === "string") {
+      ids.add(payload.proposalId);
+    }
+  }
+  return ids;
+}
+
 export function readCompletedAssistantMessageCandidate(input: {
   seq: number;
   prpEvent: unknown;
+  /** Item ids with a recorded proposal; other replies keep their plan text. */
+  proposedItemIds?: ReadonlySet<string>;
 }): CompletedFinalAgentMessageCandidate | null {
   const prpEvent = record(input.prpEvent);
   const payload = record(prpEvent.payload);
@@ -221,13 +320,22 @@ export function readCompletedAssistantMessageCandidate(input: {
   if (payload.channel !== "final" && payload.channel !== "unknown") {
     return null;
   }
-  const text = readCommentText(payload.text);
+  // A harness's `<proposed_plan>` block that became a recorded proposal is the
+  // task's Plan document and approval card; that reply keeps only the
+  // surrounding prose. Without a recorded proposal the reply keeps the plan.
+  const itemId = typeof prpEvent.itemId === "string" ? prpEvent.itemId
+    : typeof payload.itemId === "string" ? payload.itemId : null;
+  const proposed = itemId !== null && input.proposedItemIds?.has(itemId) === true;
+  const text = readCommentText(
+    typeof payload.text === "string" && proposed ? withoutProposedPlanBlock(payload.text) : payload.text,
+  );
   if (!text) return null;
   return {
     seq: input.seq,
     text,
     sourceEventId: readCommentText(prpEvent.sourceEventId),
     channel: payload.channel,
+    ...(isBoundedRunEventText(payload.text) ? { bounded: true } : {}),
   };
 }
 
@@ -267,6 +375,24 @@ function hasYieldedSemanticResult(resultJson: Record<string, unknown>) {
       candidate.schema === "paperclip.run_result.v1" &&
       candidate.reportedWorkDisposition === "yielded",
   );
+}
+
+export function readAcceptedTaskContinuationSummary(
+  resultJson: Record<string, unknown> | null | undefined,
+): string | null {
+  const result = record(resultJson);
+  if (result.finalizationPhase !== "committed") return null;
+  const kind = result.finalizationReasonCode === "live_continuation_registered" ? "same_agent"
+    : ["scheduled_monitor_waiting", "scheduled_monitor_dispatched", "scheduled_monitor_preserved"].includes(String(result.finalizationReasonCode)) ? "monitor" : null;
+  if (!kind) return null;
+  for (const candidate of semanticResultCandidates(result)) {
+    const continuation = record(candidate.continuation);
+    if (candidate.schema === "paperclip.run_result.v1" && candidate.reportedWorkDisposition === "yielded" &&
+        continuation.kind === kind && readCommentText(continuation.idempotencyKey)) {
+      return readCommentText(candidate.summary);
+    }
+  }
+  return null;
 }
 
 function readAcceptedExternalChatResponseWakeSummary(
@@ -364,7 +490,9 @@ export function resolveHeartbeatRunResponse(input: {
   /** Server-owned conversation finalization, after normal governance checks. */
   conversationTurnFinished?: boolean;
   existingComment?: { id: string; body?: string | null } | null;
+  interactionOwnsResponse?: boolean;
   preferFinalResponseOverExistingComment?: boolean;
+  nativeConversationFinalResponse?: boolean;
   externalChatResponseWakeSummaryAuthorized?: boolean;
   /** Server-only proof of the exact accepted response after durable status
    * finalization. Never read this capability from provider/context JSON. */
@@ -375,14 +503,41 @@ export function resolveHeartbeatRunResponse(input: {
     sourceEventId: string | null;
     channel: "final" | "unknown";
     reasonCode?: string;
+    bounded?: boolean;
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
-  const finalAgentText = readCommentText(input.finalAgentMessage?.text);
+  const continuationSummary = readAcceptedTaskContinuationSummary(resultJson);
+  if (continuationSummary) {
+    if (input.interactionOwnsResponse) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_response"] }),
+    };
+    const existing = input.existingComment;
+    const reuse = existing?.body === continuationSummary;
+    return {
+      text: continuationSummary,
+      decision: decision("semantic_result_summary", {
+        commentAction: reuse ? "reuse" : "create",
+        ...(reuse ? { commentId: existing.id } : {}),
+        reasonCodes: [resultJson.finalizationReasonCode === "live_continuation_registered"
+          ? "accepted_task_continuation_summary" : "accepted_scheduled_monitor_summary"],
+      }),
+    };
+  }
+  const rawFinalAgentText = readCommentText(input.finalAgentMessage?.text);
+  // A run-log preview is an incomplete copy of the agent's message. It never
+  // outranks a complete source; it is posted only when no complete text exists.
+  const boundedFinalAgentText =
+    rawFinalAgentText &&
+    (input.finalAgentMessage?.bounded === true || isBoundedRunEventText(rawFinalAgentText))
+      ? rawFinalAgentText
+      : null;
+  const finalAgentText = boundedFinalAgentText ? null : rawFinalAgentText;
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
     input.finalAgentMessage?.channel === "unknown";
-  const resolveCompletedUpstreamResponse = () => {
+  const resolveCompletedUpstreamResponse = (allowCompatibility = true) => {
     if (
       explicitProviderFinal &&
       finalAgentText &&
@@ -402,7 +557,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     const adapterFinal = readMarkedAdapterFinalResponse(resultJson);
-    if (adapterFinal) {
+    if (allowCompatibility && adapterFinal) {
       return {
         text: adapterFinal,
         decision: decision("adapter_final_response", {
@@ -413,7 +568,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     if (
-      compatibleTerminalAssistant &&
+      allowCompatibility && compatibleTerminalAssistant &&
       finalAgentText &&
       !isStructuredSemanticResultText(finalAgentText)
     ) {
@@ -436,7 +591,21 @@ export function resolveHeartbeatRunResponse(input: {
         text: semanticSummary,
         decision: decision("semantic_result_summary", {
           commentAction: "create",
-          reasonCodes: ["accepted_semantic_result_summary"],
+          reasonCodes: boundedFinalAgentText
+            ? ["bounded_final_agent_message_replaced_by_semantic_summary"]
+            : ["accepted_semantic_result_summary"],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+
+    if (boundedFinalAgentText && !isStructuredSemanticResultText(boundedFinalAgentText)) {
+      // No complete source exists. The visible marker says the text was cut.
+      return {
+        text: boundedFinalAgentText,
+        decision: decision("final_agent_message", {
+          sourceEventId: input.finalAgentMessage?.sourceEventId,
+          commentAction: "create",
+          reasonCodes: ["bounded_final_agent_message_without_complete_source"],
         }),
       } satisfies ResolvedHeartbeatRunResponse;
     }
@@ -445,7 +614,7 @@ export function resolveHeartbeatRunResponse(input: {
       readCommentText(resultJson.summary) ??
       readCommentText(resultJson.result) ??
       readCommentText(resultJson.message);
-    if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
+    if (allowCompatibility && legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
       return {
         text: legacyText,
         decision: decision("adapter_final_response", {
@@ -510,6 +679,31 @@ export function resolveHeartbeatRunResponse(input: {
   }
 
   const existingText = readCommentText(input.existingComment?.body);
+  if (input.nativeConversationFinalResponse) {
+    if (input.interactionOwnsResponse || (hasYieldedSemanticResult(resultJson) && !input.conversationTurnFinished)) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_conversation_response"] }),
+    };
+    const final = resolveCompletedUpstreamResponse(false)
+      ?? (input.conversationTurnFinished && compatibleTerminalAssistant && finalAgentText
+        && !isStructuredSemanticResultText(finalAgentText) ? {
+          text: finalAgentText,
+          decision: decision("final_agent_message", { sourceEventId: input.finalAgentMessage?.sourceEventId,
+            commentAction: "create", reasonCodes: ["server_finished_conversation_terminal_message"] }),
+        } : null);
+    if (final) {
+      const reuse = !!input.existingComment && final.text === existingText;
+      return { ...final, decision: { ...final.decision,
+        commentAction: reuse ? "reuse" : "create",
+        commentId: reuse ? input.existingComment!.id : null,
+        reasonCodes: [...final.decision.reasonCodes, "native_conversation_final_precedence"],
+      } };
+    }
+    if (!existingText) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["native_conversation_final_response_unavailable"] }),
+    };
+  }
   if (input.existingComment && existingText) {
     return {
       text: existingText,
@@ -560,13 +754,14 @@ export function buildHeartbeatRunIssueComment(
   return resolveHeartbeatRunResponse({ resultJson }).text;
 }
 
-export function findHeartbeatRunCompletionComment<T extends { id: string }>(
+export function findHeartbeatRunCompletionComment<T extends { id: string; presentation?: unknown }>(
   comments: T[],
   resultJson: Record<string, unknown> | null | undefined,
 ): T | null {
+  const completionComments = comments.filter(comment => record(comment.presentation).kind !== "system_notice");
   const receipts = resultJson?.semanticToolReceipts;
   if (!receipts || typeof receipts !== "object" || Array.isArray(receipts)) {
-    return comments[0] ?? null;
+    return completionComments[0] ?? null;
   }
 
   const generatedCommentIds = new Set<string>();
@@ -601,6 +796,6 @@ export function findHeartbeatRunCompletionComment<T extends { id: string }>(
   }
 
   return (
-    comments.find((comment) => !generatedCommentIds.has(comment.id)) ?? null
+    completionComments.find((comment) => !generatedCommentIds.has(comment.id)) ?? null
   );
 }

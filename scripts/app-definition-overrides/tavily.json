@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "slug": "tavily",
+  "name": "Tavily",
+  "description": "Search the public web and extract page content with Tavily\u2019s hosted MCP server.",
+  "categories": [
+    "analytics"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/tavily.png"
+  },
+  "urlPatterns": [
+    "https://mcp.tavily.com/*"
+  ],
+  "docsUrl": "https://docs.tavily.com/documentation/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Tavily",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Connect the provider-hosted Tavily MCP server with browser sign-in.",
+      "defaults": {
+        "serverUrl": "https://mcp.tavily.com/mcp",
+        "scopesHint": [
+          "openid",
+          "offline_access"
+        ],
+        "mcpSessionRequired": true
+      },
+      "guidanceMd": "Browser sign-in requires a public HTTPS Paperclip callback; local HTTP callbacks are rejected by Tavily. Use Tavily for bounded public research. Set focused queries and relevant domains, cite the source URLs, and distinguish retrieved facts from inference. Research does not authorize contacting a company or submitting forms.",
+      "warnings": [
+        "Tavily OAuth selects the account\u2019s `mcp_auth_default` key when configured; otherwise it may use the personal default or first available key. Review the chosen account and usage allowance.",
+        "Do not use the documented API-key-in-query alternative; OAuth keeps the key out of the server URL."
+      ],
+      "consoleLinks": {
+        "docs": "https://docs.tavily.com/documentation/mcp"
+      },
+      "riskTier": "S2"
+    }
+  ]
+}

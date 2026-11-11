@@ -21,6 +21,13 @@ GET /api/routines/{routineId}
 
 Returns routine details including triggers.
 
+Routine and trigger resource IDs must be complete UUIDs from the API response.
+Short prefixes and malformed IDs return the same `404` as a missing resource.
+UUID lookup accepts PostgreSQL's existing input forms, including uppercase,
+compact and braced UUIDs; it does not trim whitespace or resolve prefixes.
+Company access and routine-assignee permissions still apply. Public trigger
+IDs in webhook URLs are separate opaque identifiers, not resource UUIDs.
+
 ## Create Routine
 
 ```
@@ -234,6 +241,12 @@ runs asynchronously, so acceptance does not mean the agent has finished.
 Concurrency policy can coalesce or skip a delivery while work is active.
 Payload fields or a nested `variables` object supply declared routine variables;
 nested values take precedence. The full payload is retained in run history.
+For app-webhook triggers, the sender's JSON is also copied into the execution
+task. Normal webhook intake does not apply a provider-specific field allowlist
+or a general payload scrubber. Send only data suitable for company-readable
+routine history; authentication and creation provenance do not certify the
+payload's privacy. See the [Sentry tutorial](../guides/board-operator/sentry-run-failure-repairs.md)
+for source-side scrubbing and setup checks.
 
 For bearer, GitHub HMAC, and unsigned triggers, send a stable `Idempotency-Key`
 when retrying a delivery to receive the original run without creating another
@@ -250,6 +263,39 @@ signature, timestamp, and idempotency headers without requiring a browser login.
 For local HTTPS testing, proxy an isolated test instance through Tailscale Serve;
 use Funnel only if the sender is outside the tailnet. Existing routine and agent
 execution controls still apply, including the isolated-worktree execution gate.
+
+### Verified creation provenance
+
+The receiving routine and its run are recorded as the new task's direct origin.
+Paperclip can also retain the run that invoked the routine. Authenticated agent
+calls to the routine run API record a validated caller run. For an ordinary
+public webhook, optionally send `X-Paperclip-Source-Run-Token` containing a
+current, standard Paperclip run JWT from the same instance and company. The
+trigger still authenticates with its own secret. Invalid, expired, foreign, or
+stopped caller credentials return `401` before dispatch.
+
+The source reference is stored as `createdByRunId` on the routine run, separate
+from `triggerPayload`. Sender JSON and plain run-ID headers cannot establish
+trusted caller ancestry. Without the source credential, a public webhook starts
+a new external receiving-routine origin. This metadata grants no additional
+execution or source-read authority. A source reference remains recorded after
+run retention; unresolved ancestry is unknown, never assumed independent.
+
+### Routine-wide execution receipts
+
+Send `X-Paperclip-Idempotency-Scope: routine` with a stable `Idempotency-Key` to
+deduplicate execution receipts across webhook triggers on one routine. The
+default is `trigger`. Keep the key and scope stable on retries. Routine scope
+uses a deterministic receipt identity, so deleting the original trigger does
+not let the same occurrence start another task. Scope does not change ordinary
+concurrency, pause, company, permission, or budget controls.
+
+Timestamped HMAC always uses trigger-scoped anti-replay receipts and rejects a
+routine-scope request with `400`. Setup checks create no routine runs; their
+content-free test receipts remain associated with the setup trigger.
+
+For a worked example that uses the normal webhook with Sentry, see
+[Repair Failed Runs from Sentry](../guides/board-operator/sentry-run-failure-repairs.md).
 
 ## List Runs
 

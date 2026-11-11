@@ -23,6 +23,8 @@ export const githubReviewPolicySchema = z
     events: z
       .array(z.enum(GITHUB_REVIEW_EVENTS))
       .max(GITHUB_REVIEW_EVENTS.length),
+    issueOpened: z.boolean().optional(),
+    issueOpenedInstructions: z.string().max(12000).optional(),
     reviewDrafts: z.boolean(),
     reviewBotAuthors: z.boolean(),
     includeAuthors: shortList,
@@ -53,7 +55,8 @@ export const githubReviewPolicySchema = z
 const person = {
   githubUserId: githubIdSchema,
   login: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}(?:\[bot\])?$/),
-  automaticReviews: z.boolean(),
+  // Accept legacy saved configurations; automatic scheduling uses author filters.
+  automaticReviews: z.boolean().optional(),
 };
 export const githubAllowedPersonSchema = z.discriminatedUnion("kind", [
   z
@@ -110,8 +113,12 @@ export const githubReviewAssessmentSchema = z
       z.literal(5),
     ]),
     complete: z.boolean(),
-    summary: z.string().trim().min(1).max(24000),
-    rationale: z.string().trim().min(1).max(12000),
+    summary: z.string().trim().min(1).max(24000).describe(
+      "Review body only: describe the change, findings, and verdict. Paperclip adds the bot-name/score heading and reviewed-commit, coverage, and task/run footer; do not include them here or copy a previously published comment.",
+    ),
+    rationale: z.string().trim().min(1).max(12000).describe(
+      "Explain the score, supporting evidence, and remaining risk. Published after summary. Do not repeat the summary, score heading, or generated footer; put reviewed paths and limitations in coverage.",
+    ),
     coverage: z
       .object({
         reviewedPaths: z.array(z.string().min(1).max(1024)).max(5000),
@@ -128,7 +135,9 @@ export const githubReviewAssessmentSchema = z
             line: z.number().int().positive(),
             side: z.enum(["LEFT", "RIGHT"]),
             severity: z.enum(["info", "warning", "error"]),
-            category: z.string().min(1).max(80),
+            category: z.string().min(1).max(80).describe(
+              "Use an exact value from begin_review.findingCategories for this assessment. Categories are configured per repository; do not invent values. If none apply, put the finding in summary. read_pull_request metadata also includes reviewPolicy.findingCategories.",
+            ),
             body: z.string().trim().min(1).max(12000),
           })
           .strict(),

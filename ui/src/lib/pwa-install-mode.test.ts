@@ -6,13 +6,21 @@ import { describe, expect, it } from "vitest";
 const uiRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 describe("PWA install mode", () => {
-  it("opens home-screen launches with browser controls visible", () => {
+  it("requests a chromeless window so the in-app browser controls apply", () => {
     const manifest = JSON.parse(readFileSync(resolve(uiRoot, "public/site.webmanifest"), "utf8")) as {
       display?: string;
     };
     const html = readFileSync(resolve(uiRoot, "index.html"), "utf8");
 
-    expect(manifest.display).toBe("browser");
+    // `browser` makes the app uninstallable: Chrome reports
+    // `manifest-display-not-supported` and only offers a shortcut. `standalone`
+    // is the installable mode, and it is the mode the app is already written for
+    // — StandaloneBrowserControls renders Refresh / Share / Open in Browser only
+    // when the launch is chromeless, which nothing could trigger before this.
+    expect(manifest.display).toBe("standalone");
+    // The legacy `mobile-web-app-capable` meta is unnecessary (Chrome reads the
+    // manifest) and the Apple metas stay out: iOS is not an install target for
+    // this change, because Safari needs those metas rather than the manifest.
     expect(html).not.toContain('name="mobile-web-app-capable"');
     expect(html).not.toContain('name="apple-mobile-web-app-capable"');
     expect(html).not.toContain('name="apple-mobile-web-app-status-bar-style"');

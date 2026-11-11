@@ -17,6 +17,7 @@ import {
   runnerE2EServerControlPaths,
 } from "./harness-env.js";
 import { runnerExecutionById, runnerMatrix } from "./catalog.js";
+import { CHAT_ANNOUNCEMENT_SCENARIO } from "./chat-announcement-fixture.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { evaluateMatchers, persistedFinalRunMessage } from "./matchers.js";
 import {
@@ -29,6 +30,7 @@ import {
   isEphemeralPostgresScanFile,
   redactText,
   sanitizeJson,
+  browserDiagnosticUrl,
 } from "./redaction.js";
 import { parseDarwinSharedMemory } from "./shared-memory.js";
 import {
@@ -38,16 +40,78 @@ import {
 } from "./ports.js";
 import {
   acceptedPlanSessionResetFailures,
+  collectRunEvents,
   hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
   isOpenRouterDeepSeekHelloTerminalVariance,
   numberedPlanStepCount,
   providerSessionContinuityFailures,
+  reasoningProjectionFailures,
 } from "./run-observations.js";
 import { runnerE2EWebServerCommand } from "./web-server-command.js";
 
 const cleanupDirectories: string[] = [];
+
+it("rejects reasoning mislabeled as assistant text without echoing private content", () => {
+  const reasoning = {
+    eventType: "item.delta",
+    payload: { prpEvent: {
+      eventType: "item.delta",
+      payload: { kind: "agentMessage", text: "PRIVATE_THOUGHT", update: { kind: "reasoning" } },
+    } },
+  };
+  expect(reasoningProjectionFailures([reasoning])).toEqual([
+    "provider reasoning was projected as assistant text in 1 durable events",
+  ]);
+  const correctlyTyped = structuredClone(reasoning);
+  correctlyTyped.payload.prpEvent.payload.kind = "reasoning";
+  expect(reasoningProjectionFailures([correctlyTyped])).toEqual([]);
+  const assistant = structuredClone(reasoning);
+  assistant.payload.prpEvent.payload.update.kind = "agentMessage";
+  expect(reasoningProjectionFailures([assistant])).toEqual([]);
+});
+
+describe("complete run event evidence", () => {
+  const page = Array.from({ length: 1000 }, (_, i) => ({ seq: i + 1, eventType: "item.delta" }));
+  it("reads completion events beyond the first 1000 rows", async () => {
+    const terminal = ["run.result.proposed", "run.result.accepted", "run.terminal"]
+      .map((eventType, i) => ({ seq: 1001 + i, eventType }));
+    const load = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce(terminal);
+    const events = await collectRunEvents(load);
+    expect(events).toEqual([...page, ...terminal]);
+    expect(load.mock.calls).toEqual([[0, 1000], [1000, 1000]]);
+  });
+  it("checks for another page even at an exact page boundary", async () => {
+    const load = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce([]);
+    expect(await collectRunEvents(load)).toEqual(page);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    null, {}, [{ eventType: "run.terminal" }], [{ seq: 0 }], [{ seq: -1 }],
+    [{ seq: 1.5 }], [{ seq: "1" }], [{ seq: NaN }], [{ seq: Infinity }],
+    [{ seq: 2 }, { seq: 1 }], [{ seq: 1 }, { seq: 1 }], [...page, { seq: 1001 }],
+  ])("rejects malformed evidence page %#", async (malformed) => {
+    await expect(collectRunEvents(async () => malformed)).rejects.toThrow("Run event evidence");
+  });
+  it("rejects a repeated cursor instead of accepting duplicate events", async () => {
+    const load = vi.fn().mockResolvedValue(page);
+    await expect(collectRunEvents(load)).rejects.toThrow("non-increasing sequence");
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it("propagates a missing later page without returning partial evidence", async () => {
+    const load = vi.fn().mockResolvedValueOnce(page).mockRejectedValueOnce(new Error("Unavailable"));
+    await expect(collectRunEvents(load)).rejects.toThrow("Unavailable");
+  });
+  it("fails closed when a stream never ends within the bounded capture", async () => {
+    const load = vi.fn(async (afterSeq: number) => page.map((event) => ({ ...event, seq: event.seq + afterSeq })));
+    await expect(collectRunEvents(load)).rejects.toThrow("refusing incomplete evidence");
+    expect(load).toHaveBeenCalledTimes(100);
+  });
+});
+
+
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -112,6 +176,7 @@ describe("runner E2E local binary resolution", () => {
         runnerBinary,
         undefined,
         "linux",
+        "x64",
       ),
     ).toBe(runnerBinary);
     expect(
@@ -120,6 +185,7 @@ describe("runner E2E local binary resolution", () => {
         runnerBinary,
         undefined,
         "linux",
+        "x64",
       ),
     ).toBeUndefined();
     expect(
@@ -138,7 +204,14 @@ describe("runner E2E local binary resolution", () => {
         "darwin",
       ),
     ).toBe("/cross-compiled/paperclip-runnerd");
+    expect(resolvePaperclipRemoteRunnerBinaryForHarness(
+      [remoteNativeExecution], runnerBinary, undefined, "linux", "arm64",
+    )).toBeUndefined();
+    expect(resolvePaperclipRemoteRunnerBinaryForHarness(
+      [remoteNativeExecution], runnerBinary, "/cross-compiled/linux-x64-runnerd", "linux", "arm64",
+    )).toBe("/cross-compiled/linux-x64-runnerd");
   });
+
 });
 
 describe("runner E2E provider environment", () => {
@@ -175,11 +248,11 @@ describe("runner E2E provider environment", () => {
     }
   });
 
-  it("disables announcements through the server boundary for every runner cell", () => {
+  it("disables announcements through the server boundary except the isolated dismissal fixture", () => {
     for (const execution of runnerMatrix) {
       const source = { PAPERCLIP_ANNOUNCEMENTS_ENABLED: "true" };
       const env = buildRunnerE2EProcessEnvironment(source, [execution]);
-      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("false");
+      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe(execution.suite.id === "chat-features" && execution.task.id === CHAT_ANNOUNCEMENT_SCENARIO ? "true" : "false");
       expect(source.PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("true");
     }
   });
@@ -226,6 +299,15 @@ describe("runner E2E server port allocation", () => {
 });
 
 describe("runner E2E sensitive API boundary", () => {
+  it("uses the authenticated browser session for encrypted secret provisioning", async () => {
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "43123");
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ id: "secret-id" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new RunnerApi({} as never);
+    api.setBrowserSession("fixture.session=opaque");
+    await api.postSensitive("/api/companies/company/secrets", { value: "fixture-value" });
+    expect(fetchMock).toHaveBeenCalledWith(new URL("http://127.0.0.1:43123/api/companies/company/secrets"), expect.objectContaining({ headers: { "content-type": "application/json", Cookie: "fixture.session=opaque", Origin: "http://127.0.0.1:43123" } }));
+  });
   it("keeps secret request bodies out of Playwright API tracing", async () => {
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "43123");
     const playwrightPost = vi.fn();
@@ -272,6 +354,22 @@ describe("runner E2E structured evidence scanning", () => {
     expect(
       findSecretLeakInJsonValues({ nested: "sk-proj-abcdefghijklmnop" }, []),
     ).toBe("secret-shaped value");
+  });
+
+  it("keeps fake Kimi and Grok credentials out of persisted payloads while retaining references", () => {
+    const fakeCredentials = ["kimi-fixture-secret", "xai-fixture-secret"];
+    const payload = {
+      env: {
+        KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "kimi-ref", version: "latest" },
+        XAI_API_KEY: { type: "secret_ref", secretId: "xai-ref", version: "latest" },
+      },
+      log: "provider response redacted",
+    };
+    expect(findSecretLeakInJsonValues(payload, fakeCredentials)).toBeNull();
+    expect(findSecretLeak(JSON.stringify(payload), fakeCredentials)).toBeNull();
+    expect(() => assertSecretFree(JSON.stringify(payload), fakeCredentials, "pending-profile.json")).not.toThrow();
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[0]!);
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[1]!);
   });
 });
 
@@ -705,6 +803,12 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("classifies settled oracle check failures as candidate failures whatever the check ids say", () => {
+    for (const ids of ["specific-operator-qualification-next-step", "provider-connection-timeout-explained", "unauthorized-write-denied, cleanup-reported"])
+      expect(classifyFailure(new Error(`Stopped waiting for agents.managed-profile: Settled scenario failed: ${ids}`))).toBe("candidate_failure");
+    expect(classifyFailure(new Error("Stopped waiting for x: Settled scenario failed: a; secret plaintext leak in server.log"))).toBe("secret_leak");
+  });
+
   it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
     for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
       expect(classifyFailure(new Error(
@@ -742,6 +846,13 @@ describe("runner E2E failure policy", () => {
     const failureClass = classifyFailure(new Error(message));
     expect(failureClass).toBe("transient_infrastructure");
     expect(shouldRetryFailure(failureClass)).toBe(true);
+  });
+
+  it("disables both automatic retry classes when the policy is zero", () => {
+    expect(shouldRetryFailure("transient_infrastructure", 0)).toBe(false);
+    expect(shouldRetryFailure("provider_variance", 0)).toBe(false);
+    expect(shouldRetryFailure("transient_infrastructure", 1)).toBe(true);
+    expect(shouldRetryFailure("provider_variance", 1)).toBe(true);
   });
 
   it("retries only transient infrastructure failures", () => {
@@ -823,7 +934,14 @@ describe("runner E2E server isolation", () => {
         OPENAI_API_KEY: "openai",
         ANTHROPIC_API_KEY: "anthropic",
         OPENROUTER_API_KEY: "openrouter",
+        KIMI_MODEL_API_KEY: "kimi",
+        XAI_API_KEY: "xai",
+        GROK_AUTH_JSON: "grok-auth-json",
         DAYTONA_API_KEY: "daytona",
+        GITHUB_TOKEN: "github-private-repository",
+        GH_TOKEN: "github-cli",
+        XAI_ORG_ID: "xai-sensitive",
+        GROK_HOME: "/outside/grok",
         OPENAI_ORG_ID: "also-provider-sensitive",
         PAPERCLIP_API_KEY: "ambient-board-key",
         PAPERCLIP_AGENT_API_KEY: "ambient-agent-key",
@@ -846,7 +964,14 @@ describe("runner E2E server isolation", () => {
     expect(env.PATH).toBe("/bin");
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.KIMI_MODEL_API_KEY).toBeUndefined();
+    expect(env.XAI_API_KEY).toBeUndefined();
+    expect(env.GROK_AUTH_JSON).toBeUndefined();
     expect(env.OPENAI_ORG_ID).toBeUndefined();
+    expect(env.XAI_ORG_ID).toBeUndefined();
+    expect(env.GROK_HOME).toBeUndefined();
     expect(env.PAPERCLIP_API_KEY).toBeUndefined();
     expect(env.PAPERCLIP_AGENT_API_KEY).toBeUndefined();
     expect(env.XDG_CACHE_HOME).toBe("/tmp/cell/xdg-cache");
@@ -958,6 +1083,17 @@ describe("runner E2E evidence redaction", () => {
     expect(sanitizeJson("paperclip.runner-e2e.evidence/v1", [secret])).toBe(
       "paperclip.runner-e2e.evidence/v1",
     );
+  });
+
+  it("drops OAuth callback credentials before collecting browser diagnostics", () => {
+    const code = "pcmcp_code_fixture_private_code";
+    const route = browserDiagnosticUrl(`https://name:password@assistant.example/callback?code=${code}&state=private-state#token`);
+    expect(route).toBe("https://assistant.example/callback");
+    expect(() => assertSecretFree(JSON.stringify({ url: route }), [code, "password", "private-state"], "browser-diagnostics")).not.toThrow();
+    expect(browserDiagnosticUrl(`data:text/plain,${code}`)).toBe("[non-HTTP URL]");
+    expect(browserDiagnosticUrl(code)).toBe("[invalid URL]");
+    // The pre-publication credential gate must still fail for leaked API data.
+    expect(() => assertSecretFree(JSON.stringify({ body: code }), [code], "api-state")).toThrow("Secret leak");
   });
 
   it("detects leaks and accepts sanitized evidence", () => {
@@ -1335,6 +1471,13 @@ describe("persisted final response selection", () => {
   it("fails closed when the selected final comment is missing or belongs to another run", () => {
     expect(persistedFinalRunMessage(comments.slice(0, 1), run)).toBe("");
     expect(persistedFinalRunMessage(comments, { ...run, resultJson: { presentationDecision: { commentId: "other-run" } } })).toBe("");
+  });
+  it("waits for the native response receipt and its selected comment, not an earlier attachment comment", () => {
+    const native = { ...run, runtimeMode: "native" };
+    expect(persistedFinalRunMessage(comments.slice(0, 1), { id: native.id, runtimeMode: "native" })).toBe("");
+    expect(persistedFinalRunMessage(comments, { id: native.id, runtimeMode: "native", resultJson: { summary: "FINAL" } })).toBe("");
+    expect(persistedFinalRunMessage(comments.slice(0, 1), native)).toBe("");
+    expect(persistedFinalRunMessage(comments, native)).toBe("FINAL");
   });
   it("keeps legacy fallback and does not replace absent visible text with a summary", () => {
     expect(persistedFinalRunMessage(comments, { id: "run-1" })).toBe("Prepared file for this response.\nFINAL");

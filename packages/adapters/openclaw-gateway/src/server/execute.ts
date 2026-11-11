@@ -10,11 +10,12 @@ import {
   buildRuntimeToolsEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  hydrateFreshSessionHandoff,
+  selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   joinPromptSections,
   stringifyPaperclipWakePayload,
+  paperclipWakeCommentsArePromptOwned,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
@@ -448,9 +449,9 @@ function buildWakeText(
     "   - GET /api/issues/{issueId}",
     "   - GET /api/issues/{issueId}/comments",
     "   - Execute the issue instructions exactly. If the issue is actionable, take concrete action in this run; do not stop at a plan unless planning was requested.",
-    "   - Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.",
-    "   - Create child issues directly when you know what needs to be done; use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation when the board/user must choose, answer, or confirm before you can continue.",
-    "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before creating implementation subtasks.",
+    "   - Leave durable progress with a clear next action. Do not busy-poll agents, sessions, or processes waiting for completion.",
+    "   - Continue work on the current issue; use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation when the board/user must choose, answer, or confirm before you can continue.",
+    "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before implementation.",
     "   - If blocked, PATCH /api/issues/{issueId} with {\"status\":\"blocked\",\"comment\":\"what is blocked, who owns the unblock, and the next action\"}.",
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
     "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
@@ -1106,11 +1107,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   // No heartbeat prompt template is sent over the gateway, so the wake prompt
   // must carry the execution contract itself.
-  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(ctx.runtime?.sessionId) });
+  const { taskContextNote, wakePrompt: structuredWakePrompt } = selectPaperclipPromptSections(ctx.context, {
+    resumedSession: Boolean(ctx.runtime?.sessionId),
     includeExecutionContract: true,
-    conversationMode: ctx.context.conversationMode === true,
+    includeCommunicationGuidance: false,
   });
-  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const structuredWakeJson = paperclipWakeCommentsArePromptOwned(ctx.context)
+    ? null
+    : stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
+        omitIssueDescription: Boolean(taskContextNote),
+      });
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
@@ -1118,9 +1125,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
     resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
-    ctx.context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(ctx.context, { resumedSession: Boolean(ctx.runtime?.sessionId), includeCommunicationGuidance: false })
-      : undefined,
+    taskContextNote || undefined,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);

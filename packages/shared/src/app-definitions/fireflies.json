@@ -62,7 +62,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your Fireflies API key",
-          "secret": true
+          "secret": true,
+          "helperMd": "Use an API key for an account with write access to the meetings your agents need to share, rename, move or turn into soundbites. Paperclip cannot increase the key’s permissions."
         }
       ],
       "keyPlacement": {

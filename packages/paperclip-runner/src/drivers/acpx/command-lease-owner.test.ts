@@ -76,4 +76,33 @@ describe("ACPX verified command lease owner", () => {
     await owner.command.close();
     expect(initial.close).toHaveBeenCalledOnce();
   });
+
+  it("cancels a pending refresh and joins its partial-copy cleanup before retiring ownership", async () => {
+    const initial = lease();
+    let signal!: AbortSignal;
+    let entered!: () => void; let drained!: () => void;
+    const acquiring = new Promise<void>(resolve => { entered = resolve; });
+    const cleanup = new Promise<void>(resolve => { drained = resolve; });
+    const owner = createAcpxCommandLeaseOwner(initial, async activeSignal => {
+      signal = activeSignal; entered();
+      await new Promise<void>(resolve => activeSignal.addEventListener("abort", () => resolve(), { once: true }));
+      await cleanup;
+      activeSignal.throwIfAborted();
+      throw new Error("cancelled acquisition cannot return a lease");
+    });
+    owner.command.spawn();
+    const refresh = owner.refreshConsumedCommand();
+    const rejectedRefresh = expect(refresh).rejects.toThrow("owner is closing");
+    await acquiring;
+    let retired = false;
+    const close = owner.command.close().then(() => { retired = true; });
+    expect(signal.aborted).toBe(true);
+    await Promise.resolve();
+    expect(retired).toBe(false);
+    expect(initial.close).not.toHaveBeenCalled();
+    drained();
+    await rejectedRefresh; await close;
+    expect(retired).toBe(true);
+    expect(initial.close).toHaveBeenCalledOnce();
+  });
 });

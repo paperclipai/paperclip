@@ -1,4 +1,6 @@
+import { prepareSlackEndpoints } from "./slack-endpoint-preparation.js";
 import { createHash } from "node:crypto";
+import { measureRunPhase } from "../execution-preparation-timing.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import {
@@ -15,7 +17,41 @@ import type {
   ToolGatewayDescriptor,
   ToolGatewaySession,
 } from "../tool-gateway.js";
-import { resolveSlackTaskAuthority } from "./slack-authority.js";
+import {
+  resolveSlackTaskAuthorization,
+  slackEndpointCandidates,
+  type SlackTaskAuthorization,
+} from "./slack-authority.js";
+const catalogDefinitions = SLACK_TOOLS.map(tool => ({
+  tool,
+  hash: createHash("sha256").update(JSON.stringify({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    risk: tool.risk,
+    scopes: tool.scopes,
+  })).digest("hex"),
+}));
+
+export async function slackBotCatalogIsCurrent(
+  db: Db,
+  endpoint: { id: string; companyId: string; connectionId: string },
+): Promise<boolean> {
+  const [entries, profiles] = await Promise.all([
+    db.select({ name: toolCatalogEntries.name, versionHash: toolCatalogEntries.versionHash })
+      .from(toolCatalogEntries).where(and(
+        eq(toolCatalogEntries.companyId, endpoint.companyId),
+        eq(toolCatalogEntries.connectionId, endpoint.connectionId),
+      )),
+    db.select({ id: toolProfiles.id }).from(toolProfiles).where(and(
+      eq(toolProfiles.companyId, endpoint.companyId),
+      eq(toolProfiles.profileKey, `slack-bot:${endpoint.id}`),
+    )).limit(1),
+  ]);
+  const hashes = new Map(entries.map(entry => [entry.name, entry.versionHash]));
+  return profiles.length > 0 && catalogDefinitions.every(({ tool, hash }) => hashes.get(`slack_bot:${tool.name}`) === hash);
+}
+
 export async function syncSlackBotTools(
   tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
   endpoint: typeof chatEndpoints.$inferSelect,
@@ -32,27 +68,17 @@ export async function syncSlackBotTools(
       ),
     );
   if (!connection) return;
-  await tx.execute(
+  await measureRunPhase("connectors.slack.catalog.lock", () => tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`slack-catalog:${endpoint.id}`}, 0))`,
-  );
-  const existingEntries = await tx
+  ));
+  const existingEntries = await measureRunPhase("connectors.slack.catalog.entries", () => tx
     .select()
     .from(toolCatalogEntries)
-    .where(eq(toolCatalogEntries.connectionId, connection.id));
+    .where(eq(toolCatalogEntries.connectionId, connection.id)));
   const entriesByName = new Map(
     existingEntries.map((entry) => [entry.name, entry]),
   );
-  for (const tool of SLACK_TOOLS) {
-    const hash = createHash("sha256")
-      .update(
-        JSON.stringify({
-          name: tool.name,
-          inputSchema: tool.inputSchema,
-          risk: tool.risk,
-          scopes: tool.scopes,
-        }),
-      )
-      .digest("hex");
+  for (const { tool, hash } of catalogDefinitions) {
     const values = {
       companyId: endpoint.companyId,
       applicationId: connection.applicationId,
@@ -75,7 +101,7 @@ export async function syncSlackBotTools(
     };
     const existing = entriesByName.get(values.name);
     if (existing?.versionHash === hash) continue;
-    await tx
+    await measureRunPhase("connectors.slack.catalog.write", () => tx
       .insert(toolCatalogEntries)
       .values(values)
       .onConflictDoUpdate({
@@ -90,10 +116,10 @@ export async function syncSlackBotTools(
               }
             : {}),
         },
-      });
+      }));
   }
   const profileKey = `slack-bot:${endpoint.id}`;
-  const [priorProfile] = await tx
+  const [priorProfile] = await measureRunPhase("connectors.slack.catalog.profile", () => tx
     .select()
     .from(toolProfiles)
     .where(
@@ -101,7 +127,7 @@ export async function syncSlackBotTools(
         eq(toolProfiles.companyId, endpoint.companyId),
         eq(toolProfiles.profileKey, profileKey),
       ),
-    );
+    ));
   if (priorProfile) return;
   const [profile] = await tx
     .insert(toolProfiles)
@@ -169,7 +195,7 @@ export async function syncSlackBotTools(
     .onConflictDoNothing();
 }
 
-export async function slackToolsForSession(
+async function slackToolsForEndpoint(
   db: Db,
   session: Pick<
     ToolGatewaySession,
@@ -180,11 +206,13 @@ export async function slackToolsForSession(
     | "identityContextId"
     | "approvedSlackInvocationId"
   >,
+  endpointId: string,
 ): Promise<ToolGatewayDescriptor[]> {
   if (!session.agentId || !session.runId || !session.issueId) return [];
-  let authority;
+  let authority: SlackTaskAuthorization;
   try {
-    authority = await resolveSlackTaskAuthority(db, {
+    authority = await resolveSlackTaskAuthorization(db, {
+      endpointId,
       companyId: session.companyId,
       agentId: session.agentId,
       runId: session.runId,
@@ -238,4 +266,16 @@ export async function slackToolsForSession(
       upstreamToolName: entry.toolName,
       providerMetadata: { endpointId: authority.endpoint.id },
     }));
+}
+
+export async function slackToolsForSession(
+  db: Db,
+  session: Parameters<typeof slackToolsForEndpoint>[1],
+): Promise<ToolGatewayDescriptor[]> {
+  if (!session.agentId || !session.runId || !session.issueId) return [];
+  const endpoints = await slackEndpointCandidates(db, {
+    companyId: session.companyId,
+    agentId: session.agentId,
+  });
+  return prepareSlackEndpoints(endpoints, endpoint => slackToolsForEndpoint(db, session, endpoint.id));
 }

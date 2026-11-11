@@ -35,6 +35,7 @@ export interface AiConnectionsReviewProps {
   currentUserId?: string;
   initialAuthState?: AiAuthState;
   failFirstAttempt?: boolean;
+  failDefaultOnce?: boolean;
   readOnly?: boolean;
   loading?: boolean;
   error?: string;
@@ -42,7 +43,7 @@ export interface AiConnectionsReviewProps {
 
 /** Storybook-only orchestration. Explicit simulator controls; no provider/network transport. */
 export function AiConnectionsReview(props: AiConnectionsReviewProps) {
-  if (props.host === "connections") return <AiConnectorPages initialConnections={props.initialConnections} detail={props.initialStage === "manage"} readOnly={props.readOnly} />;
+  if (props.host === "connections") return <AiConnectorPages initialConnections={props.initialConnections} detail={props.initialStage === "manage"} readOnly={props.readOnly} failDefaultOnce={props.failDefaultOnce} />;
   return <AgentConnectionReview {...props} />;
 }
 

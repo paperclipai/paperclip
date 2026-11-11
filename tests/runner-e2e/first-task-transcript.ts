@@ -76,6 +76,30 @@ export function firstTaskTranscript(e: FirstTaskEvidence): TranscriptEntry[] {
     (a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id),
   );
 }
+/** Grade against submitted user input, not a scenario prompt the chosen UI path
+ * may never send. Keep references so requirement provenance is inspectable. */
+export function firstTaskUserRequest(e: FirstTaskEvidence): string {
+  const input: string[] = [];
+  for (const entry of firstTaskTranscript(e)) {
+    const row = entry.row;
+    if (row.issueId !== e.onboardingIssueId) continue;
+    if (entry.kind === "comment" && row.authorUserId && typeof row.body === "string" && row.body.trim()) {
+      input.push(`[${entry.id}] ${row.body}`);
+    } else if (entry.kind === "answer" && row.kind === "ask_user_questions" && row.status === "answered" &&
+      row.resolvedByUserId && !row.resolvedByAgentId) {
+      const questions = row.payload?.questionSet?.questions ?? row.payload?.questions ?? [];
+      const texts = questionReportAnswers(row).flatMap(answer => {
+        const question = questions.find((q: Row) => q.id === answer.questionId);
+        const selected = answer.optionIds ?? answer.selectedOptionIds ?? [];
+        return [...selected.map((id: string) => question?.options?.find((option: Row) => option.id === id)?.label),
+          answer.otherText ?? answer.customText ?? answer.text];
+      }).filter((text): text is string => typeof text === "string" && Boolean(text.trim()));
+      if (texts.length) input.push(`[${entry.id}] ${[...new Set(texts)].join("\n")}`);
+    }
+  }
+  if (!input.length) throw new Error("Missing recorded user request for completion qualification");
+  return input.join("\n\n");
+}
 const body = (value: unknown) =>
   `<div class="transcript-text">${html(value)}</div>`;
 const raw = (value: unknown, title: string) =>

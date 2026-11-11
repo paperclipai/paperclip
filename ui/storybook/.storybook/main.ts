@@ -4,6 +4,10 @@ import type { StorybookConfig } from "@storybook/react-vite";
 import tailwindcss from "@tailwindcss/vite";
 import { mergeConfig } from "vite";
 import { storybookAgentAvatarAssets } from "../../../scripts/storybook-agent-avatar-assets.mjs";
+import { generateStorybook } from "../../../scripts/storybook-catalog.mjs";
+import { storybookButtonUsage } from "../../../scripts/storybook-button-usage.mjs";
+
+generateStorybook();
 
 const storybookConfigDir = path.dirname(fileURLToPath(import.meta.url));
 const paperclipInstanceOrigin = (() => {
@@ -16,8 +20,8 @@ const paperclipInstanceOrigin = (() => {
 })();
 
 const config: StorybookConfig = {
-  stories: ["../stories/**/*.stories.@(ts|tsx|mdx)"],
-  staticDirs: ["../../public"],
+  stories: ["../stories/**/*.stories.@(ts|tsx|mdx)", "../generated/features/*.stories.tsx"],
+  staticDirs: ["../../public", "../public"],
   addons: ["@storybook/addon-docs", "@storybook/addon-a11y"],
   framework: {
     name: "@storybook/react-vite",
@@ -26,12 +30,12 @@ const config: StorybookConfig = {
   docs: {
     autodocs: true,
   },
-  viteFinal: async (baseConfig, { configType }) =>
+  viteFinal: async (baseConfig) =>
     mergeConfig(baseConfig, {
       define: {
         "import.meta.env.VITE_PAPERCLIP_INSTANCE_URL": JSON.stringify(paperclipInstanceOrigin),
       },
-      plugins: [tailwindcss(), storybookAgentAvatarAssets()],
+      plugins: [tailwindcss(), storybookAgentAvatarAssets(), storybookButtonUsage()],
       server: { proxy: { "/api/agent-avatars": { target: process.env.PAPERCLIP_STORYBOOK_API_URL ?? "http://localhost:3100", changeOrigin: true } } },
       optimizeDeps: { include: ["motion/react", "react", "react-dom"] },
       resolve: {
@@ -42,9 +46,7 @@ const config: StorybookConfig = {
         // The app's own dev server hoists one React and never hit this.
         dedupe: ["react", "react-dom"],
         alias: {
-          ...(configType === "PRODUCTION" ? {
-            "@/lib/agent-avatar-url": path.resolve(storybookConfigDir, "../fixtures/agent-avatar-url.ts"),
-          } : {}),
+          "@/lib/agent-avatar-url": path.resolve(storybookConfigDir, "../fixtures/agent-avatar-url.ts"),
           "@": path.resolve(storybookConfigDir, "../../src"),
           lexical: path.resolve(storybookConfigDir, "../../node_modules/lexical/dist/Lexical.mjs"),
           // Vite's bundled `node:crypto` polyfill omits `createHash`, which

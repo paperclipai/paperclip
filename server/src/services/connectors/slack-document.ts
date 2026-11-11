@@ -27,7 +27,7 @@ export async function authorizeSlackDocument(
         eq(chatActions.endpointId, authority.endpoint.id),
         eq(chatActions.kind, "slack_tool_write"),
         eq(chatActions.status, "processed"),
-        sql`${chatActions.payload}->'binding'->>'issueId' = ${authority.conversation.issueId}`,
+        sql`${chatActions.payload}->'binding'->>'issueId' = ${authority.issueId}`,
         sql`${chatActions.payload}->>'userId' = ${authority.userId}`,
         sql`${chatActions.payload}->'args'->>'channel' = ${args.channel}`,
         sql`(${chatActions.result}->>'canvasId' = ${args.file} or ${chatActions.result}->>'listId' = ${args.file})`,
@@ -55,7 +55,7 @@ export async function authorizeSlackDocument(
           eq(chatActions.companyId, authority.endpoint.companyId),
           eq(chatActions.endpointId, authority.endpoint.id),
           eq(chatActions.kind, "slack_private_source"),
-          sql`${chatActions.payload}->>'issueId' = ${authority.conversation.issueId}`,
+          sql`${chatActions.payload}->>'issueId' = ${authority.issueId}`,
         ),
       )
       .limit(1);

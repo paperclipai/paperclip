@@ -13,6 +13,7 @@ const requestSchema = z.object({
   pose: z.enum(CHARACTER_STATES),
   size: z.string().regex(/^\d+$/).default("512").transform(Number).refine(n => (AGENT_AVATAR_SIZES as readonly number[]).includes(n)),
   scale: z.enum(["1", "2"]).default("1"),
+  background: z.enum(["transparent", "paperclip-dark"]).default("transparent"),
 }).strict();
 
 /**
@@ -29,14 +30,14 @@ export function agentAvatarRoutes(injected?: ReturnType<typeof createAgentAvatar
   router.get("/agent-avatars/:version/:palette/:file", async (req, res) => {
     const file = String(req.params.file);
     const parsed = requestSchema.safeParse({ ...req.query, version: req.params.version, palette: req.params.palette, pose: file.endsWith(".png") ? file.slice(0, -4) : file });
-    if (!file.endsWith(".png") || !parsed.success || Object.keys(req.query).some(key => key !== "size" && key !== "scale")) {
+    if (!file.endsWith(".png") || !parsed.success || Object.keys(req.query).some(key => !["size", "scale", "background"].includes(key))) {
       res.setHeader("Cache-Control", "no-store");
       res.status(400).json({ error: "Unsupported avatar version, palette, pose, size, or scale" }); return;
     }
-    const { palette, pose, size, scale } = parsed.data;
+    const { palette, pose, size, scale, background } = parsed.data;
     try {
       service ??= createAgentAvatarService(createStorageProviderFromConfig(loadConfig()));
-      const { stream, byteSize, etag } = await service.get({ appearance: appearanceForPalette(palette === "muted-dream" ? AGENT_PALETTE_IDS[0] : palette), muted: palette === "muted-dream", pose, size: size as AgentAvatarSize, scale: Number(scale) as 1 | 2 }, req.ip || req.socket.remoteAddress || "unknown");
+      const { stream, byteSize, etag } = await service.get({ appearance: appearanceForPalette(palette === "muted-dream" ? AGENT_PALETTE_IDS[0] : palette), muted: palette === "muted-dream", pose, size: size as AgentAvatarSize, scale: Number(scale) as 1 | 2, background }, req.ip || req.socket.remoteAddress || "unknown");
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       res.setHeader("ETag", etag);
       res.setHeader("X-Content-Type-Options", "nosniff");

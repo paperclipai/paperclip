@@ -1,3 +1,6 @@
+import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
+import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,8 +36,8 @@ import {
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  hydrateFreshSessionHandoff,
+  selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -44,7 +47,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
-import { grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -195,6 +198,56 @@ function resolveBillingType(env: Record<string, string>): "api" | "subscription"
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const target = ctx.executionTarget;
+  if (!ctx.signal || !ctx.stopRemoteStartup || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
+    return executeTurn(ctx);
+  }
+
+  // Direct remote commands have no host child process to kill. Register before
+  // setup and retain ownership until the host verifies this sandbox has stopped.
+  await ctx.onCancellationReady?.();
+  const cancelled = (result?: AdapterExecutionResult): AdapterExecutionResult => ({
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    ...result,
+    errorCode: "cancelled",
+    errorMessage: "Grok execution was cancelled",
+    resultJson: {
+      ...result?.resultJson,
+      executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() },
+    },
+  });
+  if (ctx.signal.aborted) {
+    // The host may already have acquired a lease before adapter registration.
+    await ctx.stopRemoteStartup();
+    return { ...cancelled(), executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+  }
+  // Keep the existing setup boundary armed for the whole direct CLI invocation:
+  // unlike ACP adapters, Grok has no turn-level cancellation protocol.
+  const cancellation = cancellableSandboxStartup(ctx);
+  let result: AdapterExecutionResult | undefined;
+  let failure: unknown;
+  let failed = false;
+  try {
+    result = await executeTurn(cancellation.context);
+  } catch (error) {
+    failure = error;
+    failed = true;
+  }
+  try {
+    await cancellation.finish();
+  } catch (error) {
+    failure = error;
+    failed = true;
+  }
+  if (cancellation.stopAcknowledged()) return cancelled(result);
+  if (failed) throw failure;
+  return result!;
+}
+
+async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -255,10 +308,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // adapter's `stagedCodexHomeDir` handling.
   let stagedGrokHomeDir: string | null = null;
 
-  try {
+  const executeTurn = async (): Promise<AdapterExecutionResult> => {
     const envConfig = parseObject(config.env);
     const env: Record<string, string> = {
-      ...buildPaperclipEnv(agent),
+      ...buildPaperclipEnv(agent, ctx.agentIdentity),
       ...buildRuntimeToolsEnv(ctx.runtimeTools),
     };
     env.PAPERCLIP_RUN_ID = runId;
@@ -448,12 +501,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const missingManagedSession = !executionTargetIsRemote && Boolean(config.managedAiConnection) &&
+      Boolean(runtimeSessionId) && !await grokHomeHasSession(asString(env.GROK_HOME, ""), runtimeSessionId);
     const canResumeSession =
       runtimeSessionId.length > 0 &&
+      !missingManagedSession &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
-    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
+    if (missingManagedSession) {
+      await onLog("stdout", "[paperclip] Selected Grok session history is unavailable. Starting a fresh session with the task handoff instead of remote subscription recovery.\n");
+    } else if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
         `[paperclip] Grok session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
@@ -489,37 +547,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const taskContextNote = context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId), includeCommunicationGuidance: false })
-      : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-      conversationMode: context.conversationMode === true,
-      resumedSession: Boolean(sessionId),
-      suppressIssueDescription: taskContextNote.length > 0,
-    });
-    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
-    const basePrompt = joinPromptSections([
-      wakePrompt,
-      taskContextNote,
-      sessionHandoffNote,
-      paperclipEnvNote,
-      apiAccessNote,
-      renderedPrompt,
-    ]);
-    const promptMetrics = {
-      promptChars: basePrompt.length,
-      wakePromptChars: wakePrompt.length,
-      taskContextChars: taskContextNote.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-      heartbeatPromptChars: renderedPrompt.length,
-    };
 
     const buildArgs = (resumeSessionId: string | null, prompt: string) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
@@ -542,10 +572,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+      ctx.signal?.throwIfAborted();
+      const attemptSections = selectPaperclipPromptSections(context, {
+        resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
+      });
+      const attemptWakePrompt = attemptSections.wakePrompt;
+      const attemptRenderedPrompt = Boolean(resumeSessionId) && attemptWakePrompt.length > 0
+        || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const attemptBasePrompt = joinPromptSections([
+        attemptWakePrompt,
+        attemptSections.taskContextNote,
+        sessionHandoffNote,
+        paperclipEnvNote,
+        apiAccessNote,
+        attemptRenderedPrompt,
+      ]);
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
-        basePrompt,
+        attemptBasePrompt,
       ]);
+      const promptMetrics = {
+        promptChars: prompt.length,
+        wakePromptChars: attemptWakePrompt.length,
+        taskContextChars: attemptSections.taskContextNote.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+        heartbeatPromptChars: attemptRenderedPrompt.length,
+      };
       const args = buildArgs(resumeSessionId, prompt);
       if (onMeta) {
         await onMeta({
@@ -564,6 +621,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env,
         timeoutSec,
@@ -592,17 +650,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession = false,
       isRetry = false,
     ): AdapterExecutionResult => {
-      if (attempt.proc.timedOut) {
-        return {
-          exitCode: attempt.proc.exitCode,
-          signal: attempt.proc.signal,
-          timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
-          clearSession: clearSessionOnMissingSession,
-        };
-      }
-
-      const failed = (attempt.proc.exitCode ?? 0) !== 0;
+      const failed = attempt.proc.timedOut || (attempt.proc.exitCode ?? 0) !== 0;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const fallbackErrorMessage =
@@ -610,7 +658,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `Grok exited with code ${attempt.proc.exitCode ?? -1}`;
 
-      const canFallbackToRuntimeSession = !isRetry;
+      const canFallbackToRuntimeSession = !isRetry && !missingManagedSession;
       const resolvedSessionId = attempt.parsed.sessionId
         ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
       const resolvedSessionParams = resolvedSessionId
@@ -631,8 +679,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
-        timedOut: false,
-        errorMessage: failed ? fallbackErrorMessage : null,
+        timedOut: attempt.proc.timedOut,
+        errorMessage: attempt.proc.timedOut ? `Timed out after ${timeoutSec}s` : failed ? fallbackErrorMessage : null,
         usage: {
           inputTokens: attempt.parsed.inputTokens,
           outputTokens: attempt.parsed.outputTokens,
@@ -654,6 +702,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         costUsd: billingType === "api" ? attempt.parsed.costUsd : null,
         resultJson: {
           stopReason: attempt.parsed.stopReason,
+          finalResponseRecorded: attempt.parsed.stopReason === "EndTurn" && Boolean(attempt.parsed.summary?.trim()),
           requestId: attempt.parsed.requestId,
           ...(failed ? { stderr: attempt.proc.stderr } : {}),
         },
@@ -663,6 +712,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const initial = await runAttempt(sessionId);
+    ctx.signal?.throwIfAborted();
     if (
       sessionId &&
       !initial.proc.timedOut &&
@@ -677,15 +727,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toResult(retry, true, true);
     }
 
-    return toResult(initial);
+    return toResult(initial, missingManagedSession);
+  };
+
+  try {
+    return await withWorkspaceRestore(
+      async () => {
+        let result: AdapterExecutionResult;
+        let collectionFailed = false;
+        const collectionFailureMessage = "Instruction collection failed after provider stop. No instruction save is claimed.";
+        try {
+          result = await executeTurn();
+        } finally {
+          try {
+            await providerStop.collectBeforeRestore();
+          } catch {
+            collectionFailed = true;
+            await onLog("stderr", `[paperclip] ${collectionFailureMessage}\n`).catch(() => undefined);
+          }
+        }
+        if (!collectionFailed) return result;
+        const providerFailed = result.timedOut || result.signal || result.errorCode
+          || (result.exitCode !== null && result.exitCode !== 0);
+        return {
+          ...result,
+          ...(!providerFailed ? { errorCode: "instruction_collection_failed" } : {}),
+          errorMessage: [result.errorMessage, collectionFailureMessage].filter(Boolean).join(" "),
+          resultJson: { ...result.resultJson, instructionCollectionFailure: "collection_failed" },
+        };
+      },
+      async () => { await restoreRemoteWorkspace?.(); },
+    );
   } finally {
-    // Remove the staged GROK_HOME allowlist temp dir first, before the
-    // `Promise.all` below. A rejecting member of that `Promise.all` (for
-    // example a failed workspace restore) throws out of this `finally` and
-    // skips every statement after it, so the removal must run before that
-    // await to hold on every exit path (teardown AND error), never only the
-    // happy path. Cleanup failure is logged, not fatal — a leaked temp dir
-    // must not crash the run.
+    // Cleanup runs after settlement on both success and failure.
     if (stagedGrokHomeDir) {
       await fs.rm(stagedGrokHomeDir, { recursive: true, force: true }).catch(async (error) => {
         await onLog(
@@ -696,9 +770,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
       });
     }
-    await Promise.all([
-      restoreRemoteWorkspace?.(),
-      stagedAssets.cleanup(),
-    ]);
+    await stagedAssets.cleanup();
   }
 }

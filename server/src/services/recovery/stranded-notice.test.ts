@@ -60,11 +60,59 @@ describe("stranded recovery notice seeds", () => {
     expect(disabled.body).toContain("an operator disabled it");
   });
 
+  it("explains unsupported concurrent shared workspace placement instead of missing secrets", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported" });
+    expect(seed.title).toBe("Shared workspace unavailable");
+    expect(seed.body).toContain("cannot place concurrent agents in one physical shared folder");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("isolated task workspace");
+  });
+
+  it("explains a quiet holder that still owns the shared workspace", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported", holderStale: true });
+    expect(seed.title).toBe("Shared workspace still held");
+    expect(seed.body).toContain("no output for more than an hour");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("stop it if it is stuck");
+  });
+
+  it("offers retry without a workspace repair checklist", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "workspace_source_restricted" });
+    expect(seed.title).toBe("Task couldn’t start");
+    expect(seed.body).toBe("The task couldn’t start.");
+    expect(seed.nextAction).toBe("Retry the task.");
+  });
+
   it("keeps the secret-binding copy for other configuration gaps", () => {
     expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
       "secret/env bindings",
     );
     expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+  });
+
+  it("explains an unresolved workspace base ref and carries its remedy into the recovery card", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "workspace_base_ref_unresolved",
+      requestedRef: "main",
+      attemptedRefs: ["origin/main"],
+      fetchError: "fatal: couldn't find remote ref refs/heads/main",
+      missingBindings: [],
+    });
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed,
+      recoveryActionId: "base-ref-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "configuration_incomplete" },
+    });
+    expect(notice.presentation.title).toBe("Workspace base ref unavailable");
+    expect(notice.body).toContain("before the agent started");
+    expect(notice.body).toContain("base ref");
+    expect(notice.body).not.toContain("secret/env bindings");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Next action",
+      value: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+    });
   });
 
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
@@ -87,6 +135,17 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.body).toContain("before the agent started");
     expect(notice.body).not.toContain("retried continuation");
     expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
+  });
+  it("names an environment plugin that was not running after its bounded retries", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: "worker-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "plugin_worker_unavailable" },
+    });
+    expect(notice.presentation.title).toBe("Environment plugin was not running");
+    expect(notice.body).toContain("before the agent started");
+    expect(JSON.stringify(notice.metadata)).toContain("worker status");
   });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
@@ -261,4 +320,41 @@ it("names the unavailable AI account instead of suggesting secret bindings", () 
   expect(notice.title).toBe("AI connection needs attention");
   expect(notice.body).toContain("Reconnect the account");
   expect(notice.body).not.toContain("secret/env");
+});
+
+it("names a found project authentication conflict instead of suggesting secret bindings", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_incompatible", actionUrl: "/agents/agent-1/runtime" });
+  expect(notice.title).toBe("AI connection conflicts with project settings");
+  expect(notice.body).toContain("apiKeyHelper");
+  expect(notice.nextAction).toContain("choose a different AI connection");
+  expect(notice.body).not.toContain("secret/env");
+});
+
+it("names a remote Runner that was still not updated after its retries", () => {
+  const notice = buildStrandedRecoveryEscalationNotice({
+    seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+    recoveryActionId: "runner-recovery",
+    recoveryOwner: null,
+    sourceRun: { id: "failed-run", status: "failed", errorCode: "runner_revision_mismatch" },
+  });
+  expect(notice.presentation.title).toBe("Remote Runner is out of date");
+  expect(notice.body).toContain("Runner was still not updated");
+  expect(notice.body).not.toContain("workspace");
+  expect(notice.body).not.toContain("authentication");
+  expect(JSON.stringify(notice.metadata)).toContain("remote Runner received the update");
+});
+
+it("names the managed AI connection a plugin Runner-task environment requires", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required" });
+  expect(notice.title).toBe("AI connection required");
+  expect(notice.body).toContain("requires a managed AI connection");
+  expect(notice.nextAction).toContain("Choose an AI connection");
+  expect(notice.body).not.toContain("secret/env");
+});
+
+it("tells the operator to switch a preconfigured Runner home to an isolated one", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required", homeMode: "preconfigured" });
+  expect(notice.title).toBe("Isolated Runner home required");
+  expect(notice.nextAction).toContain("isolated Runner home");
+  expect(notice.nextAction).not.toContain("Choose an AI connection");
 });

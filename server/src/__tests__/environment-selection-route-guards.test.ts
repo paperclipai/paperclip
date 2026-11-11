@@ -6,6 +6,8 @@ import { errorHandler } from "../middleware/index.js";
 import { projectRoutes } from "../routes/projects.js";
 import { issueRoutes } from "../routes/issues.js";
 
+const projectPermissions = vi.hoisted(() => ({ canWrite: true }));
+
 const mockProjectService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
@@ -62,6 +64,12 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: ["project:read", "issue:read"].includes(input.action) || (projectPermissions.canWrite && ["tasks:assign", "project:write_workspace"].includes(input.action)),
+      action: input.action,
+      reason: ["project:read", "issue:read"].includes(input.action) ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: ["project:read", "issue:read"].includes(input.action) ? "Allowed by test default." : "Missing permission.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({
@@ -119,6 +127,10 @@ vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
 
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+}));
+
 function buildApp(routerFactory: (app: express.Express) => void) {
   const app = express();
   app.use(express.json());
@@ -147,7 +159,7 @@ function createProjectApp() {
 
 function createIssueApp() {
   issueServer ??= buildApp((expressApp) => {
-    expressApp.use("/api", issueRoutes({} as any, {} as any));
+    expressApp.use("/api", issueRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any, {} as any));
   }).listen(0);
   return issueServer;
 }
@@ -164,7 +176,7 @@ async function closeServer(server: Server | null) {
   });
 }
 
-describe.sequential("execution environment route guards", () => {
+describe("execution environment route guards", () => {
   afterAll(async () => {
     await closeServer(projectServer);
     await closeServer(issueServer);
@@ -173,6 +185,7 @@ describe.sequential("execution environment route guards", () => {
   });
 
   beforeEach(() => {
+    projectPermissions.canWrite = true;
     mockProjectService.create.mockReset();
     mockProjectService.getById.mockReset();
     mockProjectService.update.mockReset();
@@ -263,6 +276,14 @@ describe.sequential("execution environment route guards", () => {
 
     expect(res.status).not.toBe(422);
     expect(mockProjectService.update).toHaveBeenCalled();
+  });
+
+  it.each([sandboxEnvironmentId, null])("rejects a project environment change or clear without workspace-write permission (%s)", async environmentId => {
+    projectPermissions.canWrite = false;
+    mockProjectService.getById.mockResolvedValue({ id: "project-1", companyId: "company-1", environmentId: "other-environment" });
+    const res = await request(createProjectApp()).patch("/api/projects/project-1").send({ environmentId });
+    expect(res.status).toBe(403);
+    expect(mockProjectService.update).not.toHaveBeenCalled();
   });
 
   it("accepts sandbox environments on issue create", async () => {

@@ -1,0 +1,202 @@
+/*
+  4 · Hybrid — custom properties, scoped to the wrapper every frame puts around
+  a kit slot. Structure (page, text, radius, type, motion) comes from the app's
+  token layer; only what that layer lacks is minted here. Colours are OKLCH.
+
+  Five groups:
+    1. neutral materials — Tint's slab ladder, plus `--hy-card` (what a unit is
+       filled with right now) and the MONOCHROME well derived from it
+    2. kind hues — ONE hue per artifact kind (Tint's nine for ten kinds), tuned
+       per theme so the label on a glyph or a corner block holds 4.5:1
+    3. paper — Tactile's sheet: off-white stock, its ink, the dog-ear's fold
+    4. geometry — radii, the meta dot, the play mark, the folder back, motion
+    5. the page — the paper sheet's proportions and its type, per size, in
+       container-query units (PaperSheet.tsx)
+*/
+
+[data-direction="d4-hybrid"] {
+  /* 1 · Neutral materials. A slab is a filled card: no stroke, no shadow. 1.20:1 on the page. */
+  --hy-slab: color-mix(in oklab, var(--foreground) 7.5%, var(--background));
+  /* One step up, still neutral: the hover of a unit whose hue is already spent. */
+  --hy-slab-raised: color-mix(in oklab, var(--foreground) 11.5%, var(--background));
+  /* A filled neutral button on a slab; also the pressed step of a neutral slab. */
+  --hy-button: color-mix(in oklab, var(--foreground) 16%, var(--background));
+  /* A hole punched in a slab back to the page: the state pills. */
+  --hy-well: var(--background);
+  /* Secondary text: at least 4.5:1 on every fill above and on the mono well. */
+  --hy-ink-2: color-mix(in oklab, var(--foreground) 64%, var(--background));
+  /* Pictogram and extension label on a kind hue; the dark one is for amber, the one light hue. */
+  --hy-on-kind: oklch(1 0 0);
+  --hy-on-kind-dark: oklch(0.22 0.04 80);
+  /*
+    The fill a unit has RIGHT NOW: the slab at rest. A unit raises it on hover
+    and pressed (UnitAction.tsx `SLAB`; a thread slab takes its kind wash), and
+    everything laid on the unit that is "just lighter than the card" follows.
+  */
+  --hy-card: var(--hy-slab);
+  /*
+    THE MONOCHROME WELL — what a glyph stands on, in place of Tint's kind-tinted
+    wells: a value just lighter than the card it is on. Lighter is toward the
+    page in light, toward the foreground in dark. Re-derived on every unit
+    ([data-unit] below), so it tracks the unit's own `--hy-card`.
+  */
+  --hy-well-toward: var(--background);
+  --hy-well-lift: 55%;
+  --hy-well-mono: color-mix(in oklab, var(--hy-well-toward) var(--hy-well-lift), var(--hy-card));
+
+  /* 2 · Kind hues (light). Violet is left out on purpose: it is the app's Review hue. */
+  --hy-kind-document: oklch(0.528 0.207 262.2);
+  --hy-kind-pdf: oklch(0.556 0.209 22.9);
+  --hy-kind-slides: oklch(0.56 0.175 40.3);
+  --hy-kind-sheet: oklch(0.518 0.132 152.2);
+  --hy-kind-media: oklch(0.555 0.219 352.9);
+  --hy-kind-archive: oklch(0.74 0.156 75.1);
+  --hy-kind-code: oklch(0.516 0.087 204.2);
+  --hy-kind-link: oklch(0.52 0.121 242.6);
+  --hy-kind-file: oklch(0.519 0.017 260.7);
+
+  /* How much white the glyph's folded facet takes; how much hue a hovered and a pressed thread slab take. */
+  --hy-facet-lift: 30%;
+  --hy-wash-hover: 9%;
+  --hy-wash-pressed: 15%;
+
+  /* 3 · Paper (Tactile's sheet). Type on paper is serif; the stock is off-white in both themes. */
+  --hy-font-serif: "Iowan Old Style", "Charter", "Bitstream Charter", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --hy-paper: oklch(0.992 0.004 90);
+  --hy-paper-ink: oklch(0.24 0.012 70);
+  --hy-paper-ink-2: oklch(0.44 0.012 70);
+  --hy-paper-rule: oklch(0.84 0.008 85);
+  /* The dog-ear: the corner laid back, lit from the top-left; its own hairline shadow is the one shadow on a sheet. */
+  --hy-paper-fold: linear-gradient(225deg, oklch(0.84 0.01 88) 0%, oklch(0.9 0.008 88) 48%, oklch(0.975 0.005 90) 100%);
+  --hy-paper-fold-shadow: drop-shadow(-1px 1px 1.5px oklch(0.25 0.02 80 / 0.28));
+  /*
+    The sheet's edge: a hairline round the stock and one soft contact shadow, so
+    white paper holds its edge on a well that is itself nearly white. Paper is
+    an object lying on a surface — the one thing in this direction with a
+    shadow; slabs, wells and folders stay flat.
+  */
+  --hy-paper-edge: inset 0 1px 0 oklch(1 0 0 / 0.95), 0 0 0 1px oklch(0.3 0.02 80 / 0.22), 0 1px 2px oklch(0.3 0.02 80 / 0.24);
+  --hy-paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.2 0 0 0 0 0.16 0 0 0 0 0.1 0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.1'/%3E%3C/svg%3E");
+  /* The typeset page fades toward its bottom edge. */
+  --hy-paper-fade: linear-gradient(to bottom, black 0%, black 55%, transparent 96%);
+
+  /* 4 · Geometry. */
+  /* The dot in the mono meta line gets half-cell margins (a full " · " is three cells). */
+  --hy-meta-gap: 0.5ch;
+  /* Optical centring of a play triangle in its disc; on a small poster the disc sits clear of the corner label. */
+  --hy-play-nudge: 4%;
+  --hy-play-y-sm: 54%;
+  /* Radius of a glyph-sized object (the sm glyph's own corner) and of every preview box. */
+  --hy-radius-glyph: 0.4375rem;
+  /* A neutral scrim behind the play mark on a video poster. */
+  --hy-scrim: color-mix(in oklab, black 55%, transparent);
+  --hy-scrim-strong: color-mix(in oklab, black 75%, transparent);
+  /* The flat folder's back panel and tab: the one fill a folder adds, a clear neutral step past the slab. */
+  --hy-folder-back: color-mix(in oklab, var(--foreground) 16%, var(--background));
+  /* A folder's contents rise on hover one after another: each starts this much after the one before. */
+  --hy-stagger: 28ms;
+
+  /* 5 · The page: Tactile's 240 × 310 sheet. Sizes below set its type in cqw (1cqw = 1% of the sheet's width). */
+  --hy-pg-aspect: 240 / 310;
+  /* The tile sheet's share of a gallery tile's well and of a single stack's slab (screen 5): one value, two callers. */
+  --hy-paper-tile-w: 44%;
+}
+
+.dark [data-direction="d4-hybrid"] {
+  --hy-slab: color-mix(in oklab, var(--foreground) 9%, var(--background));
+  --hy-slab-raised: color-mix(in oklab, var(--foreground) 14%, var(--background));
+  --hy-button: color-mix(in oklab, var(--foreground) 20%, var(--background));
+  --hy-ink-2: color-mix(in oklab, var(--foreground) 72%, var(--background));
+  /* Lighter is toward the foreground here: a 5% step over the card. */
+  --hy-well-toward: var(--foreground);
+  --hy-well-lift: 5%;
+
+  /* Kind hues (dark): as bright as the white label allows; amber is a true amber with dark ink. */
+  --hy-kind-document: oklch(0.569 0.21 262.3);
+  --hy-kind-pdf: oklch(0.587 0.217 22.6);
+  --hy-kind-slides: oklch(0.579 0.177 41.4);
+  --hy-kind-sheet: oklch(0.548 0.14 152.4);
+  --hy-kind-media: oklch(0.586 0.227 351.9);
+  --hy-kind-archive: oklch(0.801 0.165 80.1);
+  --hy-kind-code: oklch(0.548 0.092 204.5);
+  --hy-kind-link: oklch(0.554 0.129 243.6);
+  --hy-kind-file: oklch(0.564 0.016 258.4);
+
+  --hy-facet-lift: 26%;
+  --hy-wash-hover: 11%;
+  --hy-wash-pressed: 18%;
+
+  /* Paper comes a step off white so it does not glare on the dark canvas. */
+  --hy-paper: oklch(0.94 0.009 90);
+  --hy-paper-rule: oklch(0.78 0.01 85);
+  --hy-paper-fold: linear-gradient(225deg, oklch(0.72 0.012 88) 0%, oklch(0.83 0.01 88) 48%, oklch(0.92 0.008 90) 100%);
+  --hy-paper-fold-shadow: drop-shadow(-1px 1px 1.5px oklch(0.15 0.02 80 / 0.4));
+  --hy-paper-edge: inset 0 1px 0 oklch(1 0 0 / 0.75), 0 0 0 1px oklch(0 0 0 / 0.25), 0 1px 2px oklch(0 0 0 / 0.35);
+
+  --hy-folder-back: color-mix(in oklab, var(--foreground) 19%, var(--background));
+}
+
+/* Derived per unit: label ink, the glyph's facet, the hover and pressed fills of a thread slab. */
+[data-direction="d4-hybrid"] [data-kind] {
+  --kind-ink: var(--hy-on-kind);
+  --kind-facet: color-mix(in oklab, var(--kind) calc(100% - var(--hy-facet-lift)), white);
+  --kind-wash: color-mix(in oklab, var(--kind) var(--hy-wash-hover), var(--hy-slab));
+  --kind-wash-pressed: color-mix(in oklab, var(--kind) var(--hy-wash-pressed), var(--hy-slab));
+}
+
+/* The mono well is re-derived on the unit, where `--hy-card` is raised on hover, so it stays a step above the card. */
+[data-direction="d4-hybrid"] [data-unit] {
+  --hy-well-mono: color-mix(in oklab, var(--hy-well-toward) var(--hy-well-lift), var(--hy-card));
+}
+/*
+  R4 under the pointer. A thread slab takes its kind wash on hover and pressed
+  (Tint's answer, ThreadWorkProduct.tsx), but the well on it stays MONOCHROME:
+  it is derived from the neutral step the wash stands in for, not from the
+  washed card, so the glyph never stands on a tinted backing in any state.
+*/
+[data-direction="d4-hybrid"] [data-unit="thread-row"]:hover,
+[data-direction="d4-hybrid"] [data-unit="thread-attachment"]:hover {
+  --hy-well-mono: color-mix(in oklab, var(--hy-well-toward) var(--hy-well-lift), var(--hy-slab-raised));
+}
+[data-direction="d4-hybrid"] [data-unit="thread-row"]:active,
+[data-direction="d4-hybrid"] [data-unit="thread-attachment"]:active {
+  --hy-well-mono: color-mix(in oklab, var(--hy-well-toward) var(--hy-well-lift), var(--hy-button));
+}
+
+/* A unit names its kind once; everything inside reads `--kind` (the hue). */
+[data-direction="d4-hybrid"] [data-kind="document"] { --kind: var(--hy-kind-document); }
+[data-direction="d4-hybrid"] [data-kind="pdf"] { --kind: var(--hy-kind-pdf); }
+[data-direction="d4-hybrid"] [data-kind="slides"] { --kind: var(--hy-kind-slides); }
+[data-direction="d4-hybrid"] [data-kind="sheet"] { --kind: var(--hy-kind-sheet); }
+[data-direction="d4-hybrid"] [data-kind="image"],
+[data-direction="d4-hybrid"] [data-kind="video"] { --kind: var(--hy-kind-media); }
+[data-direction="d4-hybrid"] [data-kind="archive"] { --kind: var(--hy-kind-archive); --kind-ink: var(--hy-on-kind-dark); }
+[data-direction="d4-hybrid"] [data-kind="code"] { --kind: var(--hy-kind-code); }
+[data-direction="d4-hybrid"] [data-kind="link"] { --kind: var(--hy-kind-link); }
+[data-direction="d4-hybrid"] [data-kind="file"] { --kind: var(--hy-kind-file); }
+
+/*
+  The paper sheet's type, per size, in cqw of the sheet. Derived values are set
+  on the same element as the size (a custom property substitutes its var()s
+  where it is declared). Small sheets show fewer, larger words, as Tactile's do.
+*/
+[data-direction="d4-hybrid"] [data-paper] {
+  --hy-pg-clip-ear: polygon(0 0, calc(100% - var(--hy-pg-ear)) 0, 100% var(--hy-pg-ear), 100% 100%, 0 100%);
+  --hy-pg-clip-fold: polygon(0 0, 100% 100%, 0 100%);
+  /* How far the first line must clear the dog-ear: the ear less the pad, plus a little air. */
+  --hy-pg-ear-clear: calc(var(--hy-pg-ear) - var(--hy-pg-pad) + 1cqw);
+  /* With a corner label (px-sized, not cqw) the print starts under it. */
+  --hy-pg-pad-labelled: calc(var(--hy-pg-label-h) + var(--hy-pg-pad) * 0.6);
+  --hy-pg-fade: var(--hy-paper-fade);
+  --hy-pg-lead-title: 1.14;
+  --hy-pg-lead-body: 1.5;
+  --hy-pg-gap: 0.8em;
+  --hy-pg-gap-para: 0.5em;
+  --hy-pg-rule: 0.1em;
+}
+/* panel · 104px wide, standing 8px down in a 100px well (screen 10): headline about 9.5px, first lines about 7px; the fade comes up to meet the clip at ~69% of the sheet. */
+[data-direction="d4-hybrid"] [data-paper="panel"] { --hy-pg-ear: 13cqw; --hy-pg-pad: 9.5cqw; --hy-pg-r: 3cqw; --hy-pg-title: 9.2cqw; --hy-pg-body: 7cqw; --hy-pg-mono: 6.6cqw; --hy-pg-label-h: 1.1875rem; --hy-pg-fade: linear-gradient(to bottom, black 0%, black 36%, transparent 70%); }
+/* tuck · standing in a folder, 90–150px wide, its foot behind the pocket. */
+[data-direction="d4-hybrid"] [data-paper="tuck"] { --hy-pg-ear: 12cqw; --hy-pg-pad: 9cqw; --hy-pg-r: 2.6cqw; --hy-pg-title: 9.5cqw; --hy-pg-body: 7cqw; --hy-pg-mono: 6.6cqw; --hy-pg-label-h: 1.1875rem; }
+/* tile · at the left of a gallery tile's well or a single stack's slab (screen 5), ~130–145px wide: headline about 12px, body about 9px. The print stays legible past the sheet's middle and is gone only at its foot, as screen 5's is. */
+[data-direction="d4-hybrid"] [data-paper="tile"] { --hy-pg-ear: 12cqw; --hy-pg-pad: 9cqw; --hy-pg-r: 2.4cqw; --hy-pg-title: 9cqw; --hy-pg-body: 6.6cqw; --hy-pg-mono: 6.2cqw; --hy-pg-label-h: 1.1875rem; --hy-pg-fade: linear-gradient(to bottom, black 0%, black 62%, transparent 100%); }

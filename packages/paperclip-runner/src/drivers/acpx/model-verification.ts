@@ -14,7 +14,7 @@ export interface AcpxModelControl {
 }
 
 /**
- * Select and verify the exact qualified model before a billable prompt can be
+ * Select and verify the exact requested model before a billable prompt can be
  * accepted. A provider selector is normalized only after ACP reports it.
  */
 export async function requireVerifiedAcpxModel(
@@ -34,10 +34,10 @@ export async function requireVerifiedAcpxModel(
     if (!control.setModel) {
       throw acpxModelVerificationError(
         "ACPX_MODEL_SELECTION_UNAVAILABLE",
-        "ACPX agent cannot verify its qualified model through ACP config options",
+        "ACPX agent cannot verify the requested model through ACP config options",
       );
     }
-    // Claude uses the exact requested ID, including custom IDs.
+    // Catalogs may be incomplete. Let the provider accept or reject the exact ID.
     await control.setModel(providerModel);
     status = await control.getStatus();
   }
@@ -47,14 +47,14 @@ export async function requireVerifiedAcpxModel(
       `ACPX effective model mismatch: requested ${requestedModel}, expected ACP selector ${providerModel}, received ${status.models?.currentModelId ?? "unverified"}`,
     );
   }
-  return normalizeQualifiedModelStatus(status, profile);
+  return normalizeVerifiedModelStatus(status, profile);
 }
 
 function acpxModelVerificationError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
-function normalizeQualifiedModelStatus(
+function normalizeVerifiedModelStatus(
   status: AcpxModelStatus,
   profile: QualifiedAcpxProfile,
 ): AcpxModelStatus {

@@ -1,3 +1,14 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -23,6 +34,8 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { IssuePostCommitAction } from "./issues.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { readRunCancellation } from "./run-cancellation.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -70,6 +83,25 @@ type RestoreTreeStatusResult = TreeStatusUpdateResult & {
 };
 
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+export const ISSUE_TREE_RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
+
+/** The error code a dispatch gate records when an active pause hold refuses a run. */
+export const ISSUE_PAUSED_ERROR_CODE = "issue_paused";
+
+/**
+ * Recorded on a run a dispatch gate refused because a pause hold covered its
+ * task, so that hold's release can re-dispatch the refused work once.
+ */
+export function pauseSuppressionResult(hold: { holdId: string; rootIssueId?: string | null }) {
+  return { treeHoldSuppression: { holdId: hold.holdId, rootIssueId: hold.rootIssueId ?? null } };
+}
+
+function readPauseSuppressionHoldId(resultJson: Record<string, unknown> | null) {
+  const marker = resultJson?.treeHoldSuppression;
+  if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
+  const holdId = (marker as Record<string, unknown>).holdId;
+  return typeof holdId === "string" && holdId.length > 0 ? holdId : null;
+}
 const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const DEFAULT_RELEASE_POLICY: IssueTreeHoldReleasePolicy = { strategy: "manual" };
 const MAX_PAUSE_HOLD_ANCESTOR_DEPTH = 100;
@@ -324,13 +356,21 @@ function issueSkipReason(input: {
   return null;
 }
 
-function buildAffectedAgents(issuesToPreview: IssueTreePreviewIssue[]): IssueTreePreviewAgent[] {
+function canWakeOnResume(issue: IssueTreePreviewIssue): boolean {
+  return !!issue.assigneeAgentId && ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status);
+}
+
+function buildAffectedAgents(
+  issuesToPreview: IssueTreePreviewIssue[],
+  mode: IssueTreeControlMode,
+): IssueTreePreviewAgent[] {
   const byAgentId = new Map<string, IssueTreePreviewAgent>();
   for (const issue of issuesToPreview) {
     if (issue.skipped) continue;
+    if (mode === "resume" && !canWakeOnResume(issue)) continue;
     const agentIds = new Set<string>();
     if (issue.assigneeAgentId) agentIds.add(issue.assigneeAgentId);
-    if (issue.activeRun) agentIds.add(issue.activeRun.agentId);
+    if (mode !== "resume" && issue.activeRun) agentIds.add(issue.activeRun.agentId);
     for (const agentId of agentIds) {
       const current = byAgentId.get(agentId) ?? { agentId, issueCount: 0, activeRunCount: 0 };
       current.issueCount += 1;
@@ -385,6 +425,17 @@ function buildWarnings(input: {
       code: "no_active_pause_holds",
       message: "No active pause holds were found in this subtree.",
     });
+  }
+
+  if (input.mode === "resume") {
+    const idleIssueIds = affectedIssues.filter((issue) => !canWakeOnResume(issue)).map((issue) => issue.id);
+    if (idleIssueIds.length > 0) {
+      warnings.push({
+        code: "resume_tasks_remain_idle",
+        message: "Blocked, backlog, and unassigned tasks will be unpaused but will not start.",
+        issueIds: idleIssueIds.sort(),
+      });
+    }
   }
 
   if (input.mode === "restore") {
@@ -675,7 +726,7 @@ export function issueTreeControlService(db: Db) {
     const activeRuns = activeRunRows
       .map(toPreviewRun)
       .sort((a, b) => a.issueId.localeCompare(b.issueId) || a.id.localeCompare(b.id));
-    const affectedAgents = buildAffectedAgents(issuesToPreview);
+    const affectedAgents = buildAffectedAgents(issuesToPreview, input.mode);
 
     return {
       companyId,
@@ -732,6 +783,8 @@ export function issueTreeControlService(db: Db) {
       const releaseReason = input.reason ?? "Subtree resume applied.";
 
       const { hold: resumeHold } = await db.transaction(async (tx) => {
+        await notifyIssueRecovery(tx, { companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId });
         const [createdHold] = await tx
           .insert(issueTreeHolds)
           .values({
@@ -810,6 +863,8 @@ export function issueTreeControlService(db: Db) {
     }
 
     const { hold, members } = await db.transaction(async (tx) => {
+      await notifyIssueRecovery(tx, { companyId });
+      await notifyDeferredExecutionEligibility(tx, { companyId });
       const [createdHold] = await tx
         .insert(issueTreeHolds)
         .values({
@@ -974,9 +1029,20 @@ export function issueTreeControlService(db: Db) {
     const now = new Date();
     const releasedCancelHoldIds = activeCancelHolds.map((hold) => hold.id);
     const updatedIssues = await db.transaction(async (tx) => {
+      await notifyDeferredExecutionEligibility(tx, { companyId });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const restored: TreeStatusUpdateResult["updatedIssues"] = [];
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;
+        for (const issueId of issueIdsForStatus) {
+          await notifyRoutineExecutionStatus(tx, issueId, companyId);
+          await notifyNativeStatusReassessment(tx, { companyId, issueId });
+          await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
+          await notifyChatResponseAvailability(tx, { companyId, issueId });
+          if (status === "blocked" || status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
+        }
+        await notifyStatusCardIssueChange(tx, companyId);
         const rows = await tx
           .update(issues)
           .set({
@@ -1143,7 +1209,9 @@ export function issueTreeControlService(db: Db) {
       throw conflict("Issue tree hold is already released");
     }
 
-    const [updated] = await db
+    const [updated] = await db.transaction(async tx => {
+      await promoteDeferredWorkIntents(tx, { companyId, trigger: "tree_hold_released" });
+      return tx
       .update(issueTreeHolds)
       .set({
         status: "released",
@@ -1159,8 +1227,12 @@ export function issueTreeControlService(db: Db) {
         releaseMetadata: input.metadata ?? null,
         updatedAt: new Date(),
       })
-      .where(and(eq(issueTreeHolds.id, holdId), eq(issueTreeHolds.companyId, companyId)))
+      .where(and(eq(issueTreeHolds.id, holdId), eq(issueTreeHolds.companyId, companyId),
+        eq(issueTreeHolds.status, "active")))
       .returning();
+    });
+    // A concurrent release won; it alone owns the resumed work.
+    if (!updated) throw conflict("Issue tree hold is already released");
 
     const members = await db
       .select()
@@ -1171,33 +1243,100 @@ export function issueTreeControlService(db: Db) {
     return toHold(updated, members);
   }
 
+  /**
+   * A pause interrupts runs as an operator hold, not as a failure. That pending
+   * work is owed one re-dispatch once no pause covers the task. A run is owed
+   * when a pause hold's member snapshot names it and an operator Stop ended it,
+   * or when a dispatch gate refused it because a pause covered the task (a
+   * scheduled retry that came due, or a queued run reaching its claim); the
+   * gate records the covering hold on the run. The obligation belongs to the
+   * run, so overlapping holds keep it until the last release. Current state
+   * governs: the interrupted run must still be the task's latest run, the task
+   * must be executable by the same agent, and the claim marker makes the
+   * resume happen at most once. Execution blockers are the caller's.
+   */
+  async function findOwedPauseResume(companyId: string, issueId: string) {
+    const [issue] = await db.select({
+      status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
+    }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+    if (!issue?.assigneeAgentId || issue.assigneeUserId
+      || !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)) return null;
+    const [run] = await db.select({
+      id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
+      finishedAt: heartbeatRuns.finishedAt, resultJson: heartbeatRuns.resultJson, errorCode: heartbeatRuns.errorCode,
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      sql`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+    )).orderBy(sql`${heartbeatRuns.createdAt} desc`).limit(1);
+    if (!run || run.status !== "cancelled" || !run.finishedAt || run.agentId !== issue.assigneeAgentId
+      || run.resultJson?.treeHoldResume !== undefined) return null;
+    // Only a cancellation recorded while a covering pause was active is owed.
+    const activeAtCancellation = and(
+      eq(issueTreeHolds.companyId, companyId), eq(issueTreeHolds.mode, "pause"),
+      sql`${issueTreeHolds.createdAt} <= ${run.finishedAt.toISOString()}::timestamptz`,
+      or(isNull(issueTreeHolds.releasedAt),
+        sql`${issueTreeHolds.releasedAt} >= ${run.finishedAt.toISOString()}::timestamptz`),
+    );
+    const memberHold = (snapshotRunId?: string) => db.select({ id: issueTreeHolds.id }).from(issueTreeHoldMembers)
+      .innerJoin(issueTreeHolds, eq(issueTreeHolds.id, issueTreeHoldMembers.holdId))
+      .where(and(
+        eq(issueTreeHoldMembers.companyId, companyId), eq(issueTreeHoldMembers.issueId, issueId),
+        snapshotRunId ? eq(issueTreeHoldMembers.activeRunId, snapshotRunId) : undefined,
+        eq(issueTreeHoldMembers.skipped, false), activeAtCancellation,
+      )).orderBy(asc(issueTreeHolds.createdAt)).limit(1);
+    let hold: { id: string } | undefined;
+    if (run.errorCode === ISSUE_PAUSED_ERROR_CODE) {
+      const suppressedBy = readPauseSuppressionHoldId(run.resultJson);
+      // The gate recorded the pause it observed. A run refused before gates
+      // recorded that hold falls back to a snapshot pause active at the time.
+      [hold] = suppressedBy
+        ? await db.select({ id: issueTreeHolds.id }).from(issueTreeHolds).where(and(eq(issueTreeHolds.id, suppressedBy),
+          eq(issueTreeHolds.companyId, companyId), eq(issueTreeHolds.mode, "pause"))).limit(1)
+        : await memberHold();
+    } else if (readRunCancellation(run.resultJson)?.source === "operator") {
+      // A Stop is owed only when the pause snapshot named the stopped run.
+      [hold] = await memberHold(run.id);
+    }
+    if (!hold) return null;
+    if (await getActivePauseHoldGate(companyId, issueId)) return null;
+    return { issueId, agentId: run.agentId, interruptedRunId: run.id, holdId: hold.id };
+  }
+
   async function cancelUnclaimedWakeupsForTree(companyId: string, rootIssueId: string, reason: string) {
     const treeIssues = await listTreeIssues(companyId, rootIssueId);
     const issueIds = treeIssues.map((issue) => issue.id);
     if (issueIds.length === 0) return [];
     const now = new Date();
-    return db
-      .update(agentWakeupRequests)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        error: reason,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, companyId),
-          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
-          isNull(agentWakeupRequests.runId),
-          inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
-        ),
-      )
-      .returning({
-        id: agentWakeupRequests.id,
-        agentId: agentWakeupRequests.agentId,
-        reason: agentWakeupRequests.reason,
-        payload: agentWakeupRequests.payload,
-      });
+    return db.transaction(async tx => {
+      const affected = await tx.select({ agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        isNull(agentWakeupRequests.runId), inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
+      )).for("update");
+      for (const agentId of new Set(affected.map(wake => wake.agentId))) await notifyStrandedAgentStatus(tx, { companyId, agentId });
+      await notifyChatInboundWakeNotices(tx, { companyId });
+      return tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: reason,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            isNull(agentWakeupRequests.runId),
+            inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
+          ),
+        )
+        .returning({
+          id: agentWakeupRequests.id,
+          agentId: agentWakeupRequests.agentId,
+          reason: agentWakeupRequests.reason,
+          payload: agentWakeupRequests.payload,
+        });
+    });
   }
 
   return {
@@ -1210,6 +1349,7 @@ export function issueTreeControlService(db: Db) {
     listHolds,
     getActivePauseHoldGate,
     releaseHold,
+    findOwedPauseResume,
     cancelUnclaimedWakeupsForTree,
   };
 }

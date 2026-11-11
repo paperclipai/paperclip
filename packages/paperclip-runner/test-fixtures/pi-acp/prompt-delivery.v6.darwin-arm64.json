@@ -1,0 +1,64 @@
+{
+  "source": "42948b9d2807aac396b6457b8886f6777248fe0e",
+  "sdk": "0.84.2",
+  "wrapper": "0.0.33",
+  "profileVersion": 6,
+  "inferenceCalls": 0,
+  "modelNetworkAllowed": false,
+  "modelStream": "synthetic capture at actual AgentSession native model request boundary",
+  "reports": [
+    {
+      "label": "fresh",
+      "modelRequests": 1,
+      "executionPromptPresent": true,
+      "customEntryPresent": true,
+      "updatedEntryPresent": false,
+      "genericMetaIgnored": true,
+      "currentAgentHomeInSystemPrompt": true,
+      "currentAgentHomeInLatestTask": true,
+      "previousRootAbsentFromSystemPrompt": null,
+      "persistedHistoryLoaded": false,
+      "systemPromptSha256": "a3f26862aed6d2d7801b7cbd3b311235556af2156fd3aa6aaf47401fe6415c3b",
+      "systemPromptBytes": 5488,
+      "sessionArgumentPresent": false
+    },
+    {
+      "label": "loaded",
+      "modelRequests": 1,
+      "executionPromptPresent": true,
+      "customEntryPresent": true,
+      "updatedEntryPresent": true,
+      "genericMetaIgnored": true,
+      "currentAgentHomeInSystemPrompt": true,
+      "currentAgentHomeInLatestTask": true,
+      "previousRootAbsentFromSystemPrompt": true,
+      "persistedHistoryLoaded": true,
+      "systemPromptSha256": "282704630281dcd7f181a3f12adc030f45c7a135fdc4954ce3a6e2de91723e9f",
+      "systemPromptBytes": 5515,
+      "sessionArgumentPresent": true
+    }
+  ],
+  "sha256": {
+    "probe.mjs": "3c12499e4a078bf96afd4f74b65042da10d13efa998b982571ff6ea8a06001ff",
+    "packages/paperclip-runner/src/drivers/acpx/runtime-sandbox.ts": "86faeb55dbc58c268e8210b9ffd2997d6067d116723b776e623eec2fa40f1fde",
+    "packages/paperclip-runner/src/drivers/acpx/pi-acp-runtime.ts": "ff9aa9773d17351ba5fe01274f64ef0a9845a33e91820d539c3f7674cd5b426b",
+    "packages/paperclip-runner/src/drivers/acpx/pi-runtime-extension.ts": "d30c99fbb46baa335034f2faf105decef9624a84cda8b0db373a008e435962c7",
+    "paperclip.js": "d479d4f510295077b8904645e161a527531233a688760a80cca8db9ae01f3b02",
+    "paperclip-runtime.js": "2df24aee67ca6a5cc813e1f87324f51a72f6a104757daed97a09cbbcb63626d4",
+    "packages/paperclip-runner/src/backends/runtime-context.ts": "e7c46e81cc9c93f9a4f805b5091ef08c59ea70c62f208cfda70d6edeed363898",
+    "packages/paperclip-runner/src/contracts/runtime-context.ts": "a17e30a69f3cb38fba00c37e1a06753d723651a004e6050c9e77ae202a61264b"
+  },
+  "limitations": [
+    "This directly exercises actual shipped wrapper launch helper and extension plus actual SDK AgentSession native model-request boundary. It does not launch the full ACPX/PRP wrapper process or call a network provider.",
+    "Uses a synthetic in-memory non-provider credential to pass native SDK auth preflight; no real credentials loaded.",
+    "Earlier saved user messages retain historical root text. The fresh system prompt and latest task constraints identify the current root and explicitly supersede earlier guidance.",
+    "Shared composition and host-to-environment binding are separately established by source inspection and existing tests; no end-to-end paid Product claim."
+  ],
+  "schema": "paperclip.pi-model-prompt-delivery-proof.v1",
+  "recordedAt": "2026-09-29",
+  "runtimeArtifactSource": "edf14a067ee7fba8d472d3cd9143f724fd51f4b5",
+  "runtimeArtifactProviderPackDigest": "sha256:fcf9802008195797fc5e8f69954ff6d238a3b7518bd21af12e625d7549462145",
+  "profileDigest": "sha256:d2b470e940115a1cd8a31cd5d2ddde2837912e965d3475deede09d67bff6346f",
+  "runtimeArtifactRelation": "The v6 wrapper helper and extension bytes are unchanged by the later host-side startup optimization. Shared composition was imported from the diagnostic EDF build; current source behavior is unchanged.",
+  "sanitization": "Only versions, source/artifact hashes, request counts, assertion outcomes and limitations are retained. Full prompts, custom entry text, session files and private paths are excluded."
+}

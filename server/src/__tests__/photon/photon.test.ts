@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Client, Server, ServerCredentials, credentials } from "@grpc/grpc-js";
-import { IMessageError } from "@photon-ai/advanced-imessage";
+import { IMessageError, type LiveEvent } from "@photon-ai/advanced-imessage";
 import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
 import {
   PhotonCloudClient,
@@ -26,7 +26,11 @@ import {
   parsePhotonQuestionAnswer,
   photonResponseCommand,
 } from "../../services/photon/interactions.js";
-import { photonFixture, photonEvent, stream } from "./fixture.js";
+import { photonFixture, photonEvent as livePhotonEvent, stream } from "./fixture.js";
+
+// The fixture always builds a message event. Its declared return type is the wider LiveEvent.
+const photonEvent = (...args: Parameters<typeof livePhotonEvent>) =>
+  livePhotonEvent(...args) as Extract<LiveEvent, { message: unknown }>;
 import {
   downloadPhotonAttachment,
   takePhotonCompanion,
@@ -582,7 +586,7 @@ describe("Photon native prompts and media", () => {
       }),
     ).rejects.toThrow("does not belong");
     const wrongMessage = await f.client.messages.get("different-message");
-    wrongMessage.content.attachments = [{ guid: "a" }] as typeof wrongMessage.content.attachments;
+    Object.assign(wrongMessage.content, { attachments: [{ guid: "a" }] });
     f.client.messages.get.mockResolvedValueOnce(wrongMessage);
     await expect(downloadPhotonAttachment(f.adapter.client, "line", {
       kind: "photon_attachment",

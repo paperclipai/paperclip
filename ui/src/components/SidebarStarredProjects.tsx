@@ -1,12 +1,10 @@
 import { useCallback, useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, LogOut, MoreHorizontal, Star } from "lucide-react";
+import { Lock, Loader2, LogOut, MoreHorizontal, Star } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
-import { projectsApi } from "../api/projects";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
-import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import {
   isStarred,
@@ -27,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Project } from "@paperclipai/shared";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 // Sidebar star reveals with the row's own group, not the shared unnamed group.
 const STAR_ROW_REVEAL =
@@ -46,8 +45,7 @@ export function SidebarStarredProjects() {
   const location = useLocation();
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
@@ -130,6 +128,7 @@ export function SidebarStarredProjects() {
           >
             <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
             <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
+            {!rail && project.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
             {!rail && project.pauseReason === "budget" ? (
               <BudgetSidebarMarker title="Project paused by budget" />
             ) : null}

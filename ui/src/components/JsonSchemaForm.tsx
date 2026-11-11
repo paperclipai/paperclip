@@ -164,7 +164,19 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
     case "object": {
       if (!schema.properties) return {};
       const obj: Record<string, unknown> = {};
+      const requiredProperties = new Set(schema.required ?? []);
       for (const [key, propSchema] of Object.entries(schema.properties)) {
+        // An optional object with no explicit default must stay absent until
+        // the user supplies a value. Materializing `{}` here makes recursive
+        // validation require all of its children even when the object was
+        // never touched.
+        if (
+          resolveType(propSchema) === "object" &&
+          !requiredProperties.has(key) &&
+          propSchema.default === undefined
+        ) {
+          continue;
+        }
         const def = getDefaultForSchema(propSchema);
         if (def !== undefined) obj[key] = def;
       }
@@ -286,7 +298,12 @@ export function validateJsonSchemaForm(
     }
 
     // Recurse into objects
-    if (type === "object" && propSchema.properties && typeof value === "object" && value !== null) {
+    if (
+      type === "object" &&
+      propSchema.properties &&
+      typeof value === "object" &&
+      value !== null
+    ) {
       Object.assign(
         errors,
         validateJsonSchemaForm(propSchema, value as Record<string, unknown>, fieldPath),
@@ -328,8 +345,16 @@ export function validateJsonSchemaForm(
 export function getDefaultValues(schema: JsonSchemaNode): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const properties = schema.properties ?? {};
+  const requiredProperties = new Set(schema.required ?? []);
 
   for (const [key, propSchema] of Object.entries(properties)) {
+    if (
+      resolveType(propSchema) === "object" &&
+      !requiredProperties.has(key) &&
+      propSchema.default === undefined
+    ) {
+      continue;
+    }
     const def = getDefaultForSchema(propSchema);
     if (def !== undefined) {
       result[key] = def;

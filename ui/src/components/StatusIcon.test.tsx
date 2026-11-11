@@ -108,6 +108,16 @@ describe("StatusIcon — glyph size (PAP-243a)", () => {
     expect(html).toContain('width="16"');
     expect(html).toContain('height="16"');
   });
+
+  it("can place the default glyph in a larger layout footprint without resizing it", () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon status="todo" glyphContainerClassName="size-6" showLabel />,
+    );
+    expect(html).toContain('data-status-glyph-container="true"');
+    expect(html).toContain('class="size-6"');
+    expect(html).toContain('width="16"');
+    expect(html).toContain('height="16"');
+  });
 });
 
 
@@ -126,5 +136,22 @@ describe("Slack idle status presentation", () => {
 
   it("preserves an explicit terminal outcome even with stale waiting data", () => {
     expect(renderToStaticMarkup(<IssueStatusBadge status="done" externalConversationState="waiting" />)).toContain(">Done<");
+  });
+});
+
+
+describe("Monitoring presentation", () => {
+  it("shows a static blue clock while retaining the canonical status picker", () => {
+    const html = renderToStaticMarkup(<StatusIcon status="in_progress" displayStatus="monitoring" showLabel onChange={() => {}} />);
+    expect(html).toContain("lucide-clock");
+    expect(html).toContain("var(--status-task-icon-monitoring)");
+    expect(html).toContain("Monitoring");
+    expect(html).not.toContain("animate-spin");
+  });
+  it("keeps terminal and review states ahead of stale Monitoring snapshots", () => {
+    for (const status of ["done", "cancelled", "blocked", "in_review"]) {
+      const html = renderToStaticMarkup(<StatusIcon status={status} displayStatus="monitoring" showLabel />);
+      expect(html).not.toContain("lucide-clock");
+    }
   });
 });

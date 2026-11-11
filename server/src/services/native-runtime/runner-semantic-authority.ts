@@ -1,3 +1,11 @@
+import { fastResponseHistoryBody } from "@paperclipai/shared";
+import { readTaskQuestionContext } from "../issue-question-context.js";
+import { isConversation } from "../agent-conversations.js";
+import {
+  isLowTrustQuarantined,
+  resolveActorSourceTrustForIssue,
+  sanitizeQuarantinedCommentForHigherTrust,
+} from "../source-trust.js";
 import { and, desc, eq, isNull } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -124,6 +132,9 @@ export class PaperclipRunnerSemanticAuthority {
                   title: context.agent.title,
                   capabilities: context.agent.capabilities,
                 },
+                taskQuestionContext: await readTaskQuestionContext(this.#db, {
+                  ...this.#binding, conversationMode: isConversation(context.issue),
+                }),
                 activeTask: {
                   id: context.issue.id,
                   identifier: context.issue.identifier,
@@ -150,6 +161,8 @@ export class PaperclipRunnerSemanticAuthority {
               .select({
                 id: issueComments.id,
                 body: issueComments.body,
+                origin: issueComments.origin,
+                sourceTrust: issueComments.sourceTrust,
                 authorAgentId: issueComments.authorAgentId,
                 authorUserId: issueComments.authorUserId,
                 createdAt: issueComments.createdAt,
@@ -164,8 +177,19 @@ export class PaperclipRunnerSemanticAuthority {
               )
               .orderBy(desc(issueComments.createdAt))
               .limit(boundedLimit(input.limit));
+            const readerSourceTrust = await resolveActorSourceTrustForIssue({
+              db: this.#db,
+              issue: context.issue,
+              actor: { actorType: "agent", actorId: context.agent.id, agentId: context.agent.id, runId: context.run.id },
+            });
+            const comments = rows.reverse().map(row => {
+              const comment = isLowTrustQuarantined(readerSourceTrust)
+                ? row
+                : sanitizeQuarantinedCommentForHigherTrust(row);
+              return { ...comment, body: fastResponseHistoryBody(comment) };
+            });
             return {
-              value: jsonValue({ comments: rows.reverse() }),
+              value: jsonValue({ comments }),
               references: [{ kind: "task", id: context.issue.id }],
             };
           }

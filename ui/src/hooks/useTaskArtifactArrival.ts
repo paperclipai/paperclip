@@ -16,19 +16,18 @@ interface TaskArtifactArrivalOptions {
   onArrival: () => void;
 }
 
-/** Watch the same durable objects as the Artifacts tab, excluding its initial load. */
+/** Register the same durable objects as the Artifacts tab, including history. */
 export function useTaskArtifactArrival({
   issueId, attachments, workProducts, documents, onArrival,
 }: TaskArtifactArrivalOptions) {
   const observed = useRef<{
     issueId: string | undefined;
-    loaded: Set<string>;
     ids: Set<string>;
-  }>({ issueId: undefined, loaded: new Set(), ids: new Set() });
+  }>({ issueId: undefined, ids: new Set() });
 
   useEffect(() => {
     if (observed.current.issueId !== issueId) {
-      observed.current = { issueId, loaded: new Set(), ids: new Set() };
+      observed.current = { issueId, ids: new Set() };
     }
     if (!issueId) return;
 
@@ -46,14 +45,12 @@ export function useTaskArtifactArrival({
     };
     const state = observed.current;
     let arrived = false;
-    for (const [source, ids] of Object.entries(sources)) {
+    for (const ids of Object.values(sources)) {
       if (!ids) continue;
-      const loaded = state.loaded.has(source);
       for (const id of ids) {
-        if (loaded && !state.ids.has(id)) arrived = true;
+        if (!state.ids.has(id)) arrived = true;
         state.ids.add(id);
       }
-      state.loaded.add(source);
     }
     // Keep observed IDs across removals and failed refetches. A repeated
     // snapshot or a revision update must not take the user's tab selection.

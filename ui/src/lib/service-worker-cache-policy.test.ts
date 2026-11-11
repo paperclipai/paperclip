@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 
-function worker() {
+function worker(development = false) {
   const handlers = new Map<string, (event: unknown) => void>();
   const put = vi.fn();
   const match = vi.fn();
   const remove = vi.fn().mockResolvedValue(true);
   const fetch = vi.fn().mockResolvedValue(new Response("public asset"));
-  vm.runInNewContext(readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8"), {
+  const source = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
+  vm.runInNewContext(development ? source : source.replace("__PAPERCLIP_BUILD_ID__", "fixture-production"), {
     self: { location: { origin: "https://example.test" }, addEventListener: (type: string, fn: (event: unknown) => void) => handlers.set(type, fn) },
     URL, Response, fetch, caches: { keys: async () => ["paperclip-old", "paperclip-current"], open: async () => ({ put, delete: remove, match }), match },
   });
@@ -22,6 +23,26 @@ function worker() {
 }
 
 describe("service worker privacy boundaries", () => {
+  it.each([
+    "/@fs/tmp/runner/vite-cache/deps/@assistant-ui_react.js?v=fixture",
+    "/@vite/client", "/@id/__x00__virtual:module", "/src/main.tsx", "/node_modules/.vite/deps/react.js",
+  ])("leaves conditional Vite module request %s to the browser", pathname => {
+    const w = worker();
+    w.fetch.mockResolvedValue(new Response(null, { status: 304 }));
+    expect(w.request("default", pathname)).not.toHaveBeenCalled();
+    expect(w.fetch).not.toHaveBeenCalled();
+    expect(w.put).not.toHaveBeenCalled();
+    expect(w.match).not.toHaveBeenCalled();
+  });
+  it("leaves development navigation and module revalidation to the browser", () => {
+    const w = worker(true);
+    for (const path of ["/RUN/issues/RUN-1", "/src/main.tsx", "/@fs/vite-cache/deps/react.js?v=1"]) {
+      expect(w.request("default", path)).not.toHaveBeenCalled();
+    }
+    expect(w.fetch).not.toHaveBeenCalled();
+    expect(w.put).not.toHaveBeenCalled();
+    expect(w.match).not.toHaveBeenCalled();
+  });
   it("bypasses both caching and offline fallback for a no-store request outside /api", () => {
     const w = worker();
     expect(w.request("no-store")).not.toHaveBeenCalled();

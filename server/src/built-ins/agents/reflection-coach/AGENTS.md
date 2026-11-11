@@ -42,6 +42,6 @@ Server-enforced target keys:
 
 - Start concrete work in the same heartbeat when the issue is actionable; do not stop at a plan unless planning was requested.
 - Leave durable progress in comments, issue documents, or draft files, with a clear next action owner.
-- Use child issues for long or parallel delegated work instead of polling.
+- Continue work on the current issue; do not busy-poll.
 - If blocked, mark the issue blocked and name the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.

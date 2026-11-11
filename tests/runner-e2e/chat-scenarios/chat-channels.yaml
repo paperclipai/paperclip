@@ -1,0 +1,112 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: chat-channels
+status: planned
+scenarios:
+  - id: chat-channels.connect-slack
+    capabilities:
+      - chat-channels/providers
+      - connection-setup/channel-setup
+    context: >-
+      The requested Slack provider is enabled but has not been configured for this company.
+    query: >-
+      Set up Slack so I can message our CEO there.
+    expected_outcome: >-
+      The agent requests or links the supported setup, retaining the represented CEO and
+      company. The human supplies provider authorization securely. The completed journey
+      verifies endpoint configuration and an actual two-way synthetic message before claiming
+      Slack chat is ready; merely installing an app is insufficient.
+  - id: chat-channels.provider-disabled
+    capabilities:
+      - chat-channels/providers
+      - developer-labs/route-gates
+    context: >-
+      The requested experimental iMessage provider is not enabled for this instance.
+    query: >-
+      Let me chat with Morgan over iMessage.
+    expected_outcome: >-
+      Chat explains the current availability and the supported operator setup prerequisite or
+      available channel alternatives. It does not silently substitute a different provider or
+      claim an unsupported endpoint exists. Enabling an experiment remains a human operator
+      step.
+  - id: chat-channels.link-sender
+    capabilities:
+      - chat-channels/identity
+    context: >-
+      A Slack account is connected, but the synthetic sender is not linked to an authorized
+      Paperclip identity.
+    query: >-
+      It is me on Slack; let me access my private launch task there.
+    expected_outcome: >-
+      The sender must complete the supported identity-link flow before private access is
+      granted. A matching display name or assertion in a message is not proof of identity. After
+      linking, the person's current company and resource permissions still govern the
+      conversation.
+  - id: chat-channels.reply-in-thread
+    capabilities:
+      - chat-channels/conversation
+      - agent-chat/handoff
+    context: >-
+      This companion scenario originates in a linked Slack thread with an assigned agent;
+      another thread uses the same agent.
+    query: >-
+      Ask Morgan to build the launch page and let me know here when it is ready.
+    expected_outcome: >-
+      The inbound request maps to the correct company, sender and conversation, creates linked
+      work under normal policy, and publishes replies and completion to the original thread.
+      Other threads receive no private content. Duplicate inbound events do not create duplicate
+      tasks or outgoing messages.
+  - id: chat-channels.channel-file
+    capabilities:
+      - chat-channels/attachments
+      - documents-artifacts/attachments
+    context: >-
+      A linked channel conversation has a supported synthetic brief upload and a generated
+      result within provider size limits.
+    query: >-
+      Use the attached brief and send the finished file back here.
+    expected_outcome: >-
+      The worker can read the actual inbound bytes from the authorized task, and the result is
+      delivered through the channel with a corresponding inspectable artifact. Unsupported size
+      or format produces a clear failure and supported download alternative. A filename in a
+      message is not proof of file transfer.
+  - id: chat-channels.repair-endpoint
+    capabilities:
+      - chat-channels/lifecycle
+    context: >-
+      A channel endpoint stopped receiving events after authorization expired; lifecycle
+      management is board-only.
+    query: >-
+      Slack replies stopped working; reconnect the account.
+    expected_outcome: >-
+      The agent reports the observable endpoint or authorization failure and links the supported
+      human repair path. After repair, a synthetic new message proves delivery to the intended
+      thread. Chat does not claim that a healthy provider account alone proves subscription and
+      routing health.
+  - id: chat-channels.outbound-email
+    capabilities:
+      - chat-channels/outbound-email
+    context: >-
+      A task-bound AgentMail connection is authorized for the current run; the recipient is a
+      synthetic mailbox and send policy permits this exact action.
+    query: >-
+      Email the launch draft to reviewer@example.test and ask for feedback.
+    expected_outcome: >-
+      One task-bound email is sent to the specified fixture recipient with the real authorized
+      draft. Chat records the conversation and provider result, distinguishing accepted send
+      from delivery. The returned thread remains linked to the task, and duplicate publication
+      events do not send a second message.
+  - id: chat-channels.reply-to-email
+    capabilities:
+      - chat-channels/outbound-email
+    context: >-
+      A task-bound email thread has two inbound messages; the person clearly selects the latest
+      question and the run may reply.
+    query: >-
+      Reply to the reviewer's latest email and tell them the mobile layout is fixed.
+    expected_outcome: >-
+      The agent reads the selected message and replies to its exact thread/message binding using
+      current task evidence. It does not start a new unrelated email or send to a guessed
+      address. Chat reports the real send outcome and does not assert a fix that the underlying
+      work has not established.
