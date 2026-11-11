@@ -246,7 +246,8 @@ export async function preparePluginWorkspace(
           ),
         )
     : [];
-  if (prior && prior.providerType !== "plugin" && !priorBinding && !prior.metadata?.workspaceProviderOwner) return null;
+  // A fresh attempt starts from the project source, so storage the provider does not own does not decide it.
+  if (!input.fresh && prior && prior.providerType !== "plugin" && !priorBinding && !prior.metadata?.workspaceProviderOwner) return null;
   const owner = priorBinding?.pluginId ?? prior?.metadata?.workspaceProviderOwner ??
     (!existing && input.selectedProviderPluginId !== undefined ? input.selectedProviderPluginId :
       !existing && project ? (await effectiveProjectWorkspacePolicy(db, input.companyId, project.executionWorkspacePolicy, false))?.storageProviderPluginId : null);
