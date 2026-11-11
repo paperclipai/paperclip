@@ -48,6 +48,7 @@ import {
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
+import { readManagedCodexRouting } from "./codex-routed-credentials.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import { checkCodexCliVersionForModel } from "./cli-version.js";
 
@@ -609,9 +610,23 @@ export async function testCodexAcpEnvironment(
       companyId: ctx.companyId,
       configuredCodexHome,
       configuredApiKey,
+      managedRouting: readManagedCodexRouting(config),
     });
 
-    if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
+    if (credentialReadiness.authMode === "routed") {
+      checks.push(credentialReadiness.ready
+        ? {
+          code: "codex_acp_routed_connection",
+          level: "info",
+          message: "Codex ACP authenticates through the AI connection's provider routing.",
+        }
+        : {
+          code: "codex_acp_credentials_missing",
+          level: "warn",
+          message: "The AI connection's routing requires a provider key, and PAPERCLIP_AI_PROVIDER_KEY is empty.",
+          hint: "Reconnect the AI connection with a valid key.",
+        });
+    } else if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
       checks.push({
         code: "codex_acp_openai_api_key_detected",
         level: "info",
@@ -651,6 +666,7 @@ export async function testCodexAcpEnvironment(
       companyId: ctx.companyId,
       configuredCodexHome,
       configuredApiKey: configApiKey,
+      managedRouting: readManagedCodexRouting(config),
     });
     if (!credentialReadiness.ready) {
       // Emit the neutral canonical check so the user interface can decide login

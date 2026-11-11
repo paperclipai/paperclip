@@ -89,6 +89,7 @@ import {
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
 } from "./codex-home.js";
+import { readManagedCodexRouting, type CodexManagedRouting } from "./codex-routed-credentials.js";
 import {
   CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
   CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,
@@ -390,6 +391,7 @@ export async function assertCodexCredentialsLaunchable(input: {
   companyId: string;
   configuredCodexHome: string | null;
   configuredApiKey: string | null;
+  managedRouting?: CodexManagedRouting | null;
   effectiveCodexHome: string;
   target: MaybeResolvedExecutionTarget;
   cwd: string;
@@ -401,8 +403,17 @@ export async function assertCodexCredentialsLaunchable(input: {
     companyId: input.companyId,
     configuredCodexHome: input.configuredCodexHome,
     configuredApiKey: input.configuredApiKey,
+    managedRouting: input.managedRouting,
   });
   if (!credentialReadiness.managed || credentialReadiness.ready) return;
+
+  if (credentialReadiness.authMode === "routed") {
+    throw new Error(
+      `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+        `(the AI connection's routing requires a provider key and PAPERCLIP_AI_PROVIDER_KEY is empty). ` +
+        `Reconnect the AI connection with a valid key.`,
+    );
+  }
 
   const targetIsSandbox =
     input.target?.kind === "remote" && input.target.transport === "sandbox";
@@ -758,6 +769,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
+    managedRouting: readManagedCodexRouting(config),
     effectiveCodexHome,
     target: executionTarget,
     cwd,

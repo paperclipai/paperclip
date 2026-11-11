@@ -6,6 +6,7 @@ import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-u
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { buildCodexAuthInboundProvision, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME } from "./codex-auth-merge-scripts.js";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { isManagedRoutingReady, type CodexManagedRouting } from "./codex-routed-credentials.js";
 import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
@@ -910,7 +911,7 @@ export async function reconcileManagedCodexHome(
   return { status, home: resolved };
 }
 
-export type CodexCredentialAuthMode = "api" | "subscription";
+export type CodexCredentialAuthMode = "api" | "subscription" | "routed";
 
 export interface CodexCredentialReadinessInput {
   env?: NodeJS.ProcessEnv;
@@ -919,6 +920,7 @@ export interface CodexCredentialReadinessInput {
   configuredCodexHome: string | null | undefined;
   /** Resolved `config.env.OPENAI_API_KEY` value (after secret resolution). */
   configuredApiKey: string | null | undefined;
+  managedRouting?: CodexManagedRouting | null;
 }
 
 export interface CodexCredentialReadiness {
@@ -974,6 +976,11 @@ export async function evaluateCodexCredentialReadiness(
 
   if (configuredApiKey) {
     return { managed: true, authMode: "api", ready: true, effectiveHome, sharedSourceHome };
+  }
+
+  if (input.managedRouting) {
+    const ready = isManagedRoutingReady(input.managedRouting);
+    return { managed: true, authMode: "routed", ready, effectiveHome, sharedSourceHome };
   }
 
   const ready =

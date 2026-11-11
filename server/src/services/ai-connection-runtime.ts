@@ -603,6 +603,7 @@ export async function prepareManagedAiRuntime(
         throw error;
       }
     })().finally(() => { cleanupRunning = undefined; });
+    const { managedAiRouting: _configuredRouting, managedAiConnection: _configuredConnection, ...configured } = input.config;
     return {
       sessionIdentity,
       ...(retainedCleanupScope ? { retainedCleanupScope } : {}),
@@ -611,7 +612,7 @@ export async function prepareManagedAiRuntime(
           versionSelector: credentialRef.versionSelector ?? "latest" } satisfies ManagedAiCredentialWritebackBinding,
       } : {}),
       config: {
-        ...input.config,
+        ...configured,
         ...projected?.config,
         ...(routing ? { managedAiRouting: routing } : {}),
         env,

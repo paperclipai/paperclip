@@ -622,6 +622,47 @@ describe("codex_local ACP lane", () => {
     );
   });
 
+  it.each([
+    ["a routed local connection that needs no credential", "none", "", "info", "codex_acp_routed_connection"],
+    ["a routed gateway connection whose routing carries the provider key", "bearer", "gw-test-key", "info", "codex_acp_routed_connection"],
+    ["a routed gateway connection whose provider key is empty", "bearer", "", "warn", "codex_acp_credentials_missing"],
+  ])("reports %s from the routing, not the host login", async (_label, auth, providerKey, level, code) => {
+    const root = await makeTempRoot("paperclip-codex-acp-routed-auth-");
+    const commandPath = path.join(root, "bin", "codex-acp");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const managedAgentHome = path.join(
+      root, "paperclip-home", "instances", "test", "companies", "company-1", "agents", "agent-1", "codex-home",
+    );
+    await fs.mkdir(path.dirname(commandPath), { recursive: true });
+    await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    setNodeVersion("v24.11.0");
+    process.env.CODEX_HOME = sharedCodexHome;
+    delete process.env.OPENAI_API_KEY;
+
+    const result = await testCodexAcpEnvironment({
+      adapterType: "codex_local",
+      companyId: "company-1",
+      config: {
+        engine: "acp",
+        cwd: root,
+        agentCommand: commandPath,
+        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "", PAPERCLIP_AI_PROVIDER_KEY: providerKey },
+        managedAiRouting: { kind: auth === "none" ? "local" : "gateway", protocol: "responses", auth, models: [] },
+        managedAiConnection: { identity: "grant-1:shared:0000" },
+      },
+    });
+
+    expect(result.checks).toContainEqual(expect.objectContaining({ code, level }));
+    if (level === "warn") {
+      expect(result.checks).toContainEqual(
+        expect.objectContaining({ code, message: expect.stringContaining("PAPERCLIP_AI_PROVIDER_KEY") }),
+      );
+    } else {
+      expect(result.checks).not.toContainEqual(expect.objectContaining({ code: "codex_acp_credentials_missing" }));
+    }
+  });
+
   it("explains the Paperclip server credential boundary when ACP auth is missing", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-missing-auth-");
     const commandPath = path.join(root, "bin", "codex-acp");
