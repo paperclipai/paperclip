@@ -3,12 +3,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 
-// Integration tests for scripts/restore-swap-db.sh against a throwaway
-// PostgreSQL container. The swap is two `ALTER DATABASE ... RENAME` statements
-// run in one transaction, so the interesting cases are the ones in between: a
-// session lost after the first rename, a stray connection that would block a
-// rename, and a deployment already stranded by an earlier hand-typed attempt.
-
 const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const scriptPath = join(repoRoot, "scripts", "restore-swap-db.sh");
 const image = process.env.RESTORE_SWAP_TEST_IMAGE ?? "postgres:17-alpine";
@@ -82,6 +76,21 @@ test("script is executable and parses", () => {
   execFileSync("bash", ["-n", scriptPath]);
 });
 
+test("--help prints the help on stdout and exits 0; a bad argument prints it on stderr and exits 2", () => {
+  const help = spawnSync("bash", [scriptPath, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  for (const opt of ["--live", "--restored", "--prior", "--fresh", "--rollback"]) {
+    assert.match(help.stdout, new RegExp(`^\\s*${opt}\\b`, "m"), `help should list ${opt}`);
+  }
+  const bad = spawnSync("bash", [scriptPath, "--bogus"], { encoding: "utf8" });
+  assert.equal(bad.status, 2, bad.stderr);
+  assert.match(bad.stderr, /unknown argument: --bogus/);
+  assert.match(bad.stderr, /^Usage:/m);
+  const both = spawnSync("bash", [scriptPath, "--fresh", "--rollback", "--", "psql"], { encoding: "utf8" });
+  assert.equal(both.status, 2, both.stderr);
+  assert.match(both.stderr, /cannot be combined/);
+});
+
 test("happy path: restored becomes live, live becomes prior, restored name is gone", { skip: !dockerAvailable && "docker unavailable" }, () => {
   resetDatabases();
   createWithMarker("paperclip", "old");
@@ -99,8 +108,6 @@ test("a stray connection on the restored database is terminated, not fatal", { s
   resetDatabases();
   createWithMarker("paperclip", "old");
   createWithMarker("paperclip_restored", "new");
-  // A psql left open from the verify step is the usual reason the second
-  // rename fails. Hold one open for the duration of the swap.
   execFileSync("docker", [
     "exec", "-d", container, "psql", "-U", "paperclip", "-d", "paperclip_restored", "-c", "select pg_sleep(120)",
   ]);
@@ -122,9 +129,6 @@ test("session lost between the two renames: nothing is renamed", { skip: !docker
   createWithMarker("paperclip", "old");
   createWithMarker("paperclip_restored", "new");
 
-  // The fault hook kills the swap's own server session after the first rename
-  // and before the second — SSH loss or a killed client at the worst moment.
-  // No client-side cleanup runs; the server rolls the transaction back.
   const { status, out } = runSwap([], { RESTORE_SWAP_TEST_FAULT: "between-renames" });
   assert.notEqual(status, 0, out);
   assert.match(out, /did not commit, so nothing was renamed/);
@@ -183,4 +187,43 @@ test("database names are configurable", { skip: !dockerAvailable && "docker unav
   assert.deepEqual(databases(), ["paperclip_a", "paperclip_c"]);
   assert.equal(marker("paperclip_a"), "new");
   assert.equal(marker("paperclip_c"), "old");
+});
+
+test("--fresh renames the restored database into place on a cluster with no live database", { skip: !dockerAvailable && "docker unavailable" }, () => {
+  resetDatabases();
+  createWithMarker("paperclip_restored", "new");
+
+  const plain = runSwap([]);
+  assert.notEqual(plain.status, 0, plain.out);
+  assert.match(plain.out, /re-run with --fresh/);
+  assert.deepEqual(databases(), ["paperclip_restored"]);
+
+  const { status, out } = runSwap(["--fresh"]);
+  assert.equal(status, 0, out);
+  assert.match(out, /FRESH TARGET READY/);
+  assert.deepEqual(databases(), ["paperclip"]);
+  assert.equal(marker("paperclip"), "new");
+});
+
+test("--fresh refuses when a live database exists, and touches nothing", { skip: !dockerAvailable && "docker unavailable" }, () => {
+  resetDatabases();
+  createWithMarker("paperclip", "live");
+  createWithMarker("paperclip_restored", "new");
+
+  const { status, out } = runSwap(["--fresh"]);
+  assert.notEqual(status, 0, out);
+  assert.match(out, /not a fresh target/);
+  assert.deepEqual(databases(), ["paperclip", "paperclip_restored"]);
+  assert.equal(marker("paperclip"), "live");
+});
+
+test("--fresh refuses a stranded prior copy and points at --rollback", { skip: !dockerAvailable && "docker unavailable" }, () => {
+  resetDatabases();
+  createWithMarker("paperclip_prior", "old");
+  createWithMarker("paperclip_restored", "new");
+
+  const { status, out } = runSwap(["--fresh"]);
+  assert.notEqual(status, 0, out);
+  assert.match(out, /--rollback/);
+  assert.deepEqual(databases(), ["paperclip_prior", "paperclip_restored"]);
 });

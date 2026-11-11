@@ -266,6 +266,8 @@ database back depends on how its tar was taken:
   major version 18 or newer, the embedded server's version, with steps 3 to 5.
   Then set `DATABASE_URL` so Paperclip uses it instead of the embedded one. This
   moves the deployment to external PostgreSQL; see [Database](/deploy/database).
+  A new cluster has no `paperclip` database for step 5 to swap out, so step 5
+  uses `--fresh` there.
   Nothing writes a pairing marker for these dumps, so step 4's run-log check
   fails unfinalized transcripts as unbounded unless you pass `--allow-unbound`.
 
@@ -434,12 +436,20 @@ level off is the easiest mistake to make here, and it looks like success until
 something opens a file. Step 4's run-log check is what catches it.
 
 The deployment state directory is the same shape. It holds a `state/` entry, so it
-extracts into the deployment root without stripping:
+extracts into the deployment root without stripping. Move the old `state` aside
+under the same timestamped name, and extract only if the move succeeded:
 
 ```sh
-mv /path/to/deployment/state /path/to/deployment/state.pre-restore
-tar -xzf state-<ts>.tar.gz -C /path/to/deployment
+DEPLOY=/path/to/deployment
+mv -T "$DEPLOY/state" "$DEPLOY/state$PRE" &&
+  tar -xzf state-<ts>.tar.gz -C "$DEPLOY"
 ```
+
+The timestamp keeps a `state.pre-restore-*` from an earlier restore out of the
+way, where a fixed name would make a plain `mv` move the current `state`
+*inside* it. `mv -T` refuses to do that, and `&&` stops the extraction when the
+move fails, so the archive never lands on top of the current tree. Remove the
+old copy in step 6 with the data-directory one.
 
 Now check two things that nothing later will tell you about.
 
@@ -746,6 +756,25 @@ What it does, in order:
 4. **Reads the catalog back** and prints what is there, so `SWAP COMPLETE` is
    a statement about the cluster, not about what was attempted.
 
+**A fresh target has no `paperclip` database to swap out.** This is the case
+when an embedded deployment moves to a new external PostgreSQL. The plain swap
+refuses there, because it cannot keep a rollback copy of a database that does
+not exist. Use `--fresh` instead. It renames `paperclip_restored` to
+`paperclip`, and it refuses if `paperclip` or `paperclip_prior` already
+exists:
+
+```sh
+scripts/restore-swap-db.sh --fresh -- "${PSQL[@]}"
+```
+
+```
+paperclip_restored renamed to paperclip
+FRESH TARGET READY: paperclip is the restored database; there is no prior copy. Present: paperclip
+```
+
+There is no `paperclip_prior` on a fresh target. The rollback is the
+deployment you moved from, so keep it until the board is up.
+
 If a swap was ever typed by hand as two statements and stopped between them,
 the helper recognises the state — `paperclip` absent, `paperclip_prior`
 present — and refuses; put the original back with one command, then retry:
@@ -761,7 +790,8 @@ Verify before you start anything:
   "select datname from pg_database where datname like 'paperclip%'"
 ```
 
-It must list `paperclip` and `paperclip_prior`. Then start Paperclip. It
+It must list `paperclip` and `paperclip_prior`, or only `paperclip` after
+`--fresh`. Then start Paperclip. It
 applies any migrations newer than the dump on boot, which is expected and is why
 the migration journal had to come back intact.
 
@@ -798,6 +828,13 @@ free.
   sudo rm -rf "$PC_DATA"/.pre-restore-*
   # named volume:
   docker run --rm -v "$VOL":/paperclip alpine sh -c 'rm -rf /paperclip/.pre-restore-*'
+  ```
+
+  The deployment state directory's old copy is `$DEPLOY/state.pre-restore-<ts>`.
+  Remove it the same way:
+
+  ```sh
+  rm -rf "$DEPLOY"/state.pre-restore-*
   ```
 
 - Take a fresh backup — after the step above, or it carries the old tree. The
