@@ -20,6 +20,7 @@ export interface WorkloadDefinition {
   title(nonce: string): string;
   description(nonce: string, agents?: WorkloadAgents): string;
   followUp?(nonce: string): string;
+  startComment?(nonce: string): string;
   stopBeforeFollowUp?: boolean;
   /** Files and commands the observer must collect for the T-oracle. */
   collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] | ((nonce: string) => string[]) }>;

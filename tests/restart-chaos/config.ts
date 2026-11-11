@@ -9,6 +9,7 @@ import { parseK15DeployShape, parseK15HoldSeconds } from "./redeploy.js";
 import { validateRecoveryStep } from "./recovery-step-faults.js";
 import { parseLongTurnMinutes } from "./long-turn.js";
 import { isRewakeWorkload } from "./rewake.js";
+import { workloadDefinitions } from "./workloads.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
@@ -380,6 +381,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (storage !== "s3") throw new Error(`${flag} runs volume-free and needs shared object storage: pass --storage s3`);
     if (env !== "daytona") throw new Error(`${flag} runs only with --env daytona: a local workspace blocks a volume-free server`);
     if (options.faults.includes("K14")) throw new Error(`${flag} does not combine with K14 (--upgrade-from)`);
+    const repository = options.workloads.filter(workload => workloadDefinitions[workload].usesRepository);
+    if (repository.length && values.workloads === undefined) options.workloads = options.workloads.filter(workload => !repository.includes(workload));
+    else if (repository.length) throw new Error(`${flag} cannot run ${repository.join(", ")}: the fixture repository is a local_path project source, which a volume-free server refuses; pick other --workloads`);
     options.ephemeralServer = true;
   }
   if (values["storage-faults"] !== undefined) {

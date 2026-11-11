@@ -435,7 +435,9 @@ wave `PAPERCLIP_EPHEMERAL_SERVER`, `PAPERCLIP_DURABLE_AGENT_FILES` and `PAPERCLI
 Postgres as `PAPERCLIP_DATABASE_LISTEN_URL`, a stable `PAPERCLIP_SECRETS_MASTER_KEY` (also written to the config's
 key file inside the wave's temporary root; `assertIsolatedServerEnvironment` admits that one generated key and still
 refuses an inherited key or `PAPERCLIP_SECRETS_MASTER_KEY_FILE`) and `RUN_LOG_S3_*` in the wave's object store. It needs
-`--storage s3` and `--env daytona` (a local workspace blocks a volume-free server) and does not combine with K14.
+`--storage s3` and `--env daytona` (a local workspace blocks a volume-free server) and does not combine with K14. Workloads with the fixture repository (B1, B5,
+F1, R1) are a `local_path` project source, which a volume-free server refuses: they are dropped from the default
+workloads and refused when listed.
 `--k15-fresh-home` implies it (and defaults `--storage` to `s3`): a new instance home without the volume-free mode
 loses the agents' instruction bundles, which staging keeps in Postgres and object storage. Every restart replays the server's startup
 eligibility check, so a replacement that refuses to start fails the wave.
@@ -1031,7 +1033,9 @@ adapter runs on that adapter's one agent: `--adapters codex --tasks 10 --concurr
 agent. Phase 1 ends with the task left `in_progress` (`in_review` would gate completion on a review): the W2 and W2C
 brief asks the agent to report phase 1 with `paperclip_finish` disposition `yielded` and a `response_wake`
 continuation, because an agent that reports `done` closes the task and the wake is never sent (on 2026-11-11 four of
-eight Claude cells tested nothing). Then the harness, as the board, wakes the same task the
+eight Claude cells tested nothing). A passive board wait needs a run that a board comment started, so W2 and W2C
+create the task in `backlog` and start phase 1 with a board comment; without it the yield queues an immediate
+continuation and phase 1 wakes itself. Then the harness, as the board, wakes the same task the
 seeded 0–60 s after that run settled (`rewake.ts`):
 
 - **W2**: a board comment, or, by the task's nonce, a board-scheduled issue monitor due now, so the

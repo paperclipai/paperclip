@@ -82,7 +82,7 @@ const phaseTwo = (nonce: string) => [
 
 const w2Description = (nonce: string) => [
   "This task has two phases.",
-  "Phase 1 (now): write a short brief on why idempotent retries matter for background job queues.",
+  "Phase 1 (when the board's comment asks you to start it): write a short brief on why idempotent retries matter for background job queues.",
   "Save it as this issue's document with key `brief` (title \"Brief\"), in markdown.",
   `It must contain the line \`${briefMarker(nonce)}\` exactly, on its own line, and at least three bullet points that start with "- ".`,
   "Then leave this task `in_progress` and end your turn. Do not mark it done or move it to review in phase 1. Do not create files or other tasks.",
@@ -273,6 +273,8 @@ export function gradeRewake(plan: Pick<TaskPlan, "workload" | "nonce">, artifact
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }
 
+export const rewakeStartComment = (nonce: string) => `Start phase 1 of this task now (${briefMarker(nonce)}).`;
+
 const definition = (id: RewakeWorkload, label: string, description: (nonce: string) => string): WorkloadDefinition => ({
   id,
   label,
@@ -284,6 +286,7 @@ const definition = (id: RewakeWorkload, label: string, description: (nonce: stri
   budgetMs: 20 * 60_000,
   title: nonce => `Chaos ${id} re-wake ${nonce}`,
   description,
+  ...(id === "W2Q" ? {} : { startComment: rewakeStartComment }),
   collect: { documents: ["brief"], files: () => [], commands: [] },
   grade: (nonce, artifacts) => gradeRewake({ workload: id, nonce }, artifacts),
 });

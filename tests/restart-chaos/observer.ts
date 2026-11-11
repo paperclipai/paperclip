@@ -282,13 +282,14 @@ export class TaskObserver {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
         description: definition.description(this.plan.nonce, this.workloadAgents()),
-        status: "todo",
+        status: assign && definition.startComment ? "backlog" : "todo",
         priority: "medium",
         ...(assign ? { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id } : {}),
         ...(definition.usesRepository ? { projectId: this.lab.projectId } : {}),
       });
       this.record.issueId = String(issue.id);
       this.record.identifier = issue.identifier ?? null;
+      if (assign && definition.startComment) await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.startComment(this.plan.nonce) });
       // K14: which build launched the task, so a replay starts it on the same one.
       if (this.supervisor.serverBuild) this.record.serverBuildAtLaunch = this.supervisor.serverBuild;
       this.record.createdAt = Date.now();
