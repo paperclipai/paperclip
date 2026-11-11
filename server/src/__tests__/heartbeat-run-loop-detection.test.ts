@@ -44,7 +44,9 @@ vi.mock("../adapters/index.ts", async () => {
 // The detector is a pure function wrapped in try/catch inside the dispatch path.
 // This seam lets one test force it to throw so we can prove dispatch survives a
 // detector failure, while every other test exercises the real implementation.
-const detectorControl = vi.hoisted(() => ({ failNext: false, calls: 0 }));
+const detectorControl = vi.hoisted(
+  () => ({ failNext: false, calls: 0, blockOn: null as Promise<void> | null }),
+);
 vi.mock("../services/run-loop-detector.ts", async () => {
   const actual =
     await vi.importActual<typeof import("../services/run-loop-detector.ts")>(
@@ -52,8 +54,11 @@ vi.mock("../services/run-loop-detector.ts", async () => {
     );
   return {
     ...actual,
-    detectRunLoops: (input: Parameters<typeof actual.detectRunLoops>[0]) => {
+    detectRunLoops: async (input: Parameters<typeof actual.detectRunLoops>[0]) => {
       detectorControl.calls += 1;
+      // `blockOn` gates detection so a test can hold the detector open and prove
+      // dispatch does not wait for it (the dispatch path awaits detectRunLoops).
+      if (detectorControl.blockOn) await detectorControl.blockOn;
       if (detectorControl.failNext) {
         throw new Error("fixture run-loop detector failure");
       }
@@ -85,6 +90,7 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
   afterEach(async () => {
     await heartbeat.drainActiveRunExecutions();
     detectorControl.failNext = false;
+    detectorControl.blockOn = null;
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
     // Executed runs write to many company-scoped tables; clear them all.
@@ -197,6 +203,21 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
     return { events, unsubscribe };
   }
 
+  // Rejects if `p` does not settle within `ms`. Before the fire-and-forget fix,
+  // dispatch awaited the detector inline, so a gated detector would hang the
+  // resume call and trip this timeout.
+  async function resolvesWithin<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), ms);
+    });
+    try {
+      return await Promise.race([p, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function runStatus(runId: string) {
     return db
       .select({ status: heartbeatRuns.status })
@@ -257,6 +278,46 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
     // No signal is published when detection fails.
     expect(events).toEqual([]);
+  });
+
+  it("dispatches queued runs without waiting on the run-loop detector read", async () => {
+    const { companyId, agentId } = await insertAgent();
+    await insertGroupHistory(companyId, agentId, "issue-A", "issue_commented", LOOP_DETECTOR_THRESHOLD);
+    const { runId } = await insertClaimableRun(companyId, agentId);
+    const { events, unsubscribe } = collectLoopEvents(companyId);
+
+    // Hold the detector open for the whole dispatch pass. The detector read is
+    // an optional check: the resume pass awaits startNextQueuedRunForAgent per
+    // agent in order, so awaiting the detector inline would let this one agent's
+    // slow read stall every later agent. With the fire-and-forget dispatch,
+    // resumeQueuedRunsForAgent must resolve even while the detector is blocked.
+    let releaseDetector!: () => void;
+    detectorControl.blockOn = new Promise<void>((resolve) => {
+      releaseDetector = resolve;
+    });
+
+    try {
+      await resolvesWithin(
+        heartbeat.resumeQueuedRunsForAgent(companyId, agentId),
+        3_000,
+        "dispatch blocked on the run-loop detector read",
+      );
+      // Dispatch returned while the detector was still gated: no signal yet.
+      expect(events).toEqual([]);
+
+      // Releasing the detector lets its (now-tracked) read finish; drain waits
+      // for that background promise, so the signal is observed deterministically.
+      releaseDetector();
+      await heartbeat.drainActiveRunExecutions();
+
+      expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
+      expect(mockAdapterExecute).toHaveBeenCalledOnce();
+      expect(events).toHaveLength(1);
+      expect(events[0].payload).toMatchObject({ agentId, issueId: "issue-A" });
+    } finally {
+      releaseDetector();
+      unsubscribe();
+    }
   });
 
   it("keeps each group's cooldown separate so a new loop still emits while another is cooling down", async () => {

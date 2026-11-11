@@ -52,6 +52,7 @@ export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependenc
     },
     activeRunExecutions: new Set<string>(),
     activeRunExecutionPromises: new Set<Promise<void>>(),
+    activeRunLoopSignalPromises: new Set<Promise<void>>(),
     activeWakeupPromises: new Set<Promise<unknown>>(),
     liveRunExecutions: { has: vi.fn(() => false) },
     isHeartbeatRunTerminalStatus: (status: string | null | undefined) => ["succeeded", "failed", "cancelled", "timed_out"].includes(status ?? ""),

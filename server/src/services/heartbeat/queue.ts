@@ -231,6 +231,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "createAdmissionTransactionScope" | "admitWakeBehindIssueExecution">;
   activeRunExecutions: Set<string>;
   activeRunExecutionPromises: Set<Promise<void>>;
+  activeRunLoopSignalPromises: Set<Promise<void>>;
   activeWakeupPromises: Set<Promise<unknown>>;
   liveRunExecutions: { has(id: string): boolean };
   isHeartbeatRunTerminalStatus: (status: string | null | undefined) => boolean;
@@ -441,6 +442,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     executeRun,
     canStartNewExternalBotWork,
     activeRunExecutionPromises,
+    activeRunLoopSignalPromises,
     activeWakeupPromises,
     instanceSettings,
     getRun,
@@ -2196,7 +2198,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .orderBy(desc(heartbeatRuns.createdAt))
         .limit(LOOP_DETECTOR_RUN_FETCH_LIMIT);
 
-      const signals = detectRunLoops({
+      // detectRunLoops is a synchronous pure function; awaiting its result is a
+      // no-op in production but lets tests swap in an async seam to prove this
+      // detector no longer blocks the shared dispatch path.
+      const signals = await detectRunLoops({
         agentId: agent.id,
         recentRuns,
         now: new Date(),
@@ -2369,7 +2374,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
-      await maybeEmitRunLoopSignal(agent);
+      // Fire-and-forget: the run-loop detector runs an optional, unbounded
+      // history read, and awaiting it on the shared dispatch path would let one
+      // agent's slow read stall every later agent in the same resume pass
+      // (resumeQueuedRunsAfterDrain and resumeFreshQueuedRunsAtStartup await
+      // startNextQueuedRunForAgent per agent in order). maybeEmitRunLoopSignal
+      // catches its own errors, so this promise never rejects. Track it so
+      // drainActiveRunExecutions (graceful shutdown, tests tearing down a shared
+      // database) still waits for the read/publish to finish instead of racing it.
+      const runLoopSignal = maybeEmitRunLoopSignal(agent);
+      activeRunLoopSignalPromises.add(runLoopSignal);
+      void runLoopSignal.finally(() => {
+        activeRunLoopSignalPromises.delete(runLoopSignal);
+      });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
