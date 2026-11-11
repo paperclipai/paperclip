@@ -126,7 +126,10 @@ schema). When it starts a turn, before any provider work, it truncates the file
 and writes a `received` record. Immediately before ACPX writes the turn's first
 `session/prompt` request to the provider, it appends a `dispatched` record and
 fsyncs it. ACPX calls the host's `onAcpMessage("outbound")` hook synchronously
-before it writes the bytes, so a failed journal write aborts the prompt write.
+before it writes the bytes. ACPX 0.22 ignores errors from that hook, so the port
+keeps a failed journal write and throws it from the turn's `assertActive`, which
+ACPX calls next, before the write. A failed journal write therefore aborts the
+prompt write.
 
 The Runner reads the journal only after it acquires the provider lifetime fence,
 which proves that the sidecar and the provider are gone.

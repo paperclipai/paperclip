@@ -1912,7 +1912,7 @@ impl AcpxCommandExecutor {
             "status": if resumed { "resumed" } else { "started" },
             "provider": "acpx",
             "driver": "acpx_runtime",
-            "providerVersion": "0.13.1",
+            "providerVersion": QUALIFIED_ACPX_VERSION,
             "providerSessionId": identity.acpx_record_id,
             "sessionId": identity.agent_session_id,
             "processId": process_id,
@@ -2563,7 +2563,9 @@ impl AcpxCommandExecutor {
         .map_err(|error| {
             DurableRunnerError::invalid(format!("ACPX runtime response failed: {error}"))
         })?;
-        // The sidecar ACK proves delivery, not durable controller settlement.
+        // The sidecar ACK proves the selected response was handed to ACPX as
+        // the provider reply (a permission reply is matched to its exact
+        // outbound message), not durable controller settlement.
         // Retain that fact in the same atomic state write that retires the
         // pending request. A crash before this write expires the old request;
         // a crash after it replays this event, never the provider response.
