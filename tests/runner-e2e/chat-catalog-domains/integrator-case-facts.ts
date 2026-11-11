@@ -34,9 +34,11 @@ export function caseFactsRoles(o: Pick<FactsObservation, "runs" | "workComments"
   return { ceo, continuation: continuation ?? [], review, valid: !!continuation && initial.length === 1 && review.length <= 1 && unexplained.length === 0 };
 }
 /** The setup records the reproduction browser in `browser`; the person's correction is "only on mobile Safari".
- * A corrected value is graded by its normalized tokens: Safari plus a mobile-platform qualifier and nothing
- * else (filler such as "only"/"on" is ignored). "iOS Safari" and "Safari on iPhone/iPad" are the same fact;
- * any other token (desktop, "not", "and", a second browser, the stale "not yet confirmed") is a different one. */
+ * A corrected value names Safari with a mobile-platform qualifier ("iOS Safari" and "Safari on iPhone/iPad" are the
+ * same fact). Its wording is the agent's: explanatory words such as "bug reproduces" are free (gha-43088288923 saved
+ * "Mobile Safari only (bug reproduces only on mobile Safari)" and an allow-list of words rejected it). What changes the
+ * fact is graded instead: another platform or browser named as affected, or a negation or uncertainty such as the
+ * stale "affected device not yet confirmed". */
 const FILLER = new Set(["only", "on", "exclusively", "just", "the", "browser", "browsers", "device", "devices", "affected"]);
 const MOBILE = new Set(["mobile", "ios", "iphone", "ipad", "ipados"]);
 const tokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter(token => token && !FILLER.has(token));
@@ -44,14 +46,16 @@ const tokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter
  * "not on Chrome"): such a clause carries a negation and names a non-mobile platform or browser and
  * no mobile one. Every other clause together must still say exactly mobile Safari. */
 const EXCLUDES = /\b(?:unaffected|excluded|not (?:affected|impacted|reproducible)|(?:does not|doesn't|never) (?:occur|happen|reproduce)|works(?: fine)?|is fine)\b|^\s*(?:not|never|no)\b/i;
-const OTHER_PLATFORM = new Set(["desktop", "mac", "macos", "windows", "linux", "android", "chrome", "firefox", "edge", "laptop"]);
+const OTHER_PLATFORM = new Set(["desktop", "mac", "macos", "windows", "linux", "android", "chrome", "chromium", "firefox", "edge", "opera", "samsung", "laptop"]);
+/** Words that negate or leave the fact open; outside an exclusion clause they make it a different fact. */
+const UNSETTLED = new Set(["not", "no", "never", "unconfirmed", "unknown", "unclear", "unverified", "maybe", "possibly", "except", "excluding", "without", "pending", "tbd"]);
 function mobileSafariOnly(value: unknown) {
   if (typeof value !== "string") return false;
   const clauses = value.split(/[;,()]|\s[-\u2013\u2014]\s|\bbut\b/i).filter(clause => tokens(clause).length > 0);
   const exclusion = (clause: string) => { const t = tokens(clause);
     return EXCLUDES.test(clause) && !/\bnot\s+(?:excluded|unaffected)\b/i.test(clause) && t.some(token => OTHER_PLATFORM.has(token)) && !t.some(token => MOBILE.has(token)); };
   const t = clauses.filter(clause => !exclusion(clause)).flatMap(tokens);
-  return t.includes("safari") && t.some(token => MOBILE.has(token)) && t.every(token => token === "safari" || MOBILE.has(token));
+  return t.includes("safari") && t.some(token => MOBILE.has(token)) && !t.some(token => OTHER_PLATFORM.has(token) || UNSETTLED.has(token));
 }
 function mobilePlatformOnly(value: unknown) { if (typeof value !== "string") return false; const t = tokens(value); return t.length > 0 && t.every(token => MOBILE.has(token)); }
 export function corrected(fields: unknown) {
@@ -137,7 +141,7 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
   const row = state.case as CaseRecord; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   const task = await ctx.input.api.get<Issue>(`/api/issues/${row.workIssueId}`);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v7", expectedRunCount: 6, minimumRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000,
+}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v8", expectedRunCount: 6, minimumRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 }, maximumTerminalStatusCounts: { succeeded: 5 } },
   sourceFiles: ["chat-catalog-domains/integrator-case-facts.ts", "chat-catalog-domains/run-roles.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"], cleanup,
   async act(ctx, state) {
