@@ -192,7 +192,9 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 - Proposed (not built): `DF1`, which fills the sandbox disk to ENOSPC before result copy-back.
 - Built (2026-11-11): `DF1` (`--faults DF1`, `--env daytona`). A test-only server hook makes the
   task's final saves report a full sandbox disk until the harness clears it, instead of filling a
-  real disk. See "Sandbox disk full (DF1)" in `tests/restart-chaos/README.md`.
+  real disk. See "Sandbox disk full (DF1)" in `tests/restart-chaos/README.md`. First wave
+  `w-20261111T131941-s9412` (Daytona, R1, Codex): the task rested with `sandbox_disk_full` and the
+  API offered Retry, but the board showed "Recover saved files" and no Retry button.
 
 ### E: Daytona capacity outage (18 runs, mostly self-healing)
 

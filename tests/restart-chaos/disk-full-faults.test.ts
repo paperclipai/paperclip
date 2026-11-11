@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
-import { DiskFullFaultSeam, diskFullLedger, diskFullRest, receiptsForIssue, withDiskFullCheck } from "./disk-full-faults.js";
+import { DISK_FULL_REST_SETTLE_MS, DiskFullFaultSeam, diskFullLedger, diskFullRest, diskFullRestReady, receiptsForIssue, withDiskFullCheck } from "./disk-full-faults.js";
 import { gradeR3 } from "./grader.js";
 import { planTasks, taskFaultSchedule } from "./scheduler.js";
 import type { TaskRecord } from "./types.js";
@@ -31,7 +31,7 @@ const passing = { verdict: "pass" as const, checks: [] };
 describe("DF1 planning", () => {
   it("is a per-task fault on Daytona that schedules no restart", () => {
     const command = parseCommand(["--env", "daytona", "--daytona-image", IMAGE, "--adapters", "codex", "--workloads", "B1",
-      "--faults", "DF1", "--tasks", "2", "--seed", "7"]);
+      "--faults", "DF1", "--storage", "s3", "--tasks", "2", "--seed", "7"]);
     if (command.mode !== "wave") throw new Error("expected a wave");
     expect(command.options).toMatchObject({ faults: [], diskFullFaults: ["DF1"] });
     const tasks = planTasks(command.options);
@@ -41,7 +41,8 @@ describe("DF1 planning", () => {
 
   it("refuses waves where no sandbox save exists or the plan cannot carry it", () => {
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "B1", "--faults", "DF1"])).toThrow(/--env daytona/);
-    expect(() => parseCommand(["--env", "daytona", "--daytona-image", IMAGE, "--adapters", "codex", "--faults", "DF1", "--storm-minutes", "5"]))
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", IMAGE, "--adapters", "codex", "--workloads", "B1", "--faults", "DF1"])).toThrow(/--storage s3/);
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", IMAGE, "--adapters", "codex", "--faults", "DF1", "--storage", "s3", "--storm-minutes", "5"]))
       .toThrow(/storm/);
   });
 });
@@ -63,6 +64,18 @@ describe("DF1 control file", () => {
     await writeFile(receiptPath, `${JSON.stringify({ issueId: "issue-2", runId: "r", boundary: "final", pid: 1, at: "t" })}\nnot json\n`);
     expect(receiptsForIssue(await seam.receipts(), "issue-2")).toHaveLength(1);
     expect(receiptsForIssue(await seam.receipts(), "issue-1")).toHaveLength(0);
+  });
+});
+
+describe("DF1 clear timing", () => {
+  it("waits at an unfinished rest until the board names the full disk, then up to the settle bound", () => {
+    const disk = { kind: "DF1" as const, armedAt: 1, clearedAt: null, rest: null };
+    const checking = diskFullRest({ status: "blocked", interruption: { canRetry: true }, activeRecoveryAction: { ownerType: "board", evidence: {} } }, 0);
+    expect(diskFullRestReady(disk, checking, 1_000)).toBe(false);
+    expect(diskFullRestReady(disk, checking, 1_000 + DISK_FULL_REST_SETTLE_MS - 1)).toBe(false);
+    expect(diskFullRestReady(disk, diskFullRest(diskFullIssue(), 0), 2_000)).toBe(true);
+    expect(diskFullRestReady(disk, { ...checking, status: "done" }, 2_000)).toBe(true);
+    expect(diskFullRestReady(disk, checking, 1_000 + DISK_FULL_REST_SETTLE_MS)).toBe(true);
   });
 });
 

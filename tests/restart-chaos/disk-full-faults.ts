@@ -52,6 +52,8 @@ export interface DiskFullRecord {
   armedAt: number | null;
   clearedAt: number | null;
   rest: DiskFullRest | null;
+  /** First rest seen while armed; the harness waits for the disk-full verdict from here (DISK_FULL_REST_SETTLE_MS). */
+  firstRestAt?: number;
   /** Faulted saves the server recorded for the task; filled in at grading. */
   appliedSaves?: number;
   armError?: string;
@@ -67,6 +69,21 @@ export function diskFullRest(issue: Json | null, at: number): DiskFullRest {
     retryClass: typeof failure?.retryClass === "string" ? failure.retryClass : null,
     ownerType: typeof action?.ownerType === "string" ? action.ownerType : null,
   };
+}
+
+/**
+ * A board-owned recovery can look like a rest while it is still checking the saved source
+ * ("Recovering saved files…", wave w-20261111T131941-s9412/t02). Clearing the fault there would
+ * let that recovery's own save succeed and hide the disk-full rest. While armed, the harness
+ * keeps waiting at an unfinished rest until the board names `sandbox_disk_full`, up to this long.
+ */
+export const DISK_FULL_REST_SETTLE_MS = 10 * 60_000;
+
+/** True when the harness may record this rest and clear the fault; false keeps watching. */
+export function diskFullRestReady(record: DiskFullRecord, rest: DiskFullRest, now: number): boolean {
+  if (rest.status === "done" || rest.causeLabel === SANDBOX_DISK_FULL_CAUSE) return true;
+  record.firstRestAt ??= now;
+  return now - record.firstRestAt >= DISK_FULL_REST_SETTLE_MS;
 }
 
 /** The control file the server reads and the receipts it writes. */

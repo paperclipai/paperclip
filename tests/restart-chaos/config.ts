@@ -222,7 +222,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (diskFullFaults.length) {
     if (stormMinutes) throw new Error("The disk-full fault (DF1) is planned per task; do not combine it with --storm-minutes");
     // Only a remote sandbox workspace has a save the sandbox disk can refuse; a local run has none.
-    if (env !== "daytona") throw new Error("The disk-full fault (DF1) needs a remote sandbox workspace save; run it with --env daytona");
+    if (env !== "daytona" || values.storage !== "s3") throw new Error("The disk-full fault (DF1) needs a remote sandbox workspace save; run it with --env daytona --storage s3");
     if (providerFaults.length) throw new Error("The disk-full fault (DF1) does not share a wave with provider message faults (PV*)");
   }
   if (providerFaults.length) {

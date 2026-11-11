@@ -21,7 +21,7 @@ import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 import { databaseUrlFromConfig, journeyDriverFor, type JourneyDriver } from "./journey-driver.js";
 import { withLiveStatusEvidence } from "./live-status-evidence.js";
-import { diskFullRest, isDiskFullFault, type DiskFullFaultSeam } from "./disk-full-faults.js";
+import { diskFullRest, diskFullRestReady, isDiskFullFault, type DiskFullFaultSeam } from "./disk-full-faults.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
 const MAX_SNAPSHOT_FILES = 2_000;
@@ -624,14 +624,20 @@ export class TaskObserver {
     }
   }
 
-  /** DF1: at the first rest, record what the board shows, then clear the fault, as a person who freed space. */
-  private async clearDiskFullAtRest(now: number): Promise<void> {
+  /**
+   * DF1: once the rest names the full disk (or the task is done, or the settle bound passed), record
+   * what the board shows, then clear the fault, as a person who freed space. Returns false to keep watching.
+   */
+  private async clearDiskFullAtRest(now: number): Promise<boolean> {
     const record = this.record.diskFull;
-    if (!record || record.armedAt === null || record.clearedAt !== null || !this.record.issueId) return;
-    record.rest = diskFullRest(this.issue, now);
+    if (!record || record.armedAt === null || record.clearedAt !== null || !this.record.issueId) return true;
+    const rest = diskFullRest(this.issue, now);
+    if (!diskFullRestReady(record, rest, now)) return false;
+    record.rest = rest;
     await this.diskFullSeam!.clear(this.record.issueId);
     record.clearedAt = Date.now();
     this.timeline.add("disk_full_fault_cleared", { taskId: this.plan.taskId, rest: record.rest });
+    return true;
   }
 
   private async onRest(sample: TaskSample, now: number) {
@@ -658,7 +664,7 @@ export class TaskObserver {
         return;
       }
     }
-    await this.clearDiskFullAtRest(now);
+    if (!await this.clearDiskFullAtRest(now)) { this.restCandidateSince = null; return; }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
       if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
       this.record.retry = await this.retry(sample, now);

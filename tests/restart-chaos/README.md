@@ -418,7 +418,7 @@ graded. F1 is meaningful with a remote workspace (`--env daytona`, with
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
-  --adapters codex --workloads B1 --faults DF1 --storage s3 --concurrency 2 --tasks 2 --seed 9401
+  --adapters codex --workloads R1 --workspace-repo "$PWD" --faults DF1 --storage s3 --concurrency 2 --tasks 2 --seed 9412
 ```
 
 On staging, saving a run's result back from its sandbox failed because the sandbox disk was full
@@ -436,8 +436,11 @@ hook is one comparison and the save uses its own target.
   a full sandbox returns: every capture command exits 1 with the product's disk-full message, and
   the provider download fails with `No space left on device`. The product's own code does the rest.
   The server appends one receipt per faulted save.
-- **Cleared**: when the task first rests, the harness records what the board shows, removes the id,
-  and then the observer clicks Retry, as a person who freed space would.
+- **Cleared**: when the task rests with the cause `sandbox_disk_full` (or is `done`), the harness
+  records what the board shows, removes the id, and then the observer clicks Retry, as a person who
+  freed space would. A board-owned recovery can look like a rest while it still checks the saved
+  source; the harness keeps waiting there for up to 10 minutes (`DISK_FULL_REST_SETTLE_MS`) before it
+  clears the fault anyway, so that recovery's own save cannot hide the disk-full rest.
 
 The task passes when:
 
@@ -448,9 +451,15 @@ The task passes when:
 
 The ledger line records `diskFull: { faultedSaves, restedDiskFull, retryOffered, retryWorked }`.
 
-DF1 restarts nothing and needs `--env daytona`: a local run has no sandbox workspace save, so the
-harness refuses `--env local`. Use workloads that change workspace files (B1, F1, R1, T1). An
-unchanged workspace skips the capture and fails as `not_applied`.
+DF1 restarts nothing and needs `--env daytona --storage s3`: only a remote workspace has a sandbox
+save, so the harness refuses other setups. Use R1 with `--workspace-repo`. With the chaoscli fixture
+(B1) on Daytona, the workspace is a local worktree synced into the sandbox, so no remote save runs
+and the task fails as `not_applied` (wave `w-20261111T131314-s9411`). An unchanged workspace also
+skips the capture.
+
+The observer clicks Retry in the board UI, as for every other cell. In wave `w-20261111T131941-s9412`
+the disk-full rest showed "Recover saved files", not a Retry button, while the API reported
+`canRetry: true`; R3 records this as `ui_retry_button_missing`.
 
 ## Config faults (CF1–CF3, `config-wave.ts`)
 
