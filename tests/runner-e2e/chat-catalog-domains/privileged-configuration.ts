@@ -73,13 +73,19 @@ const settings = privilegedDefinition("instance-operations.instance-settings", "
     // The person asks to turn Cases on, so it starts off; restore the target's own value afterwards.
     const initial = await casesEnabled(ctx);
     restoreValues.set(ctx, initial);
-    if (initial) await ctx.input.api.patch(endpoint, { enableCases: false });
-    if (await casesEnabled(ctx)) throw new Error("Cases did not start off");
-    const key = await ctx.input.api.postSensitive<{ id: string; token: string }>(`/api/agents/${ctx.input.fixtures.agent.id}/keys`, { name: `catalog-instance-probe-${ctx.input.nonce}` });
-    ctx.input.privateSecrets.push(key.token); probeKeys.set(ctx, key);
-    const read = await probe(ctx, "GET"), patch = await probe(ctx, "PATCH");
-    return { companyPrefix: ctx.input.fixtures.company.issuePrefix, agentReadStatus: read.status, agentPatchStatus: patch.status,
-      agentDenialCode: read.code === patch.code ? read.code : null, gateUnchangedAfterProbe: !(await casesEnabled(ctx)) };
+    // A failed setup returns no state, so the flow skips cleanup: restore here before rethrowing.
+    try {
+      if (initial) await ctx.input.api.patch(endpoint, { enableCases: false });
+      if (await casesEnabled(ctx)) throw new Error("Cases did not start off");
+      const key = await ctx.input.api.postSensitive<{ id: string; token: string }>(`/api/agents/${ctx.input.fixtures.agent.id}/keys`, { name: `catalog-instance-probe-${ctx.input.nonce}` });
+      ctx.input.privateSecrets.push(key.token); probeKeys.set(ctx, key);
+      const read = await probe(ctx, "GET"), patch = await probe(ctx, "PATCH");
+      return { companyPrefix: ctx.input.fixtures.company.issuePrefix, agentReadStatus: read.status, agentPatchStatus: patch.status,
+        agentDenialCode: read.code === patch.code ? read.code : null, gateUnchangedAfterProbe: !(await casesEnabled(ctx)) };
+    } catch (error) {
+      await restoreFixture(ctx).catch(() => undefined);
+      throw error;
+    }
   },
   async act(ctx, state) {
     const remaining = () => remainingPrivilegedObservationBudget(ctx);
@@ -132,7 +138,8 @@ settings.observe = async (ctx, state) => {
   state.finalGateEnabled = await casesEnabled(ctx);
   return { ...o, state };
 };
-settings.cleanup = async ctx => {
+settings.cleanup = async ctx => restoreFixture(ctx);
+async function restoreFixture(ctx: ChatCatalogContext) {
   try {
     const key = probeKeys.get(ctx); if (key) {
       await ctx.input.api.delete(`/api/agents/${ctx.input.fixtures.agent.id}/keys/${key.id}`); probeKeys.delete(ctx);
@@ -141,7 +148,7 @@ settings.cleanup = async ctx => {
     const restore = restoreValues.get(ctx);
     if (restore !== undefined) { await ctx.input.api.patch(endpoint, { enableCases: restore }); restoreValues.delete(ctx); }
   }
-};
+}
 settings.sourceFiles = [...settings.sourceFiles, "chat-catalog-domains/internal-comment-reference.ts", "../../ui/src/pages/InstanceExperimentalSettings.tsx",
   "../../ui/src/components/CasesExperimentalGate.tsx", "../../ui/src/pages/Cases.tsx"];
 export const privilegedConfigurationCases = [settings];
