@@ -19,7 +19,8 @@ setInterval(() => {}, 1000);
   await chmod(executable, 0o700);
   vi.stubEnv("PATH", `${root}${path.delimiter}${process.env.PATH ?? ""}`);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const scan = inspectZip(source, [secret]);
+  let stopped = false;
+  const scan = inspectZip(source, [secret]).then(result => { stopped = true; return result; });
   try {
     const result = await Promise.race([
       scan,
@@ -30,7 +31,7 @@ setInterval(() => {}, 1000);
     clearTimeout(timer);
     vi.unstubAllEnvs();
     const pid = Number(await readFile(`${source}.pid`, "utf8").catch(() => "0"));
-    if (pid > 0) {
+    if (!stopped && pid > 0) {
       try { process.kill(pid, "SIGKILL"); } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
       }
