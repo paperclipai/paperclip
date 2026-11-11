@@ -73,7 +73,7 @@ export function PoolAgentSetup({ companyId, agentId }: { companyId: string; agen
     finally { busyRef.current = false; setBusy(false); }
   }
   return <div className="mx-auto max-w-2xl space-y-6 p-6">
-    <div className="space-y-2"><h1 className="text-lg font-semibold">{agent.data?.name ?? "New agent"} · Pool</h1><p className="text-sm text-muted-foreground">Choose a shared pool of harnesses, models and accounts. This agent uses Paperclip Runner and keeps healthy tasks on their selected member.</p></div>
+    <div className="space-y-2"><h1 className="text-lg font-semibold">{agent.data?.name ?? "New agent"} · Pool</h1><p className="text-sm text-muted-foreground">Choose a shared pool of harnesses, models and accounts. Each member chooses its runner. Healthy tasks keep their selected member.</p></div>
     {loadError ? <p role="alert" className="text-sm text-destructive">{describeError(loadError).body} <Button variant="outline" onClick={() => { void agent.refetch(); void pools.refetch(); void experimental.refetch(); }}>Retry</Button></p> : agent.isPending || pools.isPending || experimental.isPending ? <p>Loading setup…</p> : <>
       {experimental.data?.enableNativeRunner !== true && <p role="alert">Enable Paperclip Runner in instance settings before continuing.</p>}
       <label className="block space-y-2 text-sm"><span>Harness pool</span><NativeSelect aria-label="Harness pool" value={poolId} disabled={busy || experimental.data?.enableNativeRunner !== true} onChange={event => setSelected(event.target.value)}><option value="">Choose a pool</option>{pools.data?.map(item => <option key={item.id} value={item.id} disabled={!item.enabled}>{item.name}{item.enabled ? "" : " (disabled)"}</option>)}</NativeSelect></label>

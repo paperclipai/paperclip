@@ -1,3 +1,4 @@
+import { ExecutionEngineField } from "../../components/ExecutionEngineField";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectPopover } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
 import { MuseRunnerConnection } from "../../components/MuseRunnerConnection";
@@ -200,37 +201,9 @@ export function CodexLocalConfigFields({
 
   return configFieldsForSection(section, (
     <>
-      {!hideEngineChoice && (
-        <Field
-          label="Execution engine"
-          hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it."
-        >
-          <SelectPopover
-            aria-label="Execution engine"
-            value={engine}
-            onValueChange={(next) => {
-              const value =
-                next === "acp"
-                  ? "acp"
-                  : next === "cli"
-                    ? "cli"
-                    : "auto";
-              isCreate
-                ? set!({ codexEngine: value })
-                : mark(
-                    "adapterConfig",
-                    "engine",
-                    value === "auto" ? undefined : value,
-                  );
-            }}
-            options={[
-              { value: "auto", label: "Default (ACP)" },
-              { value: "cli", label: "Codex CLI" },
-              { value: "acp", label: "ACP" },
-            ]}
-          />
-        </Field>
-      )}
+      {!hideEngineChoice && <ExecutionEngineField harness="codex" value={engine} onChange={value => {
+        isCreate ? set!({ codexEngine: value }) : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
+      }} />}
       {runnerManaged && !hideRunnerHarness && !isExternal && (
         <Field configSection="adapter"
           label="Harness"

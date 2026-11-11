@@ -48,3 +48,32 @@ describe("harness pool contracts", () => {
     expect(aiConnectionPoolConfigSchema.safeParse({ ...stored, kind: undefined }).success).toBe(false);
   });
 });
+
+
+it("round trips explicit runner settings and treats runners as distinct members", () => {
+  const configured = { ...pool, members: [{ ...member, runner: "legacy" as const, adapterConfig: { engine: "cli" as const, timeoutSec: 60, fastMode: true } }, { ...member, id: "44444444-4444-4444-8444-444444444444", runner: "paperclip" as const }] };
+  expect(decodeHarnessPoolConfig(harnessPoolToRuntimeConfig(configured))).toEqual({ kind: "harness_pool", config: configured });
+});
+it.each(["env", "command", "args", "extraArgs", "instructionsFilePath", "cwd", "stateDir", "model", "provider", "homeMode"])("rejects injected member adapter configuration %s", key => {
+  expect(harnessPoolConfigSchema.safeParse({ ...pool, members: [{ ...member, adapterConfig: { [key]: "injected" } }] }).success).toBe(false);
+});
+
+it.each([
+  { harness: { type: "codex" }, runner: "paperclip", adapterConfig: { engine: "cli" } },
+  { harness: { type: "codex" }, runner: "legacy", adapterConfig: { lifecycleMode: "warm" } },
+  { harness: { type: "claude_code" }, runner: "paperclip", adapterConfig: { chrome: true } },
+  { harness: { type: "grok" }, runner: "legacy", adapterConfig: { fastMode: true } },
+])("rejects settings that the selected harness and runner would ignore (%j)", settings => {
+  expect(harnessPoolConfigSchema.safeParse({ ...pool, members: [{ ...member, ...settings }] }).success).toBe(false);
+});
+it("accepts the native ACPX Paperclip action permission mode", () => {
+  const configured = { ...pool, members: [{ ...member, harness: { type: "claude_code" as const }, adapterConfig: { acpxPermissionMode: "approve-paperclip" as const } }] };
+  expect(decodeHarnessPoolConfig(harnessPoolToRuntimeConfig(configured))).toEqual({ kind: "harness_pool", config: configured });
+});
+
+it.each(["acceptEdits", "plan", "bypassPermissions"])("rejects unknown ACP permission values %s instead of falling back to approve-all", permissionMode => {
+  expect(harnessPoolConfigSchema.safeParse({ ...pool, members: [{ ...member, harness: { type: "claude_code" }, runner: "legacy", adapterConfig: { engine: "acp", permissionMode } }] }).success).toBe(false);
+});
+it("rejects permissions that the CLI engine cannot enforce", () => {
+  expect(harnessPoolConfigSchema.safeParse({ ...pool, members: [{ ...member, harness: { type: "claude_code" }, runner: "legacy", adapterConfig: { engine: "cli", permissionMode: "deny-all" } }] }).success).toBe(false);
+});

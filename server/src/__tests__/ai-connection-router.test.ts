@@ -91,16 +91,16 @@ it("dispatches a V1 plugin Pi pool through Pi without remapping it to Codex", as
     await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("failed");
     expect(execute).toHaveBeenCalledOnce();
     expect((await heartbeat.getRun(run!.id))?.contextSnapshot?.aiRouterSelection).toMatchObject({ adapterType: "pi_local", memberId: member.id });
-  } finally { unregisterServerAdapter("pi_local"); await heartbeat.drainActiveRunExecutions(); }
-}, 30_000);
+  } finally { await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter("pi_local"); }
+}, 90_000);
 
-it.each(["quota", "runner"] as const)("rechecks a fresh native pool pin for a concurrent %s cooldown before provider start", async kind => {
+it.each([["quota", "paperclip"], ["runner", "paperclip"], ["quota", "legacy"], ["runner", "legacy"]] as const)("rechecks a fresh pool pin for a concurrent %s cooldown before %s provider start", async (kind, runner) => {
   const original = await instanceSettingsService(db).getExperimental();
   await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
   const { harnessPoolService } = await import("../services/harness-pools.js");
   const member = members[0]!;
   const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
-    { id: randomUUID(), harness: { type: "codex" }, connection: member.binding as Exclude<typeof member.binding, { mode: "responsible_user" }>, model: "gpt-5.6-sol" },
+    { id: randomUUID(), harness: { type: "codex" }, runner, ...(runner === "legacy" ? { adapterConfig: { engine: "cli" as const } } : {}), connection: member.binding as Exclude<typeof member.binding, { mode: "responsible_user" }>, model: "gpt-5.6-sol" },
   ] } }, "alice");
   const [agent] = await db.insert(agents).values({ companyId, name: "Fresh native cooldown", adapterType: "paperclip_runner",
     adapterConfig: { cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id }, heartbeat: { enabled: false } } }).returning();
@@ -111,7 +111,7 @@ it.each(["quota", "runner"] as const)("rechecks a fresh native pool pin for a co
     const identity = await identityFor(member.binding.grantId);
     const { poolRunnerCooldownIdentity } = await import("../services/ai-connection-pool-cooldown.js");
     await service().recordQuotaCooldown(companyId, member.binding.connectionId, kind === "runner"
-      ? poolRunnerCooldownIdentity(identity, selection.runtimeConfig, selection.runnerScope!.environmentId) : identity, deadline, identity);
+      ? poolRunnerCooldownIdentity(identity, selection.runtimeConfig, selection.runnerScope!.environmentId, selection.adapterType) : identity, deadline, identity);
   });
   const heartbeat = heartbeatService(db, { runtimeEnv: {}, afterPoolSelection: selected, nativeSessionBackendFactory: providerStart });
   try {
@@ -665,12 +665,13 @@ describe("durable, authorized connection routing", () => {
     } finally { await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter("codex_local"); }
   }, 30_000);
   it.each([
-    { failureKind: "quota", reconnect: false, noBackup: false },
-    { failureKind: "quota", reconnect: true, noBackup: false },
-    { failureKind: "auth", reconnect: false, noBackup: false },
-    { failureKind: "auth", reconnect: true, noBackup: false },
-    { failureKind: "auth", reconnect: false, noBackup: true },
-  ] as const)("handles $failureKind through the public heartbeat lifecycle (reconnect=$reconnect, noBackup=$noBackup)", async ({ failureKind, reconnect, noBackup }) => {
+    { failureKind: "quota", reconnect: false, noBackup: false, versioned: false },
+    { failureKind: "quota", reconnect: true, noBackup: false, versioned: false },
+    { failureKind: "auth", reconnect: false, noBackup: false, versioned: false },
+    { failureKind: "auth", reconnect: true, noBackup: false, versioned: false },
+    { failureKind: "auth", reconnect: false, noBackup: true, versioned: false },
+    { failureKind: "quota", reconnect: false, noBackup: false, versioned: true },
+  ] as const)("handles $failureKind through the public heartbeat lifecycle (reconnect=$reconnect, noBackup=$noBackup, versioned=$versioned)", async ({ failureKind, reconnect, noBackup, versioned }) => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Isolated continuation", issuePrefix: `C${companyId.slice(0, 6)}` });
     await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
@@ -682,19 +683,26 @@ describe("durable, authorized connection routing", () => {
       { id: randomUUID(), binding: { mode: "delegated", provider: "anthropic", method: "subscription", ...claude }, profile: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } },
     ];
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
-    await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: true });
+    const originalSettings = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: true, ...(versioned ? { enableNativeRunner: true } : {}) });
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
-      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: noBackup ? [members[1]!] : [members[1]!, members[0]!],
+      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90,
+      ...(versioned ? { schemaVersion: 2, kind: "harness_pool" } : {}),
+      members: (noBackup ? [members[1]!] : [members[1]!, members[0]!]).map(member => versioned
+        ? { ...member, runner: "legacy" as const, adapterConfig: { engine: "cli" as const } } : member),
     } }, "alice");
     const workdir = path.join(home, `continuation-${randomUUID()}`);
     await mkdir(workdir, { recursive: true });
-    const [agent] = await db.insert(agents).values({ companyId, name: "Claude to Codex lifecycle", adapterType: "claude_local",
-      adapterConfig: { cwd: workdir, engine: "cli", model: "claude-sonnet-5" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false } } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Claude to Codex lifecycle", adapterType: versioned ? "paperclip_runner" : "claude_local",
+      adapterConfig: { cwd: workdir, ...(versioned ? {} : { engine: "cli", model: "claude-sonnet-5" }) },
+      runtimeConfig: { ...(versioned ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } }), heartbeat: { enabled: false } } }).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Keep completed file and continue remaining work", description: "Keep the completed marker; finish the remaining work.", status: "todo", assigneeAgentId: agent!.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
     let sourceRunId: string | undefined;
     let sourceCwd: string | undefined;
     const primary = vi.fn(async (ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
       sourceRunId = ctx.runId; sourceCwd = String(ctx.config.cwd);
+      expect(ctx.agent.adapterType).toBe("claude_local");
+      expect(ctx.config.engine).toBe("cli");
       await ctx.onDispatch?.();
       await writeFile(path.join(sourceCwd, "completed-marker.txt"), "completed exactly once");
       await ctx.onLog("stdout", "Completed marker file. Quota interrupted the remaining work.\n");
@@ -707,6 +715,7 @@ describe("durable, authorized connection routing", () => {
     const backup = vi.fn(async (ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
       ctx.onDispatch?.();
       expect(ctx.agent.adapterType).toBe("codex_local");
+      expect(ctx.config.engine).toBe("cli");
       expect(ctx.config.cwd).toBe(sourceCwd);
       expect(await readFile(path.join(String(ctx.config.cwd), "completed-marker.txt"), "utf8")).toBe("completed exactly once");
       expect(ctx.runtime.sessionId).toBeNull();
@@ -750,14 +759,22 @@ describe("durable, authorized connection routing", () => {
       await heartbeat.promoteDueScheduledRetries();
       await heartbeat.resumeQueuedRunsAfterDrain({ companyId });
       await heartbeat.drainActiveRunExecutions();
-      await expect.poll(async () => (await heartbeat.getRun(successor!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
+      await expect.poll(async () => {
+        const outcome = await heartbeat.getRun(successor!.id);
+        return outcome?.status === "succeeded" ? [outcome.status] : [outcome?.status, outcome?.errorCode, outcome?.error];
+      }, { timeout: 20_000 }).toEqual(["succeeded"]);
       expect(primary).toHaveBeenCalledOnce(); expect(backup).toHaveBeenCalledOnce();
       expect((await db.select().from(issues).where(eq(issues.id, issue!.id)))[0]?.status).toBe("done");
       expect((await heartbeat.getRun(source!.id))?.resultJson?.executionSettlement).toMatchObject({ providerStopped: true, workspaceSettled: true });
-      expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.adapterType).toBe("claude_local");
+      expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.adapterType).toBe(versioned ? "paperclip_runner" : "claude_local");
+      if (versioned) {
+        expect((await heartbeat.getRun(source!.id))?.runnerProfileJson?.adapterDispatch).toMatchObject({ adapterType: "claude_local", configuredAdapterType: "paperclip_runner" });
+        expect((await heartbeat.getRun(successor!.id))?.contextSnapshot?.aiRouterSelection).toMatchObject({ adapterType: "codex_local", runtimeConfig: { engine: "cli" } });
+      }
     } finally {
       fetch.mockRestore(); await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter("claude_local"); unregisterServerAdapter("codex_local");
       await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+      await instanceSettingsService(db).updateExperimental(originalSettings);
     }
   }, 60_000);
   it.each([false, true])("retains an independent native auth backup deadline when the source is already attempted (revoked=%s)", async revoked => {

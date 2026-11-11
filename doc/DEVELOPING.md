@@ -5242,9 +5242,11 @@ A failed batch upload marks the affected repository rows as needing repair.
 ### Pool harness host admission
 
 `heartbeat/harness-pool-admission.ts` resolves a virtual Pool selection before
-claim, through the existing authorized router and native provider-profile
-builders. `effective-run-adapter.ts` reads the frozen concrete target; native
-execution receives its normal concrete driver input. `harness-pool-environment.ts`
+claim, through the existing authorized router and the member's explicit runner
+and validated adapter settings. Native selections use the provider-profile
+builders; Legacy selections use the existing direct adapter.
+`effective-run-adapter.ts` reads the frozen concrete target; native execution
+receives its normal concrete driver input. `harness-pool-environment.ts`
 reads placement policy for scoped cooldown identity. Fresh environment admission
 checks that placement still matches; retained native recovery uses its admitted
 execution input. Pool management is the facade in `services/harness-pools.ts`.

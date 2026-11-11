@@ -15,6 +15,6 @@ vi.mock("../components/fast-responses/FastResponseSettings", () => ({ FastRespon
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 it.each([[false,false],[false,true],[true,true]])("shows independent connections when fast response enabled=%s loaded=%s", async (enabled, loaded) => {
   Object.assign(flags, { enabled, loaded }); const container = document.createElement("div"), root = createRoot(container);
-  try { await act(async () => root.render(<CompanyConnections />)); expect([...container.querySelectorAll("section")].map(s => s.textContent)).toEqual(["Harness pools", "Decision model", "Prompt Injection Prevention", ...(enabled ? ["Fast response"] : [])]); }
+  try { await act(async () => root.render(<CompanyConnections />)); expect([...container.querySelectorAll("section")].map(s => s.textContent)).toEqual(["Decision model", "Prompt Injection Prevention", ...(enabled ? ["Fast response"] : [])]); }
   finally { act(() => root.unmount()); }
 });

@@ -2631,7 +2631,7 @@ export function heartbeatService(
           }
           context.aiRouterSelection = selection;
           taskKey ??= routerTaskKey;
-          if (LOCAL_POOL_ADAPTERS.includes(poolPolicyAgent.adapterType) ||
+          if (LOCAL_POOL_ADAPTERS.includes(agent.adapterType) ||
               (agent.adapterType === "paperclip_runner" && Object.keys(savedRouterInput).length === 0)) {
             await options.afterPoolSelection?.(run.id, selection);
             await router.recheckPinnedPoolAccount({ companyId: agent.companyId, agentId: agent.id,

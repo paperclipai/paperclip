@@ -183,7 +183,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     const kind = input.failureKind ?? "quota";
     const runnerScope = parseObject(selection.runnerScope);
     const cooldownIdentity = kind === "runner" && Object.hasOwn(runnerScope, "environmentId")
-      ? poolRunnerCooldownIdentity(credentialIdentity, parseObject(selection.runtimeConfig), typeof runnerScope.environmentId === "string" ? runnerScope.environmentId : null) : credentialIdentity;
+      ? poolRunnerCooldownIdentity(credentialIdentity, parseObject(selection.runtimeConfig), typeof runnerScope.environmentId === "string" ? runnerScope.environmentId : null, typeof selection.adapterType === "string" ? selection.adapterType : undefined) : credentialIdentity;
     const eventId = `ai-connection-${kind}-attributed:${run.id}`;
     const [existing] = await tx.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.sourceEventId, eventId))).limit(1);
     const existingPayload = parseObject(existing?.payload);

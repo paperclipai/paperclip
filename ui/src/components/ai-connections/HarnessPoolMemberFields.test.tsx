@@ -35,7 +35,8 @@ async function open(label: string) {
   await settle();
 }
 async function choose(label: string) {
-  const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(item => item.textContent?.includes(label))!;
+  const options = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
+  const option = options.find(item => item.textContent === label) ?? options.find(item => item.textContent?.includes(label))!;
   expect(option, label).toBeTruthy(); flushSync(() => option.click()); await settle();
 }
 async function mount(initial = draft()) {
@@ -90,7 +91,7 @@ it("reconnects the selected explicit account and preserves its model", async () 
 
 it("uses the ordinary harness picker and clears an incompatible account when switching", async () => {
   await mount(); await open("Harness");
-  expect(document.body.textContent).not.toContain("Paperclip Runner");
+  expect(Array.from(document.querySelectorAll('[role="option"]')).map(option => option.textContent).join(" ")).not.toContain("Paperclip Runner");
   await choose("Claude Code");
   expect(latest).toMatchObject({ harness: { type: "claude_code" }, connection: undefined, model: "", effort: undefined });
 });
@@ -216,4 +217,63 @@ it.each(["claude_local", "codex_local"])("preserves ordinary routed OpenRouter s
     connections={[account("First", { provider: "openrouter", method: "api_key", routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] } })]} />));
   await open("Connection"); await choose("First");
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ connectionId: ids.First!.id, provider: "openrouter", method: "api_key" }));
+});
+
+it("preserves historical runner omission until explicitly changed and edits legacy engine", async () => {
+  await mount({ ...draft(), harness: { type: "claude_code" }, connection: undefined });
+  expect(latest.runner).toBeUndefined();
+  await open("Runner"); await choose("Legacy");
+  expect(latest.runner).toBe("legacy");
+  await open("Execution engine"); await choose("Claude CLI");
+  expect(latest.adapterConfig).toMatchObject({ engine: "cli" });
+  expect(host.querySelector('[aria-label="Permissions"]')).toBeNull();
+  expect(host.querySelector('[aria-label="Permissions"]')).toBeNull();
+  await open("Execution engine"); await choose("ACP");
+  expect(latest.adapterConfig).toMatchObject({ engine: "acp" });
+  expect(host.querySelector('[aria-label="ACP session mode"]')).toBeTruthy();
+  await open("Runner"); await choose("Paperclip Runner");
+  expect(latest.runner).toBe("paperclip");
+  expect(host.querySelector('[aria-label="Execution engine"]')).toBeNull();
+  expect(host.querySelector('[aria-label="Runner lifecycle"]')).toBeTruthy();
+  expect(host.textContent).not.toContain("instructions file");
+});
+
+it("edits the Codex engine and clears incompatible settings when choosing the native runner", async () => {
+  await mount({ ...draft(), runner: "legacy", adapterConfig: { engine: "cli", fastMode: true } });
+  expect(host.querySelector('[aria-label="Execution engine"]')?.textContent).toContain("Codex CLI");
+  await open("Execution engine"); await choose("ACP");
+  expect(latest.adapterConfig).toMatchObject({ engine: "acp", fastMode: true });
+  await open("ACP session mode"); await choose("One-shot");
+  expect(latest.adapterConfig?.mode).toBe("oneshot");
+  await open("Runner"); await choose("Paperclip Runner");
+  expect(latest.adapterConfig).toBeUndefined();
+  expect(latest.connection).toEqual(binding("First"));
+  expect(latest.model).toBe("gpt-6-sol");
+});
+
+it("uses the native provider permission capability and keeps legacy-only controls hidden", async () => {
+  await mount({ ...draft(), harness: { type: "claude_code" }, runner: "paperclip", connection: undefined });
+  expect(host.textContent).not.toContain("Chrome");
+  expect(host.textContent).not.toContain("Max turns per run");
+  await open("Permission mode"); await choose("Allow Paperclip reads");
+  expect(latest.adapterConfig).toMatchObject({ acpxPermissionMode: "approve-reads" });
+  expect(latest.adapterConfig?.permissionMode).toBeUndefined();
+});
+
+it("offers ACP settings for the default legacy Claude engine and confirms removing them", async () => {
+  await mount({ ...draft(), harness: { type: "claude_code" }, runner: "legacy", connection: undefined });
+  expect(host.querySelector('[aria-label="ACP session mode"]')).toBeTruthy();
+  await open("Permissions"); await choose("Approve reads");
+  expect(latest.adapterConfig?.permissionMode).toBe("approve-reads");
+  await open("Execution engine"); await choose("Claude CLI");
+  expect(latest.adapterConfig?.permissionMode).toBe("approve-reads");
+  flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Switch to CLI")!.click());
+  expect(latest.adapterConfig).toEqual({engine:"cli"});
+  expect(host.querySelector('[aria-label="Permissions"]')).toBeNull();
+});
+
+it.each([undefined, false])("matches actual Codex bypass policy for saved setting %s", async dangerouslyBypassApprovalsAndSandbox => {
+  await mount({ ...draft(), runner:"legacy", adapterConfig:{dangerouslyBypassApprovalsAndSandbox} });
+  const toggle=host.querySelector('[aria-label="Bypass approvals and sandbox"]');
+  expect(toggle?.getAttribute("aria-checked")).toBe(String(dangerouslyBypassApprovalsAndSandbox !== false));
 });

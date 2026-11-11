@@ -1899,7 +1899,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             {harnessPoolId && harnessPools.isSuccess && !harnessPools.data.some(pool => pool.id === harnessPoolId) && <p role="alert" className="text-sm text-destructive">The saved pool is unavailable. Choose another pool.</p>}
             {harnessPools.isPending && <p className="text-sm text-muted-foreground">Loading pools…</p>}
             {harnessPools.error && <p role="alert" className="text-sm text-destructive">{describeError(harnessPools.error).body}</p>}
-            <p className="text-sm text-muted-foreground">Runner: Paperclip Runner · Models and accounts come from the pool. <Link to="/company/settings/connections">Manage pools</Link></p>
+            <p className="text-sm text-muted-foreground">Runners, models and accounts come from the pool. <Link to="/company/settings/pools">Manage pools</Link></p>
           </Field>}
           {!isPoolHarness && isRunnerHarness && runnerDiscoveryView.kind === "error" && (
             <QueryErrorState size="inline" error={runnerDiscoveryView.error}

@@ -206,13 +206,20 @@ live usage; provider and restart acceptance remain separate gated test drives.
 
 ## Central harness pools
 
-Settings → Connections → Harness pools manages shared, company-scoped pools.
-Smart, Mid and Cheap are editable starting names, not fixed model tiers. Add as
-many ordered members as needed (up to 100). Each member chooses its own saved
-account grant, concrete harness, model ID and optional effort. The same account
+Settings → Pools manages shared, company-scoped pools. The left list starts
+without a selection. **Add pool** opens a blank create form on the right;
+selecting an existing pool opens its editor. Names are chosen by the user;
+there are no predefined pools or naming templates. Add as many ordered members
+as needed (up to 100). Each member chooses its own saved account grant,
+concrete harness, runner, execution settings, model ID and optional effort. The same account
 can appear with different models. No credentials are copied into the pool.
-The member editor uses the same harness, account, model and thinking-effort
-controls as agent configuration. Choose an existing connected account or use
+The member editor uses the same harness, account, model, thinking-effort and
+execution-engine controls as agent configuration. Select **Legacy** and
+**Claude CLI** to use Claude's existing CLI adapter; select **Paperclip Runner**
+to use a qualified native driver. Provider tuning and permission settings are
+validated against the agent and task execution constraints. Member settings
+cannot supply credentials, environment variables, instructions, workspace paths
+or private provider-session directories. Choose an existing connected account or use
 **Connect an account…** in the Connection selector. Sign-in and API-key setup
 use the existing account setup flow, including access controls. A pool member
 always saves an explicit account grant; connecting it does not change your
@@ -231,23 +238,29 @@ action before selecting Pool on a Legacy agent. New agent setup offers a held
 Pool choice and tests it before the normal hiring/approval action. Several agents can choose the same pool; changing one
 agent's selection does not change the others. Instructions, permissions and the
 execution environment belong to the agent and remain admission constraints.
-Models and accounts belong to the pool. Task-bound runs use native Runner execution.
+Models, accounts and member runner settings belong to the pool. Task-bound runs
+use the selected member's existing Legacy adapter or native Runner driver.
 Manual agent runs and unscoped timer heartbeats can also use Pool without a task.
 These company-scoped runs use the selected member's existing direct harness path.
 They do not create a placeholder task or acquire task completion authority.
 Manual runs keep their own run-key allocation; timer wakes use the existing
 heartbeat session policy. Retrying a run retains its allocation lineage.
-Native-only permission restrictions that cannot be preserved by that path cause
-an explicit policy error, rather than weaker permissions. Task-bound sessions
-continue to use their existing native driver and checkpoint.
+Explicit Paperclip Runner members require a task and are skipped for taskless
+runs; choose a Legacy member for unscoped manual runs and heartbeats. A chat
+backed by a conversation task can use a qualified native member.
+Older members without an explicit runner retain their existing compatibility
+behavior. Native-only permission restrictions that cannot be preserved by the
+selected path cause an explicit policy error. Existing task pins retain their
+recorded adapter, settings and private session boundary after pool edits.
 The selected execution environment must support the chosen execution path.
-Windows native agent qualification remains deferred; a successful Windows
-Runner build does not qualify agent execution. See the
+On Windows x64, native Codex is supported; native ACPX harnesses remain
+unsupported. Claude Legacy/CLI uses its existing independent adapter. A
+successful Runner build alone does not qualify a driver. See the
 [Runner platform notes](../../packages/paperclip-runner/README.md).
 
 The host freezes the concrete driver profile, pool name/revision and selected
-member before claim. For task runs it uses the existing Codex, Claude/Grok ACPX or OpenCode
-driver, with one native run owner. Pool is not another model API, Rust provider,
+member before claim. Task runs use the selected existing Legacy adapter or
+Codex, Claude/Grok ACPX or OpenCode native driver, with one execution owner. Pool is not another model API, Rust provider,
 CLI wrapper process or nested agent loop. Existing direct/Legacy configurations
 and old run snapshots keep their original readers. The optional
 `runtimeConfig.harnessPool: { poolId }` conflicts with a direct `aiConnection`.
@@ -255,7 +268,7 @@ and old run snapshots keep their original readers. The optional
 A healthy task keeps its pinned member. Confirmed usage/authentication failures
 hold the credential across models and agents; the provider reset deadline wins,
 otherwise the hold is two hours. Definitive stopped-runner failures hold the
-credential/harness/environment combination for five minutes. New credential
+credential/harness/runner/engine/environment combination for five minutes. New credential
 epochs do not inherit old cooldowns. Unsupported or uncertain failures retain the
 existing recovery hold. All-cooling work waits for the earliest deadline or a
 real configuration/reconnect event, without trying a blocked provider repeatedly.

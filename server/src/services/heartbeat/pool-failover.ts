@@ -115,7 +115,7 @@ export async function switchFailedPoolPin(db: Db, input: {
   const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
   return aiConnectionRouterService(db).transitionQuotaPin({ companyId: run.companyId, poolId: selection.poolId,
     agentId: run.agentId, taskKey, expectedSelection: selection, userId: input.userId,
-    adapterType: executionAgent.adapterType, attemptedMemberIds: [], failureKind: kind,
+    adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], failureKind: kind,
     sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) },
     allowCoolingSelection: true });
 }
@@ -170,7 +170,7 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
     const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
     const next = await aiConnectionRouterService(tx as unknown as Db).transitionQuotaPin({ companyId: run.companyId,
       poolId: selection.poolId, agentId: run.agentId, taskKey, expectedSelection: pin.selection, userId,
-      adapterType: executionAgent.adapterType, attemptedMemberIds: [], failureKind: kind,
+      adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], failureKind: kind,
       sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) } });
     if (next.kind !== "selected") return;
     const updated = { ...context, aiRouterSelection: next.selection,

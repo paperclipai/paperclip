@@ -1,3 +1,4 @@
+import { ExecutionEngineField } from "../../components/ExecutionEngineField";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
@@ -96,22 +97,9 @@ export function ClaudeLocalAdvancedFields({
         environment owns both, so the managed-sandbox-only policy hides them,
         the same way `runnerManaged` hides them for the Paperclip Runner.
       */}
-      {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
-        <select
-          className={inputClass}
-          value={engine}
-          onChange={(e) => {
-            const value = e.target.value === "acp" ? "acp" : e.target.value === "cli" ? "cli" : "auto";
-            isCreate
-              ? set!({ claudeEngine: value })
-              : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
-          }}
-        >
-          <option value="auto">Default (ACP)</option>
-          <option value="cli">Claude CLI</option>
-          <option value="acp">ACP</option>
-        </select>
-      </Field>}
+      {!managedSandboxOnly && <ExecutionEngineField harness="claude" value={engine} onChange={value => {
+        isCreate ? set!({ claudeEngine: value }) : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
+      }} />}
       {acpSelected && (
         <>
           {!managedSandboxOnly && (

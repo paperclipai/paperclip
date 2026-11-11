@@ -20,9 +20,13 @@ it("creates a named pool with ordered models on the same account and leaves othe
   mocks.save.mockImplementation(async (_company, body) => ({ ...body.config, id:crypto.randomUUID(), companyId:"company", revision:1 }));
   const host=document.createElement("div"); document.body.append(host); const root=createRoot(host);
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  try {
   flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
   const click=(text:string)=>{ const button=Array.from(host.querySelectorAll("button")).find(item=>item.textContent===text)!; expect(button).toBeTruthy(); flushSync(()=>button.click()); };
-  click("Smart"); click("Add member"); click("Add member");
+  click("Add pool");
+  const name = host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!;
+  flushSync(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "My pool"); name.dispatchEvent(new Event("input", { bubbles: true })); });
+  click("Add member"); click("Add member");
   await settle();
   for (let index = 0; index < 2; index++) {
     const trigger = host.querySelectorAll<HTMLElement>('[aria-label="Connection"]')[index]!;
@@ -36,15 +40,21 @@ it("creates a named pool with ordered models on the same account and leaves othe
     expect(modelOption).toBeTruthy(); flushSync(() => modelOption.click()); await settle();
   }
   click("Save pool"); await settle();
-  expect(mocks.save).toHaveBeenCalledWith("company",expect.objectContaining({ config:expect.objectContaining({name:"Smart",schemaVersion:2,members:[expect.objectContaining({model:"smart-a",connection:expect.objectContaining({connectionId:account.id})}),expect.objectContaining({model:"smart-b",connection:expect.objectContaining({connectionId:account.id})})]}) }));
-  flushSync(()=>root.unmount()); client.clear();host.remove();
-});
+  expect(mocks.save).toHaveBeenCalledWith("company",expect.objectContaining({ config:expect.objectContaining({name:"My pool",schemaVersion:2,members:[expect.objectContaining({model:"smart-a",connection:expect.objectContaining({connectionId:account.id})}),expect.objectContaining({model:"smart-b",connection:expect.objectContaining({connectionId:account.id})})]}) }));
+  } finally { flushSync(()=>root.unmount()); client.clear();host.remove(); }
+}, 30_000);
 
-it.each(["Mid", "Cheap"])("starts a customisable %s draft without changing existing pools", async name => {
-  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]});mocks.pools.mockResolvedValue([]);mocks.legacy.mockResolvedValue([]);
+it("starts unselected and opens an empty custom draft without templates or writes", async () => {
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]});mocks.pools.mockResolvedValue([{id:"existing",name:"Smart",schemaVersion:2,kind:"harness_pool",enabled:true,mode:"failover",revision:3,members:[]}]);mocks.legacy.mockResolvedValue([]);
   const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
-  try{flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent===name)!.click());expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe(name);expect(mocks.save).not.toHaveBeenCalled();}
-  finally{flushSync(()=>root.unmount());client.clear();host.remove();}
+  try {
+    flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();
+    expect(host.querySelector('[aria-label="Pool name"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Pools"]')).toBeTruthy();
+    expect(host.textContent).not.toContain("Cheap"); expect(host.textContent).not.toContain("Mid");
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Add pool")!.click());
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe("");expect(mocks.save).not.toHaveBeenCalled();
+  } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
 });
 
 it("can add the first member before any accounts are connected", async () => {
@@ -54,7 +64,7 @@ it("can add the first member before any accounts are connected", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
     flushSync(() => root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
-    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Smart")!.click());
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Add pool")!.click());
     const add = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Add member")!;
     expect(add.disabled).toBe(false); flushSync(() => add.click()); await settle();
     expect(host.querySelector('[aria-label="Harness"]')).toBeTruthy();
@@ -99,4 +109,22 @@ it("retains cached affected agents after an inspection refresh fails while block
     expect(Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Archive pool")!.disabled).toBe(true);
     expect(mocks.archive).not.toHaveBeenCalled();
   } finally { flushSync(()=>root.unmount()); client.clear(); host.remove(); }
+});
+
+it("edits an existing pool with its revision and preserves member runtime settings", async () => {
+  const id=crypto.randomUUID(), memberId=crypto.randomUUID(), connectionId=crypto.randomUUID(), grantId=crypto.randomUUID();
+  const config={schemaVersion:2,kind:"harness_pool",name:"Existing pool",enabled:true,mode:"failover",members:[{id:memberId,harness:{type:"claude_code"},runner:"legacy",adapterConfig:{engine:"cli",chrome:true},connection:{mode:"shared",connectionId,grantId,provider:"anthropic",method:"api_key"},model:"claude-sonnet"}]};
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]});mocks.legacy.mockResolvedValue([]);
+  mocks.pools.mockResolvedValue([{...config,id,companyId:"company",revision:7}]);mocks.inspect.mockResolvedValue({members:{},usedBy:[]});
+  mocks.save.mockResolvedValue({...config,id,companyId:"company",revision:8});
+  const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  try {
+    flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
+    expect(host.querySelector('[aria-label="Pool name"]')).toBeNull();
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent?.startsWith("Existing pool ·"))!.click());await settle();
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe("Existing pool");
+    expect(host.querySelector('[aria-label="Runner"]')?.textContent).toContain("Legacy");
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Save pool")!.click());await settle();
+    expect(mocks.save).toHaveBeenCalledWith("company",{id,expectedRevision:7,config});
+  } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
 });

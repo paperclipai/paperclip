@@ -11,7 +11,7 @@ import { resolvePaperclipRunnerProviderProfile, type PaperclipRunnerProviderProf
 import { deriveTaskKeyWithHeartbeatFallback, shouldResetTaskSessionForWake } from "./run-state.js";
 
 export type HarnessPoolAdmission = { kind: "selected"; selection: HarnessPoolExecutionSelection;
-  routerSelection: AiConnectionRouterSelection; taskKey: string; profile: PaperclipRunnerProviderProfile };
+  routerSelection: AiConnectionRouterSelection; taskKey: string; profile?: PaperclipRunnerProviderProfile };
 
 export async function resolveHarnessPoolExecution(input: { db: Db; run: typeof heartbeatRuns.$inferSelect;
   agent: typeof agents.$inferSelect; userId: string | null }): Promise<HarnessPoolAdmission> {
@@ -28,8 +28,10 @@ export async function resolveHarnessPoolExecution(input: { db: Db; run: typeof h
   const context = parseObject(run.contextSnapshot);
   const taskKey = typeof context.aiRouterTaskKey === "string" && context.aiRouterTaskKey.trim() ? context.aiRouterTaskKey : deriveTaskKeyWithHeartbeatFallback(context, null) ?? run.issueId;
   const [task] = await db.select().from(issues).where(and(eq(issues.companyId, agent.companyId), eq(issues.id, run.issueId)));
+  const [existingPin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, agent.companyId),
+    eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.agentId, agent.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
   const [session] = await db.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, agent.companyId), eq(agentTaskSessions.agentId, agent.id),
-    eq(agentTaskSessions.adapterType, "paperclip_runner"), eq(agentTaskSessions.taskKey, taskKey))).limit(1);
+    eq(agentTaskSessions.adapterType, existingPin?.selection.adapterType ?? "paperclip_runner"), eq(agentTaskSessions.taskKey, taskKey))).limit(1);
   const identity = session?.sessionParamsJson?.paperclipAiCredentialIdentity;
   const overrides = parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig);
   const environmentId = await harnessPoolEnvironmentScope(db, agent, task);
@@ -45,13 +47,14 @@ export async function resolveHarnessPoolExecution(input: { db: Db; run: typeof h
   const memberSnapshot = pinned?.kind === "harness_pool" ? pinned.config.members[0] : undefined;
   if (!memberSnapshot) throw unprocessable("The selected pool member is unavailable");
   // A retained pin owns its historical model profile, including after pool edits.
-  const profile = resolvePaperclipRunnerProviderProfile(applyAiConnectionRouterTaskSettings(agent.adapterConfig, routerSelection, "paperclip_runner"));
+  const profile = routerSelection.adapterType === "paperclip_runner" ? resolvePaperclipRunnerProviderProfile(applyAiConnectionRouterTaskSettings(agent.adapterConfig, routerSelection, "paperclip_runner")) : undefined;
   if (routerSelection.binding.mode === "responsible_user") throw unprocessable("Pool members require an explicit account");
   const admittedMember = { ...memberSnapshot, connection: routerSelection.binding, model: String(routerSelection.runtimeConfig.model),
     effort: typeof routerSelection.runtimeConfig.modelReasoningEffort === "string" ? routerSelection.runtimeConfig.modelReasoningEffort
-      : typeof routerSelection.runtimeConfig.reasoningEffort === "string" ? routerSelection.runtimeConfig.reasoningEffort : undefined };
+      : typeof routerSelection.runtimeConfig.reasoningEffort === "string" ? routerSelection.runtimeConfig.reasoningEffort
+      : typeof routerSelection.runtimeConfig.effort === "string" ? routerSelection.runtimeConfig.effort : undefined };
   const selection: HarnessPoolExecutionSelection = { schemaVersion: 2, poolId: pool.id, poolRevision: pool.revision, poolName: decoded.config.name,
     memberId: routerSelection.memberId, memberSnapshot: admittedMember,
-    fingerprint: createHash("sha256").update(JSON.stringify([routerSelection.binding, routerSelection.runtimeConfig, profile, routerSelection.runnerScope])).digest("hex") };
+    fingerprint: createHash("sha256").update(JSON.stringify([routerSelection.binding, routerSelection.runtimeConfig, profile, routerSelection.runnerScope, ...(routerSelection.adapterType !== "paperclip_runner" ? [routerSelection.adapterType] : [])])).digest("hex") };
   return { kind: "selected", selection, routerSelection, taskKey, profile };
 }

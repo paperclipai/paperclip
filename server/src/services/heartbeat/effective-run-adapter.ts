@@ -15,7 +15,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { harnessPoolEnvironmentScope } from "./harness-pool-environment.js";
 
 export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.$inferSelect,
-  agent: typeof agents.$inferSelect, userId: string | null, workerManager?: PluginWorkerManager, companyEnvironmentId?: string): Promise<{ adapterDispatch: Record<string, unknown>; context: Record<string, unknown> & { aiRouterSelection?: AiConnectionRouterSelection } }> {
+  agent: typeof agents.$inferSelect, userId: string | null, workerManager?: PluginWorkerManager, companyEnvironmentId?: string, companyTaskless = false): Promise<{ adapterDispatch: Record<string, unknown>; context: Record<string, unknown> & { aiRouterSelection?: AiConnectionRouterSelection } }> {
   const existing = parseObject(parseObject(run.runnerProfileJson).adapterDispatch);
   if (typeof existing.adapterType === "string") return { adapterDispatch: existing, context: {} };
   const adapterDispatch = { adapterType: agent.adapterType, configuredAdapterType: agent.adapterType };
@@ -30,14 +30,14 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
         if (!pool || pool.pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY || decodeHarnessPoolConfig(pool.config).kind !== "harness_pool")
           throw unprocessable("Choose an available harness pool");
         const environmentId = await harnessPoolEnvironmentScope(db, agent, undefined);
-        const prepared = await preparePoolAdapterClaim(db, run, sourceAgent, userId, workerManager, environmentId);
+        const prepared = await preparePoolAdapterClaim(db, run, sourceAgent, userId, workerManager, environmentId, true);
         if (prepared.adapterDispatch.poolPreparationFailure && !prepared.context.aiRouterSelection)
           return { adapterDispatch: { ...adapterDispatch, poolPreparationFailure: prepared.adapterDispatch.poolPreparationFailure }, context: prepared.context };
         return { ...prepared, adapterDispatch: { ...prepared.adapterDispatch,
           configuredAdapterType: agent.adapterType, companyPoolExecution: true } };
       }
       const admitted = await resolveHarnessPoolExecution({ db, run, agent, userId });
-      return { adapterDispatch: { ...adapterDispatch, poolId: admitted.selection.poolId, memberId: admitted.selection.memberId, harnessPoolProfile: admitted.profile },
+      return { adapterDispatch: { ...adapterDispatch, adapterType: admitted.routerSelection.adapterType ?? agent.adapterType, poolId: admitted.selection.poolId, memberId: admitted.selection.memberId, harnessPoolProfile: admitted.profile },
         context: { aiRouterSelection: admitted.routerSelection, aiRouterTaskKey: admitted.taskKey, harnessPoolSelection: admitted.selection } };
     } catch (error) {
       return { adapterDispatch: { ...adapterDispatch, poolPreparationFailure: error instanceof AiConnectionPoolExhausted
@@ -69,7 +69,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
   try {
     const identity = session?.sessionParamsJson?.paperclipAiCredentialIdentity;
     const selection = await aiConnectionRouterService(db, workerManager).resolve({ companyId: agent.companyId, poolId: binding.connectionId,
-      agentId: agent.id, userId, adapterType: agent.adapterType, taskKey, environmentId: companyEnvironmentId, overrides: parseObject(parseObject(issue?.overrides).adapterConfig),
+      agentId: agent.id, userId, adapterType: agent.adapterType, taskKey, taskless: companyTaskless, environmentId: companyEnvironmentId, overrides: parseObject(parseObject(issue?.overrides).adapterConfig),
       requireExisting: Boolean(session?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
       sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(issue?.overrides).adapterConfig) },
       skipUsageProbe: pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY,

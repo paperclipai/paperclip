@@ -1,3 +1,4 @@
+import { HarnessPoolRuntimeFields } from "./HarnessPoolRuntimeFields";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AiConnectionBinding, HarnessPoolMemberV2 } from "@paperclipai/shared";
@@ -66,9 +67,10 @@ export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange 
       <AdapterTypeDropdown value={adapter} disabledTypes={disabledTypes} allowedTypes={allowedTypes}
         onChange={next => {
           const type = (Object.keys(harnessAdapters) as Array<keyof typeof harnessAdapters>).find(type => harnessAdapters[type] === next);
-          if (type && next !== adapter) { setRefreshError(undefined); onChange({ harness: { type }, connection: undefined, model: "", effort: undefined }); }
+          if (type && next !== adapter) { setRefreshError(undefined); onChange({ harness: { type }, connection: undefined, model: "", effort: undefined, adapterConfig: undefined }); }
         }} />
     </Field>
+    <HarnessPoolRuntimeFields key={`${member.harness.type}-${member.runner ?? "historical"}`} member={member} onChange={onChange} />
     <AiConnectionField key={adapter} companyId={companyId} agentName="this pool member" adapterType={adapter}
       value={member.connection} model={member.model} readOnly={readOnly} explicitAccount
       onChange={binding => {
