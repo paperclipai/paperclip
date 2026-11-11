@@ -3482,6 +3482,11 @@ ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
 owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
 that directory into a Git worktree. Explicit strategy settings still apply.
 
+An isolated local task without a configured project workspace or explicit
+workspace strategy uses its own task directory. Paperclip retains that directory
+for subsequent turns; it does not require the directory to be a Git checkout.
+Explicit Git workspace strategies retain their repository requirements.
+
 A prepared remote workspace interrupted before the executor's first durable
 claim may resume its untouched bootstrap on the same run. This requires attempt
 and controller generation zero, no prior owner, and no process, provider session,

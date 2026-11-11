@@ -23,9 +23,13 @@ describe("repository-free low-trust workspace selection", () => {
     expect(shouldUseIsolatedTaskDirectory(policy)).toBe(true);
   });
 
+  it("selects a private directory for a local task without a repository", () => {
+    expect(shouldUseIsolatedTaskDirectory({ ...policy, trustPreset: "standard", environmentDriver: "local" })).toBe(true);
+  });
+
   it.each([
-    { trustPreset: "standard" },
-    { environmentDriver: "local" },
+    { trustPreset: "standard", environmentDriver: "sandbox" },
+    { trustPreset: "low_trust_review", environmentDriver: "local" },
     { environmentDriver: "ssh" },
     { mode: "shared_workspace" },
     { hasProjectWorkspace: true },

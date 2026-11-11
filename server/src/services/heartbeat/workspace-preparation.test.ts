@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access, rename, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile, access, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1226,6 +1226,21 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(access(join(prepared.executionWorkspace.cwd, "README.md"))).rejects.toThrow();
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(prepared.persistedExecutionWorkspace!.id);
+  });
+
+  it("prepares a repository-free local task directory without a Git worktree", async () => {
+    const { input, issue } = await fixture();
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    input.task.issueRef = await readIssue(issue.id);
+    input.task.context = { issueId: issue.id };
+    input.policy.useIsolatedTaskDirectory = true;
+    input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+    input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+    input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree" } };
+    const prepared = await prepareHeartbeatWorkspace(db, input);
+    expect(readIsolatedTaskPath(await realpath(resolvePaperclipInstanceRoot()), prepared.executionWorkspace.cwd))
+      .toMatchObject({ companyId: input.agent.companyId, issueId: issue.id, rest: [] });
+    expect(prepared.persistedExecutionWorkspace).toMatchObject({ mode: "isolated_workspace", strategyType: "project_primary", sourceIssueId: issue.id });
   });
 
   it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement", "canonical_repaired_git"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
