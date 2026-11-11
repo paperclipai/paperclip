@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { issueRecoveryActions } from "@paperclipai/db";
 import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
-import { CAPTURE_POLICY_REARM_CODES, isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
+import { CAPTURE_POLICY_REARM_CODES, FINISHED_COORDINATOR_PHASES, isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
   stopProofRearmsSpent, type SystemRecoveryState } from "./system-recovery-state.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 
@@ -17,6 +17,7 @@ export const EXPORT_HOLD_CAUSES = ["native_workspace_sync_out_unrecoverable", "n
 export const NATIVE_NO_REPLAY_HOLD_CAUSE = "native_continuation_requires_reconciliation";
 
 type HoldAction = { cause: string; status: string; outcome: string | null; evidence: Record<string, unknown> };
+const list = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
 const field = (value: unknown, key: string) => value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
 
 /** Whether this recovery action is a retained-file hold the fallback may settle. */
@@ -63,17 +64,23 @@ const exhaustedStopProofWait = sql`(${issueRecoveryActions.evidence}#>>'{systemR
   and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,code}' = ${STOP_PROOF_WAIT_CODE}
   and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}' = 'recheck_evidence')`;
 
+// A stale (lapsed or expiry-less) owner of an unfinished coordinator waits for
+// the abandoned-owner settlement: the attempt would refuse it, and the passive
+// sweep revisits the hold after it. The re-arm itself releases a lapsed owner
+// of a finished coordinator (lapsedFinishedCoordinatorOwner), because no
+// settlement ever would.
+const staleUnfinishedFinalizerOwner = sql`exists (select 1 from native_run_finalizations finalizer
+  where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
+    and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true)
+    and finalizer.phase not in (${list(FINISHED_COORDINATOR_PHASES)}))`;
+
 /** An exhausted unproven-stop hold whose next bounded re-arm is pending. Holds
- * saved by older releases carry no marker and are due immediately. A finalizer
- * owner whose lease is not live waits for the abandoned-owner settlement (the
- * attempt would refuse it, and the passive sweep revisits the hold after it);
- * a live one makes the re-arm due at its expiry (stopProofRearmDueAt). */
+ * saved by older releases carry no marker and are due immediately. A live
+ * finalizer lease makes the re-arm due at its expiry (stopProofRearmDueAt). */
 export function stopProofRearmPendingCondition() {
   return sql`(${issueRecoveryActions.status} in ('active', 'escalated')
     and ${exhaustedStopProofWait}
-    and not exists (select 1 from native_run_finalizations finalizer
-      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
-        and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true))
+    and not ${staleUnfinishedFinalizerOwner}
     and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
     and ${issueRecoveryActions.evidence}->'executionReconciliation' is null
     and ${stopProofRearms} < ${STOP_PROOF_MAX_REARMS})`;
@@ -101,7 +108,6 @@ export function stopProofRearmDueCondition(now: number) {
   return sql`(${stopProofRearmPendingCondition()} and ${stopProofRearmDueAt()} <= ${now}::bigint)`;
 }
 
-const list = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
 const capturePolicyVersion = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,capturePolicyVersion}') = 'number'
   then (${issueRecoveryActions.evidence}#>>'{systemRecovery,capturePolicyVersion}')::int else 1 end`;
 
@@ -114,9 +120,7 @@ export function capturePolicyRearmPendingCondition() {
     and ${issueRecoveryActions.evidence}#>>'{systemRecovery,phase}' = 'preserve_files'
     and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,code}' in (${list(CAPTURE_POLICY_REARM_CODES)})
     and ${capturePolicyVersion} < ${REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION}
-    and not exists (select 1 from native_run_finalizations finalizer
-      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
-        and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true))
+    and not ${staleUnfinishedFinalizerOwner}
     and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
     and ${issueRecoveryActions.evidence}->'executionReconciliation' is null)`;
 }

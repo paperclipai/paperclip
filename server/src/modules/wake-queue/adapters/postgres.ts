@@ -19,7 +19,7 @@ import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm"
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
 import type { Db } from "@paperclipai/db";
-import { deliveredQueuedCommentIds } from "../../../services/queued-comment-delivery.js";
+import { deliveredQueuedCommentIds, EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION, EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../../../services/queued-comment-delivery.js";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
 import {
   activityLog,
@@ -55,7 +55,8 @@ import {
   queuedCommentIdsFromRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
-import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds } from "../../run-dispatch/index.js";
+import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds, readWakeChatConversationId } from "../../run-dispatch/index.js";
+import { deferredWakeHoldsNoOtherConversation, otherConversationCommentIds, splitOtherConversationMessages } from "./chat-conversation-batch.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
 import { decidePreDrain, type PreDrainFacts } from "../domain/policy.js";
 import {
@@ -177,7 +178,11 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
     !queuedReason ||
     queuedReason === "issue_commented" ||
     queuedReason === "issue_reopened_via_comment" ||
-    queuedReason === "issue_comment_mentioned";
+    queuedReason === "issue_comment_mentioned" ||
+    // An inbound chat message wake carries only its saved messages. When a
+    // completed run already received them, nothing is left to start, and a
+    // reviewed chat run with no message cannot be attested.
+    (queuedReason === EXTERNAL_CHAT_MESSAGE_WAKE_REASON && payload.mutation === EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION);
   const preservesIndependentContinuation =
     hasInteractionContinuationWakeContext(deferredContextSeed) ||
     deferredContextSeed.resumeIntent === true ||
@@ -255,6 +260,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
         const candidate = toDeferredWakeCandidate(row);
+        // Upgrade repair: older code could merge two conversations into one
+        // saved chat wake. Split it and read the queue again.
+        const conversationId = readWakeChatConversationId(candidate.deferredContextSeed);
+        if (conversationId && candidate.queuedCommentIds.length > 0 && await splitOtherConversationMessages(tx, row, {
+          companyId, issueId, conversationId, queuedCommentIds: candidate.queuedCommentIds, payload: candidate.payload,
+        })) continue;
         try {
           const authorizedFailedChatRetry = await authorizeFailedChatRunRetryWake(
             db,
@@ -956,6 +967,9 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
             ...(chatConversationId
               ? [
                   sql`coalesce(${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY}::text ->> ${CHAT_CONVERSATION_ID_KEY}::text, ${chatConversationId}) = ${chatConversationId}`,
+                  // A wake with no recorded conversation can still hold
+                  // another conversation's messages (an outbox-saved wake).
+                  deferredWakeHoldsNoOtherConversation(companyId, chatConversationId),
                 ]
               : []),
             ...(durableActor
@@ -1012,6 +1026,12 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       )).for("update").limit(1);
       if (!current || current.status !== input.activeExecutionRunStatus || current.wakeupRequestId !== candidate.wakeupRequestId) return null;
       const commentIds = queuedCommentIdsFromRunContext(input.mergedContextSnapshot);
+      // A reviewed chat run attests one conversation. Never fold a message
+      // into a run that already holds another conversation's messages; the
+      // wake is saved behind the run instead.
+      const mergedConversationId = readWakeChatConversationId(input.mergedContextSnapshot);
+      if (mergedConversationId && commentIds.length > 0 && (await otherConversationCommentIds(tx, {
+        companyId: input.companyId, conversationId: mergedConversationId, commentIds })).length > 0) return null;
       const synchronizeBatch = current.status === "queued" && commentIds.length > 0
         && primary?.status === "queued" && queuedCommentIdsFromWakePayload(primary.payload).length > 0;
       if (current.status === "queued" && commentIds.length && current.wakeupRequestId &&

@@ -50,7 +50,18 @@ describe("interruptedExactResumeCause", () => {
     });
   });
 
+  it("finds the interruption behind the resume reconciler's claim entry for the same attempt", () => {
+    const resumeClaim = { at: "2099-01-01T00:01:00.000Z", disposition: "same_run_resume", controllerBootId: "boot-1",
+      providerAttempt: 1, evidence: { recoveryMode: "exact_checkpoint_resume" } };
+    expect(interruptedExactResumeCause({ ...claimed, recoveryHistory: [interruption, resumeClaim] })).toEqual({
+      originalFailureCode: "native_session_interrupted",
+      originalMessage: "PRP command turn.start failed: classification=session_resume_required",
+      interruptedAttempt: 1,
+    });
+  });
+
   it.each([
+    ["a resume claim entry for a later provider attempt", { disposition: "same_run_resume", providerAttempt: 2 }],
     ["a wait for a later provider attempt", { disposition: "blocked", reason: "held", providerAttempt: 2 }],
     ["a later recovery entry that is not a wait", { disposition: "resume_dead_runner", reason: "restart", providerAttempt: 1 }],
   ])("does not reach past %s", (_name, later) => {

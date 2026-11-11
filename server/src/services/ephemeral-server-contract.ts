@@ -8,6 +8,7 @@ import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harnes
 import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
 import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
+import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
 
 import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
 
@@ -58,10 +59,8 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
   // empty directory on the replacement machine as the old server's content.
   const configured = await db.select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig }).from(agents);
   if (configured.some(agent => agentInstructionsBundleMode(agent) === "external")) blockers.push("external_agent_instructions");
-  const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
-    isNotNull(executionWorkspaces.cwd), sql`${executionWorkspaces.providerType} <> 'plugin'`,
-    sql`coalesce(${executionWorkspaces.metadata}->'remoteWorkspace'->>'schema', '') <> 'paperclip.remote-workspace.v1'`,
-  )).limit(1);
+  const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+    .where(localWorkspaceDependencyWhere(db)).limit(1);
   if (localWorkspace) blockers.push("workspaces_require_migration");
   const [localLog] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.logStore, "local_file"), isNotNull(heartbeatRuns.logRef),

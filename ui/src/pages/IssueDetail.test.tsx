@@ -2923,7 +2923,7 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      expect.objectContaining({ label: "Parent task visible in Properties", identifier: "PAP-0", href: "/issues/PAP-0" }),
+      expect.objectContaining({ label: "Parent task visible in Properties", href: "/issues/PAP-0" }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
   });
@@ -2939,6 +2939,8 @@ describe("IssueDetail", () => {
     await act(async () => { renderIssueView(); });
     await flushReact();
     const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.identifier).toBeUndefined();
+    expect(parentCrumb.label).toBe("Parent task");
     expect(parentCrumb.onClick).toBeTypeOf("function");
     parentCrumb.onClick();
     const expected = { label: source === "query" ? "Inbox" : "Mine", href: state.issueDetailBreadcrumb!.href };
@@ -2951,7 +2953,9 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({ id: "parent-1", identifier: "PAP-0", title: "Parent task" }));
     await act(async () => { renderIssueView(); });
     await waitForAssertion(() => {
-      expect(mockSetBreadcrumbs.mock.calls.at(-1)![0][0]).toEqual(expected);
+      const breadcrumbs = mockSetBreadcrumbs.mock.calls.at(-1)![0];
+      expect(breadcrumbs[0]).toEqual(expected);
+      expect(breadcrumbs.at(-1)?.label).toBe(parentCrumb.label);
     });
   });
 
@@ -2964,19 +2968,20 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      expect.objectContaining({ label: "Private task", identifier: "PAP-0", href: undefined }),
+      expect.objectContaining({ label: "Private task", href: undefined }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
     const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.identifier).toBeUndefined();
     expect(parentCrumb.onClick).toBeUndefined();
     await act(async () => { renderIssueView(parentCrumb.control); });
     const chip = container.querySelector('[data-testid="locked-issue-chip"]');
     expect(chip).not.toBeNull();
-    expect(chip?.textContent).toBe(isMobile ? "Private" : "PAP-0");
+    expect(chip?.textContent).toBe("Private");
     expect(container.querySelector('a, [role="link"]')).toBeNull();
   });
 
-  it("updates the private parent label when an open task changes viewport", async () => {
+  it("keeps the private parent title free of IDs when an open task changes viewport", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
     }));
@@ -3000,7 +3005,7 @@ describe("IssueDetail", () => {
     await act(async () => {
       renderIssueView(<BreadcrumbProvider><RenderBreadcrumbControl /></BreadcrumbProvider>);
     });
-    for (const [index, expected] of ["PAP-0", "Private", "PAP-0"].entries()) {
+    for (const [index, expected] of ["Private", "Private", "Private"].entries()) {
       await act(async () => { updateBreadcrumbs(captured[index]); });
       expect(container.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toBe(expected);
       expect(container.querySelector('a, [role="link"]')).toBeNull();
@@ -7546,6 +7551,61 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each(["success", "dispatch", "forbidden", "network"] as const)(
+    "discards a saved message before queue acknowledgement (%s)",
+    async (outcome) => {
+      const queue = createQueuedCommentQueue({ queueId: null, state: null });
+      const comment = queue.entries[0].comment;
+      mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1" }));
+      mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+      mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+      mockIssuesApi.recentComments.mockResolvedValue({ comments: [comment], latestCommentId: comment.id, hasMore: false });
+      mockIssuesApi.listComments.mockResolvedValue([comment]);
+      const failure = outcome === "dispatch"
+        ? new ApiError("The queued message is already being dispatched", 409, {
+            details: { code: "queued_comment_already_dispatching" },
+          })
+        : outcome === "forbidden"
+          ? new ApiError("Only the queued message author can discard it", 403, {})
+          : new Error("Connection lost");
+      if (outcome === "success") mockIssuesApi.cancelComment.mockResolvedValue(comment);
+      else mockIssuesApi.cancelComment.mockRejectedValue(failure);
+
+      await act(async () => { renderIssueView(); });
+      const props = () => mockIssueChatThreadRender.mock.calls.at(-1)![0] as {
+        queuedCommentQueue: IssueQueuedCommentQueue | null;
+        comments: IssueComment[];
+        onDiscardQueuedComment: (commentId: string, revision: string) => Promise<void>;
+      };
+      await waitForAssertion(() => {
+        expect(props().queuedCommentQueue).toMatchObject({
+          queueId: null,
+          entries: [{ comment: { id: comment.id } }],
+        });
+      });
+      let result: unknown;
+      await act(async () => {
+        result = await props().onDiscardQueuedComment(comment.id, queue.revision).catch((error: unknown) => error);
+      });
+      expect(mockIssuesApi.cancelComment).toHaveBeenCalledWith("issue-1", comment.id);
+      expect(mockIssuesApi.discardQueuedComment).not.toHaveBeenCalled();
+      if (outcome === "success") {
+        expect(result).toBeUndefined();
+        await waitForAssertion(() => {
+          expect(props().queuedCommentQueue).toBeNull();
+          expect(props().comments.some((value) => value.id === comment.id)).toBe(false);
+        });
+      } else {
+        expect(result).toBe(failure);
+        expect(props().queuedCommentQueue?.entries[0].comment.id).toBe(comment.id);
+        expect(props().comments.some((value) => value.id === comment.id)).toBe(true);
+        if (outcome === "dispatch") {
+          expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Message is already being sent" }));
+        }
+      }
+    },
+  );
+
   it.each([true, false])("keeps a discarded queued comment out of the thread (expanded=%s)", async (expanded) => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], expanded);
     const queue = createQueuedCommentQueue();
@@ -7624,8 +7684,8 @@ describe("IssueDetail", () => {
     });
   });
 
-  it.each(["discard", "cancel", "delete"] as const)("keeps %s responses in both comment caches after reopening by either task ref", async (action) => {
-    const queue = createQueuedCommentQueue();
+  it.each(["discard", "discard-unacknowledged", "cancel", "delete"] as const)("keeps %s responses in both comment caches after reopening by either task ref", async (action) => {
+    const queue = createQueuedCommentQueue(action === "discard-unacknowledged" ? { queueId: null, state: null } : {});
     const comment = queue.entries[0].comment;
     const earlier = createIssueComment({ id: "earlier-comment", createdAt: new Date("2026-04-21T00:00:01.000Z") });
     const deleted = { ...comment, body: "", deletedAt: new Date() };
@@ -7663,7 +7723,7 @@ describe("IssueDetail", () => {
       queryFn: () => new Promise<IssueRecentComments>((resolve) => { finishStaleRead = resolve; }),
     }).catch(() => undefined);
     await act(async () => {
-      if (action === "discard") await props().onDiscardQueuedComment(comment.id, queue.revision);
+      if (action === "discard" || action === "discard-unacknowledged") await props().onDiscardQueuedComment(comment.id, queue.revision);
       if (action === "cancel") props().onCancelQueued(comment.id);
       if (action === "delete") await props().onDeleteComment(comment.id);
     });

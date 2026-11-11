@@ -38,7 +38,7 @@ import {
   nativeRunnerCheckpoints,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
 } from "@paperclipai/db";
-import { beforeAll, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { heartbeatService } from "../heartbeat.js";
 
 import {
@@ -79,6 +79,7 @@ import {
   restoreNativeRunnerCheckpoint,
 } from "./native-runner-checkpoint.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { setNativeExecutionActive } from "./native-active-runs.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS } from "./runner-bridge-tools.js";
 import { HttpError } from "../../errors.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
@@ -929,8 +930,11 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
     await expect(recover(call))
       .resolves.toEqual({ result: { revision: "revision-1" } });
+    // write_document's receipt commits with its revision, so a key whose
+    // receipt holds other input proves this call can never apply under it.
     await expect(recover({ ...call, input: { ...call.input, body: "changed" } }))
-      .resolves.toBeNull();
+      .resolves.toMatchObject({ isError: true, result: { success: false, contentItems: [
+        { type: "inputText", text: expect.stringContaining("paperclip_runner_tool_idempotency_conflict") }] } });
     await expect(recover({ ...call, operationId: "unknown_external_write" }))
       .resolves.toBeNull();
     expect(executeRead).not.toHaveBeenCalled();
@@ -3292,6 +3296,86 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const fixture = await seedUnlaunchedRemoteClaim(label.replace(/\W+/g, "-"), options);
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({ runId: fixture.runId, ...expected })]);
+  });
+
+  // Daytona wave s9330 t02 (TM1): SIGSTOP held this same server past its
+  // execution lease while the executor was starting the native process. On
+  // SIGCONT the lease renewal found the lease lapsed, the executor detached for
+  // "the next controller" and exited, and every recovery scan then waited on
+  // the recorded controller: this same live PID and boot. Nothing else can hold
+  // a lease that names this process, and nothing in it drives the run any more.
+  describe("same-boot controller whose own lease lapsed", () => {
+    it("restarts the bootstrap instead of waiting on itself when no turn reached the runner", async () => {
+      const fixture = await seedUnlaunchedRemoteClaim("SELF-LAPSED-UNCOMMANDED",
+        { liveController: true, leaseExpired: true, event: { eventType: "native.process_start_requested" } });
+      const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
+        restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set() });
+      expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 });
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_never_received_commands" });
+    });
+
+    it("fails with a Retry instead of waiting on itself when the runner may have started", async () => {
+      const fixture = await seedUnlaunchedRemoteClaim("SELF-LAPSED-IDENTITY",
+        { liveController: true, leaseExpired: true, event: { eventType: "native.process_identity_recorded" } });
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
+        restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set() }))
+        .toEqual([expect.objectContaining({ kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" })]);
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", leaseOwner: null, failureCode: "native_restart_recovery_blocked" });
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run.status).toBe("failed");
+      const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+      expect(await taskInterruptionPresentation(fixture.db, issue)).toMatchObject({
+        state: "failed", canRetry: true, observedRunId: fixture.runId });
+      const personId = randomUUID();
+      await fixture.db.insert(authUsers).values({ id: personId, name: "Retry person", email: `${personId}@fixture.invalid`,
+        emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+      await fixture.db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: personId,
+        status: "active", membershipRole: "member" });
+      expect(await requestTaskRetry({ db: fixture.db, companyId, issueId: fixture.issueId, actorId: personId,
+        actorSource: "session", idempotencyKey: `self-lapsed-${fixture.runId}`, observedRunId: fixture.runId }))
+        .toMatchObject({ accepted: true });
+    });
+
+    it("leaves the run to this process's executor while it still drives the run", async () => {
+      const fixture = await seedUnlaunchedRemoteClaim("SELF-LAPSED-EXECUTING",
+        { liveController: true, leaseExpired: true, event: { eventType: "native.process_start_requested" } });
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
+        restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set([fixture.runId]) }))
+        .toEqual([expect.objectContaining({ kind: "awaiting_evidence", reason: "current_controller_preparing" })]);
+      setNativeExecutionActive(fixture.runId, true);
+      try {
+        expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
+          restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set() }))
+          .toEqual([expect.objectContaining({ kind: "awaiting_evidence", reason: "current_controller_preparing" })]);
+      } finally {
+        setNativeExecutionActive(fixture.runId, false);
+      }
+    });
+
+    it("leaves a run this process handed to the next server for that server", async () => {
+      const fixture = await seedUnlaunchedRemoteClaim("SELF-LAPSED-HANDED-OFF",
+        { liveController: true, leaseExpired: true, event: { eventType: "native.process_start_requested" } });
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
+        restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set(),
+        handedOffForShutdown: runId => runId === fixture.runId }))
+        .toEqual([expect.objectContaining({ kind: "awaiting_evidence", reason: "controller_still_alive" })]);
+    });
+
+    it("keeps waiting for a different live controller in this process space", async () => {
+      const fixture = await seedUnlaunchedRemoteClaim("OTHER-LIVE-LAPSED",
+        { leaseExpired: true, event: { eventType: "native.process_start_requested" } });
+      // Another live process (the test runner's parent) recorded as controller.
+      const parentStartedAt = new Date((await readProcessStartedAt(process.ppid))!);
+      await fixture.db.update(nativeRunFinalizations).set({ controllerPid: process.ppid,
+        controllerProcessStartedAt: parentStartedAt }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
+        restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set() }))
+        .toEqual([expect.objectContaining({ kind: "awaiting_evidence", reason: "controller_still_alive" })]);
+    });
   });
 
   it.each([
