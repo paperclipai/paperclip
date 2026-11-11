@@ -238,6 +238,7 @@ Available toolsets: `terminal`, `file`, `web`, `browser`, `code_execution`, `vis
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `cwd` | string | *(assigned task workspace)* | Absolute working directory override. Without an override, use Paperclip's resolved task workspace. |
+| `startInWorkspace` | boolean | `true` | Pass `--in <cwd>` so Hermes starts or resumes the session in the resolved working directory. Needs Hermes 0.21.4 or later; set `false` for older Hermes versions, which reject `--in`. |
 | `persistSession` | boolean | `true` | Resume sessions across heartbeats |
 | `worktreeMode` | boolean | `false` | Git worktree isolation |
 | `checkpoints` | boolean | `false` | Enable filesystem checkpoints for rollback |
