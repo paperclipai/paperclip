@@ -115,7 +115,15 @@ function toRunSnapshot(row: ReleaseRun): RunSnapshot {
     contextSnapshot: parseObject(row.contextSnapshot),
     configurationIncompletePayload: Object.keys(configurationIncompletePayload).length > 0 ? configurationIncompletePayload : null,
     operatorStopped: isOperatorStoppedRunRow(row),
+    retryableBeforeProviderWork: isRetryableBeforeProviderWorkRunRow(row),
   };
+}
+
+export function isRetryableBeforeProviderWorkRunRow(row: ReleaseRun): boolean {
+  const recovery = parseObject(parseObject(row.resultJson).executionRecovery);
+  return ["failed", "timed_out", "interrupted"].includes(row.status)
+    && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false
+    && classifyContinuationFailure(row).kind === "transient_infra";
 }
 
 const OPERATOR_STOP_ERROR_CODES = new Set(["operator_interrupted", "agent_paused"]);

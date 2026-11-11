@@ -626,6 +626,7 @@ async function runReleaseRecoveryTail(
         run,
         expectedRetryReason,
       ),
+      automaticRecoveryRetryableBeforeProviderWork: run.retryableBeforeProviderWork === true,
       sourceRequiresExplicitRecovery,
     },
     shared: {

@@ -766,6 +766,24 @@ describe("releaseIssueExecution", () => {
     expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["retries a continuation that lost its controller lease before provider work through the bounded sweep", true, "released"],
+    ["still blocks a continuation whose automatic retry failed after provider work could have started", false, "blocked"],
+  ] as const)("%s", async (_label, retryableBeforeProviderWork, expected) => {
+    const transaction = createFakeTransaction();
+    const recovery = createFakeRecovery();
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, { ...RUN, runtimeMode: "legacy",
+        errorCode: "controller_lease_lost", retryableBeforeProviderWork,
+        contextSnapshot: { issueId: ISSUE.id, retryReason: "issue_continuation_needed", source: "issue.continuation_recovery" } }),
+      recovery,
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe(expected);
+    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(expected === "blocked" ? 1 : 0);
+  });
+
   it("escalates through the recovery port for a blocked outcome, after the transaction resolves", async () => {
     const transaction = createFakeTransaction({
       findNextDeferredWake: vi.fn(async () => null),

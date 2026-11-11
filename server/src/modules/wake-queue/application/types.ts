@@ -29,6 +29,7 @@ export type RunSnapshot = {
    * or an agent pause. Release must not immediately re-queue such a run.
    */
   operatorStopped?: boolean;
+  retryableBeforeProviderWork?: boolean;
 };
 
 export type IssueSnapshot = {
