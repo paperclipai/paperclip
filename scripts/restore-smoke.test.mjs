@@ -6,13 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// Argument-handling tests for scripts/restore-smoke.sh. The script's real
-// work needs docker, a postgres image, a Paperclip image and multi-gigabyte
-// artifacts, so what CI can assert is the part that decides whether that
-// work starts at all: every refusal happens before a container exists, and
-// the exit code distinguishes "you called it wrong" (2) from "the artifact is
-// bad" (1). The end-to-end run is recorded in docs/deploy/backup-restore.md.
-
 const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const scriptPath = join(repoRoot, "scripts", "restore-smoke.sh");
 
@@ -34,6 +27,14 @@ test("no --db is a usage error, and the usage text names every option", () => {
   for (const opt of ["--db", "--volume", "--image", "--max-missing", "--max-torn", "--boot", "--boot-timeout", "--allow-unbound", "--keep"]) {
     assert.match(out, new RegExp(`^#?\\s*${opt}\\b`, "m"), `usage text should list ${opt}`);
   }
+});
+
+test("--help prints the help on stdout and exits 0", () => {
+  const res = spawnSync("bash", [scriptPath, "--help"], { encoding: "utf8" });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /^Usage:/m);
+  assert.match(res.stdout, /^\s*--boot <ref>/m);
+  assert.equal(res.stderr, "");
 });
 
 test("a missing artifact fails before anything starts", () => {
@@ -84,9 +85,6 @@ test("--max-torn must be a non-negative integer, refused before anything starts"
 });
 
 test("a truncated artifact fails the integrity step, before docker is needed", () => {
-  // The integrity check is the first step and must run before any container
-  // starts, so a corrupt gzip is caught even on a host without docker: put a
-  // `docker` on PATH that fails loudly if anything reaches it.
   const dir = mkdtempSync(join(tmpdir(), "restore-smoke-"));
   try {
     const db = join(dir, "db.sql.gz");

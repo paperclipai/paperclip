@@ -1,37 +1,3 @@
--- restore-verify.sql — prove a restored Paperclip database is actually usable.
---
--- Run this against a database you have just restored, BEFORE you point the
--- server at it. It checks the invariants a restore can silently break, prints a
--- board inventory to compare against your pre-incident numbers, and raises an
--- exception (psql exit 3 under ON_ERROR_STOP) if any check failed — so it is
--- safe to use as a gate in a script.
---
--- Usage (deployment box, database in the compose stack):
---   docker compose -f compose.yaml exec -T db \
---     psql -U paperclip -d paperclip -v ON_ERROR_STOP=1 -f - < scripts/restore-verify.sql
---
--- Usage (any reachable database):
---   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/restore-verify.sql
---
--- It is read-only apart from one temporary table, and it never writes to the
--- board's own tables.
---
--- What it deliberately does NOT do: compare row counts against the source. A
--- restore target has no way to know what the source held, so counts are printed
--- for a human to compare, not asserted. See docs/deploy/backup-restore.md.
---
--- What it CANNOT do: open a run-log file. It runs inside the database, and the
--- NDJSON transcripts live in the data directory. Run
--- scripts/restore-verify-logs.sh afterwards — the last query below prints the
--- sampling command — or a database-only restore passes here with every
--- transcript dangling.
---
--- Escape hatch: `-v allow_empty=1` downgrades the two population gates to
--- WARN. Use it only when the source deployment genuinely held no such rows —
--- a brand-new instance, or one whose run logs live in S3 rather than locally.
--- Restoring a deployment that had a board and passing allow_empty is how an
--- empty restore gets waved through.
-
 \set ON_ERROR_STOP on
 
 \if :{?allow_empty}
@@ -46,8 +12,6 @@ create temporary table restore_verify_results (
   detail   text
 );
 
--- 1. The core board relations exist at all. A dump that was truncated mid
---    stream, or loaded into the wrong database, fails here first.
 insert into restore_verify_results
 select
   1,
@@ -71,12 +35,6 @@ from (
   ]) as t(name)
 ) s;
 
--- 2. The migration journal came back. Without it the server cannot tell which
---    migrations have run and will try to re-apply the whole history.
---
---    The journal is read through EXECUTE, not a plain subquery: Postgres
---    resolves every relation a statement names when it parses it, so a CASE
---    guard cannot keep a missing table from erroring before the guard runs.
 do $$
 declare
   n      bigint;
@@ -98,10 +56,6 @@ begin
     format('%s migration(s) recorded, newest hash %s', n, coalesce(newest, '(none)')));
 end $$;
 
--- Every check from here on queries the core relations. If one is missing, a
--- later query errors and ON_ERROR_STOP exits before the table below prints, so
--- the operator sees a bare "relation does not exist" instead of which
--- prerequisite failed. Print what we have and stop.
 select exists (select 1 from restore_verify_results where status = 'FAIL')
   as prerequisites_failed \gset
 \if :prerequisites_failed
@@ -115,9 +69,6 @@ select exists (select 1 from restore_verify_results where status = 'FAIL')
   end $$;
 \endif
 
--- 3. Extensions the schema depends on. pg_dump emits CREATE EXTENSION, but it
---    is skipped without the privilege to create it, and the failure only
---    surfaces later as a missing-operator error at query time.
 insert into restore_verify_results
 select
   3,
@@ -132,9 +83,6 @@ select
 from pg_extension
 where extname in ('pg_trgm', 'fuzzystrmatch');
 
--- 4. Referential integrity across the board graph. A partial restore — one
---    table's COPY aborted, or a dump taken with per-table filters — shows up
---    here as orphans even though every statement "succeeded".
 insert into restore_verify_results
 select
   4,
@@ -171,9 +119,6 @@ from (
     where r.id is null
 ) s;
 
--- The two population gates below read these. Splitting them out keeps each
--- gate's list in one place and lets the inventory print the same numbers the
--- gate asserted, rather than a second query that could drift from it.
 create temporary view populated as
   select 'companies' as entity, count(*) as n from companies
   union all select 'agents', count(*) from agents
@@ -185,15 +130,6 @@ create temporary view run_history as
   select 'heartbeat_runs' as entity, count(*) as n from heartbeat_runs
   union all select 'heartbeat_run_events', count(*) from heartbeat_run_events;
 
--- 5. The board is not empty. The most embarrassing restore outcome is a
---    structurally perfect database with no data in it, which every other check
---    above passes cleanly.
---
---    Every relation here is gated, not merely printed. Gating companies and
---    agents alone lets a dump that carried only those two tables — a
---    per-table filter, a COPY that aborted partway down the file — pass while
---    the board it is supposed to restore is gone. Issues and their comments are
---    the board.
 insert into restore_verify_results
 select
   5,
@@ -209,10 +145,6 @@ from (
     (select string_agg(format('%s %s', n, entity), ', ' order by entity) from populated) as counts
 ) s;
 
--- 6. Run history came back. It is separate from check 5 because it fails for a
---    different reason — heartbeat_runs and heartbeat_run_events are the largest
---    tables in the dump, so a truncated artifact loses these first and
---    everything else looks fine.
 insert into restore_verify_results
 select
   6,
@@ -228,15 +160,6 @@ from (
     (select string_agg(format('%s %s', n, entity), ', ' order by entity) from run_history) as counts
 ) s;
 
--- 7. Sequences are ahead of the data they hand out ids for. pg_dump restores
---    sequence values via setval, but a dump assembled another way — or a
---    partial reload — leaves a sequence behind its column's max, and the
---    symptom is a duplicate-key error on the first insert after go-live, not
---    at restore time.
---
---    last_value alone is not the next id. With is_called = false the next
---    nextval() returns last_value itself, so a sequence sitting exactly on its
---    column's max collides even though it is not "behind" it.
 do $$
 declare
   rec record;
@@ -274,7 +197,6 @@ begin
     execute format('select coalesce(max(%I), 0) from %I.%I',
                    rec.col_name, rec.tbl_schema, rec.tbl_name)
       into col_max;
-    -- Compared rather than computed: last_value + 1 overflows at the bigint max.
     if seq_last < col_max or (not seq_called and seq_last = col_max) then
       behind := behind || format('%s.%s at %s (is_called=%s) but max(%s.%s)=%s',
                                  rec.seq_schema, rec.seq_name, seq_last, seq_called,
@@ -338,7 +260,6 @@ order by runs desc;
 \echo 'sample into scripts/restore-verify-logs.sh — the command is in'
 \echo 'docs/deploy/backup-restore.md, step 4.'
 
--- Fail the process if anything above failed, so a caller can gate on exit code.
 do $$
 declare
   failures text;

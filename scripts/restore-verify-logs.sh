@@ -1,144 +1,95 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# restore-verify-logs.sh — open the run-log files a restored database points
-# at, and prove they are the files the database recorded.
-#
-# scripts/restore-verify.sql runs inside the database and can only see the
-# database. `heartbeat_runs` rows with `log_store = 'local_file'` carry a
-# relative `log_ref`; the NDJSON transcript itself is a file in the data
-# directory. So a database-only restore passes every SQL check while every
-# transcript is a dangling reference — which is one failure this script
-# exists to catch.
-#
-# The other is tearing. The data-directory tar is taken from a live tree, so
-# a transcript a run was still writing is captured mid-line: the file exists,
-# a presence check passes, and the run's history cannot be opened intact.
-# When the server finalizes a run it records the transcript's exact size and
-# SHA-256 on the row (`log_bytes`, `log_sha256`), so the restored file can be
-# compared with what the database says it should be. That comparison is the
-# cross-artifact check; presence alone is not.
-#
-# It reads rows on stdin, one per line, tab-separated, so it does not need to
-# know how your deployment reaches psql:
-#
-#   log_ref <TAB> created_at <TAB> log_bytes <TAB> log_sha256 <TAB> last_output_bytes
-#
-#   "${PSQL[@]}" -d paperclip_restored -Atq -F "$(printf '\t')" -c \
-#     "select log_ref, created_at, log_bytes, log_sha256, last_output_bytes
-#        from heartbeat_runs
-#       where log_store = 'local_file' and log_ref is not null" > refs.tsv
-#   scripts/restore-verify-logs.sh /paperclip --expect <count(*) of the same rows> < refs.tsv
-#
-# created_at is echoed next to each missing, mismatching or torn ref — that is
-# what tells a source-side gap from a wrong artifact (see below). log_bytes and
-# log_sha256 are NULL (empty) for a run the server never finalized: it was in
-# flight when the dump was taken, or died before finalize. With the database
-# dumped before the tree is tarred (the documented order) every finalized
-# run's file is complete in the tar, so a digest mismatch means a wrong
-# artifact generation or the reverse ordering, and it always fails.
-#
-# An unfinalized transcript has no digest, but it has a floor. While a run is
-# live the server writes last_output_bytes — the transcript's byte total — to
-# the row after the append it counts, so with the dump taken first the
-# restored file is at least that long. A file shorter than that was cut by
-# the tar, wherever the cut fell, and always fails. Longer is normal: the tar
-# ran after the dump and the run kept writing. The floor lags: it is written
-# at most once a minute, so output from the last minute before the dump is
-# recorded nowhere in the dump and no per-file check can bound it. NULL means
-# the run never produced output.
-#
-# What bounds it is the pairing. A transcript is append-only, so a tar that
-# read it after the dump finished holds every byte the run wrote before the
-# dump. A tar from an earlier backup run can sit at or past the stale floor,
-# end on a line boundary, and still lack events the dump preceded — nothing
-# in the file tells the two apart. So the producer writes the dump artifact's
-# sha256 to <data-dir>/.backup-generation after the dump is complete, and
-# names that marker as the tar's first member:
-#
-#   sha256sum db-<ts>.sql.gz > "$PAPERCLIP_HOME/.backup-generation"
-#   tar -czf paperclip-<ts>.tar.gz -C "$(dirname "$PAPERCLIP_HOME")" \
-#     "$(basename "$PAPERCLIP_HOME")/.backup-generation" <kept paths>
-#
-# --dump-sha256 holds the archive's first member to the dump being restored.
-# First matters: the marker is one mutable file, and a tar that walks the
-# tree for hours can reach it after a later backup run rewrote it, having
-# already read its transcripts before that run's dump. What the tar read
-# before any transcript is its first member, so that is the one checked. A
-# first member that is not the marker, or names any other dump, fails before
-# any ref is checked; so does a restored tree whose marker names another.
-# Without --dump-sha256 an unfinalized transcript is unbounded and fails
-# unless --allow-unbound is given. Finalized runs need no marker: a
-# transcript from another generation does not match their digest.
-#
-# It also has a shape: the server appends whole NDJSON lines, so an intact
-# transcript is empty or ends in a newline. A last byte other than a newline
-# is a cut-off event, counted as torn, failing beyond --max-torn.
-# Measured on one live deployment: 286 unfinalized transcripts, 285 at or
-# past their floor and 1 empty with none, 0 short; 23 torn at the source
-# itself (runs interrupted by server restarts weeks earlier).
-#
-# Check every ref, not a sample. Hashing a gigabyte of transcripts takes
-# seconds, and a sample turns the result into a coin toss (see --max-missing).
-#
-# Usage:
-#   restore-verify-logs.sh <data-dir> [--run-logs-dir <dir>] [--max-missing <n>]
-#                          [--max-torn <n>] [--expect <n>] [--allow-empty]
-#                          [--allow-unverified]
-#                          [--dump-sha256 <hex> --archive <file>]
-#                          [--allow-unbound]
-#
-# <data-dir> is PAPERCLIP_HOME (the restored data directory) or an instance
-# root; the run-log base is resolved from it. --run-logs-dir names the base
-# directly, which is what a multi-instance data directory needs.
-#
-# --max-missing <n>: tolerate up to n missing refs. A healthy deployment can
-# carry a few dangling refs of its own — a run whose transcript was lost at the
-# source before any backup was taken — and a faithful restore brings those back
-# dangling. Measured on one live deployment: 11 of 6325 refs, all from one
-# eight-minute window weeks earlier. Set n to the count the *source* is known to
-# have, never to whatever makes the check pass. Missing refs from a wrong
-# artifact look different: all of them (archive missing or extracted one level
-# off), or a cluster of the newest runs (filesystem tarred before the database
-# was dumped, so the files postdate the archive). Content mismatches have no
-# tolerance: the source never has any (measured: 0 of 6068 finalized runs).
-#
-# --max-torn <n>: tolerate up to n unfinalized transcripts that end mid-line.
-# Same rule as --max-missing: the count the source is known to have, which you
-# get by running this script against the live tree, never whatever makes the
-# check pass. A torn transcript beyond that count was torn by the backup — a
-# run in flight while the tar read its file — and its last event is lost.
-#
-# --expect <n>: the number of rows the database reported for the same query
-# (select count(*) ...). Fewer or more rows on stdin fails before any file is
-# looked at. `docker exec ... | <this script>` has been measured dropping output
-# when the reader falls behind — 5942 of 6457 rows arrived, exit 0, nothing on
-# stderr — and a short list is checked and passes. Write the rows to a file
-# first and pass the count; the runbook and restore-smoke.sh both do.
-#
-# --dump-sha256 <hex>: the sha256 of the database dump artifact being
-# restored (`sha256sum db-<ts>.sql.gz`). <data-dir> must then be the root the
-# data-directory archive extracted to, which is where .backup-generation is.
-#
-# --archive <file>: the data-directory archive <data-dir> was extracted from.
-# Required with --dump-sha256; its first member is the marker checked.
-#
-# --allow-unbound: accept unfinalized transcripts with no generation marker
-# checked, and say so on the PASSED line. For artifacts from a producer that
-# does not write the marker; it is the old guarantee, stated as such.
-#
-# --allow-unverified: accept input with no digest columns at all (the
-# two-column form) and report presence only. Without it, such input fails, so
-# a PASSED line always means content was compared. It does not waive the
-# marker: a row with no digest is unfinalized as far as this script knows.
-#
-# Exits non-zero if more than --max-missing refs are missing (default 0), more
-# than --max-torn unfinalized transcripts are torn (default 0), or any ref's
-# content differs from its recorded digest, so it gates a script.
-
 usage() {
-  echo "usage: $0 <data-dir> [--run-logs-dir <dir>] [--max-missing <n>] [--max-torn <n>] [--expect <n>] [--allow-empty] [--allow-unverified] [--dump-sha256 <hex> --archive <file>] [--allow-unbound]" >&2
-  exit 2
+  local code="${1:-2}"
+  if [ "$code" -eq 0 ]; then help_text; else help_text >&2; fi
+  exit "$code"
+}
+
+help_text() {
+  cat <<'EOF'
+restore-verify-logs.sh: open the run-log files that a restored database points
+at, and prove that they are the files the database recorded.
+
+Usage:
+  restore-verify-logs.sh <data-dir> [--run-logs-dir <dir>] [--max-missing <n>]
+                         [--max-torn <n>] [--expect <n>] [--allow-empty]
+                         [--allow-unverified]
+                         [--dump-sha256 <hex> --archive <file>]
+                         [--allow-unbound]
+
+It reads one row per line on stdin, tab-separated (psql's default '|' is also
+accepted):
+
+  log_ref <TAB> created_at <TAB> log_bytes <TAB> log_sha256 <TAB> last_output_bytes
+
+  "${PSQL[@]}" -d paperclip_restored -Atq -F "$(printf '\t')" -c \
+    "select log_ref, created_at, log_bytes, log_sha256, last_output_bytes
+       from heartbeat_runs
+      where log_store = 'local_file' and log_ref is not null" > refs.tsv
+  restore-verify-logs.sh /paperclip --expect <count(*) of the same rows> < refs.tsv
+
+Every ref is checked, not a sample:
+
+  - A finalized run's file must match the size and SHA-256 the server recorded
+    at finalize (log_bytes, log_sha256). A mismatch always fails.
+  - An unfinalized run has no digest. Its file must be at least
+    last_output_bytes long, and must end on a newline. A shorter file always
+    fails. A file that ends mid-line is torn and fails beyond --max-torn.
+  - An unfinalized file is only bounded when the data-directory tar is proven
+    to follow this dump: see --dump-sha256. Without that proof it fails unless
+    --allow-unbound is given.
+  - A missing file fails beyond --max-missing. A zero-byte file is a normal
+    source state and does not fail.
+  - created_at is printed next to each missing, mismatched, short or torn ref.
+    The newest runs missing together means the tree was tarred before the
+    dump. Old runs can be gaps the source already had.
+
+Options:
+  <data-dir>               PAPERCLIP_HOME (the restored data directory) or an
+                           instance root. The run-log base is resolved from it
+  --run-logs-dir <dir>     the run-log base itself. A data directory with more
+                           than one instance needs it
+  --max-missing <n>        tolerate up to n missing refs, default 0. Set it to
+                           the count the source is known to have, never to
+                           whatever makes the check pass. Content mismatches
+                           have no tolerance
+  --max-torn <n>           tolerate up to n unfinalized transcripts that end
+                           mid-line, default 0. Measure the count with this
+                           script against the live tree
+  --expect <n>             the row count the database reported for the same
+                           query. More or fewer rows on stdin fail before any
+                           file is checked, because a pipe from `docker exec`
+                           can drop rows and exit 0. Write the rows to a file
+                           first
+  --allow-empty            pass when no refs arrive, for a deployment that
+                           keeps run logs in S3
+  --allow-unverified       accept input with no digest columns and report
+                           presence only. It does not waive the generation
+                           marker
+  --dump-sha256 <hex>      the sha256 of the dump being restored
+                           (`sha256sum db-<ts>.sql.gz`). <data-dir> must be the
+                           root the data-directory tar extracted to. The tar's
+                           first member must be the .backup-generation marker
+                           and name this digest, and so must the extracted
+                           marker
+  --archive <file>         the data-directory tar <data-dir> came from.
+                           Required with --dump-sha256
+  --allow-unbound          accept unfinalized transcripts with no generation
+                           marker checked, and say so on the PASSED line
+  -h, --help               print this help
+
+The producer writes the marker after the dump and puts it first in the tar:
+
+  sha256sum db-<ts>.sql.gz > "$PAPERCLIP_HOME/.backup-generation"
+  tar -czf paperclip-<ts>.tar.gz -C "$(dirname "$PAPERCLIP_HOME")" \
+    "$(basename "$PAPERCLIP_HOME")/.backup-generation" <kept paths>
+
+Exits non-zero if more refs are missing than --max-missing, more unfinalized
+transcripts are torn than --max-torn, any unfinalized transcript is short or
+unbounded, or any ref's content differs from its recorded digest.
+EOF
 }
 
 DATA_DIR=""
@@ -209,7 +160,7 @@ while [ $# -gt 0 ]; do
       ALLOW_UNBOUND=1
       shift
       ;;
-    -h|--help) usage ;;
+    -h|--help) usage 0 ;;
     -*) echo "unknown option: $1" >&2; usage ;;
     *)
       [ -z "$DATA_DIR" ] || usage
@@ -224,11 +175,8 @@ if [ -z "$RUN_LOGS_DIR" ]; then
   [ -d "$DATA_DIR" ] || { echo "FAIL: data directory not found: $DATA_DIR" >&2; exit 1; }
 
   if [ -d "$DATA_DIR/data/run-logs" ]; then
-    # <data-dir> is an instance root.
     RUN_LOGS_DIR="$DATA_DIR/data/run-logs"
   else
-    # <data-dir> is PAPERCLIP_HOME: exactly one instance resolves unambiguously,
-    # more than one is a choice this script must not make for you.
     candidates=()
     for candidate in "$DATA_DIR"/instances/*/data/run-logs; do
       [ -d "$candidate" ] && candidates+=("$candidate")
@@ -252,7 +200,6 @@ fi
 
 [ -d "$RUN_LOGS_DIR" ] || { echo "FAIL: run-log directory not found: $RUN_LOGS_DIR" >&2; exit 1; }
 
-# Tie the tar to the dump before trusting any unfinalized transcript in it.
 generation_proven=0
 if [ -n "$DUMP_SHA" ]; then
   [ -n "$DATA_DIR" ] || { echo "--dump-sha256 needs <data-dir>, the root the archive extracted to" >&2; usage; }
@@ -276,13 +223,7 @@ if [ -n "$DUMP_SHA" ]; then
     echo "      by the same run as the dump." >&2
     exit 1
   fi
-  # The tree's marker is the last copy the tar read. The first member is the
-  # copy it read before any transcript, and only that one orders the tar
-  # after the dump. head closes the listing early; tar's SIGPIPE is fine,
-  # an unreadable archive leaves the name empty and fails below.
   first_member="$(set +o pipefail; tar -tzf "$ARCHIVE" 2>/dev/null | head -n 1)"
-  # At the root, or under exactly one top-level directory: the level the
-  # runbook's --strip-components=1 extracts to <data-dir>.
   if ! [[ "${first_member#./}" =~ ^([^/]+/)?\.backup-generation$ ]]; then
     echo "FAIL: .backup-generation is not the first member of $ARCHIVE; nothing was checked." >&2
     echo "      first member is ${first_member:-(none: unreadable archive)}" >&2
@@ -306,8 +247,6 @@ if [ -n "$DUMP_SHA" ]; then
   generation_proven=1
 fi
 
-# sha256sum is coreutils on a host and busybox in the alpine helper container
-# the runbook uses for named volumes; both print "<hex>  <path>".
 command -v sha256sum >/dev/null 2>&1 || { echo "FAIL: sha256sum not found on PATH" >&2; exit 1; }
 
 checked=0
@@ -323,16 +262,7 @@ torn=0
 empty=0
 reported=0
 
-# Only missing files and digest mismatches fail. A zero-byte transcript is a
-# normal source state — a run that was killed before it wrote its first line
-# leaves one, and a faithful restore brings the empty file back empty.
-# Measured on a live deployment: 1131 of 9086 transcripts were already zero
-# bytes at the source. Failing on those would make this check cry wolf on
-# every healthy restore. A zero-byte file whose row carries a digest is
-# verified like any other: the digest of the empty string is a real value.
 report() {
-  # Only the first few, so a wholly missing directory does not print thousands
-  # of lines. The count at the end is the number that matters.
   if [ "$reported" -lt 20 ]; then
     echo "  $1" >&2
     reported=$((reported + 1))
@@ -342,10 +272,6 @@ report() {
   fi
 }
 
-# Read every row before checking any, so the count can be held to --expect
-# first: a truncated list must fail as truncated, not pass as shorter.
-# Tolerate trailing \r and blank lines: psql -At over `docker compose exec` is
-# the documented producer and it is not guaranteed to be clean.
 rows=()
 while IFS= read -r line; do
   line="${line%$'\r'}"
@@ -359,19 +285,11 @@ if [ -n "$EXPECT" ] && [ "${#rows[@]}" -ne "$EXPECT" ]; then
 fi
 
 for line in ${rows[@]+"${rows[@]}"}; do
-  # Tab is the documented separator (psql -F $'\t'). psql -A without -F
-  # separates with '|', and no ref, timestamp, size or digest can contain
-  # one, so accept that too rather than turn a forgotten flag into "every
-  # ref is missing". Tabs are turned into '|' before splitting: tab is IFS
-  # whitespace, so `read` would merge the empty log_bytes/log_sha256 of an
-  # unfinalized row and shift last_output_bytes into log_bytes.
   line="${line//$'\t'/|}"
   seps="${line//[!|]/}"
   IFS='|' read -r ref when want_bytes want_sha floor_bytes _ <<<"$line"
   case "$ref" in
     ''|/*|*..*)
-      # A ref is relative and stays inside the base. Anything else is a
-      # corrupt or hostile row, not a restore result.
       checked=$((checked + 1))
       missing=$((missing + 1))
       report "rejected (not a relative path inside the base): $ref"
@@ -389,18 +307,9 @@ for line in ${rows[@]+"${rows[@]}"}; do
     empty=$((empty + 1))
   fi
   if [ -z "$want_sha" ]; then
-    # The server never finalized this run, so the database holds no digest.
-    # It does hold a floor: last_output_bytes is written to the row after
-    # the append it counts, and the dump precedes the tar, so the restored
-    # file is at least that long. Shorter is a cut the tar made, on a line
-    # boundary or not.
     if [ "${#seps}" -lt 3 ]; then
-      # No digest columns at all: presence-only input, which makes no claim
-      # about content and is refused below unless --allow-unverified.
       presence_only=$((presence_only + 1))
     elif [ "${#seps}" -eq 3 ]; then
-      # The four-column query: digests selected, the floor not. (Fewer
-      # columns is presence-only input, which the digest rule below refuses.)
       unbounded_input=$((unbounded_input + 1))
     elif [ -n "$floor_bytes" ]; then
       case "$floor_bytes" in
@@ -417,8 +326,6 @@ for line in ${rows[@]+"${rows[@]}"}; do
         continue
       fi
     fi
-    # What can still be established is that the file stops on a line
-    # boundary; a last byte other than a newline is a cut-off event.
     if [ -s "$path" ] && [ "$(tail -c 1 "$path" | od -An -tx1 | tr -d ' \n')" != "0a" ]; then
       torn=$((torn + 1))
       report "torn: $ref  unfinalized, ends mid-line${when:+  (run created $when)}"
@@ -499,14 +406,12 @@ fi
 
 if [ "$unbounded_input" -gt 0 ] && [ "$ALLOW_UNVERIFIED" -ne 1 ]; then
   echo "FAIL: $unbounded_input unfinalized ref(s) arrived without a last_output_bytes column." >&2
-  echo "      Select it as the fifth column (see the query at the top of this" >&2
-  echo "      script). Without it an in-flight transcript the tar cut on a line" >&2
-  echo "      boundary passes. Pass --allow-unverified to accept that knowingly." >&2
+  echo "      Select it as the fifth column (see --help). Without it an in-flight" >&2
+  echo "      transcript the tar cut on a line boundary passes. Pass" >&2
+  echo "      --allow-unverified to accept that knowingly." >&2
   failed=1
 fi
 
-# Every unfinalized transcript that got this far, torn or not, is only
-# known to hold what the dump preceded if the tar is known to follow it.
 unbound=0
 if [ "$generation_proven" -ne 1 ]; then
   unbound=$((floored + unverified + torn))
@@ -537,7 +442,7 @@ fi
 if [ "$verified" -eq 0 ] && [ "$ALLOW_UNVERIFIED" -ne 1 ]; then
   echo "FAIL: no ref carried a digest, so no transcript's content was verified." >&2
   echo "      Select log_bytes and log_sha256 as the third and fourth columns" >&2
-  echo "      (see the query at the top of this script). Presence alone does" >&2
+  echo "      (see --help). Presence alone does" >&2
   echo "      not catch a transcript the tar captured mid-write. Pass" >&2
   echo "      --allow-unverified to accept a presence-only result knowingly." >&2
   exit 1

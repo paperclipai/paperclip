@@ -1,38 +1,41 @@
 #!/usr/bin/env node
-// restore-verify-secrets.mjs — prove a restored master key is the key the
-// restored database's secrets were encrypted with.
-//
-// A key file that is present and 0600 says nothing about whether it belongs
-// to this dump: a valid 32-byte key from a different artifact set boots the
-// server just as well, and every stored credential then fails the first time
-// an agent uses it. So every local_encrypted_v1 secret version is decrypted
-// with the key. AES-256-GCM authenticates, so a wrong key cannot decrypt by
-// accident, and the plaintext's SHA-256 is compared with the row's
-// value_sha256. No plaintext is ever printed.
-//
-// Rows arrive on stdin, one per line, tab-separated:
-//
-//   id <TAB> value_sha256 <TAB> material (the jsonb column as text)
-//
-//   select id, value_sha256, material::text from company_secret_versions
-//    where material->>'scheme' = 'local_encrypted_v1'
-//
-// Usage:
-//   restore-verify-secrets.mjs <master.key> --expect <n> < versions.tsv
-//
-// --expect is the count(*) the database reported for the same query, for the
-// same reason restore-verify-logs.sh takes it: output piped out of
-// `docker exec` has been measured arriving short with exit 0.
-//
-// Exits 0 when every version decrypts to its recorded hash, 1 when any does
-// not or the row count is off, 2 on a usage error.
-
 import { createDecipheriv, createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
+const HELP = `restore-verify-secrets.mjs: prove that a restored master key is the key the
+restored database's secrets were encrypted with.
+
+Usage:
+  restore-verify-secrets.mjs <master.key> --expect <n> < versions.tsv
+
+Rows arrive on stdin, one per line, tab-separated:
+
+  id <TAB> value_sha256 <TAB> material (the jsonb column as text)
+
+  select id, value_sha256, material::text from company_secret_versions
+   where material->>'scheme' = 'local_encrypted_v1'
+
+Every local_encrypted_v1 version is decrypted with the key (AES-256-GCM, so a
+wrong key cannot decrypt by accident), and the SHA-256 of the plaintext is
+compared with the row's value_sha256. No plaintext is printed.
+
+The key file holds 64 hex characters, base64 of 32 bytes, or 32 raw bytes, as
+the server's local_encrypted provider accepts.
+
+Options:
+  <master.key>   the restored instances/<id>/secrets/master.key
+  --expect <n>   the count(*) the database reported for the same query. Output
+                 piped out of \`docker exec\` can arrive short with exit 0, so a
+                 different row count fails before anything is decrypted
+  -h, --help     print this help
+
+Exits 0 when every version decrypts to its recorded hash, 1 when any does not
+or the row count is off, 2 on a usage error.
+`;
+
 function usage(message) {
   if (message) console.error(message);
-  console.error("usage: restore-verify-secrets.mjs <master.key> --expect <n> < versions.tsv");
+  console.error(HELP);
   process.exit(2);
 }
 
@@ -40,7 +43,10 @@ const args = process.argv.slice(2);
 let keyFile = null;
 let expect = null;
 for (let i = 0; i < args.length; i += 1) {
-  if (args[i] === "--expect") {
+  if (args[i] === "-h" || args[i] === "--help") {
+    process.stdout.write(HELP);
+    process.exit(0);
+  } else if (args[i] === "--expect") {
     const value = args[i + 1];
     if (value === undefined || !/^[0-9]+$/.test(value)) usage(`--expect needs a non-negative integer, got: ${value}`);
     expect = Number(value);
@@ -53,8 +59,6 @@ for (let i = 0; i < args.length; i += 1) {
 }
 if (keyFile === null || expect === null) usage();
 
-// The encodings the server's local_encrypted provider accepts: 64 hex
-// characters, base64 of 32 bytes, or 32 raw bytes.
 function decodeMasterKey(raw) {
   const trimmed = raw.trim();
   if (/^[A-Fa-f0-9]{64}$/.test(trimmed)) return Buffer.from(trimmed, "hex");

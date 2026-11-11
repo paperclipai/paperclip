@@ -6,17 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// Behavioural tests for scripts/restore-verify-secrets.mjs: encrypt values
-// exactly as the server's local_encrypted provider does, hand the rows a
-// restored company_secret_versions would produce to the checker, and assert
-// that only the key they were encrypted with passes.
-
 const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const scriptPath = join(repoRoot, "scripts", "restore-verify-secrets.mjs");
 
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
-// Mirrors encryptValue() in server/src/secrets/local-encrypted-provider.ts.
 function encrypt(key, value) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
@@ -67,8 +61,6 @@ test("the key the secrets were encrypted with passes, in every encoding the serv
 });
 
 test("a valid key from a different artifact set fails", () => {
-  // The case presence and mode cannot catch: a well-formed 32-byte key that
-  // is simply not the one this dump's secrets were encrypted with.
   withKeyFile(OTHER.toString("base64"), (path) => {
     const { status, out } = run(path, [row("v1", KEY, "sk-live-one"), row("v2", KEY, "ghp_two")]);
     assert.equal(status, 1, out);
@@ -115,4 +107,14 @@ test("--expect fails a short list and is required", () => {
     const bad = run(path, [row("v1", KEY, "a")], ["--expect", "one"]);
     assert.equal(bad.status, 2, bad.out);
   });
+});
+
+test("--help prints the help on stdout and exits 0; a bad argument prints it on stderr and exits 2", () => {
+  const help = spawnSync(process.execPath, [scriptPath, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^\s*--expect\b/m);
+  const bad = spawnSync(process.execPath, [scriptPath, "--bogus"], { encoding: "utf8" });
+  assert.equal(bad.status, 2, bad.stderr);
+  assert.match(bad.stderr, /unknown argument: --bogus/);
+  assert.match(bad.stderr, /^Usage:/m);
 });
