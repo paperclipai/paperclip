@@ -83,7 +83,10 @@ the task. Its later task mutations are rejected, including under the update
 transaction's task and run locks. Read and comment access follows normal policy.
 A native run's task tools stop acting for the task once it is handed off, and the
 run's result is kept as history: its finalizer preserves the person's task status
-and adds no continuation, blocker, or recovery to it.
+and adds no continuation, blocker, or recovery to it. If a restart interrupts the
+outgoing turn, the run settles and its unsaved files are retained. Once automatic
+recovery saves them, the workspace hold releases for the person who received the
+task through that run's own recorded hand-off.
 
 Board-initiated reassignments, agent API keys, and handoffs to another agent still
 require the outgoing execution to stop before ownership changes.
