@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout } from "node:timers/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, environmentLeases, environments, agentInstructionWorkingCopies as copies, withDedicatedDbConnection, type Db } from "@paperclipai/db";
@@ -120,11 +121,26 @@ function actor(row: Copy): AuthorizationActor {
 }
 export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patchRow: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
   const lockOwnership = new AsyncLocalStorage<{ signal: AbortSignal; verify: () => Promise<void> }>();
-  const patch = (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => {
-    lockOwnership.getStore()?.signal.throwIfAborted();
+  const assertDirectoryLockHeld = async () => { await lockOwnership.getStore()?.verify(); };
+  const whileDirectoryLockHeld = async (fn: () => Promise<unknown>) => {
+    if (await assertDirectoryLockHeld().then(() => true, () => false)) await fn();
+  };
+  const patch = async (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => {
+    await assertDirectoryLockHeld();
     return patchRow(row, values, condition);
   };
-  const assertOwner = async () => { await lockOwnership.getStore()?.verify(); };
+  async function fencedRemoteDelete(paths: string[], execute: (script: string) => Promise<boolean>): Promise<boolean> {
+    const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+    const suffix = `.deleting-${randomUUID()}`;
+    const quoted = paths.map(quote).join(" ");
+    await assertDirectoryLockHeld();
+    if (!await execute(`for p in ${quoted}; do if [ -e "$p" ] || [ -L "$p" ]; then mv -- "$p" "$p${suffix}" || exit 1; fi; done`)) return false;
+    try { await assertDirectoryLockHeld(); } catch (error) {
+      await execute(`for p in ${quoted}; do if [ -e "$p${suffix}" ] && [ ! -e "$p" ]; then mv -- "$p${suffix}" "$p"; fi; done`);
+      throw error;
+    }
+    return execute(`rm -rf -- ${paths.map(p => quote(`${p}${suffix}`)).join(" ")}`);
+  }
   const store = agentFileStore(db);
   async function insertCopy(values: typeof copies.$inferInsert) {
     return db.transaction(async tx => {
@@ -281,17 +297,18 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       const inspected = await inspectAgentDirectory(canonical, false);
       // A stopped lifecycle has already accounted for all its bytes. No live
       // or pending candidate ever enters this replacement path.
+      await assertDirectoryLockHeld();
       await fs.rm(localRoot, { recursive: true, force: true });
       await fs.mkdir(path.dirname(localRoot), { recursive: true, mode: 0o700 });
       try {
         await fs.cp(canonical, localRoot, { recursive: true, preserveTimestamps: true });
         return inspected;
       } catch (error) {
-        await fs.rm(path.dirname(localRoot), { recursive: true, force: true });
+        await whileDirectoryLockHeld(() => fs.rm(path.dirname(localRoot), { recursive: true, force: true }));
         throw error;
       }
     }).catch(async error => {
-      await fs.rm(path.dirname(localRoot), { recursive: true, force: true });
+      await whileDirectoryLockHeld(() => fs.rm(path.dirname(localRoot), { recursive: true, force: true }));
       throw error;
     });
     const loadedEntry = snapshot.entries.get(deriveBundleState(agent).entryFile);
@@ -304,7 +321,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       row = await patch(row, values);
       if (input.warm) await fs.writeFile(ownerFile(row), JSON.stringify({ runId: row.runId }));
     } catch (error) {
-      await fs.rm(path.dirname(localRoot), { recursive: true, force: true });
+      await whileDirectoryLockHeld(() => fs.rm(path.dirname(localRoot), { recursive: true, force: true }));
       throw error;
     }
     try {
@@ -314,6 +331,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
           `node -e ${quote(instructionGitExcludeProgram)} ${quote(input.target.remoteCwd)}`,
           { cwd: input.target.remoteCwd, env: {}, timeoutSec: 15 });
         if (excluded.exitCode !== 0 || excluded.timedOut) throw new Error("Could not exclude agent files from task Git staging");
+        await assertDirectoryLockHeld();
         const runtime = await transport(row, input.target, false);
         transports.set(key(row), runtime);
         if (input.target.transport === "sandbox") {
@@ -349,6 +367,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // Reconstruct a private mirror without applying save quotas to admission.
     // An empty merge baseline downloads all remote bytes without uploading any;
     // the original save baseline remains unchanged in Postgres.
+    await assertDirectoryLockHeld();
     await fs.mkdir(row.localRoot, { recursive: true, mode: 0o700 });
     let projection: PreparedAdapterExecutionTargetRuntime | undefined;
     try {
@@ -361,9 +380,9 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       await inspectAgentDirectory(row.localRoot, false);
       if (row.receipt?.warm === true) await fs.writeFile(ownerFile(row), JSON.stringify({ runId: row.runId }));
     } catch (error) {
-      await fs.rm(row.localRoot, { recursive: true, force: true });
+      await whileDirectoryLockHeld(() => fs.rm(row.localRoot, { recursive: true, force: true }));
       throw error;
-    } finally { await projection?.cleanupWorkspaceSnapshot?.(); }
+    } finally { await whileDirectoryLockHeld(async () => projection?.cleanupWorkspaceSnapshot?.()); }
   }
   async function retrieve(row: Copy, target?: AdapterExecutionTarget | null) {
     if (row.location !== "local") {
@@ -493,14 +512,15 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       let captured: Awaited<ReturnType<typeof captureAgentFileCheckpoint>> | undefined;
       try {
         const previous = row.receipt?.checkpointManifest as AgentFileManifest | undefined ?? checkpointBaseline(baseline(row));
+        await assertDirectoryLockHeld();
         captured = await captureAgentFileCheckpoint({ runId: row.runId, localRoot: row.localRoot, executionRoot: row.executionRoot, previous, target });
         const snapshot = checkpointSnapshot(captured.manifest);
         const nextHash = directorySnapshotSha256(snapshot);
         const changed = nextHash !== row.baseHash;
         const { storageWarning } = changed
-          ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest, assertOwner }, actor(row))
+          ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest, assertOwner: assertDirectoryLockHeld }, actor(row))
           : await store.locked(row.companyId, row.agentId, actor(row), true, async () => {
-            await assertOwner();
+            await assertDirectoryLockHeld();
             return { storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null };
           });
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
@@ -557,7 +577,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         if (candidateHash === row.baseHash) {
           row = await patch(row, { state: "unchanged", errorCode: null, errorMessage: null, nextAttemptAt: null });
         } else {
-          ({ storageWarning } = await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: row.localRoot, baseline: baseline(row), assertOwner }, actor(row)));
+          ({ storageWarning } = await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: row.localRoot, baseline: baseline(row), assertOwner: assertDirectoryLockHeld }, actor(row)));
           row = await patch(row, { state: "saved", candidateHash, errorCode: null, errorMessage: null, nextAttemptAt: null });
         }
         row = await patch(row, { receipt: { ...row.receipt, storageWarning } });
@@ -600,6 +620,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     const runtime = transports.get(key(row));
     transports.delete(key(row));
     let cleanupPending = false;
+    await assertDirectoryLockHeld();
     await runtime?.cleanupWorkspaceSnapshot?.().catch(() => { cleanupPending = true; });
     const cleanupTarget = target ?? runtime?.target;
     const lease = row.location !== "local" ? await ownedRemoteLease(row) : null;
@@ -616,15 +637,15 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       const expected = path.posix.join(cleanupTarget.remoteCwd, ".paperclip-runtime", "agent-files", row.agentId, typeof row.receipt?.materializationRunId === "string" ? row.receipt.materializationRunId : String(row.receipt?.directoryRunId ?? row.runId));
       if (row.executionRoot !== expected) throw new Error("Agent directory cleanup path changed");
       const paths = cleanupTarget.transport === "sandbox" ? [expected, sandboxTransferRoot(row, cleanupTarget.remoteCwd)] : [expected];
-      const quoted = paths.map(p => `'${p.replaceAll("'", `'"'"'`)}'`).join(" ");
-      const remoteCleanupFailed = await runAdapterExecutionTargetShellCommand(row.runId, cleanupTarget, `rm -rf -- ${quoted}`,
-        { cwd: cleanupTarget.remoteCwd, env: {}, timeoutSec: 15 }).then(result => result.exitCode !== 0 || result.timedOut, () => true);
-      cleanupPending ||= remoteCleanupFailed;
+      const removed = await fencedRemoteDelete(paths, script => runAdapterExecutionTargetShellCommand(row.runId, cleanupTarget, script,
+        { cwd: cleanupTarget.remoteCwd, env: {}, timeoutSec: 15 }).then(result => result.exitCode === 0 && !result.timedOut, () => false));
+      cleanupPending ||= !removed;
     } else if (!destroyed && row.processStoppedAt && completed.has(row.state) && row.location !== "local") {
       // Rebind only the current host-owned lease. Never acquire a replacement.
       cleanupPending ||= !await cleanupRemoteAfterRestart(row).catch(() => false);
     }
     if (completed.has(row.state) && row.processStoppedAt) {
+      await assertDirectoryLockHeld();
       try { await fs.rm(path.dirname(row.localRoot), { recursive: true, force: true }); }
       catch {
         // Leave the baseline marker so restart recovery retries failed cleanup.
@@ -711,9 +732,11 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     const remoteCwd = cleanup?.remoteCwd ?? lease.metadata?.remoteCwd;
     if (typeof remoteCwd !== "string" || row.executionRoot !== path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", row.agentId, typeof row.receipt?.materializationRunId === "string" ? row.receipt.materializationRunId : String(row.receipt?.directoryRunId ?? row.runId))) return false;
     const paths = environment.driver === "sandbox" ? [row.executionRoot, sandboxTransferRoot(row, remoteCwd)] : [row.executionRoot];
-    const result = await environmentRuntime.execute({ environment: environment as Environment, lease: lease as EnvironmentLease, command: "rm", args: ["-rf", "--", ...paths],
-      cwd: remoteCwd, env: {}, timeoutMs: 15_000, bypassSession: true });
-    return result.exitCode === 0 && !result.timedOut;
+    return fencedRemoteDelete(paths, async script => {
+      const result = await environmentRuntime.execute({ environment: environment as Environment, lease: lease as EnvironmentLease, command: "sh", args: ["-c", script],
+        cwd: remoteCwd, env: {}, timeoutMs: 15_000, bypassSession: true });
+      return result.exitCode === 0 && !result.timedOut;
+    });
   }
   async function serial<T>(row: Copy, fn: (current: Copy) => Promise<T>, operation: DirectoryMergeLockOperation): Promise<T> {
     const run = async () => {

@@ -1215,15 +1215,59 @@ describe("persistent agent directories", () => {
       await copies.recoverCaptured();
       expect((await copies.get(companyId, copy.runId))?.receipt?.cleanupPending).toBe(expectedPending);
     }
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ lease: expect.objectContaining({ id: leaseId, providerLeaseId: "original-sandbox" }),
-      command: "rm", args: ["-rf", "--", executionRoot,
-        path.posix.join(remoteCwd, ".paperclip-runtime", "paperclip-runner", "agent-file-transfers", agentId, copy.runId)], bypassSession: true }));
+    expect(execute).toHaveBeenCalledTimes(3);
+    const transfer = path.posix.join(remoteCwd, ".paperclip-runtime", "paperclip-runner", "agent-file-transfers", agentId, copy.runId);
+    expect(execute).toHaveBeenNthCalledWith(2, expect.objectContaining({ lease: expect.objectContaining({ id: leaseId, providerLeaseId: "original-sandbox" }),
+      command: "sh", args: ["-c", expect.stringMatching(/^for p in .* do .*mv -- /)], bypassSession: true }));
+    const removal = execute.mock.calls[2]![0] as { command: string; args: string[] };
+    expect(removal.command).toBe("sh");
+    expect(removal.args[1]).toMatch(new RegExp(`^rm -rf -- '${executionRoot}\\.deleting-[0-9a-f-]+' '${transfer}\\.deleting-[0-9a-f-]+'$`));
     await copies.recoverCaptured();
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(3);
     await copies.release(companyId, copy.runId);
     expect((await copies.get(companyId, copy.runId))?.receipt?.cleanupPending).toBe(false);
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a new owner's resumed files when release loses its lock during remote cleanup", async () => {
+    const copy = await run();
+    const environmentId = randomUUID(), leaseId = randomUUID();
+    const remoteCwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agent-directory-remote-")));
+    const executionRoot = path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId);
+    await fs.mkdir(executionRoot, { recursive: true });
+    await fs.writeFile(path.join(executionRoot, "finished.txt"), "old run");
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: copy.runId,
+      provider: "daytona", providerLeaseId: "original-sandbox", status: "active", metadata: { remoteCwd } });
+    await db.update(agentInstructionWorkingCopies).set({ state: "saved", processStoppedAt: new Date(), location: `remote:${environmentId}`, executionRoot,
+      receipt: { ...copy.receipt, cleanup: { leaseId, remoteCwd } } }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    const ephemeralBefore = process.env.PAPERCLIP_EPHEMERAL_SERVER;
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
+    let takenOver = false;
+    const execute = vi.fn(async (input: { command: string; args: string[] }) => {
+      if (!takenOver) {
+        takenOver = true;
+        const [{ pid }] = await db.execute(sql`select pid from pg_locks where locktype = 'advisory' and granted
+          and objid = (hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0) & 4294967295)::bigint::oid limit 1`) as unknown as [{ pid: number }];
+        await db.execute(sql`select pg_terminate_backend(${pid})`);
+        const owner = await holdAgentDirectoryLock(false);
+        await fs.writeFile(path.join(executionRoot, "resumed.txt"), "new owner");
+        await owner.release();
+      }
+      await execFile(input.command, input.args);
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    });
+    const service = agentInstructionWorkingCopyService(db, { environmentRuntime: { execute } as unknown as EnvironmentRuntimeService });
+    try {
+      await service.release(companyId, copy.runId).catch(() => undefined);
+      expect(takenOver).toBe(true);
+      expect(await fs.readFile(path.join(executionRoot, "resumed.txt"), "utf8")).toBe("new owner");
+      expect((await fs.readdir(path.dirname(executionRoot))).filter(name => name.includes(".deleting-"))).toEqual([]);
+    } finally {
+      if (ephemeralBefore === undefined) delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
+      else process.env.PAPERCLIP_EPHEMERAL_SERVER = ephemeralBefore;
+      await fs.rm(remoteCwd, { recursive: true, force: true });
+    }
   });
 
   it.each(["missing", "stopped", "destroyed"])("recovers a retained remote unchanged turn only with exact stop proof: %s", async stopped => {
