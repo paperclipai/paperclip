@@ -883,9 +883,10 @@ function summarizeResult(result: unknown): Record<string, unknown> {
   };
 }
 
-function inferToolRisk(toolName: string): ToolGatewayDescriptor["risk"] {
+function inferToolRisk(toolName: string, declaredRisk?: ToolGatewayDescriptor["risk"]): ToolGatewayDescriptor["risk"] {
   const lower = toolName.toLowerCase();
   if (
+    declaredRisk === "destructive" ||
     /\b(delete|destroy|remove|drop|truncate|wipe|purge)\b|(^|[:._-])(delete|destroy|remove|drop|truncate|wipe|purge)([:._-]|$)/.test(
       lower,
     )
@@ -893,6 +894,7 @@ function inferToolRisk(toolName: string): ToolGatewayDescriptor["risk"] {
     return "destructive";
   }
   if (
+    declaredRisk === "write" ||
     /\b(create|update|write|edit|patch|post|send|publish|merge|commit|apply)\b|(^|[:._-])(create|update|write|edit|patch|post|send|publish|merge|commit|apply)([:._-]|$)/.test(
       lower,
     )
@@ -1489,7 +1491,7 @@ export function createToolGatewayService(
     return (pluginToolDispatcher?.listToolsForAgent() ?? []).map((tool) => ({
       ...tool,
       providerType: "paperclip_plugin" as const,
-      risk: inferToolRisk(tool.name),
+      risk: inferToolRisk(tool.name, tool.riskLevel),
     }));
   }
 

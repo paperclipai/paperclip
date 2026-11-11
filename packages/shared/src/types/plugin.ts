@@ -118,6 +118,7 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+  riskLevel?: "read" | "write" | "destructive";
 }
 
 /**
