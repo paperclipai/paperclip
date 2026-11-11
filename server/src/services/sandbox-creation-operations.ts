@@ -15,6 +15,8 @@ export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSe
 // A live creator may still be waiting for the provider, and a provider may still
 // materialize an aborted request. Absence is conclusive only after this delay.
 const CREATION_SETTLE_FLOOR_MS = 30 * 60_000;
+const ENDED_LEASE_STATUSES = new Set(["released", "expired", "failed"]);
+const MAX_CREATION_GENERATIONS = 20;
 
 function creationAbsenceInconclusive(operation: SandboxCreationOperation): boolean {
   const settleAt = Date.parse(typeof operation.metadata.creationSettleAt === "string" ? operation.metadata.creationSettleAt : "");
@@ -70,31 +72,40 @@ export async function createOwnedSandbox(
   const runId = owner.heartbeatRunId ?? randomUUID();
   const settleAt = new Date(Date.now() + Math.max(CREATION_SETTLE_FLOOR_MS, (owner.timeoutMs ?? 0) + 60_000));
   const creationController = await currentControllerProcess();
-  const operation = await db.transaction(async tx => {
-    await notifyEnvironmentCleanup(tx, { companyId: owner.companyId, runId: owner.heartbeatRunId ?? undefined });
-    await assertEnvironmentCompanyBinding(tx as unknown as Db, owner.environmentId, owner.companyId);
-    const [inserted] = await tx.insert(sandboxCreationOperations).values({
-      id, companyId: owner.companyId, environmentId: owner.environmentId, originalEnvironmentId: owner.environmentId,
-      runId, requestKey: owner.requestKey ?? "run", issueId: owner.issueId, executionWorkspaceId: owner.executionWorkspaceId,
-      provider: owner.provider, pluginId: owner.pluginId, driverKey: owner.driverKey,
-      config: owner.config, metadata: { ...owner.metadata, creationHeartbeatRunId: owner.heartbeatRunId ?? null, creationCredentialHashes: credentialHashes,
-        creationController, creationSettleAt: settleAt.toISOString() },
-      nextAttemptAt: settleAt,
-    }).onConflictDoNothing().returning();
-    if (inserted) return inserted;
-    const [existing] = await tx.select().from(sandboxCreationOperations).where(and(
-      eq(sandboxCreationOperations.companyId, owner.companyId), eq(sandboxCreationOperations.originalEnvironmentId, owner.environmentId),
-      eq(sandboxCreationOperations.runId, runId), eq(sandboxCreationOperations.requestKey, owner.requestKey ?? "run"),
-    ));
-    if (!existing) throw new Error("Sandbox creation ownership was not recorded");
-    return existing;
-  });
-  if (operation.id !== id) {
-    if (operation.state !== "attached" || !operation.leaseId) throw new Error("Sandbox creation requires reconciliation before another attempt");
-    const existing = await environmentService(db).getLeaseById(operation.leaseId);
-    if (!existing || existing.status !== "active" || !existing.providerLeaseId) throw new Error("Sandbox creation has already transferred ownership");
-    return { providerLeaseId: existing.providerLeaseId, expiresAt: existing.expiresAt?.toISOString(),
-      metadata: { ...existing.metadata, creationOperationId: operation.id } };
+  const baseRequestKey = owner.requestKey ?? "run";
+  let operation!: SandboxCreationOperation;
+  for (let generation = 1; ; generation++) {
+    // A later acquisition by the same run, after its earlier lease ended, is a new creation.
+    const requestKey = generation === 1 ? baseRequestKey : `${baseRequestKey}#${generation}`;
+    const recorded = await db.transaction(async tx => {
+      await notifyEnvironmentCleanup(tx, { companyId: owner.companyId, runId: owner.heartbeatRunId ?? undefined });
+      await assertEnvironmentCompanyBinding(tx as unknown as Db, owner.environmentId, owner.companyId);
+      const [inserted] = await tx.insert(sandboxCreationOperations).values({
+        id, companyId: owner.companyId, environmentId: owner.environmentId, originalEnvironmentId: owner.environmentId,
+        runId, requestKey, issueId: owner.issueId, executionWorkspaceId: owner.executionWorkspaceId,
+        provider: owner.provider, pluginId: owner.pluginId, driverKey: owner.driverKey,
+        config: owner.config, metadata: { ...owner.metadata, creationHeartbeatRunId: owner.heartbeatRunId ?? null, creationCredentialHashes: credentialHashes,
+          creationController, creationSettleAt: settleAt.toISOString() },
+        nextAttemptAt: settleAt,
+      }).onConflictDoNothing().returning();
+      if (inserted) return inserted;
+      const [existing] = await tx.select().from(sandboxCreationOperations).where(and(
+        eq(sandboxCreationOperations.companyId, owner.companyId), eq(sandboxCreationOperations.originalEnvironmentId, owner.environmentId),
+        eq(sandboxCreationOperations.runId, runId), eq(sandboxCreationOperations.requestKey, requestKey),
+      ));
+      if (!existing) throw new Error("Sandbox creation ownership was not recorded");
+      return existing;
+    });
+    if (recorded.id === id) { operation = recorded; break; }
+    if (recorded.state !== "attached" || !recorded.leaseId) throw new Error("Sandbox creation requires reconciliation before another attempt");
+    const existing = await environmentService(db).getLeaseById(recorded.leaseId);
+    if (existing?.status === "active" && existing.providerLeaseId) {
+      return { providerLeaseId: existing.providerLeaseId, expiresAt: existing.expiresAt?.toISOString(),
+        metadata: { ...existing.metadata, creationOperationId: recorded.id } };
+    }
+    if (!existing?.releasedAt || !ENDED_LEASE_STATUSES.has(existing.status) || generation >= MAX_CREATION_GENERATIONS) {
+      throw new Error("Sandbox creation has already transferred ownership");
+    }
   }
   try {
     crashPoint("sandbox.create.after_intent_before_provider");
