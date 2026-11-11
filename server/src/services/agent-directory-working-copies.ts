@@ -1,5 +1,7 @@
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import fs from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { setTimeout } from "node:timers/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
@@ -18,7 +20,6 @@ import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { agentDirectoryBaselineDigest, agentDirectoryProbeProgram, observeLocalAgentDirectory } from "./agent-directory-probe.js";
 import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "./remote-execution-termination.js";
 import { cachedAgentFileManifest, captureAgentFileCheckpoint, checkpointBaseline, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
-import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 import { logger } from "../middleware/logger.js";
 
 type Copy = typeof copies.$inferSelect;
@@ -33,18 +34,64 @@ export async function acquireAgentDirectoryOperationLock(tx: Pick<Db, "execute">
   const { waitMs, ownerSilenceMs } = agentDirectoryOperationLockTiming;
   const [bound] = await tx.execute(sql`with current_timeout as (
       select case when setting::bigint > 0 and setting::bigint < ${ownerSilenceMs} then setting::bigint else ${ownerSilenceMs}::bigint end as ms
-      from pg_settings where name = 'idle_in_transaction_session_timeout')
-    select ms as idle_timeout_ms, set_config('idle_in_transaction_session_timeout', ms::text, true) as idle_timeout,
-      set_config('lock_timeout', ${String(waitMs)}, true) as lock_timeout from current_timeout`);
+      from pg_settings where name = 'idle_in_transaction_session_timeout'),
+    current_statement_timeout as (select setting as original,
+      case when setting::bigint > 0 and setting::bigint <= ${waitMs} then (${waitMs}::bigint + 1000)::text else setting end as during_wait
+      from pg_settings where name = 'statement_timeout')
+    select ms as idle_timeout_ms, original as statement_timeout_ms, set_config('idle_in_transaction_session_timeout', ms::text, true) as idle_timeout,
+      set_config('statement_timeout', during_wait, true) as statement_timeout,
+      set_config('lock_timeout', ${String(waitMs)}, true) as lock_timeout from current_timeout, current_statement_timeout`);
   try {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
   } catch (error) {
     const failure = error as { code?: string; cause?: { code?: string } };
-    if ((failure.cause?.code ?? failure.code) === "55P03") throw conflict("Agent directory operation is already active");
+    const code = failure.cause?.code ?? failure.code;
+    if (code === "55P03" || code === "57014") throw conflict("Agent directory operation is already active");
     throw error;
   }
-  await tx.execute(sql`select set_config('lock_timeout', '0', true)`);
+  await tx.execute(sql`select set_config('lock_timeout', '0', true), set_config('statement_timeout', ${String(bound?.statement_timeout_ms ?? "0")}, true)`);
   return Number(bound?.idle_timeout_ms ?? ownerSilenceMs);
+}
+export async function withAgentDirectoryLockKeepalive<T>(lock: Pick<Db, "execute">, idleTimeoutMs: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const owned = new AbortController();
+  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return work(owned.signal);
+  const stop = new AbortController();
+  const interval = Math.max(1, Math.min(30_000, Math.floor(idleTimeoutMs / 4)));
+  const retryDelay = Math.max(1, Math.min(1_000, Math.floor(interval / 4)));
+  let lost!: (error: Error) => void;
+  const lockLost = new Promise<never>((_resolve, reject) => { lost = reject; });
+  lockLost.catch(() => undefined);
+  const keeper = (async () => {
+    let confirmedAt = Date.now();
+    let delay = interval;
+    while (!stop.signal.aborted) {
+      await setTimeout(delay, undefined, { signal: stop.signal, ref: false });
+      try {
+        await lock.execute(sql`select 1`);
+        confirmedAt = Date.now();
+        delay = interval;
+      } catch {
+        if (stop.signal.aborted) return;
+        if (Date.now() - confirmedAt + retryDelay >= idleTimeoutMs) {
+          const error = conflict("Agent directory operation lock was lost");
+          owned.abort(error);
+          lost(error);
+          return;
+        }
+        delay = retryDelay;
+      }
+    }
+  })().catch(() => undefined);
+  const running = work(owned.signal);
+  try {
+    return await Promise.race([running, lockLost]);
+  } catch (error) {
+    if (owned.signal.aborted) await running.catch(() => undefined);
+    throw error;
+  } finally {
+    stop.abort();
+    await keeper;
+  }
 }
 const completed = new Set(["saved", "unchanged", "resolved", "unavailable"]);
 const transports = new Map<string, PreparedAdapterExecutionTargetRuntime>();
@@ -64,7 +111,12 @@ function baseline(row: Copy) {
 function actor(row: Copy): AuthorizationActor {
   return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
 }
-export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patch: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
+export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patchRow: (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
+  const lockOwnership = new AsyncLocalStorage<AbortSignal>();
+  const patch = (row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) => {
+    lockOwnership.getStore()?.throwIfAborted();
+    return patchRow(row, values, condition);
+  };
   const store = agentFileStore(db);
   async function insertCopy(values: typeof copies.$inferInsert) {
     return db.transaction(async tx => {
@@ -674,7 +726,11 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
     return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
       const idleTimeoutMs = await acquireAgentDirectoryOperationLock(tx as unknown as Db, row.companyId, row.agentId);
-      return withWorkspaceLockKeepalive(tx as unknown as Db, idleTimeoutMs, run);
+      return withAgentDirectoryLockKeepalive(tx as unknown as Db, idleTimeoutMs, signal => lockOwnership.run(signal, async () => {
+        const result = await run();
+        signal.throwIfAborted();
+        return result;
+      }));
     }));
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,

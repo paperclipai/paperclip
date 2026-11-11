@@ -25,11 +25,10 @@ import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-co
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
-import { AgentDirectoryReuseInvalidatedError, acquireAgentDirectoryOperationLock, agentDirectoryOperationLockTiming, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
+import { AgentDirectoryReuseInvalidatedError, acquireAgentDirectoryOperationLock, agentDirectoryOperationLockTiming, agentDirectoryWorkingCopyService, withAgentDirectoryLockKeepalive } from "../services/agent-directory-working-copies.js";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import { withWorkspaceLockKeepalive } from "../services/native-runtime/native-workspace-lock-keepalive.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_DIRECTORY_TEST_DATABASE_URL");
 
@@ -1064,7 +1063,7 @@ describe("persistent agent directories", () => {
         const idleTimeoutMs = await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
         expect(idleTimeoutMs).toBe(1_000);
         expect(Date.now() - started).toBeLessThan(2_900);
-        await withWorkspaceLockKeepalive(tx as unknown as typeof db, idleTimeoutMs, () => new Promise(resolve => setTimeout(resolve, 2_500)));
+        await withAgentDirectoryLockKeepalive(tx as unknown as typeof db, idleTimeoutMs, () => new Promise(resolve => setTimeout(resolve, 2_500)));
         return "completed";
       });
       expect(await abandoned).toBe("terminated");
@@ -1073,6 +1072,89 @@ describe("persistent agent directories", () => {
       Object.assign(agentDirectoryOperationLockTiming, timing);
       await Promise.all([silent.$client.end({ timeout: 1 }), live.$client.end({ timeout: 1 })]);
     }
+  });
+
+  it("waits for the full lock wait when statement_timeout is shorter", async () => {
+    const timing = { ...agentDirectoryOperationLockTiming };
+    Object.assign(agentDirectoryOperationLockTiming, { waitMs: 800 });
+    const holder = createDb(external ?? database.connectionString), waiter = createDb(external ?? database.connectionString);
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let acquired!: () => void;
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const held = holder.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
+      acquired();
+      await released;
+    });
+    try {
+      await ready;
+      const started = Date.now();
+      await expect(waiter.transaction(async tx => {
+        await tx.execute(sql`set local statement_timeout = '200ms'`);
+        await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+      })).rejects.toThrow("Agent directory operation is already active");
+      expect(Date.now() - started).toBeGreaterThanOrEqual(700);
+      const restored = await waiter.transaction(async tx => {
+        await tx.execute(sql`set local statement_timeout = '200ms'`);
+        release();
+        await held;
+        await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+        const [row] = await tx.execute(sql`select current_setting('statement_timeout') as value`);
+        return row?.value;
+      });
+      expect(restored).toBe("200ms");
+    } finally {
+      release();
+      await held.catch(() => undefined);
+      Object.assign(agentDirectoryOperationLockTiming, timing);
+      await Promise.all([holder.$client.end({ timeout: 1 }), waiter.$client.end({ timeout: 1 })]);
+    }
+  });
+
+  it("maps a cancelled lock wait to the operation conflict", async () => {
+    const execute = vi.fn().mockResolvedValueOnce([{ idle_timeout_ms: 60_000, statement_timeout_ms: "0" }])
+      .mockRejectedValueOnce(Object.assign(new Error("query wrapper"), { cause: { code: "57014" } }));
+    await expect(acquireAgentDirectoryOperationLock({ execute } as unknown as typeof db, companyId, agentId))
+      .rejects.toThrow("Agent directory operation is already active");
+  });
+
+  it("retries a failed lock keepalive ping and keeps the operation", async () => {
+    const execute = vi.fn().mockRejectedValueOnce(new Error("transient")).mockResolvedValue([]);
+    let aborted = false;
+    const value = await withAgentDirectoryLockKeepalive({ execute } as unknown as typeof db, 400, async signal => {
+      await new Promise(resolve => setTimeout(resolve, 600));
+      aborted = signal.aborted;
+      return "saved";
+    });
+    expect(value).toBe("saved");
+    expect(aborted).toBe(false);
+    expect(execute.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("aborts the operation when its lock keepalive cannot reach the session", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("connection lost"));
+    let observed: unknown;
+    let finished = false;
+    await expect(withAgentDirectoryLockKeepalive({ execute } as unknown as typeof db, 200, async signal => {
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      observed = signal.reason;
+      finished = true;
+      signal.throwIfAborted();
+    })).rejects.toThrow("Agent directory operation lock was lost");
+    expect(finished).toBe(true);
+    expect(observed).toBeInstanceOf(Error);
+  });
+
+  it("does not report success for work that finishes after its operation lock is lost", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("connection lost"));
+    let settled = false;
+    await expect(withAgentDirectoryLockKeepalive({ execute } as unknown as typeof db, 200, async () => {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      settled = true;
+      return "saved";
+    })).rejects.toThrow("Agent directory operation lock was lost");
+    expect(settled).toBe(true);
   });
 
   it("retains remote cleanup across restart and failed retries until the original lease is cleaned", async () => {
