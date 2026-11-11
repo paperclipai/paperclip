@@ -224,6 +224,24 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
     await db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: rebound, nativePreparationFencingVersion: 1 } })
       .where(eq(heartbeatRuns.id, runId));
+    // Any Runner controller checkpoint of this run, even one whose identity
+    // no longer matches the run, proves a Runner was reached.
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, runId, "reached-runner"),
+      identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: randomUUID(),
+        environmentLeaseId: fixture.native.environmentLeaseId, turnId: fixture.native.turnId, itemId: fixture.native.itemId },
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    const runnerOwner = { companyId, issueId: fixture.scope.issueId, runId, authorityRunId: runId,
+      bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed",
+      controllerBootId: runnerOwner.bootId, controllerGeneration: 1, leaseOwner: runnerOwner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, runnerOwner));
+    try {
+      await core.flushCheckpoint();
+      expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+    } finally { await core.stop(); }
+    await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("bootstrap_retry");
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
       eventType: "session.resumed" });
     expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
