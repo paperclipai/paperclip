@@ -19,7 +19,7 @@ vi.mock("../api/uiLayouts", () => ({ uiLayoutsApi }));
 type Layout = { name: string };
 type Preference = { surface: string; schemaVersion: number | null; layout: Layout | null; updatedAt: null };
 
-const resolve = (raw: unknown) => raw as Layout;
+const resolve = (raw: unknown) => ((raw as { unreadable?: boolean }).unreadable ? null : (raw as Layout));
 const empty: Preference = { surface: "dashboard", schemaVersion: null, layout: null, updatedAt: null };
 
 let host: HTMLDivElement;
@@ -100,7 +100,7 @@ describe("useUiLayout", () => {
     await settle();
     expect(order).toEqual(["put custom start", "put custom end", "delete"]);
     expect(current.stored).toBeNull();
-    expect(queryClient.getQueryData<Preference>(queryKeys.uiLayouts.mine("company-1", "dashboard"))?.layout).toBeNull();
+    expect(queryClient.getQueryData<Preference>(queryKeys.uiLayouts.mine("company-1", "dashboard", "user-1"))?.layout).toBeNull();
     expect(current.saveState).toBe("idle");
   });
 
@@ -170,6 +170,56 @@ describe("useUiLayout", () => {
     await startSave("after");
     expect(uiLayoutsApi.save).toHaveBeenCalledTimes(3);
     expect(uiLayoutsApi.save.mock.calls[2]![2]).toEqual({ name: "after" });
+  });
+
+  it("loads the layout of the new account after the session changes and drops the pending layout of the previous one", async () => {
+    const mine: Preference = { ...empty, schemaVersion: 1, layout: { name: "mine" } };
+    const theirs: Preference = { ...empty, schemaVersion: 1, layout: { name: "theirs" } };
+    uiLayoutsApi.get.mockResolvedValueOnce(mine).mockResolvedValueOnce(theirs);
+    await render();
+    expect(current.owner).toBe("user-1");
+    expect(current.stored).toEqual({ name: "mine" });
+    await act(async () => current.save({ name: "draft of user-1" }));
+    expect(current.saveState).toBe("pending");
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    });
+    await settle();
+    expect(current.owner).toBe("user-2");
+    expect(current.stored).toEqual({ name: "theirs" });
+    expect(current.saveState).toBe("idle");
+    expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    await act(async () => current.flush());
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await settle();
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData<Preference>(queryKeys.uiLayouts.mine("company-1", "dashboard", "user-1"))?.layout).toEqual({ name: "mine" });
+
+    await startSave("edit of user-2");
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2]).toEqual({ name: "edit of user-2" });
+  });
+
+  it("saves the replacement layout when the user replaces a layout that cannot be read", async () => {
+    uiLayoutsApi.get.mockResolvedValue({ ...empty, schemaVersion: 99, layout: { unreadable: true } });
+    await render();
+    expect(current.blocked).toBe("unreadable");
+    await act(async () => current.save({ name: "ignored while blocked" }));
+    await act(async () => current.flush());
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+
+    await act(async () => current.allowOverwrite({ name: "replacement" }));
+    await settle();
+    expect(current.blocked).toBeNull();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2]).toEqual({ name: "replacement" });
+    await act(async () => releaseSave[0]!());
+    await settle();
+    expect(current.stored).toEqual({ name: "replacement" });
+    expect(current.saveState).toBe("saved");
   });
 
   it("reports a failed reset without offering to save again", async () => {
