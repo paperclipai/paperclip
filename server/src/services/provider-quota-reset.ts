@@ -1,17 +1,29 @@
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const RESET_PATTERN = new RegExp(
+  "(?:try again at|resets?(?:\\s+(?:at|on))?)\\s+" +
+    // Optional calendar date, as in "resets Nov 12, 6pm (UTC)" for a weekly limit.
+    `(?:(${MONTHS.join("|")})[a-z]*\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(?:at\\s+)?)?` +
+    "(\\d{1,2})(?::(\\d{2}))?\\s*(?:([ap])\\.?\\s*m\\.?)?(?:\\s*\\(([^)]+)\\)|\\s+([A-Z]{2,5}))?",
+  "i",
+);
+
 /**
- * Reads a provider's "try again at 4:30 PM (America/Chicago)" or
- * "resets 2am (UTC)" wording as the next matching wall-clock instant after
- * `now`. A clock without a time zone is read as UTC.
+ * Reads a provider's "try again at 4:30 PM (America/Chicago)", "resets 2am
+ * (UTC)" or "resets Nov 12, 6pm (UTC)" wording. A clock alone is the next
+ * matching wall-clock instant after `now`; a calendar date is its occurrence
+ * nearest `now`, which is in the past when the reset already passed. A clock
+ * without a time zone is read as UTC.
  */
 export function parseProviderQuotaClockReset(error: string, now: Date) {
-  const match = error.match(
-    /(?:try again at|resets?(?:\s+at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
-  );
+  const match = error.match(RESET_PATTERN);
   if (!match) return null;
 
-  const hourValue = Number.parseInt(match[1] ?? "", 10);
-  const minute = Number.parseInt(match[2] ?? "0", 10);
-  const meridiem = (match[3] ?? "").toLowerCase();
+  const monthIndex = match[1] ? MONTHS.indexOf(match[1].slice(0, 3).toLowerCase()) : null;
+  const dayOfMonth = match[2] ? Number.parseInt(match[2], 10) : null;
+  if (monthIndex !== null && (monthIndex < 0 || !dayOfMonth || dayOfMonth < 1 || dayOfMonth > 31)) return null;
+  const hourValue = Number.parseInt(match[3] ?? "", 10);
+  const minute = Number.parseInt(match[4] ?? "0", 10);
+  const meridiem = (match[5] ?? "").toLowerCase();
   if (!Number.isInteger(hourValue)) return null;
   if (
     meridiem ? hourValue < 1 || hourValue > 12 : hourValue < 0 || hourValue > 23
@@ -21,14 +33,7 @@ export function parseProviderQuotaClockReset(error: string, now: Date) {
 
   let hour = meridiem ? hourValue % 12 : hourValue;
   if (meridiem === "p") hour += 12;
-  const timeZone = (match[4] ?? match[5])?.trim();
-  if (!timeZone) {
-    const retryAt = new Date(now);
-    retryAt.setUTCHours(hour, minute, 0, 0);
-    if (retryAt.getTime() <= now.getTime())
-      retryAt.setUTCDate(retryAt.getUTCDate() + 1);
-    return retryAt;
-  }
+  const timeZone = (match[6] ?? match[7])?.trim() || "UTC";
 
   try {
     const wallClock = (date: Date) =>
@@ -46,18 +51,13 @@ export function parseProviderQuotaClockReset(error: string, now: Date) {
           .map((part) => [part.type, part.value]),
       );
     const nowParts = wallClock(now);
-    const buildRetryAt = (dayOffset: number) => {
-      const targetDay = new Date(
-        Date.UTC(
-          Number(nowParts.year),
-          Number(nowParts.month) - 1,
-          Number(nowParts.day) + dayOffset,
-          hour,
-          minute,
-        ),
-      );
-      let candidate = targetDay;
-      const targetMs = targetDay.getTime();
+    // The instant whose wall clock in `timeZone` reads this date and time.
+    const instant = (year: number, month: number, day: number) => {
+      const target = new Date(Date.UTC(year, month, day, hour, minute));
+      // Reject dates that overflow, such as Nov 31.
+      if (monthIndex !== null && target.getUTCDate() !== day) return null;
+      let candidate = target;
+      const targetMs = target.getTime();
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const actual = wallClock(candidate);
         const actualMs = Date.UTC(
@@ -73,8 +73,23 @@ export function parseProviderQuotaClockReset(error: string, now: Date) {
       }
       return candidate;
     };
-    const sameDay = buildRetryAt(0);
-    return sameDay.getTime() > now.getTime() ? sameDay : buildRetryAt(1);
+    const year = Number(nowParts.year);
+    if (monthIndex !== null && dayOfMonth !== null) {
+      // The occurrence of that date nearest `now`: "resets Jan 2" read on
+      // Dec 30 is next year's. A date read after it passed stays in the past,
+      // so a caller reading an old message sees an expired reset rather than
+      // one a year away.
+      const candidates = [year - 1, year, year + 1]
+        .map((candidateYear) => instant(candidateYear, monthIndex, dayOfMonth))
+        .filter((candidate): candidate is Date => candidate !== null);
+      if (!candidates.length) return null;
+      return candidates.reduce((nearest, candidate) =>
+        Math.abs(candidate.getTime() - now.getTime()) < Math.abs(nearest.getTime() - now.getTime()) ? candidate : nearest);
+    }
+    const month = Number(nowParts.month) - 1;
+    const day = Number(nowParts.day);
+    const sameDay = instant(year, month, day)!;
+    return sameDay.getTime() > now.getTime() ? sameDay : instant(year, month, day + 1);
   } catch {
     return null;
   }

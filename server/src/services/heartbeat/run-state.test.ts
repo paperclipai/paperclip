@@ -21,6 +21,7 @@ import * as legacy from "../heartbeat.js";
 import * as extracted from "./run-state.js";
 import { readRunCancellation } from "../run-cancellation.js";
 import { decideQueuedCommentQueueSteering } from "../issue-queued-comment-queue.js";
+import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE } from "../../storage/storage-unavailable.js";
 
 // SQL_ASCII needs a separate database cluster. Inspect its selected SQL here;
 // the PostgreSQL tests below exercise the session queries and transactions.
@@ -395,6 +396,19 @@ describePostgres("heartbeat run state database wiring", () => {
     expect(await state.listRuns(companyId, agent.id, -10)).toHaveLength(1);
     expect(await state.listRuns(companyId, agent.id, NaN)).toHaveLength(200);
     expect(await state.listRuns(companyId, foreign.agent.id)).toEqual([]);
+  });
+
+  it("lists a previously saved storage retry promise under native recovery truthfully", async () => {
+    const { companyId, agent, state } = await fixture();
+    const [held] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "failed",
+      errorCode: "native_continuation_requires_reconciliation", error: STORAGE_UNAVAILABLE_MESSAGE }).returning();
+    const [waiting] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "failed",
+      errorCode: STORAGE_UNAVAILABLE_CODE, error: STORAGE_UNAVAILABLE_MESSAGE }).returning();
+    for (const summary of [false, true]) {
+      const rows = await state.listRuns(companyId, agent.id, 100, { summary });
+      expect(rows.find(row => row.id === held.id)?.error).toBe(STORAGE_UNAVAILABLE_HELD_MESSAGE);
+      expect(rows.find(row => row.id === waiting.id)?.error).toBe(STORAGE_UNAVAILABLE_MESSAGE);
+    }
   });
 
   it("preserves legacy context text, native issue precedence and summary privacy", async () => {

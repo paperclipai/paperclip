@@ -15,6 +15,7 @@ import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { boundRunIssueId, boundRunIssueIdSql, runTaskContextColumn } from "./run-task-binding.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { queuedInteractionId } from "./queued-interaction-response.js";
 
 /** Resolve an explicit click from persisted receipts, never caller context or message authors. */
 export async function explicitOperatorRunIdentity(
@@ -46,12 +47,29 @@ export async function explicitOperatorRunIdentity(
   ));
   const marker = receipt?.payload?.queuedCommentInterrupt;
   const actorId = marker && typeof marker === "object" && "actorId" in marker ? marker.actorId : null;
-  const ids = queuedCommentIdsFromWakePayload(receipt?.payload);
-  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
-  if (typeof actorId !== "string" || !actorId || !ids.length ||
-      receipt?.payload?.issueId !== run.contextSnapshot?.issueId ||
-      !ids.every(id => deliveredIds.includes(id)) ||
+  if (typeof actorId !== "string" || !actorId || !receipt ||
+      receipt.payload?.issueId !== run.contextSnapshot?.issueId ||
       request.requestedByActorType !== "user" || request.requestedByActorId !== actorId) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  const ids = queuedCommentIdsFromWakePayload(receipt.payload);
+  if (!ids.length) {
+    const interactionId = queuedInteractionId(receipt.payload);
+    const [interaction] = interactionId && run.contextSnapshot?.interactionId === interactionId
+      ? await executor.select({ resolvedByUserId: issueThreadInteractions.resolvedByUserId })
+        .from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, run.companyId),
+          eq(issueThreadInteractions.issueId, String(run.contextSnapshot.issueId)),
+          eq(issueThreadInteractions.status, String(receipt.payload?.interactionStatus)),
+        ))
+      : [];
+    if (!interaction || interaction.resolvedByUserId !== actorId) {
+      throw forbidden("Queued-message interrupt authority is unavailable");
+    }
+    return { actorId, cause: "queued_comment_interrupt" };
+  }
+  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
+  if (!ids.every(id => deliveredIds.includes(id))) {
     throw forbidden("Queued-message interrupt authority is unavailable");
   }
   return { actorId, cause: "queued_comment_interrupt" };

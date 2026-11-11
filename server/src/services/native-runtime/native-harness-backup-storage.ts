@@ -242,7 +242,9 @@ export async function persistNativeHarnessBackup(input: {
     });
     await input.storage.putFile({ companyId: ref.companyId, namespace: "native-harness-backups", objectKey: ref.objectKey,
       originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
-      byteSize: ref.byteSize, sha256: ref.sha256, signal: input.signal });
+      // The file source lets a request-rate limit (503 SlowDown) or a dropped
+      // connection resend the upload; a stream body can be sent only once.
+      byteSize: ref.byteSize, sha256: ref.sha256, sourceFile: encrypted, signal: input.signal });
     await receive(input.storage, ref, undefined, input.signal);
     await input.db.transaction(async tx => {
       await fence(tx, input.owner, inactiveSource, input.signal);

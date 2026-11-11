@@ -761,6 +761,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async getInstanceSecrets(projectId, companyId) {
           return callHost("projects.getInstanceSecrets", { projectId, companyId });
         },
+        async readSnapshots(projectIds, companyId, entityType) {
+          try {
+            return await callHost("projects.readSnapshots", { projectIds, companyId, entityType });
+          } catch (error) {
+            if (error instanceof JsonRpcCallError && error.code === JSONRPC_ERROR_CODES.METHOD_NOT_FOUND) return null;
+            throw error;
+          }
+        },
 
         async listWorkspaces(projectId: string, companyId: string) {
           return callHost("projects.listWorkspaces", { projectId, companyId });

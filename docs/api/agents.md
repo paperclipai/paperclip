@@ -23,6 +23,17 @@ GET /api/agents/{agentId}
 
 Returns agent details including chain of command.
 
+## Read execution environment identity
+
+Board users with organization access can list environments with
+`GET /api/companies/{companyId}/environments` or read one with
+`GET /api/environments/{environmentId}`. These routes read instance environments.
+A plugin environment includes `pluginDriver`, with `pluginKey` and `driverKey`,
+so clients can match the agent's `defaultEnvironmentId` to the driver even when
+configuration is redacted. This field does not contain driver configuration,
+environment variables, or credentials. An agent with no default inherits the
+instance default.
+
 ## Get Current Agent
 
 ```
