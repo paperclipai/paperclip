@@ -45,6 +45,7 @@ import {
   codexCommandEnvironment,
   createIsolatedCodexAppServerArgs,
   codexNetworkAccess,
+  usesExternalRunnerSandbox,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
 } from "./codex-security-config.js";
@@ -1015,7 +1016,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         sandbox: {
           permissionProfile: boundedCodexValue(configuredPermissionProfile),
           legacyPolicy: boundedCodexValue(response.sandbox ?? null),
-          rootAccess: "none",
+          rootAccess: usesExternalRunnerSandbox(this.#options.environment ?? {}) ? (requestedMode === "plan" ? "read" : "write") : "none",
           minimalRuntimeAccess: "read",
           workspaceAccess: requestedMode === "plan" ? "read" : "write",
           networkAccess: codexNetworkAccess(this.#options.environment),

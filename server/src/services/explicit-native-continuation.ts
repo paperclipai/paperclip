@@ -35,6 +35,7 @@ import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds } from "./queued-comment-delivery.js";
+import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -404,6 +405,16 @@ export async function admitExplicitNativeContinuation(input: {
           actionId: action.id, operationIds: recovery.preservationOperationIds });
       const repairedTerminal = completedResult && coordinator.phase === "terminal_failure"
         && await hasVerifiedWorkspaceRepair(db, run);
+      // A Retry of this run whose files are saved applies the accepted result
+      // it already has, never a new agent turn. Saved files can be verified
+      // before their recovery attempt settles, so wait for that attempt too.
+      // The wait ends when preserved-result finalization coalesces this intent
+      // (resumeTaskRetry or the recovery sweep). Records that do not prove an
+      // applicable result (Stop, newer run, other owner) keep today's turn.
+      if (repairedTerminal && taskRetry?.sourceRunId === run.id && taskRetry.strategy === "evaluate"
+        && await canResumePreservedResultFinalization(db, companyId, run.id,
+          ["scheduled", "running", "awaiting_evidence"].includes(recovery?.state ?? "") ? "pending" : "ready"))
+        return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled)) {
         // Nothing finishes the saved result while a stopped copyback owner is
         // unverified. The run's live retained recovery records that hold; name

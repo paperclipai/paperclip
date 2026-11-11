@@ -58,6 +58,7 @@ import { ownedActiveCleanupRunIds, mayAllocateRemoteResources, runCleanupWithObs
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
+import { CODEX_PLANNING_READ_ONLY_SUITE, gradePlanningWriteRefusal } from "./codex-planning-read-only.js";
 import { artifactTransferDescription, gradeApiArtifactTransfer, readArtifactTransferSource, usesApiResponseProof } from "./api-artifact-transfer.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
@@ -1817,6 +1818,14 @@ for (const execution of executions) {
         if (!normalizePlanMarkdown(plan.body).includes(planMarkers.draft)) {
           throw new Error(`Plan document did not contain ${planMarkers.draft}`);
         }
+        if (execution.suite.id === CODEX_PLANNING_READ_ONLY_SUITE) {
+          const planningEvents = (await Promise.all(pendingState.taskRuns.map(candidate =>
+            collectRunEvents<RunEventRecord>((afterSeq, limit) =>
+              api.get(`/api/heartbeat-runs/${candidate.id}/events?afterSeq=${afterSeq}&limit=${limit}`))))).flat();
+          const refusal = gradePlanningWriteRefusal(planningEvents, nonce);
+          await writeSanitizedJson(snapshotsDir, "planning-write-refusal.json", refusal, secrets);
+          if (!refusal.passed) throw new Error(`Planning write refusal was not proven: ${refusal.failure}`);
+        }
         if (numberedPlanStepCount(plan.body) !== 2) {
           throw new Error("Plan must contain exactly two numbered steps");
         }
@@ -2395,6 +2404,10 @@ for (const execution of executions) {
         }
       }
 
+      if (execution.suite.id === CODEX_PLANNING_READ_ONLY_SUITE) {
+        const refusal = gradePlanningWriteRefusal(runEventsByRun.flatMap(captured => captured.events), nonce);
+        if (refusal.attempts.some(attempt => attempt.succeeded)) invariantFailures.push(`Planning write refusal was not proven: ${refusal.failure}`);
+      }
       if (execution.suite.id === "api-response-reading") {
         const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
