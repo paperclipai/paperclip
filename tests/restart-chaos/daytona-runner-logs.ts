@@ -20,8 +20,8 @@ import { redactKnownSecrets } from "./evidence.js";
 export const RUNNER_LOG_PROBE = [
   'echo "== observed_at $(date -u +%Y-%m-%dT%H:%M:%SZ)"',
   'echo "== uptime"; cat /proc/uptime 2>/dev/null',
-  'echo "== runner and provider processes"; ps -eo pid,ppid,sid,etimes,stat,rss,args 2>/dev/null'
-    + ' | grep -E "paperclip-runner|runnerd|opencode|codex|claude|acpx" | grep -v grep | cut -c1-400',
+  // Every process, not only the Runner's: a tool the agent started (for example T1's loop) shows as a child.
+  'echo "== processes"; ps -eo pid,ppid,sid,etimes,stat,rss,args 2>/dev/null | cut -c1-400 | head -n 120',
   'echo "== memory"; free -m 2>/dev/null',
   'echo "== disk"; df -h / /tmp 2>/dev/null',
   'echo "== oom"; dmesg 2>/dev/null | grep -iE "oom|killed process" | tail -n 20',

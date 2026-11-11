@@ -367,7 +367,7 @@ minutes. In staging class R, recovery then found the remote Runner gone
   with an `index.json`, and to `runner_logs_captured` in the timeline.
   `daytona-runner-logs.ts` runs one fixed, read-only probe through the Daytona
   toolbox. It reads:
-  - the Runner and provider processes (`ps`);
+  - every process (`ps`), so a running tool shows as a child of the Runner;
   - memory, disk, and OOM lines from `dmesg`;
   - the tail of every `runnerd.stderr.log`, `runner-process.identity` and
     `runner-state.json`.
