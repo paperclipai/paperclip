@@ -5,6 +5,8 @@ import { WorkspaceProviderFailureError, workspaceProviderCallFailure } from "./w
 
 type ProviderRequest = Omit<PluginWorkspaceParams, "deadline">;
 type WorkspaceWorker = Pick<PluginWorkerManager, "call" | "getWorker">;
+const legacyWorkspaceOperationMs = 300_000;
+const legacyRpcGraceMs = 10_000;
 
 export async function invokeWorkspaceProvider(workers: WorkspaceWorker, params: ProviderRequest) {
   const verifyExisting = params.operation.kind === "prepare" && params.operation.verifyExisting;
@@ -13,10 +15,10 @@ export async function invokeWorkspaceProvider(workers: WorkspaceWorker, params: 
     if (result) return result;
   }
   // Compatibility for providers without asynchronous preparation.
-  const timeout = verifyExisting ? 10_000 : params.operation.kind === "finalize" ? 30_000 : 300_000;
+  const timeout = verifyExisting ? 10_000 : params.operation.kind === "finalize" ? 30_000 : legacyWorkspaceOperationMs;
   const request = { ...params, deadline: new Date(Date.now() + timeout).toISOString() };
   return parseWorkspaceProviderResult(request, await workers.call(
-    params.pluginId, "workspaceOperation", request, timeout + (verifyExisting ? 2_000 : 10_000),
+    params.pluginId, "workspaceOperation", request, timeout + (verifyExisting ? 2_000 : legacyRpcGraceMs),
   ));
 }
 
@@ -26,9 +28,17 @@ async function prepareWorkspaceWithPolling(workers: Pick<PluginWorkerManager, "c
   const receipt = parseWorkspacePrepareResult(submit, await workers.call(params.pluginId, "workspacePrepare", submit, rpcTimeout));
   if (receipt.kind === "unsupported") return null;
   if (receipt.kind === "prepared") return receipt;
-  const expiresAt = Date.parse(receipt.deadline);
+  const offeredMs = Date.parse(receipt.deadline) - Date.now();
+  // Preparation owns a workspace lifecycle lock. Refuse an offer that would
+  // hold it beyond the previous RPC budget. Accepted offers keep their deadline.
+  if (offeredMs > legacyWorkspaceOperationMs + legacyRpcGraceMs)
+    throw new WorkspaceProviderFailureError({
+      kind: "provider", reason: "unsupported_operation", retryable: false,
+      message: "Workspace provider offered a deadline outside the supported lifecycle budget",
+    });
+  const expiresAt = performance.now() + offeredMs;
   const remaining = () => {
-    const ms = expiresAt - Date.now();
+    const ms = Math.ceil(expiresAt - performance.now());
     if (ms <= 0) throw new WorkspaceProviderFailureError({
       kind: "provider", reason: "deadline_exceeded", retryable: true,
       message: "Workspace storage operation expired; retry the same workspace",

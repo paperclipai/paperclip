@@ -131,6 +131,24 @@ const support = await getEmbeddedPostgresTestSupport();
       });
     });
 
+    it("rejects an oversized provider deadline before it can retain the workspace lifecycle lock", async () => {
+      const f = await fixture();
+      const workers = {
+        getWorker: () => ({ supportedMethods: ["workspaceOperation", "workspacePrepare"] }),
+        call: async (_pluginId: string, method: string, params: { phase: string }) => {
+          expect(method).toBe("workspacePrepare");
+          expect(params.phase).toBe("submit");
+          return { kind: "pending", deadline: "2099-01-01T00:00:00Z" };
+        },
+      } as unknown as WorkspaceWorkers;
+      await expect(preparePluginWorkspace(db, workers, f.input)).rejects.toMatchObject({
+        kind: "provider", reason: "unsupported_operation", retryable: false,
+      });
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(task?.executionWorkspaceId).toBeTruthy();
+      expect(await preparePluginWorkspace(db, f.workers, { ...f.input, existingWorkspaceId: task!.executionWorkspaceId })).toBeTruthy();
+    });
+
     it.each([
       ["missing", undefined],
       ["stopped", { status: "stopped", supportedMethods: [] }],
