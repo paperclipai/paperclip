@@ -186,7 +186,7 @@ export function inspectNativeGenericWarmAttachment(input: {
   controlPlaneState: unknown;
   runnerState: unknown;
   now?: number;
-}) {
+}): ReturnType<typeof inspectWarmRunTransition> {
   const { recovery } = input;
   const proof = inspectWarmRunTransition({ controlPlaneState: input.controlPlaneState, runnerState: input.runnerState,
     expectedNewIdentity: recovery.targetIdentity, expectedRunnerVersion: recovery.runnerVersion,

@@ -79,10 +79,11 @@ async function readPreparationProof(db: Db, scope: Scope, liveOwner: boolean) {
   if (!publication || scope.deadline !== undefined && Date.now() >= scope.deadline) return null;
   const binding = { runnerInstanceId: row.runnerInstanceId, nativeSessionId: row.nativeSessionId, environmentLeaseId: lease.id };
   if (publication.kind === "absent") {
-    if (!row.profile.hasPluginLaunchIntent && !row.profile.hasRemoteLaunchIntent && !lease.dispatched
+    const warm = !row.profile.hasPluginLaunchIntent && !row.profile.hasRemoteLaunchIntent && !lease.dispatched
       && !await hasNativeExecutionStartEvidence(db, { companyId: scope.companyId, id: scope.runId })
-      && await readNativeWarmPreparation(db, { ...scope, agentId: row.agentId,
-        runnerInstanceId: row.runnerInstanceId, nativeSessionId: row.nativeSessionId })) {
+      ? await readNativeWarmPreparation(db, { ...scope, agentId: row.agentId,
+          runnerInstanceId: row.runnerInstanceId, nativeSessionId: row.nativeSessionId }) : null;
+    if (warm && warm.identity.environmentLeaseId === (lease.pluginTask ? lease.id : remote?.workspaceId)) {
       return { kind: "preparing" as const, ...binding, warmSource: true as const };
     }
     if (row.profile.hasPluginLaunchIntent || row.profile.hasRemoteLaunchIntent
@@ -115,10 +116,11 @@ async function readPreparationProof(db: Db, scope: Scope, liveOwner: boolean) {
     return { kind: "preparing" as const, ...binding };
   }
   if (row.profile.hasPluginLaunchIntent || row.profile.hasRemoteLaunchIntent || lease.dispatched) return null;
-  if ((row.processPid || row.processGroupId || row.processStartedAt || row.profile.hasCarriedProviderSession)
-    && !await readNativeWarmPreparation(db, { ...scope, agentId: row.agentId,
-      runnerInstanceId: row.runnerInstanceId, nativeSessionId: row.nativeSessionId })) return null;
-  return { kind: "preparing" as const, ...binding };
+  const inherited = row.processPid || row.processGroupId || row.processStartedAt || row.profile.hasCarriedProviderSession;
+  const warm = inherited ? await readNativeWarmPreparation(db, { ...scope, agentId: row.agentId,
+    runnerInstanceId: row.runnerInstanceId, nativeSessionId: row.nativeSessionId }) : null;
+  if (inherited && (!warm || warm.identity.environmentLeaseId !== (lease.pluginTask ? lease.id : remote?.workspaceId))) return null;
+  return { kind: "preparing" as const, ...binding, ...(warm ? { warmSource: true as const } : {}) };
 }
 
 export function readNativePreparationHandoffReadiness(db: Db, scope: Scope) {

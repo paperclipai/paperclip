@@ -4,16 +4,16 @@ import { closeSync, openSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
-import { eq } from "drizzle-orm";
-import { completionContracts, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { completionContracts, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
-import { DurablePrpControlPlane, type DurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
-import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding } from "../../../../packages/paperclip-runner/src/live/runnerd-codex-transport.js";
-import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest } from "../../../../packages/paperclip-runner/src/live/runner-provider-launch.js";
-import { QUALIFIED_ACPX_PROFILES } from "../../../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { DurablePrpControlPlane, createRunnerdCodexTransport as createCapabilityRunnerdCodexTransport,
+  defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, createRunnerProviderLaunch,
+  QUALIFIED_ACPX_PROFILES, type DurablePrpCheckpoint, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+import { runnerLaunchRequirementsDigest } from "@paperclipai/paperclip-runner";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
-import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
+import { nativeRunnerCheckpointWriter, readNativeGenericWarmPublication } from "./native-runner-checkpoint.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { nativeGenericWarmAttachmentPublication, resolveNativeGenericWarmAttachmentRecovery } from "./native-generic-warm-attachment.js";
@@ -82,7 +82,7 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
         }
         await core.flushCheckpoint();
       },
-      controlPlaneRegistration: async (core: DurablePrpControlPlane, identity?: typeof sourceIdentity) => {
+      controlPlaneRegistration: async (core: DurablePrpControlPlane, identity?: DurableRecoveryIdentity) => {
         if (identity?.runId === targetId) writer = nativeRunnerCheckpointWriter(f.db, owner(targetId));
         authority = core;
         return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: () => { if (authority === core) authority = null; } }; },
@@ -92,7 +92,7 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
           provider: createRunnerProviderLaunch(requirements, { options: {}, root: remote, cwd: remote, codexHome: remote,
             codexCommand: "", providerNodeCommand: wrapper, opencodeProxyPath: "", acpxSidecarPath: script }) };
       },
-    };
+    } satisfies NonNullable<Parameters<typeof createCapabilityRunnerdCodexTransport>[0]>;
     const launch = vi.fn((spec: any) => {
       const stderr = openSync(join(remote, "stderr"), "a", 0o600);
       const child = spawn(binary, [...spec.args, "--acpx-launch-authority-digest", sha("fixture authority"),
@@ -143,6 +143,14 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       const recover = () => resolveNativeGenericWarmAttachmentRecovery({ db: f.db, currentRun: currentRun!, publication: publication!,
         header: checkpoint.records.get("header")!, owner: owner(targetId) });
       const proof = await recover(); expect(proof).not.toBeNull();
+      const binding = { companyId: shared.companyId, issueId: f.issueId, runId: targetId };
+      expect(await readNativeGenericWarmPublication(f.db, binding)).not.toBeNull();
+      const [cursor] = await f.db.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.companyId, shared.companyId),
+        eq(nativeRunnerCheckpoints.runId, targetId), eq(nativeRunnerCheckpoints.part, "cursor"))).returning();
+      expect(cursor).toBeDefined();
+      expect(await readNativeGenericWarmPublication(f.db, binding)).toBeNull();
+      await f.db.insert(nativeRunnerCheckpoints).values(cursor!);
+      expect(await readNativeGenericWarmPublication(f.db, binding)).not.toBeNull();
       expect(await resolveNativeGenericWarmAttachmentRecovery({ db: f.db, currentRun: currentRun!, publication: publication!,
         header: checkpoint.records.get("header")!, owner: { ...owner(targetId), generation: 2 } })).toBeNull();
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...currentRun!.runnerProfileJson,

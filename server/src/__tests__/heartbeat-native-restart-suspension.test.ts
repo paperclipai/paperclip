@@ -121,10 +121,11 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         deps.getAgent.mockImplementation(id => isolated.db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0] ?? null));
         const claim = legacyControllerLease.legacyControllerClaim;
         const nextBoot = randomUUID();
-        const nextProcess = { ...old.controllerProcess, bootId: nextBoot };
-        const differentProcess = vi.spyOn(legacyControllerLease, "legacyControllerClaim").mockImplementation(mode => ({
-          ...claim(mode), controllerBootId: nextBoot, controllerProcess: nextProcess,
-        }));
+        const nextProcess = { ...await controllerProcess.currentControllerProcess(), bootId: nextBoot };
+        const differentProcess = vi.spyOn(legacyControllerLease, "legacyControllerClaim").mockImplementation(mode => {
+          const patch = claim(mode);
+          return patch.controllerBootId ? { ...patch, controllerBootId: nextBoot, controllerProcess: nextProcess } : patch;
+        });
         try { successor = await createHeartbeatQueue(isolated.db, deps).claimQueuedRun(queued) ?? undefined; }
         finally { differentProcess.mockRestore(); }
         expect(successor).toMatchObject({ id: runId, status: "running", controllerBootId: nextBoot });

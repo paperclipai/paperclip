@@ -357,7 +357,7 @@ export async function nativeRunnerCheckpointRemoteBootstrapProof(
     };
     const header = read("header");
     const cursor = read("cursor");
-    if (!["paperclip.runner.controller-checkpoint.v2", "paperclip.runner.controller-checkpoint.v3"].includes(String(header?.schema)) || !cursor
+    if (!header || !["paperclip.runner.controller-checkpoint.v2", "paperclip.runner.controller-checkpoint.v3"].includes(String(header.schema)) || !cursor
       || cursor.commandCount !== commandParts.length) return null;
     const state: Record<string, unknown> = {
       ...(header.state as Record<string, unknown>),
@@ -454,7 +454,8 @@ export async function readNativePreparationPublication(db: Pick<Db, "select">, b
   } catch { return null; }
 }
 
-export async function readNativeCheckpointPublicationIdentity(db: Pick<Db, "execute">, binding: Binding) {
+export async function readNativeCheckpointPublicationIdentity(db: Pick<Db, "execute">, binding: Binding,
+  expectedIdentity?: DurableRecoveryIdentity) {
   const [row] = await db.execute<{ header: Record<string, unknown> | null; cursor: Record<string, unknown> | null;
     commands: number; events: number; templates: number; other: number }>(sql`
     with census as (
@@ -476,13 +477,14 @@ export async function readNativeCheckpointPublicationIdentity(db: Pick<Db, "exec
     const cipher = createLocalEncryptedCipher("read"), header = decryptPart(cipher, binding, "header", row.header);
     const identity = inspectDurablePrpCheckpointHeader(header), cursor = JSON.parse(decryptPart(cipher, binding, "cursor", row.cursor));
     const state = JSON.parse(header).state;
-    if (!identity || identity.runId !== binding.runId || cursor.commandCount !== row.commands || cursor.eventCount !== row.events
+    if (!identity || (expectedIdentity ? nativeSha256(identity) !== nativeSha256(expectedIdentity) : identity.runId !== binding.runId)
+      || cursor.commandCount !== row.commands || cursor.eventCount !== row.events
       || row.templates !== (state.stagedRunAttachment?.commandId === null ? 1 : 0)) return null;
     return { identity, header };
   } catch { return null; }
 }
 
-export async function readNativeGenericWarmPublication(db: Pick<Db, "select">, binding: Binding) {
+export async function readNativeGenericWarmPublication(db: Pick<Db, "select" | "execute">, binding: Binding) {
   const [row] = await db.select({ material: sql<Record<string, unknown> | null>`case
     when pg_column_size(${nativeRunnerCheckpoints.material})<=${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES}
     then ${nativeRunnerCheckpoints.material} else null end` }).from(nativeRunnerCheckpoints).where(and(
@@ -496,6 +498,10 @@ export async function readNativeGenericWarmPublication(db: Pick<Db, "select">, b
       || envelope.part !== "header" || !publication || publication.schema !== "paperclip.native-generic-warm-attachment.v1"
       || publication.targetIdentity.runId !== binding.runId || publication.headerSha256 !== preparationSha256(envelope.contents)
       || !inspectDurablePrpCheckpointHeader(envelope.contents)) return null;
+    const identity = inspectDurablePrpCheckpointHeader(envelope.contents)!;
+    if (![publication.sourceIdentity, publication.targetIdentity].some(value => nativeSha256(value) === nativeSha256(identity))) return null;
+    const complete = await readNativeCheckpointPublicationIdentity(db, binding, identity);
+    if (!complete || complete.header !== envelope.contents) return null;
     return { publication, header: envelope.contents as string };
   } catch { return null; }
 }

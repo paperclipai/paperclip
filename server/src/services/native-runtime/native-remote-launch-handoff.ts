@@ -43,7 +43,7 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 const identityFields = ["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"] as const;
 const sha256 = /^[a-f0-9]{64}$/;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
-const fail = (code: LaunchCode): never => { throw new NativeRemoteLaunchHandoffError(code); };
+const fail: (code: LaunchCode) => never = code => { throw new NativeRemoteLaunchHandoffError(code); };
 
 export function assertNativeRemoteLaunchIntent(intent: NativeRemoteLaunchIntent): void {
   if (intent?.schema !== "paperclip.native-remote-launch-intent.v1" || !uuid.test(intent.launchId) || !uuid.test(intent.nonce)

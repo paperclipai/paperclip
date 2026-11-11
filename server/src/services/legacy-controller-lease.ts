@@ -169,7 +169,8 @@ export async function readLegacyPreparationHandoffReadiness(
 export async function requeueRevokedLegacyPreparation(
   db: Db, observed: Run, revoked: RevokedLegacyControllerState,
 ): Promise<boolean> {
-  if (!observed.controllerBootId || !revoked.controllerBootId || revoked.controllerBootId === observed.controllerBootId
+  const revokedBootId = revoked.controllerBootId;
+  if (!observed.controllerBootId || !revokedBootId || revokedBootId === observed.controllerBootId
     || revoked.executionStage !== "preparing") return false;
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
@@ -178,7 +179,7 @@ export async function requeueRevokedLegacyPreparation(
     if (observed.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
       .where(and(eq(agentWakeupRequests.id, observed.wakeupRequestId), eq(agentWakeupRequests.companyId, observed.companyId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, observed.id),
-      eq(heartbeatRuns.companyId, observed.companyId), eq(heartbeatRuns.controllerBootId, revoked.controllerBootId))).for("update");
+      eq(heartbeatRuns.companyId, observed.companyId), eq(heartbeatRuns.controllerBootId, revokedBootId))).for("update");
     if (!run || run.wakeupRequestId !== observed.wakeupRequestId || run.issueId !== observed.issueId) return false;
     const [agent] = await tx.select({ adapterType: agents.adapterType }).from(agents)
       .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));

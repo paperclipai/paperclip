@@ -85,6 +85,9 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     } else database = await startEmbeddedPostgresTestDatabase("paperclip-upgrade-readiness-");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
     db = createDb(database.connectionString);
+    // Route graph loading is test setup, outside the timed readiness assertions.
+    await Promise.all([import("express"), import("supertest"),
+      import("../../routes/instance-settings.js"), import("../../middleware/error-handler.js")]);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); });
   it("keeps an old unowned preparation visible without making it a live upgrade blocker", async () => {

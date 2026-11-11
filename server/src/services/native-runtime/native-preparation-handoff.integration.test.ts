@@ -1,15 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, expect, it } from "vitest";
-import { environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
-import { DurablePrpControlPlane, inspectDurablePrpCheckpointHeader } from "../../vendor/paperclip-runner/index.js";
+import { agentTaskSessions, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { DurablePrpControlPlane, inspectDurablePrpCheckpointHeader, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
-import { nativeRunnerCheckpointRegistration, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { nativeRunnerCheckpointRegistration, loadNativeRunnerCheckpoint, readNativeGenericWarmPublication } from "./native-runner-checkpoint.js";
 import { readNativePreparationHandoffReadiness } from "./native-preparation-handoff.js";
 import { recordNativeRunnerLaunchIntent } from "./native-runner-launch-intent.js";
-import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { restoreNativeWarmPreparationClaim } from "./native-warm-preparation-recovery.js";
+import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
+import { hasLocalNativeControllerObligations } from "./native-controller-migration.js";
+import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 
 describeEmbeddedPostgres("durable native preparation handoff", () => {
   const environment = nativeRestartFixture();
@@ -103,4 +108,92 @@ describeEmbeddedPostgres("durable native preparation handoff", () => {
         expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toBeNull();
       } finally { await f.core.stop(); }
     });
+
+  it("keeps an accepted warm predecessor resumable before a new control plane and rejects changed source authority", async () => {
+    const f = await seed("WARM-SOURCE"), sourceId = randomUUID(), resultId = randomUUID();
+    const [current] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const execution = parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1",
+      provider: { kind: "codex", model: null }, binding: { companyId: shared.companyId, agentId: shared.agentId,
+        issueId: f.issueId, runId: f.runId, executionWorkspaceId: f.leaseId },
+      task: { identifier: "PREPARATION-WARM", title: "Continue retained work", description: null, prompt: "Continue.", workMode: "standard" },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: f.native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1,
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60000 } },
+      completionContract: { id: current.completionContractId!, sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue", criteria: [{ id: "objective", requirement: "Save work." }] } },
+      credentialBindings: [], interactionResponses: [] });
+    const sourceExecution = parseNativeExecutionInput({ ...execution, binding: { ...execution.binding, runId: sourceId } });
+    const fingerprint = nativeToolContractFingerprintForTarget("remote", execution.provider.kind);
+    const sourceIdentity = { ...f.identity, runId: sourceId, turnId: `turn-${sourceId}`, itemId: `item-${sourceId}` };
+    const sourceCore = new DurablePrpControlPlane({ stateDirectory: join(shared.runtimeRoot, `accepted-predecessor-${sourceId}`), identity: sourceIdentity,
+      expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    const snapshot = { sessionId: randomUUID(), providerSessionId: randomUUID(),
+      identity: { ...execution.binding, runId: sourceId, sessionId: execution.session.normalizedSessionId } };
+    const [source] = await f.db.insert(heartbeatRuns).values({ id: sourceId, companyId: shared.companyId, agentId: shared.agentId,
+      nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId, runnerInstanceId: f.native.runnerInstanceId,
+      runtimeMode: "native", status: "succeeded", invocationSource: "assignment", triggerDetail: "system",
+      createdAt: new Date(current.createdAt.getTime() - 10000), startedAt: new Date(current.createdAt.getTime() - 9000),
+      finishedAt: new Date(current.createdAt.getTime() - 1000), completionContractId: current.completionContractId,
+      runnerProfileJson: { nativeExecutionInput: sourceExecution, nativeToolContractFingerprint: fingerprint, sessionCheckpoint: snapshot } }).returning();
+    await f.db.insert(nativeRunFinalizations).values({ runId: sourceId, companyId: shared.companyId, issueId: f.issueId,
+      phase: "observed", controllerBootId: f.scope.controllerBootId, controllerGeneration: 1,
+      leaseOwner: `${f.scope.controllerBootId}:source`, leaseExpiresAt: new Date(Date.now() + 60000) });
+    const paths = nativeControllerMigrationDescriptor(execution, fingerprint);
+    let selectionId: string | undefined;
+    try {
+      await nativeRunnerCheckpointRegistration({ db: f.db, binding: { companyId: shared.companyId, issueId: f.issueId, runId: sourceId },
+        bootId: f.scope.controllerBootId })(sourceCore);
+      await sourceCore.stop();
+      await f.db.insert(nativeRunResults).values({ id: resultId, companyId: shared.companyId, issueId: f.issueId,
+        runId: sourceId, completionContractId: current.completionContractId!, serverFingerprint: "accepted-warm-source",
+        schemaStatus: "accepted", resultJson: {}, canonicalSha256: "a".repeat(64) });
+      await f.db.update(nativeRunFinalizations).set({ phase: "committed", resultId, leaseOwner: null, leaseExpiresAt: null })
+        .where(eq(nativeRunFinalizations.runId, sourceId));
+      const rebound = rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: execution, executionTargetKind: "remote" });
+      expect(rebound).not.toBeNull();
+      const profile = { ...f.preparedProfile, nativeExecutionInput: execution, nativeToolContractFingerprint: fingerprint,
+        nativePreparationHandoffVersion: 1, nativePreparationHandoffSourceRunId: sourceId, sessionCheckpoint: rebound };
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toMatchObject({ kind: "preparing", warmSource: true });
+      await f.db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, sourceId));
+      expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toBeNull();
+      await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, sourceId));
+      expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toMatchObject({ kind: "preparing", warmSource: true });
+      await mkdir(join(paths.root, "control-plane"), { recursive: true, mode: 0o700 });
+      await writeFile(join(paths.root, "control-plane", "control-plane-state.json"), JSON.stringify({
+        schema: "paperclip.runner.external-control-plane-state.v1", identity: sourceIdentity }), { mode: 0o600 });
+      const [selection] = await f.db.insert(agentTaskSessions).values({ companyId: shared.companyId, agentId: shared.agentId,
+        adapterType: "paperclip_runner", taskKey: f.issueId, lastRunId: f.runId }).returning({ id: agentTaskSessions.id });
+      selectionId = selection.id;
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(false);
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...profile, nativePreparationHandoffVersion: undefined } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toBeNull();
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(true);
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
+        nativeToolContractFingerprint: "foreign-tool-authority" } }).where(eq(heartbeatRuns.id, sourceId));
+      expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toBeNull();
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: source.runnerProfileJson }).where(eq(heartbeatRuns.id, sourceId));
+      await f.register();
+      expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toMatchObject({ kind: "preparing", warmSource: true });
+      await writeFile(join(paths.root, "control-plane", "control-plane-state.json"), "unpublished local controller bytes", { mode: 0o600 });
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(true);
+      await f.core.stop();
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      const controller = await currentNativeControllerIdentity();
+      const [claim] = await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] });
+      expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: f.runId, controllerGeneration: 2 });
+      if (claim?.kind !== "bootstrap_incomplete") throw new Error("Expected the canonical never-launched warm preparation claim");
+      expect(await restoreNativeWarmPreparationClaim({ db: f.db, execution,
+        root: join(shared.runtimeRoot, "warm-successor"), restartRecovery: claim })).toEqual({ version: "0.3.0", digest: `sha256:${"a".repeat(64)}` });
+      expect((await readNativeGenericWarmPublication(f.db, f.scope))?.publication).toMatchObject({
+        phase: "preparing", sourceIdentity, targetIdentity: f.identity, bootId: controller.bootId, generation: 2 });
+      expect(await readNativePreparationHandoffReadiness(f.db, { ...f.scope, controllerBootId: controller.bootId }))
+        .toMatchObject({ kind: "launching", warmAttachment: true });
+    } finally {
+      if (selectionId) await f.db.delete(agentTaskSessions).where(eq(agentTaskSessions.id, selectionId));
+      await f.core.stop(); await sourceCore.stop(); await rm(paths.root, { recursive: true, force: true });
+    }
+  });
 });

@@ -63,6 +63,7 @@ import { recordNativeRunnerLaunchIntent, readNativeRunnerLaunchIntent, nativeRun
 import { launchNativeRemoteRunnerOnce, readNativeRemoteLaunchReceipt, type NativeRemoteLaunchIntent } from "./native-remote-launch-handoff.js";
 import { readNativePreparationPublication } from "./native-runner-checkpoint.js";
 import { nativePreparationClaimNeverLaunched } from "./native-preparation-handoff.js";
+import { restoreNativeWarmPreparationClaim } from "./native-warm-preparation-recovery.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
@@ -10292,6 +10293,17 @@ async function executePaperclipNativeSessionAttempt(
   const restoredController = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await restoreNativeRunnerCheckpoint(input.db, input.execution.binding, scopedRunnerdStateRoot(input.execution))
     : null;
+  const restoredPreparation = input.runnerExecutionTarget?.kind === "remote"
+    ? await restoreNativeWarmPreparationClaim({ ...input, root: scopedRunnerdStateRoot(input.execution) }) : false;
+  if (restoredPreparation && input.restartRecovery?.kind === "bootstrap_incomplete") {
+    const target = input.runnerExecutionTarget;
+    if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.leaseId) {
+      throw new Error("native_runner_warm_preparation_target_unproven");
+    }
+    input = { ...input, restartRecovery: { ...input.restartRecovery, kind: "reattach_remote_runner",
+      remote: target.runnerTask ? { kind: "plugin_task", leaseId: target.leaseId }
+        : { providerLeaseId: target.sandboxLeaseAcquisition!.providerLeaseId, remoteCwd: target.remoteCwd } } };
+  }
   const genericRestart = await verifyGenericWarmAttachmentRestart(input);
   const stagedRestart = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyStagedAttachmentRestart(input) : null;
@@ -11683,7 +11695,7 @@ async function executePaperclipNativeSessionAttempt(
       onAccountingEvent: producerUsage?.capture,
       controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? {
         bootId: controller.bootId,
-        runnerArtifact: restoredController ? { version: restoredController.runnerVersion, digest: restoredController.runnerDigest } : undefined,
+        runnerArtifact: restoredPreparation || (restoredController ? { version: restoredController.runnerVersion, digest: restoredController.runnerDigest } : undefined),
       } : undefined,
       ...(overlapGitHubPreparation ? { prepareRunnerEnvironment } : {}),
       // Durable scope and prior-run verification use the controller's
@@ -15492,9 +15504,9 @@ async function createRunnerdBackendWithinSessionClaim(
     ? inspectRetainedRunInstructions(JSON.parse(readBoundedNativeFile(
         resolve(root, "control-plane", "control-plane-state.json"), NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
         "native_runner_recovery_instructions_unavailable").toString("utf8")), {
-        runId: genericRecovery?.sourceIdentity.runId ?? input.execution.binding.runId,
+        runId: genericRecovery ? String(durableIdentity?.runId) : input.execution.binding.runId,
         normalizedSessionId: nativeSessionKey(input.execution),
-        runtimeContextDigest: genericRecovery && "runtimeContext" in genericRecovery.sourceExecution
+        runtimeContextDigest: genericRecovery && durableIdentity?.runId === genericRecovery.sourceIdentity.runId && "runtimeContext" in genericRecovery.sourceExecution
           ? genericRecovery.sourceExecution.runtimeContext.aggregateDigest : input.execution.runtimeContext.aggregateDigest,
       })
     : undefined;
@@ -17260,8 +17272,9 @@ async function createRunnerdBackendWithinSessionClaim(
     input.restartRecovery?.kind === "reattach_existing_runner"
       ? input.restartRecovery.process
       : null;
+  const genericClaim = input.restartRecovery?.kind === "reattach_remote_runner" ? input.restartRecovery : null;
   const adoptedProcess =
-    genericRecovery && input.restartRecovery?.kind === "reattach_remote_runner"
+    genericRecovery && genericClaim
       ? await (async () => {
           if (remoteTarget?.transport !== "sandbox" || !remoteCommandRunner || !remoteStateDirectory) {
             throw new Error("native_runner_generic_attachment_physical_state_unproven");
@@ -17271,8 +17284,8 @@ async function createRunnerdBackendWithinSessionClaim(
           const physicalIdentity = [genericRecovery.sourceIdentity, genericRecovery.targetIdentity].find(value =>
             Object.entries(value).every(([key, expected]) => genericRunnerState![key] === expected));
           if (!physicalIdentity) throw new Error("native_runner_generic_attachment_physical_state_unproven");
-          return verifyRemoteRunnerReattachment({ claim: { ...input.restartRecovery, runId: physicalIdentity.runId },
-            target, identity: physicalIdentity, runId: physicalIdentity.runId,
+          return verifyRemoteRunnerReattachment({ claim: { ...genericClaim, runId: physicalIdentity.runId },
+            target, identity: { ...physicalIdentity }, runId: physicalIdentity.runId,
             normalizedSessionId: physicalIdentity.normalizedSessionId });
         })()
       : stagedRecovery && input.restartRecovery?.kind === "reattach_remote_runner"

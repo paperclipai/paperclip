@@ -6825,7 +6825,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ? `command_resume_probe_${randomUUID().replaceAll("-", "")}`
         : null;
     if (recoveryProbeCommandId !== null) {
-      core.queueCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", {}, recoveryProbeCommandId);
+      core.queueCommand(sourceAttachmentTarget && !this.options.genericWarmAttachment ? "session.open" : "runner.drain", {}, recoveryProbeCommandId);
     }
     // A controller retry can open the exact authority after run.attach has
     // already reached a durable outcome. Re-observe that command instead of
@@ -7201,7 +7201,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (adoptedRunner) this.#startupSteps?.begin("provider.session.load");
     else this.#startupSteps?.advance("runner.process.launch", "provider.session.load");
     if (recoveryProbeCommandId !== null) {
-      await this.#waitCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", recoveryProbeCommandId, admissionDeadline, true);
+      await this.#waitCommand(sourceAttachmentTarget && !this.options.genericWarmAttachment ? "session.open" : "runner.drain", recoveryProbeCommandId, admissionDeadline, true);
       if (this.#checkpointProviderIdentityExpectation !== null) {
         // A replacement runner can restore the exact provider while its fresh
         // session.resumed event is compacted or delayed behind the completed
