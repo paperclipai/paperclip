@@ -172,6 +172,16 @@ describe("useUiLayout", () => {
     expect(uiLayoutsApi.save.mock.calls[2]![2]).toEqual({ name: "after" });
   });
 
+  it("reports a failed reset without offering to save again", async () => {
+    uiLayoutsApi.reset.mockRejectedValueOnce(new Error("network down"));
+    await render();
+    await act(async () => current.reset());
+    await settle();
+    expect(current.saveState).toBe("error");
+    expect(current.saveError).toBeNull();
+    expect(current.resetting).toBe(false);
+  });
+
   it("sends a debounced or staged layout with keepalive on pagehide when no save is in flight", async () => {
     await render();
     await act(async () => current.save({ name: "edited" }));

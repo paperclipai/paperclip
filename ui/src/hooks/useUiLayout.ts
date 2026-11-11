@@ -222,8 +222,8 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
       setSaveError(null);
       setSaveState("idle");
     },
-    onError: (error) => {
-      setSaveError(error);
+    onError: () => {
+      setSaveError(null);
       setSaveState("error");
     },
     onFinished: () => {
