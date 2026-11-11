@@ -41,6 +41,7 @@ import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
+import { ephemeralServerEnvironment } from "./ephemeral-server.js";
 import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
@@ -173,6 +174,7 @@ export class ChaosSupervisor {
   redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
   /** K15 deploy shape (redeploy.ts `parseK15DeployShape`); main.ts sets it before `start`. */
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
+  ephemeralServer = false;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -286,10 +288,12 @@ export class ChaosSupervisor {
       // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
       ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, this.deployShape.freshHome ? null : home) : {}),
     };
-    const environment = buildPaperclipServerEnvironment(source, overrides);
+    const ephemeral = this.ephemeralServer ? await ephemeralServerEnvironment({ configPath: this.paths.configPath, temporaryRoot: this.paths.temporaryRoot, extraEnvironment }) : null;
+    const environment = buildPaperclipServerEnvironment(source, { ...overrides, ...ephemeral });
     const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
       ? Object.fromEntries(Object.entries(extraEnvironment).filter(([key]) => key.startsWith("PAPERCLIP_STORAGE_"))) : undefined;
-    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}) });
+    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}),
+      ...(ephemeral ? { generatedSecretsMasterKey: ephemeral.PAPERCLIP_SECRETS_MASTER_KEY } : {}) });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
     await prepareSourceServerDependencies(root, this.environment, false);
   }
