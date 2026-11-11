@@ -411,7 +411,13 @@ export class CodexAppServerDriver implements HarnessDriver {
       this.#options.workingDirectoryAuthority === "remote_runner" &&
       remoteRunnerWorkingDirectoryMoved(snapshot.workingDirectory, this.#options.environment)
     ) {
-      const inFlight = Boolean(snapshot.activeTurnId) || Boolean(snapshot.pendingRuntimeRequests?.length);
+      // A crash can save a turn's terminal record before clearing its active
+      // marker; that turn finished and is not in flight.
+      const activeTurnIsTerminal = (snapshot.terminalTurns ?? []).some(
+        (terminal) => terminal.turnId === snapshot.activeTurnId,
+      );
+      const inFlight = (Boolean(snapshot.activeTurnId) && !activeTurnIsTerminal)
+        || Boolean(snapshot.pendingRuntimeRequests?.length);
       return inFlight
         ? {
             recovered: false,

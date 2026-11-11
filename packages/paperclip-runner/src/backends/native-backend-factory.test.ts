@@ -445,6 +445,14 @@ describe("native backend factory", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  it("treats a moved-root active turn that already has a terminal record as finished", async () => {
+    const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
+    await expect(backend.recoverSession!({ ...snapshot, activeTurnId: "turn-1",
+      terminalTurns: [{ turnId: "turn-1", fingerprint: "{\"status\":\"completed\"}" }] } as never, { signal: new AbortController().signal }))
+      .resolves.toMatchObject({ recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   it("names the agent generically when a remote Claude session opens outside its workspace", async () => {
     const { factory, backend } = movedRootRecovery(acpxExecution("claude"));
     const failure = await backend.openSession({
