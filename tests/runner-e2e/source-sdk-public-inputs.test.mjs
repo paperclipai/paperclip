@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import { staleSdkPublicInputs, synchronizeSdkPublicInputs } from "./source-sdk-public-inputs.mjs";
 
 const registry = "tests/runner-e2e/source-sdk-public-inputs.json";
+const reportLock = "tests/runner-e2e/report-lock.json";
+const reportPolicy = (inputSha256, outputSha256) => `${JSON.stringify({ inputSha256, outputSha256, patchSha256: "0".repeat(64), basis: "synthetic" }, null, 2)}\n`;
+const commit = (root, message) => { git(root, "add", "-A"); git(root, "-c", "user.name=Synthetic unit", "-c", "user.email=synthetic@example.invalid", "commit", "-qm", message); return git(root, "rev-parse", "HEAD").trim(); };
 const roots = [];
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const blob = bytes => createHash("sha1").update(`blob ${Buffer.byteLength(bytes)}\0`).update(bytes).digest("hex");
@@ -25,6 +28,8 @@ async function fixture() {
     parserPackageSha256: "b".repeat(64), parserEntrySha256: "c".repeat(64),
     zodPackageSha256: "d".repeat(64), zodEntrySha256: "e".repeat(64), zodTypeFiles: { "index.d.cts": "f".repeat(64) } };
   await put(root, registry, `${JSON.stringify(baseline, null, 2)}\n`);
+  // The reviewed report-lock policy: committed lock in, authenticated restored lock out.
+  await put(root, reportLock, reportPolicy(digest("synthetic original pnpm-lock.yaml\n"), baseline.lockSha256));
   git(root, "init", "-q"); git(root, "add", ".");
   git(root, "-c", "user.name=Synthetic unit", "-c", "user.email=synthetic@example.invalid", "commit", "-qm", "synthetic source");
   return { root, baseline, revision: git(root, "rev-parse", "HEAD").trim() };
@@ -70,6 +75,38 @@ test("admits only the separately pinned restored lock overlay without changing i
   assert.equal(updated.inputs["pnpm-lock.yaml"], git(root, "rev-parse", `${revision}:pnpm-lock.yaml`).trim());
   await writeFile(path.join(root, "pnpm-lock.yaml"), "unknown lock overlay");
   await assert.rejects(synchronizeSdkPublicInputs(root, revision));
+});
+
+// A lockfile refresh rewrites the lock and report-lock.json together (#20615).
+// The sync carries the new reviewed output hash into lockSha256; nothing else.
+test("a lockfile refresh moves lockSha256 to the committed reviewed report-lock output", async () => {
+  const { root, baseline, revision: first } = await fixture();
+  await synchronizeSdkPublicInputs(root, first, { write: true });
+  commit(root, "synced");
+  const refreshed = "synthetic refreshed pnpm-lock.yaml\n";
+  await put(root, "pnpm-lock.yaml", refreshed);
+  await put(root, reportLock, reportPolicy(baseline.lockSha256, digest(refreshed)));
+  const revision = commit(root, "lockfile refresh");
+  assert.deepEqual(await staleSdkPublicInputs(root), [
+    { file: "pnpm-lock.yaml", change: "changed" },
+    { file: `${reportLock} outputSha256`, change: "lockSha256 changed" },
+  ]);
+  const result = await synchronizeSdkPublicInputs(root, revision, { write: true });
+  assert.equal(result.lockPinChanged, true); assert.equal(result.runtimePinsChanged, false);
+  const updated = JSON.parse(await readFile(path.join(root, registry), "utf8"));
+  assert.equal(updated.lockSha256, digest(refreshed));
+  assert.equal(updated.inputs["pnpm-lock.yaml"], blob(refreshed));
+  const { inputs: _old, lockSha256: _oldLock, ...runtime } = baseline, { inputs: _new, lockSha256: _newLock, ...afterRuntime } = updated;
+  assert.deepEqual(afterRuntime, runtime);
+  assert.deepEqual(await staleSdkPublicInputs(root), []);
+});
+test("refuses a committed lock that the report-lock policy does not review", async () => {
+  const { root } = await fixture();
+  await put(root, "pnpm-lock.yaml", "synthetic unreviewed lock\n");
+  const revision = commit(root, "unreviewed lock");
+  const before = await readFile(path.join(root, registry));
+  await assert.rejects(synchronizeSdkPublicInputs(root, revision, { write: true }), /not reviewed by tests\/runner-e2e\/report-lock\.json/);
+  assert.deepEqual(await readFile(path.join(root, registry)), before);
 });
 
 // The pins only prove the SDK public types while they match the committed
