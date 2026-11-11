@@ -14,6 +14,7 @@ import type { EndpointRecord, RuntimeContext, DiscordGatewayOwnership, InternalS
 import { credentialFingerprint } from "../credential-fingerprint.js";
 import { createPhotonExternalStore, PHOTON_EXTERNAL_STATE } from "./external-store.js";
 import { createPhotonExternalOwner, PhotonLocalResources, type PhotonExternalBroker } from "./external-owner.js";
+import { photonResourceProcessEnded } from "./resource-process.js";
 import { readPhotonExternalState, parsePhotonExternalDelivery, photonHash, type PhotonExternalIdentity, type PhotonResourceDescriptor } from "./external-contract.js";
 import { currentControllerProcess, UNKNOWN_PROCESS_SPACE } from "../../controller-process-identity.js";
 import { randomUUID, createHash } from "node:crypto";
@@ -432,8 +433,13 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         || connector && (state.binding.instanceId !== connector.instanceId || state.binding.environment !== connector.environment));
       const restoredRetirementPort = state.phase === "retiring" && state.failure?.code === "authority"
         && state.failure.nextAttemptAt === null && connector !== undefined;
+      // Ordinary discovery after restart can prove that the original receiver
+      // process ended. Unknown owners and operation retry deadlines stay held.
+      const closedOriginalProcess = !changedExternal && state.phase === "external" && state.failure === null
+        && state.localClosureConfirmed !== true && state.localResourceDebt?.nextAttemptAt === null
+        && await photonResourceProcessEnded(state);
       values.push({ id: row.endpointId, companyId: row.companyId, connectionId: row.connectionId,
-        dueAt: changedExternal || restoredRetirementPort ? 0 : state.failure ? (state.failure.nextAttemptAt ? Date.parse(state.failure.nextAttemptAt) : null)
+        dueAt: changedExternal || restoredRetirementPort || closedOriginalProcess ? 0 : state.failure ? (state.failure.nextAttemptAt ? Date.parse(state.failure.nextAttemptAt) : null)
           : state.localResourceDebt ? (state.localResourceDebt.nextAttemptAt ? Date.parse(state.localResourceDebt.nextAttemptAt) : null)
           : state.phase === "external" ? null : 0 });
     }
