@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueThreadInteractions, issues, projects, plugins, environments } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
@@ -779,6 +779,67 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(finished).toMatchObject({ status: "cancelled", errorCode: "ai_connection_busy", resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } }, contextSnapshot: { aiConnectionBusyDeferredWhileAssignee: true } });
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
     expect(runs.filter(run => run.id !== finished.id)).toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy" })]);
+  });
+
+  describe("addressed interaction wake whose shared AI credentials are busy", () => {
+    // The addressee (the managed-account agent) is neither the assignee nor the
+    // review participant; its pending request_confirmation is its only authority.
+    async function deferAddresseeWake(f: Awaited<ReturnType<typeof seed>>) {
+      const assigneeId = randomUUID();
+      await db.insert(agents).values({ id: assigneeId, companyId: f.companyId, name: "Assignee", adapterType, status: "idle", adapterConfig: {}, runtimeConfig: {} });
+      // Another agent is the current review participant, so only the pending interaction authorizes the addressee.
+      await db.update(issues).set({ assigneeAgentId: assigneeId, status: "in_review", executionState: {
+        status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: assigneeId, userId: null }, returnAssignee: { type: "agent", agentId: assigneeId, userId: null },
+        reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      } }).where(eq(issues.id, f.issueId));
+      const [interaction] = await db.insert(issueThreadInteractions).values({
+        companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation", status: "pending", createdByAgentId: assigneeId,
+        addresseeAgentId: f.agentId, payload: { version: 1, prompt: "Please confirm" } as never,
+      }).returning();
+      vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValueOnce(new HttpError(422, "AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" }));
+      const run = await heartbeat.wakeup(f.agentId, {
+        source: "automation", triggerDetail: "system", reason: "interaction_pending",
+        payload: { issueId: f.issueId, interactionId: interaction!.id, mutation: "interaction" },
+        contextSnapshot: { issueId: f.issueId, taskId: f.issueId, interactionId: interaction!.id, interactionKind: "request_confirmation",
+          wakeReason: "interaction_pending", source: "issue.interaction.created" },
+      });
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const [deferred] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+      const [retry] = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId))).filter(candidate => candidate.id !== run!.id);
+      return { interaction: interaction!, deferred: deferred!, retry: retry! };
+    }
+
+    it("saves the retry marker and starts the retry while the interaction is still pending", async () => {
+      const f = await seed(true);
+      const { deferred, retry } = await deferAddresseeWake(f);
+      expect(captured.get(deferred.id)).toBeUndefined();
+      expect(deferred).toMatchObject({ status: "cancelled", errorCode: "ai_connection_busy",
+        contextSnapshot: { aiConnectionBusyDeferredWhileAssignee: false } });
+      expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy",
+        contextSnapshot: { wakeReason: "ai_connection_busy_retry", interactionPendingWake: true } });
+      const promotion = await heartbeat.promoteDueScheduledRetries(retry.scheduledRetryAt!);
+      expect(promotion.runIds).toContain(retry.id);
+      await heartbeat.resumeQueuedRuns();
+      await vi.waitFor(() => expect(captured.get(retry.id)).toBeDefined(), { timeout: 10_000 });
+      await heartbeat.drainActiveRunExecutions();
+      const [started] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry.id));
+      expect(started).toMatchObject({ status: "succeeded" });
+    });
+
+    it("drops the exception when the interaction is resolved before the retry starts", async () => {
+      const f = await seed(true);
+      const { interaction, retry } = await deferAddresseeWake(f);
+      expect(retry.contextSnapshot).toMatchObject({ interactionPendingWake: true });
+      await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, interaction.id));
+      await heartbeat.promoteDueScheduledRetries(retry.scheduledRetryAt!);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry.id));
+      expect(after).toMatchObject({ status: "cancelled", startedAt: null });
+      expect(captured.get(retry.id)).toBeUndefined();
+    });
   });
 
   it("snapshots only selected immutable skills and omits inaccessible optional assignments", async () => {
