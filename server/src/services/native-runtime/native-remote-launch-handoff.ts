@@ -80,7 +80,7 @@ function configuration(input: Pick<NativeRemoteLaunchIntent, "remoteBinary" | "r
   if (index >= 0) args[index + 1] = input.diagnosticsDirectory;
   else args.push("--diagnostics-directory", input.diagnosticsDirectory);
   const environment = Object.fromEntries(Object.entries(spec.environment).filter((entry): entry is [string, string] =>
-    typeof entry[1] === "string").sort(([left], [right]) => left.localeCompare(right)));
+    typeof entry[1] === "string").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
   return { command: input.remoteBinary, args, cwd: input.remoteCwd, environment };
 }
 
