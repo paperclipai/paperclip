@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
@@ -190,6 +190,61 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       .toMatchObject({ identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: currentRun.runnerInstanceId } });
     expect(await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure),
       executionTargetKind: "local" })).toMatchObject({ recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true });
+  });
+
+  it("retries a remote follow-up whose own server stopped serving before its runner, carrying only the predecessor session", async () => {
+    // Daytona wave s9203: a graceful drain closed the runtime API listener while
+    // a follow-up was still preparing. Its only checkpoint was the settled
+    // predecessor's provider session, rebound at admission.
+    const fixture = await seed(), runId = randomUUID();
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, backendKind: "runner", driverKind: "codex_app_server",
+      providerSessionId: "predecessor-thread", sessionId: "predecessor-thread", cursor: "predecessor-cursor",
+      activeTurnId: null, terminal: null, terminalTurns: [], pendingRuntimeRequests: [] };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...fixture.profile, sessionCheckpoint: checkpoint } })
+      .where(eq(heartbeatRuns.id, fixture.scope.runId));
+    const rebound = { ...checkpoint, cursor: null, identity: { ...checkpoint.identity, runId } };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: randomUUID(), status: "running", runtimeMode: "native",
+      createdAt: new Date(Date.now() + 1_000),
+      runnerProfileJson: { sessionCheckpoint: rebound, nativePreparationFencingVersion: 1 } });
+    const evidence = (sourceFailureCode: Parameters<typeof nativeProviderRecoveryEvidence>[0]["sourceFailureCode"],
+      executionTargetKind: "remote" | "local" = "remote") =>
+      nativeProviderRecoveryEvidence({ db, runId, executionTargetKind, sourceFailureCode });
+    expect(await evidence("local_runtime_api_listener_unavailable")).toMatchObject({ recoveryMode: "bootstrap_retry",
+      providerSessionEstablished: false, providerEventsExist: false, checkpointExists: true });
+    // Only this server's own shutdown proves the runner was never reached.
+    expect((await evidence("provider_process_exited")).recoveryMode).toBe("ambiguous_state");
+    // A provider session no settled predecessor saved could be this run's own.
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: { ...rebound, providerSessionId: "unknown-thread" },
+      nativePreparationFencingVersion: 1 } }).where(eq(heartbeatRuns.id, runId));
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+    // A turn of this run is provider work, whatever stopped it.
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: { ...rebound, cursor: "own-turn" },
+      nativePreparationFencingVersion: 1 } }).where(eq(heartbeatRuns.id, runId));
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: rebound, nativePreparationFencingVersion: 1 } })
+      .where(eq(heartbeatRuns.id, runId));
+    // Any Runner controller checkpoint of this run, even one whose identity
+    // no longer matches the run, proves a Runner was reached.
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, runId, "reached-runner"),
+      identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: randomUUID(),
+        environmentLeaseId: fixture.native.environmentLeaseId, turnId: fixture.native.turnId, itemId: fixture.native.itemId },
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    const runnerOwner = { companyId, issueId: fixture.scope.issueId, runId, authorityRunId: runId,
+      bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed",
+      controllerBootId: runnerOwner.bootId, controllerGeneration: 1, leaseOwner: runnerOwner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, runnerOwner));
+    try {
+      await core.flushCheckpoint();
+      expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+    } finally { await core.stop(); }
+    await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("bootstrap_retry");
+    await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
+      eventType: "session.resumed" });
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
   });
 
   it("uses the database clock when an import finds an expired owner", async () => {

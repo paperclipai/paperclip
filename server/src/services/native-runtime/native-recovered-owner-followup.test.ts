@@ -92,7 +92,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
    * Only the database controller checkpoint and recovery pointer survive. */
   async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool"
     | "failed-turn-start" | "rejected-turn-start" | "indeterminate-turn-start" | "unknown-outcome-turn-start"
-    | "unsuperseded-unknown-outcome-turn-start" | "failed-suspend" = "settled",
+    | "unsuperseded-unknown-outcome-turn-start" | "failed-suspend" | "pending-attach" | "pending-tool-result" = "settled",
     options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode";
       lifecycle?: "warm" } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
@@ -150,10 +150,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         Object.assign(commands.find(command => command.type === "turn.start")!, unknownOutcome);
       }
       if (control === "failed-suspend") Object.assign(commands.at(-1)!, { status: "failed", result: { status: "failed" } });
+      // Staging PAP-4196 and PAP-3443: the controller journaled a delivery to the
+      // per-turn Runner that the Runner never acknowledged before its sandbox was
+      // destroyed after the turn.
+      if (control === "pending-attach") controller.queueCommand("run.attach", { provider: "fixture" });
+      const toolInput = control === "unanswered-tool" || control === "pending-tool-result";
+      if (control === "pending-tool-result") controller.queueCommand("semantic_tool.result", { sourceEventId: "unanswered-tool-input" });
       const event = (sourceSeq: number, sourceEventId: string, eventType: string) => ({ sourceSeq, sourceEventId, eventType,
         priority: 0 as const, envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
       controller.store.state.committedEvents.push(
-        ...(control === "unanswered-tool" ? [event(1, "unanswered-tool-input", "semantic_tool.input")] : []),
+        ...(toolInput ? [event(1, "unanswered-tool-input", "semantic_tool.input")] : []),
         event(2, "recovered-terminal", "run.terminal"));
       controller.store.state.ackedSourceSeq = 2;
       controller.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
@@ -760,6 +766,38 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(await followUp.start()).toBe(outcome);
   }, 60_000);
 
+  // Staging PAP-4196 (run.attach) and PAP-3443 (semantic_tool.result): the
+  // per-turn owner committed its result and its sandbox was destroyed after the
+  // turn, but its journal still held a delivery that its Runner never
+  // acknowledged. No process remains to receive it, so the follow-up retires
+  // the owner. A Runner whose sandbox may still exist keeps the owner held.
+  it.each([
+    { control: "pending-attach", label: "ended on another sandbox", status: "expired", sameSandbox: false, recorded: true,
+      outcome: ADMITTED },
+    { control: "pending-tool-result", label: "ended on another sandbox", status: "expired", sameSandbox: false, recorded: true,
+      outcome: ADMITTED },
+    { control: "pending-attach", label: "still retained", status: "retained", sameSandbox: false, recorded: true,
+      outcome: stranded("journal_commands_unsettled(run.attach.pending)") },
+    { control: "pending-tool-result", label: "ended on this sandbox", status: "expired", sameSandbox: true, recorded: true,
+      outcome: stranded("journal_commands_unsettled(semantic_tool.result.pending)") },
+    { control: "pending-tool-result", label: "not recorded", status: "expired", sameSandbox: false, recorded: false,
+      outcome: stranded("journal_commands_unsettled(semantic_tool.result.pending)") },
+    { control: "unanswered-tool", label: "ended on another sandbox", status: "expired", sameSandbox: false, recorded: true,
+      outcome: stranded("journal_tool_input_unanswered") },
+  ] as const)("retires a finished remote owner with an unacknowledged $control when its sandbox lease $label",
+    async ({ control, status, sameSandbox, recorded, outcome }) => {
+      const prior = await seedRecoveredPriorRun(control, { provider: "opencode" });
+      const followUp = await admitFollowUp(prior);
+      if (recorded) {
+        await db.insert(environments).values({ id: followUp.environmentId, name: `ended-${followUp.environmentId}`, driver: "sandbox" });
+        await db.insert(environmentLeases).values({ companyId, environmentId: followUp.environmentId, issueId: prior.issueId,
+          heartbeatRunId: prior.runId, provider: "daytona", providerLeaseId: sameSandbox ? followUp.providerLeaseId : `sandbox-${prior.runId}`,
+          status, releasedAt: status === "retained" ? null : new Date(), metadata: { remoteCwd: "/workspace" } });
+      }
+      expect(await followUp.start()).toBe(outcome);
+      if (outcome === ADMITTED) expect(followUp.logs.join("")).toContain("finished without a saved runner checkpoint");
+    }, 60_000);
+
   it("admits again when a retry rebuilds the same projection from the database", async () => {
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);
@@ -1070,6 +1108,17 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     state.commands.find((command: { type: string }) => command.type === "turn.start").status = "pending";
     await writeFile(path, JSON.stringify(state));
     expect(await followUp.startLocal()).toBe(stranded("journal_commands_unsettled(turn.start.pending)"));
+  }, 60_000);
+
+  it("keeps a stopped local owner held by an unacknowledged run.attach", async () => {
+    // Only a remote Runner whose sandbox lease ended elsewhere is gone by record.
+    const { followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+    const path = join(root, "control-plane", "control-plane-state.json");
+    const state = JSON.parse(await readFile(path, "utf8"));
+    state.commands.push({ ...state.commands.at(-1), commandId: "command_unacknowledged_attach",
+      controllerSeq: state.commands.length + 1, type: "run.attach", status: "pending", result: null });
+    await writeFile(path, JSON.stringify(state));
+    expect(await followUp.startLocal()).toBe(stranded("journal_commands_unsettled(run.attach.pending)"));
   }, 60_000);
 
   it.each(["uncommitted result", "committed without result", "live controller lease", "unexpired controller lease", "recovery pending", "pending command",

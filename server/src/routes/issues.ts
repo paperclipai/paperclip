@@ -7602,7 +7602,8 @@ export function issueRoutes(
       if (wake.status === "deferred_issue_execution") {
         if (isReceipt) {
           const response = await readReceipt();
-          if (response) receipt = { wake, state: "deferred", queueRun: null, response };
+          // A tool action's outcome is delivered, never listed (approve = run).
+          if (response && !response.toolActionOutcome) receipt = { wake, state: "deferred", queueRun: null, response };
           continue;
         }
         return { wake, state: "deferred", queueRun: null };
@@ -7624,7 +7625,7 @@ export function issueRoutes(
         .then((runRows) => runRows[0] ?? null);
       if (queueRun && isReceipt) {
         const response = await readReceipt();
-        if (response) receipt = { wake, state: "queued", queueRun, response };
+        if (response && !response.toolActionOutcome) receipt = { wake, state: "queued", queueRun, response };
       }
       else if (queueRun) return { wake, state: "queued", queueRun };
     }
@@ -7790,7 +7791,11 @@ export function issueRoutes(
     if (
       !wake ||
       readObject(wake.payload).issueId !== input.issue.id ||
-      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
+      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload)) ||
+      // A tool action's outcome is never a message to steer, interrupt or discard.
+      (queuedInteractionId(wake.payload) &&
+        (await readQueuedInteractionResponse(input.tx as unknown as Db, input.issue.companyId, input.issue.id, wake.payload))
+          ?.toolActionOutcome)
     ) {
       throw conflict("The queued message is no longer pending", {
         code: "queued_comment_not_pending",

@@ -14,6 +14,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
+import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 
 const EXITED_PID = 4_194_304;
 
@@ -35,7 +36,7 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
   const exactResume = { recoveryMode: "exact_checkpoint_resume", recoverable: true, providerSessionEstablished: true,
     checkpointExists: true, originalFailureCode: "native_session_recovery_failed" };
 
-  async function resumeOnce(options: { failureDetail: Record<string, unknown>; stopRecorded: boolean }) {
+  async function resumeOnce(options: { failureDetail: Record<string, unknown>; stopRecorded: boolean; viaReconciler?: boolean }) {
     const issueId = randomUUID();
     const runId = randomUUID();
     const [issue] = await db.insert(issues).values({ id: issueId, companyId, title: "Resume the lost turn",
@@ -58,7 +59,12 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
         contract: buildNativeCompletionContract(issue!, { revision: contract!.revision }) },
       interactionResponses: [], credentialBindings: [],
     };
-    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution,
+      sessionCheckpoint: { backendKind: "runner", driverKind: "codex_app_server", sessionId: native.normalizedSessionId,
+        identity: { companyId, issueId, runId, agentId, sessionId: native.normalizedSessionId },
+        providerSessionId: "provider-thread", cursor: "1", activeTurnId: "lost-turn", pendingRuntimeRequests: [], lineage: [] } },
+      ...(options.viaReconciler ? { status: "failed" as const, nativePhase: "retryable_failure" } : {}) })
+      .where(eq(heartbeatRuns.id, runId));
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "retryable_failure", attempt: 1,
       failureCode: "native_session_interrupted", failureDetail: options.failureDetail });
     const identity = { processPid: EXITED_PID, processGroupId: EXITED_PID, processStartedAt: new Date().toISOString() };
@@ -80,7 +86,13 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
       passed.push(input.resumeInterruptedTurn);
       throw new Error("scheduled_resume_fixture_stop");
     });
-    await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: {
+    let leaseOwner: string | undefined;
+    if (options.viaReconciler) {
+      const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: native.runnerInstanceId, runIds: [runId] });
+      expect(claims).toEqual([expect.objectContaining({ runId })]);
+      leaseOwner = claims[0]!.leaseOwner;
+    }
+    await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, leaseOwner, backend: {
       descriptor: async () => { throw new Error("Unexpected provider call"); },
       openSession: async () => { throw new Error("Unexpected provider call"); },
     } }).catch(() => undefined);
@@ -88,10 +100,15 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
     return { passed, coordinator: coordinator! };
   }
 
-  it("lets the runtime continue a lost turn after a verified stop and an admitted attempt", async () => {
-    const { passed, coordinator } = await resumeOnce({ failureDetail: exactResume, stopRecorded: true });
+  it.each([false, true])("lets the runtime continue a lost turn after a verified stop and an admitted attempt (claimed by the resume reconciler: %s)", async (viaReconciler) => {
+    const { passed, coordinator } = await resumeOnce({ failureDetail: exactResume, stopRecorded: true, viaReconciler });
     expect(passed).toEqual([true]);
     expect(coordinator.attempt).toBe(2);
+  });
+
+  it("keeps the lost turn failing when the reconciler claimed a resume without a stop receipt", async () => {
+    const { passed } = await resumeOnce({ failureDetail: exactResume, stopRecorded: false, viaReconciler: true });
+    expect(passed).toEqual([false]);
   });
 
   it.each([
