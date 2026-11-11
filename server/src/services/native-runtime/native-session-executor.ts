@@ -347,6 +347,7 @@ import {
   NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT,
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
+  carriesSettledPredecessorSession,
 } from "./native-restart-recovery.js";
 
 type ActiveNativeSession = {
@@ -8731,7 +8732,7 @@ export async function nativeProviderRecoveryEvidence(input: {
   const run = await input.db
     .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, nativeSessionId: heartbeatRuns.nativeSessionId,
-      runnerInstanceId: heartbeatRuns.runnerInstanceId })
+      runnerInstanceId: heartbeatRuns.runnerInstanceId, id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -8765,6 +8766,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     ? await loadNativeUnclaimedBootstrapCheckpoint(input.db, input.bootstrap.binding, input.bootstrap.identity)
     : null;
   let controllerCheckpointMatches = true;
+  let controllerCheckpointAbsent = false;
   if (input.executionTargetKind === "remote" && checkpointRecord.backendKind === "runner"
     && record(run?.runnerProfileJson).nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION) {
     controllerCheckpointMatches = false;
@@ -8772,6 +8774,7 @@ export async function nativeProviderRecoveryEvidence(input: {
       const header = await loadNativeRunnerCheckpointHeader(input.db, {
         companyId: run.companyId, issueId: run.nativeIssueId, runId: input.runId,
       });
+      controllerCheckpointAbsent = !header;
       if (header && Buffer.byteLength(header) <= NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES) {
         const identity = inspectDurablePrpCheckpointHeader(header);
         const staged = inspectStagedRunAttachmentHeader(header);
@@ -8811,6 +8814,30 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode);
+  // A closed runtime API listener means this server stopped serving (a
+  // graceful drain) before the attempt could reach its remote runner. A
+  // follow-up may still carry its settled predecessor's provider session,
+  // rebound at admission with no cursor, turn, result or request of its own.
+  // With no runner checkpoint and no provider event for this run, that
+  // carried session is not this run's provider work: retry its startup on the
+  // same run instead of holding the task for a manual Retry.
+  const carriedAdmissionCheckpointOnly = checkpointExists && !providerEventsExist
+    && input.sourceFailureCode === "local_runtime_api_listener_unavailable"
+    && controllerCheckpointAbsent && !!run
+    && checkpointRecord.cursor == null && checkpointRecord.activeTurnId == null
+    && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null
+    && (!Array.isArray(checkpointRecord.terminalTurns) || checkpointRecord.terminalTurns.length === 0)
+    && (checkpointRecord.pendingRuntimeRequests == null || (Array.isArray(checkpointRecord.pendingRuntimeRequests)
+      && checkpointRecord.pendingRuntimeRequests.length === 0))
+    && await carriesSettledPredecessorSession(input.db, run, checkpointRecord.providerSessionId);
+  if (carriedAdmissionCheckpointOnly) {
+    return {
+      recoveryMode: "bootstrap_retry",
+      providerSessionEstablished: false,
+      providerEventsExist: false,
+      checkpointExists: true,
+    };
+  }
   if (!checkpointExists && !providerEventsExist && (definitelyPreSession
     || unclaimedBootstrap && input.bootstrap?.transientIngressFailure)) {
     return {
@@ -12463,7 +12490,9 @@ async function executePaperclipNativeSessionAttempt(
                               ? "Inspect the persisted native session after its bounded resume budget was exhausted."
                               : recoveryEvidence.recoveryMode ===
                                   "bootstrap_retry"
-                                ? `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves no provider session or provider event was created.`
+                                ? recoveryEvidence.checkpointExists
+                                  ? `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves this run did no provider work of its own, and it resumes the provider session carried from its settled predecessor.`
+                                  : `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves no provider session or provider event was created.`
                                 : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
             }),
             nextAttemptAt,

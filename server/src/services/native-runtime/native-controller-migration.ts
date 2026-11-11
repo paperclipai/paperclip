@@ -209,19 +209,19 @@ async function preservedWarmMarker(db: Db, selected: Selected,
 async function preservedActiveCheckpoint(db: Db, selected: Selected,
   source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, paths: Awaited<ReturnType<typeof localPaths>>) {
   if (source.status !== "running" || source.runtimeMode !== "native") return false;
-  let marker: Record<string, unknown>, bytes: string | undefined;
+  let marker: Record<string, unknown> | null, bytes: string | undefined;
   try {
     bytes = await readPrivateSource(paths.controlFile, 4096);
-    marker = record(JSON.parse(bytes ?? "null"));
+    marker = bytes === undefined ? null : record(JSON.parse(bytes));
   } catch { return false; }
-  if (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
-    || Object.keys(marker).sort().join(",") !== "identity,schema") return false;
+  if (marker !== null && (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
+    || Object.keys(marker).sort().join(",") !== "identity,schema")) return false;
   const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
   const checkpoint = await loadNativeRunnerCheckpoint(db, binding).catch(() => null);
   const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
   if (!header || header.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
     || header.normalizedSessionId !== selected.sessionId) return false;
-  const exact = nativeSha256(header) === nativeSha256(marker.identity), markerIdentity = record(marker.identity);
+  const exact = marker === null || nativeSha256(header) === nativeSha256(marker.identity), markerIdentity = record(marker?.identity);
   if (!exact && (paths.execution.session.lifecyclePolicy.mode !== "warm"
     || ["runnerInstanceId", "normalizedSessionId", "environmentLeaseId"].some(field => markerIdentity[field] !== header[field as keyof typeof header])
     || !await preservedWarmMarker(db, selected, source, markerIdentity))) return false;
