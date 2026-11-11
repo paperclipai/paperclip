@@ -369,7 +369,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     expect(operations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          phase: "workspace_finalize",
+          phase: "worktree_prepare",
           command: `git checkout --no-overwrite-ignore ${recordedBranch}`,
           status: "succeeded",
           executionWorkspaceId,
@@ -385,7 +385,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     );
 
     const finalizeOps = await listFinalizeOperations(db, run!.id);
-    expect(finalizeOps).toHaveLength(2);
+    expect(finalizeOps).toHaveLength(1);
     expect(finalizeOps[0]).toMatchObject({
       status: "succeeded",
       executionWorkspaceId,

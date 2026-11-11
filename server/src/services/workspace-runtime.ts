@@ -2483,7 +2483,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 
   try {
     await recordGitOperation(input.recorder, {
-      phase: input.reconcileOperationPhase ?? "worktree_prepare",
+      phase: "worktree_prepare",
       args: ["checkout", "--no-overwrite-ignore", expectedBranchName],
       cwd: input.worktreePath,
       metadata: {

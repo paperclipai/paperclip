@@ -3,11 +3,20 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ensureGitWorktreeBranchCoherent } from "../services/workspace-runtime.ts";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
 
 const execFileAsync = promisify(execFile);
+
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  while (tempRoots.length > 0) {
+    const root = tempRoots.pop();
+    if (root) await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
@@ -28,6 +37,7 @@ async function createRepo() {
   const repoRoot = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-clean-restore-repo-")),
   );
+  tempRoots.push(repoRoot);
   await runGit(repoRoot, ["init", "--initial-branch", "main"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
@@ -210,7 +220,7 @@ describe("clean worktree branch restore", () => {
     expect(await fs.readFile(collisionPath, "utf8")).toBe("local ignored sentinel\n");
   }, 20_000);
 
-  it("returns the restore warning and records the finalize phase on the finalize path", async () => {
+  it("returns the restore warning and records the worktree prepare phase on the finalize path", async () => {
     const expectedBranch = "task-recorded-finalize-phase";
     const driftBranch = "drift-finalize-phase";
     const { repoRoot, worktreePath, expectedHead } =
@@ -244,7 +254,8 @@ describe("clean worktree branch restore", () => {
 
     expect(result.branchName).toBe(expectedBranch);
     expect(result.warnings.length).toBeGreaterThan(0);
-    expect(recordedPhases).toContain("workspace_finalize");
+    expect(recordedPhases).toContain("worktree_prepare");
+    expect(recordedPhases).not.toContain("workspace_finalize");
     expect(await currentBranch(worktreePath)).toBe(expectedBranch);
     expect(await readGit(worktreePath, ["rev-parse", "HEAD"])).toBe(expectedHead);
   }, 20_000);
