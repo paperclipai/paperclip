@@ -17,6 +17,8 @@ import type { UiRetryClick } from "./board-ui.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "./question-handoff.js";
 import { isSessionFault, rotateAgentSession } from "./session-faults.js";
+import { awaitingRewake, collectRewakeArtifacts, isRewakeWorkload, rewakeStep } from "./rewake.js";
+import { withLongTurn } from "./long-turn.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -233,7 +235,8 @@ export class TaskObserver {
   /** Q1–Q3: the board's side of the journey (journey-driver.ts). */
   readonly journey: JourneyDriver | null;
 
-  get definition() { return workloadDefinitions[this.plan.workload]; }
+  /** The workload, with `--long-turn-minutes` tool work in front of its first turn (long-turn.ts). */
+  get definition() { return withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes); }
 
   /**
    * Crash-point suite: create the issue without an assignee, so no wake is
@@ -820,6 +823,7 @@ export class TaskObserver {
     if (this.plan.workload === "G1") return Boolean(governance?.approvalSeenAt) && !governance?.decision;
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
     if (this.plan.workload === "Q1" || this.plan.workload === "Q4") return awaitingQuestionAnswer(this.record);
+    if (isRewakeWorkload(this.plan.workload)) return awaitingRewake(this.record);
     return false;
   }
 
@@ -861,6 +865,10 @@ export class TaskObserver {
         boardMayAct: this.boardMayAct(sample, "answered"), sequence: this.plan.workload === "Q4",
         note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }),
         ...(sessionFault ? { beforeAnswer: () => rotateAgentSession(this.api, this.lab.agents[this.plan.adapter].id, this.plan.index, now, sessionFault) } : {}) });
+    }
+    if (isRewakeWorkload(this.plan.workload)) {
+      await rewakeStep({ api: this.api, record: this.record, plan: this.plan, issueId: this.record.issueId, agentId: this.lab.agents[this.plan.adapter].id,
+        sample, now, boardMayAct: this.boardMayAct(sample), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
     }
   }
 
@@ -1039,7 +1047,11 @@ export class TaskObserver {
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
-      ...(this.plan.workload === "Q1" || this.plan.workload === "Q4" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
+      ...(this.plan.workload === "Q1" || this.plan.workload === "Q4" || this.plan.workload === "W2Q" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
+      ...(isRewakeWorkload(this.plan.workload) ? { rewake: await collectRewakeArtifacts(this.api, issueId, this.record) } : {}),
+      // The task's runs, for the shape checks (`no_failed_attempt`, the long turn's own evidence).
+      runs: await this.api.get<Json[]>(`/api/issues/${issueId}/runs`, 10_000).then(rows => (rows ?? []).map(run => ({ id: String(run.runId ?? run.id),
+        status: String(run.status), errorCode: run.errorCode ?? null, createdAt: run.createdAt ?? null, finishedAt: run.finishedAt ?? null }))).catch(() => []),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
     };
   }
