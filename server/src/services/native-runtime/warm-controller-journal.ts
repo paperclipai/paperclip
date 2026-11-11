@@ -1,6 +1,3 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
 import type { Db } from "@paperclipai/db";
 import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS } from "./native-bootstrap-proof.js";
 import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -49,14 +46,14 @@ export function controllerJournalExtends(saved: readonly JournalEntry[], project
 async function readCanonicalControlState(db: Db, binding: Binding, normalizedSessionId: string) {
   const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
   if (!checkpoint || checkpoint.recoveryEvidence.normalizedSessionId !== normalizedSessionId) return null;
-  const scratch = mkdtempSync(join(tmpdir(), "paperclip-controller-journal-"));
   try {
-    checkpoint.restoreSessionDirectory(scratch);
-    const text = readFileSync(resolve(scratch, "control-plane", "control-plane-state.json"), "utf8");
-    const state = parseFullControlState(text);
-    return state ? { checkpoint, text, state } : null;
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    const header = record(JSON.parse(checkpoint.records.get("header") ?? "null"));
+    const commands = [...checkpoint.records].filter(([part]) => /^command:\d+$/.test(part))
+      .map(([, contents]) => record(JSON.parse(contents)))
+      .sort((left, right) => Number(left.controllerSeq) - Number(right.controllerSeq));
+    return { checkpoint, state: { identity: record(header.state).identity, commands } as Record<string, unknown> };
+  } catch {
+    return null;
   }
 }
 
@@ -73,11 +70,12 @@ export async function refreshRetiredWarmOwnerProjection(input: ControllerProject
   const projected = parseFullControlState(projectedText);
   if (!projected || record(projected.identity).runId !== input.binding.runId) return "unchanged";
   const canonical = await readCanonicalControlState(input.db, input.binding, input.normalizedSessionId);
-  if (!canonical || canonical.text === projectedText) return "unchanged";
+  if (!canonical) return "unchanged";
   if (!sameIdentity(canonical.state.identity, projected.identity)
     || !controllerJournalExtends(journal(canonical.state), journal(projected))) {
     throw new Error("native_runner_checkpoint_projection_held:retired_owner_journal_diverged");
   }
+  if (journal(canonical.state).length === journal(projected).length) return "unchanged";
   if (input.readControlState() !== projectedText) throw new Error("native_runner_checkpoint_projection_held:journal_changed");
   canonical.checkpoint.restoreSessionDirectory(input.root);
   return "refreshed";

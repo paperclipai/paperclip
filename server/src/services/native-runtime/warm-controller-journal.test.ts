@@ -8,8 +8,11 @@ vi.mock("./native-runner-checkpoint.js", () => ({
   loadNativeRunnerCheckpoint: vi.fn(async (_db: unknown, binding: { runId: string }) => {
     const state = checkpoints.get(binding.runId);
     if (state === undefined) return null;
+    const parsed = JSON.parse(state) as { identity: unknown; commands: Array<{ controllerSeq: number }> };
     return {
       recoveryEvidence: { normalizedSessionId: "session" },
+      records: new Map<string, string>([["header", JSON.stringify({ schema: "paperclip.runner.controller-checkpoint.v2", state: { identity: parsed.identity } })],
+        ...parsed.commands.map(entry => [`command:${entry.controllerSeq}`, JSON.stringify(entry)] as [string, string])]),
       restoreSessionDirectory(root: string) {
         mkdirSync(join(root, "control-plane"), { recursive: true });
         writeFileSync(join(root, "control-plane", "control-plane-state.json"), state);
