@@ -3256,6 +3256,13 @@
       "when": 1794408985337,
       "tag": "0466_drop_project_environment",
       "breakpoints": true
+    },
+    {
+      "idx": 467,
+      "version": "7",
+      "when": 1794415046802,
+      "tag": "0467_company_user_ui_layouts",
+      "breakpoints": true
     }
   ]
 }
