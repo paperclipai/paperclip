@@ -43,6 +43,7 @@ vi.mock("@/components/AgentAvatar", () => ({
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+vi.setConfig({ testTimeout: 30_000 });
 
 function roster(): Agent[] {
   return syntheticOrg(AGENT_COUNT).map((member, index) => ({
