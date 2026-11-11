@@ -390,6 +390,29 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
   });
 
+  it("merges a network-egress-only settings blob into the stored settings", async () => {
+    const storedSettings = {
+      mode: "isolated_workspace",
+      sharedWorkspaceConcurrency: "serialize",
+      workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+      workspaceRuntime: { profile: "node" },
+      environmentId: "11111111-1111-4111-8111-111111111111",
+    };
+    const seeded = await seed({ isolatedWorkspaces: false, storeSettings: storedSettings });
+
+    const res = await patch(seeded, {
+      executionWorkspaceSettings: {
+        networkEgress: { allowFqdns: ["registry.npmjs.org"], allowCidrs: [] },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await storedWorkspaceFields(seeded)).executionWorkspaceSettings).toEqual({
+      ...storedSettings,
+      networkEgress: { allowFqdns: ["registry.npmjs.org"], allowCidrs: [] },
+    });
+  });
+
   it("persists a settings downgrade without touching the bound workspace's config", async () => {
     const seeded = await seed({
       isolatedWorkspaces: false,

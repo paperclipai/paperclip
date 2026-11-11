@@ -11705,7 +11705,10 @@ export function issueService(db: Db) {
             );
       if (issueData.executionWorkspaceSettings !== undefined) {
         patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
-          ? { ...nextExecutionWorkspaceSettings }
+          ? {
+            ...(gatedExecutionWorkspaceWrite ? parseObject(existing.executionWorkspaceSettings) : {}),
+            ...nextExecutionWorkspaceSettings,
+          }
           : null;
       }
       if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
