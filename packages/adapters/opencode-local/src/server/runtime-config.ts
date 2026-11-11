@@ -11,6 +11,56 @@ type PreparedOpenCodeRuntimeConfig = {
   cleanup: () => Promise<void>;
 };
 
+/**
+ * A server-owned, short-lived Paperclip MCP gateway for this run. The adapter
+ * receives it through ctx.runtimeMcp; it must never be persisted to agent config.
+ */
+export type OpenCodeRuntimeMcpServer = {
+  name: string;
+  url: string;
+  token: string;
+};
+
+function sanitizeMcpServerName(value: string, fallback: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || fallback;
+}
+
+/**
+ * OpenCode's `mcp` config accepts remote streamable-HTTP servers. Mount the
+ * assigned gateways alongside any operator-defined entries without overwriting
+ * them: a name collision gets the `paperclip-` prefix and a numeric suffix.
+ */
+function mergeManagedMcpServers(
+  existing: Record<string, unknown>,
+  servers: readonly OpenCodeRuntimeMcpServer[],
+): Record<string, unknown> {
+  if (servers.length === 0) return existing;
+  const merged = { ...existing };
+  servers.forEach((server, index) => {
+    const baseName = sanitizeMcpServerName(server.name, `paperclip-${index + 1}`);
+    let name = baseName;
+    let suffix = 1;
+    while (Object.hasOwn(merged, name)) {
+      name = suffix === 1 ? `paperclip-${baseName}` : `paperclip-${baseName}-${suffix}`;
+      suffix += 1;
+    }
+    merged[name] = {
+      type: "remote",
+      url: server.url,
+      enabled: true,
+      oauth: false,
+      headers: { Authorization: `Bearer ${server.token}` },
+      timeout: 30_000,
+    };
+  });
+  return merged;
+}
+
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
     (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) ||
@@ -109,6 +159,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
   sandboxToolOomPreference?: boolean;
+  runtimeMcpServers?: readonly OpenCodeRuntimeMcpServer[];
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
 
@@ -212,6 +263,22 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       // OpenCode must still report invalid operator configuration.
     }
   }
+  const existingMcp = mergeConfigObjects(
+    isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {},
+    isPlainObject(inlineConfig?.mcp) ? inlineConfig.mcp : {},
+  );
+  const nextMcp = mergeManagedMcpServers(
+    existingMcp,
+    input.runtimeMcpServers ?? [],
+  );
+  if (Object.keys(nextMcp).length > 0) {
+    nextConfig.mcp = nextMcp;
+    if (input.runtimeMcpServers && input.runtimeMcpServers.length > 0) {
+      notes.push(
+        `Mounted ${input.runtimeMcpServers.length} Paperclip-managed MCP server(s) in the runtime OpenCode config.`,
+      );
+    }
+  }
   nextProvider = attributeOpenCodeProviders(mergeConfigObjects(nextProvider,
     isPlainObject(inlineConfig?.provider) ? inlineConfig.provider : {}));
   if (Object.keys(nextProvider).length > 0) {
@@ -229,7 +296,10 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  // `mode` only applies on creation; tighten a copied operator config that may
+  // now carry run-scoped gateway bearer tokens.
+  await fs.chmod(runtimeConfigPath, 0o600);
   if (input.sandboxToolOomPreference) {
     try {
       await installSandboxToolMemoryPreference(runtimeConfigDir);
@@ -244,7 +314,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
       ...(inlineContent ? { OPENCODE_CONFIG_CONTENT: inlineConfig
-        ? JSON.stringify({ ...inlineConfig, provider: nextProvider }) : inlineContent } : {}),
+        ? JSON.stringify({ ...inlineConfig, provider: nextProvider, ...(Object.keys(nextMcp).length > 0 ? { mcp: nextMcp } : {}) }) : inlineContent } : {}),
     },
     notes,
     cleanup: async () => {

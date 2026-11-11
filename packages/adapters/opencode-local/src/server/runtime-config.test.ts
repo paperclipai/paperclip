@@ -459,4 +459,54 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(config.provider.openrouter.options.headers["HTTP-Referer"]).toBe("https://paperclip.ing");
     await prepared.cleanup();
   });
+
+  it("mounts run-scoped Paperclip MCP gateways and preserves operator entries", async () => {
+    const configHome = await makeConfigHome({
+      mcp: {
+        "operator-tool": { type: "remote", url: "https://operator.example/mcp", enabled: true },
+      },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: [{
+        name: "assigned",
+        url: "https://paperclip.example/mcp/gateways/gw-1",
+        token: "run-token",
+      }],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const config = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp?: Record<string, Record<string, unknown>> };
+    expect(config.mcp?.["operator-tool"]).toMatchObject({ url: "https://operator.example/mcp" });
+    expect(config.mcp?.assigned).toEqual({
+      type: "remote",
+      url: "https://paperclip.example/mcp/gateways/gw-1",
+      enabled: true,
+      oauth: false,
+      headers: { Authorization: "Bearer run-token" },
+      timeout: 30_000,
+    });
+    expect(prepared.notes.some((note) => note.includes("Paperclip-managed MCP server"))).toBe(true);
+    await prepared.cleanup();
+  });
+
+  it("does not overwrite an operator MCP server with the same name", async () => {
+    const configHome = await makeConfigHome({
+      mcp: { assigned: { type: "remote", url: "https://operator.example/mcp", enabled: true } },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: [{ name: "assigned", url: "https://paperclip.example/mcp", token: "run-token" }],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const config = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp?: Record<string, Record<string, unknown>> };
+    expect(config.mcp?.assigned).toMatchObject({ url: "https://operator.example/mcp" });
+    expect(config.mcp?.["paperclip-assigned"]).toMatchObject({ url: "https://paperclip.example/mcp" });
+    await prepared.cleanup();
+  });
 });

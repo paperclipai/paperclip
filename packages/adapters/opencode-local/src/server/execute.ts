@@ -330,8 +330,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const runtimeMcpServers = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
+    name: server.name,
+    url: server.url,
+    token: server.token,
+  }));
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
     env, config,
+    runtimeMcpServers,
     sandboxToolOomPreference: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
   });
   const localRuntimeConfigHome =
