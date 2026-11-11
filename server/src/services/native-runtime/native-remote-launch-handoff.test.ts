@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createNativeRemoteLaunchIntent, launchNativeRemoteRunnerOnce, NATIVE_REMOTE_LAUNCH_SCRIPT,
-  readNativeRemoteLaunchReceipt } from "./native-remote-launch-handoff.js";
+  readNativeRemoteLaunchReceipt, type NativeRemoteLaunchIntent } from "./native-remote-launch-handoff.js";
 
 const executeFile = promisify(execFile);
 const roots: string[] = [];
@@ -37,7 +37,7 @@ function fixture() {
     normalizedSessionId: "session", turnId: "turn", itemId: "item" };
   const stateDirectory = join(root, "state"), processIdentityPath = join(stateDirectory, "runner-process.identity");
   const spec: RunnerProcessLaunchSpec = { command: process.execPath, cwd: root, environment: { BOOTSTRAP_TICKET: "original-fixture-ticket" },
-    args: ["-e", `if(process.env.BOOTSTRAP_TICKET!=="original-fixture-ticket")process.exit(9);require("node:fs").appendFileSync(${JSON.stringify(join(root, "turns"))},"turn\\n");setInterval(()=>{},1000)`, "--",
+    args: ["-e", `if(process.env.BOOTSTRAP_TICKET!=="original-fixture-ticket")process.exit(9);require("node:fs").appendFileSync(${JSON.stringify(join(root, "turns"))},"turn\\n");setInterval(()=>{if(require("node:fs").existsSync(${JSON.stringify(join(root, "finish-"))}+process.argv[process.argv.indexOf("--run-id")+1]))process.exit(0)},25)`, "--",
       "--runner-id", identity.runnerInstanceId, "--environment-lease-id", identity.environmentLeaseId,
       "--run-id", identity.runId, "--session-id", identity.normalizedSessionId, "--turn-id", identity.turnId,
       "--item-id", identity.itemId, "--runner-version", "fixture-v1", "--runner-digest", `sha256:${"a".repeat(64)}`,
@@ -48,7 +48,7 @@ function fixture() {
     runnerVersion: "fixture-v1", runnerDigest: `sha256:${"a".repeat(64)}`, spec });
   const script = NATIVE_REMOTE_LAUNCH_SCRIPT
     .replace('const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");',
-      'const stat = String(pid) + " (fixture) " + ["S", ...Array(18).fill("0"), "1234"].join(" ");')
+      'if(fs.existsSync(path.join(intent.remoteCwd,"fingerprint-unavailable")))throw Error("fixture_fingerprint_unavailable");const stat = String(pid) + " (fixture) " + ["S", ...Array(18).fill("0"), "1234"].join(" ");')
     .replace('const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();', 'const boot = "abcd-1234";')
     .replace('const claimDirectory = intent.processIdentityPath + ".launch";', 'const claimDirectory = intent.processIdentityPath + ".launch";if(mode==="worker")process.on("exit",()=>fs.appendFileSync(path.join(intent.remoteCwd,"finished-workers"),String(process.pid)+"\\n"));')
     .replace('worker.unref();', 'fs.appendFileSync(path.join(intent.remoteCwd,"accepted-workers"),String(worker.pid)+"\\n");worker.unref();')
@@ -87,6 +87,81 @@ async function settledSpawns(root: string) {
   });
   return lines(root, "spawned-children");
 }
+
+function nextLaunch(f: ReturnType<typeof fixture>, overrides: Partial<NativeRemoteLaunchIntent["identity"]> = {}) {
+  const identity = { ...f.intent.identity, runnerInstanceId: "next-runner", runId: "next-run", turnId: "next-turn", itemId: "next-item", ...overrides };
+  const values: Record<string, string> = { "--runner-id": identity.runnerInstanceId, "--run-id": identity.runId,
+    "--turn-id": identity.turnId, "--item-id": identity.itemId, "--session-id": identity.normalizedSessionId,
+    "--environment-lease-id": identity.environmentLeaseId };
+  const spec = { ...f.spec, args: f.spec.args.map((arg, index) => values[f.spec.args[index - 1]!] ?? arg) };
+  const { schema: _schema, launchId: _launchId, nonce: _nonce, launchConfigSha256: _config, ...binding } = f.intent;
+  return { spec, intent: createNativeRemoteLaunchIntent({ ...binding, identity, spec }) };
+}
+
+it("launches a new authorized turn at the same identity path only after the previous process exited", async () => {
+  const f = fixture(), next = nextLaunch(f);
+  writeFileSync(join(f.root, "release-receipt"), "release");
+  const first = await launchNativeRemoteRunnerOnce({ runner: f.runner, intent: f.intent, spec: f.spec });
+  const oldReceipt = readFileSync(f.receiptPath, "utf8");
+  await vi.waitFor(() => expect(lines(f.root, "turns")).toEqual(["turn"]));
+  writeFileSync(join(f.root, "finish-" + f.intent.identity.runId), "finished");
+  await vi.waitFor(() => expect(() => process.kill(first.pid, 0)).toThrow());
+  let lost = false;
+  const disconnected = { execute: vi.fn<CommandManagedRuntimeRunner["execute"]>(async request => {
+    if (lost) throw Error("old_controller_transport_closed");
+    await f.runner.execute(request); lost = true; throw Error("launch_ack_lost");
+  }) };
+  await expect(launchNativeRemoteRunnerOnce({ runner: disconnected, ...next, deadline: Date.now() + 250 }))
+    .rejects.toMatchObject({ code: "native_remote_launch_receipt_pending" });
+  const second = await readNativeRemoteLaunchReceipt({ runner: f.runner, intent: next.intent });
+  expect(second.pid).not.toBe(first.pid);
+  expect(second.nonce).toBe(next.intent.nonce);
+  const duplicates = await Promise.all([1, 2, 3].map(() => launchNativeRemoteRunnerOnce({ runner: f.runner, ...next })));
+  expect(duplicates).toEqual([second, second, second]);
+  await expect(launchNativeRemoteRunnerOnce({ runner: f.runner, intent: f.intent, spec: f.spec }))
+    .rejects.toMatchObject({ code: "native_remote_launch_process_exited" });
+  expect(await settledSpawns(f.root)).toEqual([String(first.pid), String(second.pid)]);
+  await vi.waitFor(() => expect(lines(f.root, "turns")).toEqual(["turn", "turn"]));
+  expect(readFileSync(f.receiptPath, "utf8")).toBe(oldReceipt);
+});
+
+it.each(["alive", "unverifiable"])("preserves the previous claim when its process is %s", async status => {
+  const f = fixture(), next = nextLaunch(f);
+  writeFileSync(join(f.root, "release-receipt"), "release");
+  const receipt = await launchNativeRemoteRunnerOnce({ runner: f.runner, intent: f.intent, spec: f.spec });
+  const before = [f.intent.processIdentityPath, f.receiptPath].map(path => readFileSync(path, "utf8"));
+  if (status === "unverifiable") writeFileSync(join(f.root, "fingerprint-unavailable"), "unavailable");
+  await expect(launchNativeRemoteRunnerOnce({ runner: f.runner, ...next, deadline: Date.now() + 350 }))
+    .rejects.toMatchObject({ code: "native_remote_launch_receipt_pending" });
+  expect(() => process.kill(receipt.pid, 0)).not.toThrow();
+  expect(await settledSpawns(f.root)).toEqual([String(receipt.pid)]);
+  expect([f.intent.processIdentityPath, f.receiptPath].map(path => readFileSync(path, "utf8"))).toEqual(before);
+  expect(existsSync(join(f.intent.processIdentityPath + ".launch", next.intent.nonce))).toBe(false);
+});
+
+it("rejects a separately named intent from a foreign workspace without replacing the previous process", async () => {
+  const f = fixture(), next = nextLaunch(f, { environmentLeaseId: "foreign-lease" });
+  writeFileSync(join(f.root, "release-receipt"), "release");
+  const receipt = await launchNativeRemoteRunnerOnce({ runner: f.runner, intent: f.intent, spec: f.spec });
+  const marker = readFileSync(f.intent.processIdentityPath, "utf8");
+  await expect(launchNativeRemoteRunnerOnce({ runner: f.runner, ...next })).rejects.toMatchObject({
+    code: "native_remote_launch_identity_mismatch", classification: "native_provider_state_incompatible" });
+  expect(await settledSpawns(f.root)).toEqual([String(receipt.pid)]);
+  expect(() => process.kill(receipt.pid, 0)).not.toThrow();
+  expect(readFileSync(f.intent.processIdentityPath, "utf8")).toBe(marker);
+});
+
+it("refuses a new claim-directory symlink inside a retained launch root", async () => {
+  const f = fixture(), next = nextLaunch(f), outside = mkdtempSync(join(tmpdir(), "native-next-launch-outside-"));
+  roots.push(outside);
+  writeFileSync(join(f.root, "release-receipt"), "release");
+  const receipt = await launchNativeRemoteRunnerOnce({ runner: f.runner, intent: f.intent, spec: f.spec });
+  symlinkSync(outside, join(f.intent.processIdentityPath + ".launch", next.intent.nonce));
+  await expect(launchNativeRemoteRunnerOnce({ runner: f.runner, ...next }))
+    .rejects.toMatchObject({ code: "native_remote_launch_path_unsafe" });
+  expect(await settledSpawns(f.root)).toEqual([String(receipt.pid)]);
+  expect(existsSync(join(outside, "intent.json"))).toBe(false);
+});
 
 it("adopts the independently continuing remote launch after controller I/O dies before receipt publication", async () => {
   const f = fixture();

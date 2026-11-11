@@ -329,7 +329,11 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
           }
           const snapshot = await request<Snapshot>("snapshot");
           diagnostic?.sample(snapshot, proxy.queries.length, proxy.pending);
-          throw new Error(`Maintenance did not settle: ${JSON.stringify({ timeoutMs: settleTimeoutMs, quietMs, queries: proxy.queries.length, pending: proxy.pending, snapshot })}\n${output.slice(-12_000)}`);
+          throw new Error(`Maintenance did not settle: ${JSON.stringify({ timeoutMs: settleTimeoutMs, quietMs,
+            queries: proxy.queries.length, pending: proxy.pending, starting: proxy.starting,
+            frames: proxy.frames, transport: proxy.transport,
+            lastQueryFingerprints: proxy.queries.slice(-12).map(({ protocol, fingerprint }) => ({ protocol, fingerprint })),
+            snapshot })}\n${output.slice(-12_000)}`);
         } catch (error) { failure = { error }; throw error; }
         finally {
           if (diagnostic) {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, expect, it } from "vitest";
 import { agentTaskSessions, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
@@ -139,7 +139,7 @@ describeEmbeddedPostgres("durable native preparation handoff", () => {
       phase: "observed", controllerBootId: f.scope.controllerBootId, controllerGeneration: 1,
       leaseOwner: `${f.scope.controllerBootId}:source`, leaseExpiresAt: new Date(Date.now() + 60000) });
     const paths = nativeControllerMigrationDescriptor(execution, fingerprint);
-    let selectionId: string | undefined;
+    let selectionId: string | undefined, publishedCore: DurablePrpControlPlane | undefined;
     try {
       await nativeRunnerCheckpointRegistration({ db: f.db, binding: { companyId: shared.companyId, issueId: f.issueId, runId: sourceId },
         bootId: f.scope.controllerBootId })(sourceCore);
@@ -177,6 +177,46 @@ describeEmbeddedPostgres("durable native preparation handoff", () => {
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: source.runnerProfileJson }).where(eq(heartbeatRuns.id, sourceId));
       await f.register();
       expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toMatchObject({ kind: "preparing", warmSource: true });
+      await f.core.stop();
+      const durable = await loadNativeRunnerCheckpoint(f.db, f.scope);
+      durable!.restoreSessionDirectory(paths.root);
+      publishedCore = new DurablePrpControlPlane({ stateDirectory: join(paths.root, "control-plane"), identity: f.identity,
+        expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      await nativeRunnerCheckpointRegistration({ db: f.db, binding: f.scope, bootId: f.scope.controllerBootId })(publishedCore);
+      const published = await loadNativeRunnerCheckpoint(f.db, f.scope);
+      const externalMarkerPath = join(paths.root, "control-plane", "control-plane-state.json");
+      const externalMarker = await readFile(externalMarkerPath, "utf8");
+      expect(JSON.parse(externalMarker)).toEqual({ schema: "paperclip.runner.external-control-plane-state.v1", identity: f.identity });
+      const [liveOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      await f.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "fixture_preparation_failed",
+        leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(await readNativePreparationHandoffReadiness(f.db, f.scope)).toBeNull();
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(false);
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...profile, nativePreparationHandoffVersion: undefined } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(true);
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+      await writeFile(externalMarkerPath, JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1",
+        identity: { ...f.identity, runId: randomUUID() } }), { mode: 0o600 });
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(true);
+      await writeFile(externalMarkerPath, externalMarker, { mode: 0o600 });
+      const [failedCursor] = await f.db.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.runId, f.runId),
+        eq(nativeRunnerCheckpoints.part, "cursor"))).returning();
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(true);
+      await f.db.insert(nativeRunnerCheckpoints).values(failedCursor!);
+      await mkdir(join(paths.supervisorPath, ".."), { recursive: true });
+      await writeFile(paths.supervisorPath, "unpublished failed preparation supervisor", { mode: 0o600 });
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(true);
+      await rm(paths.supervisorPath);
+      expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(false);
+      expect(await readFile(externalMarkerPath, "utf8")).toBe(externalMarker);
+      expect((await loadNativeRunnerCheckpoint(f.db, f.scope))!.records).toEqual(published!.records);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].runnerProfileJson.sessionCheckpoint)
+        .toEqual(profile.sessionCheckpoint);
+      await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(nativeRunFinalizations).set({ phase: liveOwner.phase, failureCode: liveOwner.failureCode,
+        leaseOwner: liveOwner.leaseOwner, leaseExpiresAt: liveOwner.leaseExpiresAt }).where(eq(nativeRunFinalizations.runId, f.runId));
       await writeFile(join(paths.root, "control-plane", "control-plane-state.json"), "unpublished local controller bytes", { mode: 0o600 });
       expect(await hasLocalNativeControllerObligations(f.db, null)).toBe(true);
       await f.core.stop();
@@ -193,7 +233,7 @@ describeEmbeddedPostgres("durable native preparation handoff", () => {
         .toMatchObject({ kind: "launching", warmAttachment: true });
     } finally {
       if (selectionId) await f.db.delete(agentTaskSessions).where(eq(agentTaskSessions.id, selectionId));
-      await f.core.stop(); await sourceCore.stop(); await rm(paths.root, { recursive: true, force: true });
+      await publishedCore?.stop(); await f.core.stop(); await sourceCore.stop(); await rm(paths.root, { recursive: true, force: true });
     }
   });
 });

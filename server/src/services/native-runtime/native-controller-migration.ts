@@ -8,7 +8,7 @@ import { captureLegacyDurablePrpCheckpoint, inspectDurablePrpCheckpointHeader, p
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { findNativeSessionResumeRun, isNativeSessionId } from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
-import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpoint, readNativeCheckpointPublicationIdentity, readNativeGenericWarmPublication } from "./native-runner-checkpoint.js";
 import { importNativeControllerRecovery, readNativeControllerRecovery } from "./native-controller-recovery.js";
 import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
 import { providerPackWorkspaceId, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
@@ -22,6 +22,7 @@ import { readNativePreparationHandoffReadiness } from "./native-preparation-hand
 import { readNativeWarmPreparation } from "./native-warm-preparation.js";
 import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
 import { nativeControllerSourceDigest } from "./native-controller-source-digest.js";
+import { NATIVE_PREPARATION_HANDOFF_VERSION } from "./native-active-runs.js";
 
 type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date; lastRunId: string };
 
@@ -189,6 +190,42 @@ async function preservedDatabaseOnlyFailedCheckpoint(selected: Selected,
   return true;
 }
 
+async function preservedFailedPreparationCheckpoint(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, paths: Awaited<ReturnType<typeof localPaths>>) {
+  const snapshot = record(source.runnerProfileJson.sessionCheckpoint), identity = record(snapshot.identity);
+  if (source.status !== "failed" || source.runtimeMode !== "native"
+    || identity.runId !== source.id || identity.companyId !== selected.companyId || identity.agentId !== selected.agentId
+    || identity.issueId !== selected.issueId || identity.sessionId !== selected.sessionId
+    || typeof snapshot.sessionId !== "string" || !snapshot.sessionId.trim()) return false;
+  const [run] = await db.select({ version: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativePreparationHandoffVersion'` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, source.id), eq(heartbeatRuns.companyId, selected.companyId),
+      eq(heartbeatRuns.agentId, selected.agentId), eq(heartbeatRuns.nativeIssueId, selected.issueId),
+      eq(heartbeatRuns.nativeSessionId, selected.sessionId), eq(heartbeatRuns.status, "failed"),
+      sql`${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint' = ${JSON.stringify(snapshot)}::jsonb`)).limit(1);
+  if (run?.version !== NATIVE_PREPARATION_HANDOFF_VERSION) return false;
+  try {
+    const bytes = await readPrivateSource(paths.controlFile, 4096);
+    if (bytes === undefined) return false;
+    const marker = record(JSON.parse(bytes));
+    if (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
+      || Object.keys(marker).sort().join(",") !== "identity,schema") return false;
+    const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
+    const direct = await readNativeCheckpointPublicationIdentity(db, binding);
+    const warm = direct ? null : await readNativeGenericWarmPublication(db, binding);
+    const text = direct?.header ?? warm?.header;
+    const header = text && inspectDurablePrpCheckpointHeader(text), state = text && JSON.parse(text);
+    if (!header || state.schema !== "paperclip.runner.controller-checkpoint.v3"
+      || state.state.preparationHandoff?.version !== NATIVE_PREPARATION_HANDOFF_VERSION
+      || header.runnerInstanceId !== source.runnerInstanceId || header.normalizedSessionId !== selected.sessionId
+      || nativeSha256(header) !== nativeSha256(marker.identity)) return false;
+    const supervisor = await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024);
+    if (supervisor !== undefined && (paths.execution.session.lifecyclePolicy.mode !== "warm"
+      || !await hasConfirmedOlderSupervisor(db, selected, source, paths, JSON.parse(supervisor)))) return false;
+    return bytes === await readPrivateSource(paths.controlFile, 4096)
+      && supervisor === await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024);
+  } catch { return false; }
+}
+
 async function preservedWarmMarker(db: Db, selected: Selected,
   source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, markerIdentity: Record<string, unknown>) {
   if (!isNativeSessionId(markerIdentity.runId) || markerIdentity.runId === source.id) return false;
@@ -269,6 +306,7 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
     if (source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
       && preservedFailedCheckpoint(source, selected.sessionId, await loadNativeRunnerCheckpoint(db, binding))) continue;
     const paths = await localPaths(source);
+    if (await preservedFailedPreparationCheckpoint(db, selected, source, paths)) continue;
     if (await preservedPreparationCheckpoint(db, selected, source, paths)) continue;
     if (await preservedActiveCheckpoint(db, selected, source, paths)) continue;
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {

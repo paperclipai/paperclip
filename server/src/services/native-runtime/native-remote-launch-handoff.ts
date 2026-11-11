@@ -164,38 +164,94 @@ function fingerprint(pid) {
   if (end < 0 || !/^\d+$/.test(ticks || "") || !/^[a-f0-9-]+$/i.test(boot)) fail("native_remote_launch_fingerprint_unavailable");
   return "linux:" + boot + ":" + ticks;
 }
-function storedIntent() {
+function intentDirectory(value = intent) {
   const text = file(path.join(claimDirectory, "intent.json"));
+  if (text === null || JSON.parse(text).nonce === value.nonce) return claimDirectory;
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.nonce)) fail("native_remote_launch_identity_mismatch");
+  return path.join(claimDirectory, value.nonce);
+}
+function storedIntent(directory = intentDirectory()) {
+  const text = file(path.join(directory, "intent.json"));
   if (text === null) return false;
   if (hash(JSON.parse(text)) !== hash(intent)) fail("native_remote_launch_identity_mismatch");
   return true;
 }
-function read() {
-  if (!confined(claimDirectory) || !storedIntent()) return { kind: "pending" };
-  const text = file(path.join(claimDirectory, "receipt.json"));
-  if (text === null) return { kind: "pending" };
+function receiptFor(expected, directory) {
+  const text = file(path.join(directory, "receipt.json"));
+  if (text === null) return null;
   const receipt = JSON.parse(text);
-  if (receipt.schema !== "paperclip.native-remote-launch-receipt.v1" || receipt.intentSha256 !== hash(intent)
-    || receipt.nonce !== intent.nonce || !Number.isSafeInteger(receipt.pid) || receipt.pid < 1
-    || !Number.isFinite(Date.parse(receipt.startedAt))) fail("native_remote_launch_identity_mismatch");
-  const marker = file(intent.processIdentityPath);
-  if (marker !== [intent.nonce, receipt.pid, receipt.startedAt, intent.identity.runnerInstanceId, receipt.processStartFingerprint, ""].join("\n")) {
+  if (receipt.schema !== "paperclip.native-remote-launch-receipt.v1" || receipt.intentSha256 !== hash(expected)
+    || receipt.nonce !== expected.nonce || !Number.isSafeInteger(receipt.pid) || receipt.pid < 1
+    || !Number.isFinite(Date.parse(receipt.startedAt)) || !/^linux:[a-f0-9-]+:[0-9]+$/i.test(receipt.processStartFingerprint)
+    || receipt.processGroupId !== null) {
     fail("native_remote_launch_identity_mismatch");
   }
+  return receipt;
+}
+function markerFor(expected, receipt) {
+  return [expected.nonce, receipt.pid, receipt.startedAt, expected.identity.runnerInstanceId, receipt.processStartFingerprint, ""].join("\n");
+}
+function read() {
+  const directory = intentDirectory();
+  if (!confined(directory) || !storedIntent(directory)) return { kind: "pending" };
+  const receipt = receiptFor(intent, directory);
+  if (receipt === null) return { kind: "pending" };
   try { process.kill(receipt.pid, 0); } catch (error) {
     if (error.code === "ESRCH") fail("native_remote_launch_process_exited");
     throw error;
   }
+  if (file(intent.processIdentityPath) !== markerFor(intent, receipt)) fail("native_remote_launch_identity_mismatch");
   if (fingerprint(receipt.pid) !== receipt.processStartFingerprint) fail("native_remote_launch_identity_mismatch");
   return { kind: "published", receipt };
+}
+function previousStopped() {
+  const marker = file(intent.processIdentityPath);
+  if (marker === null) fail("native_remote_launch_receipt_pending");
+  const previousDirectory = intentDirectory({ nonce: marker.split("\n")[0] });
+  const text = file(path.join(previousDirectory, "intent.json"));
+  if (text === null) fail("native_remote_launch_receipt_pending");
+  const previous = JSON.parse(text), receipt = receiptFor(previous, previousDirectory);
+  if (previous.schema !== intent.schema || previous.launchId === intent.launchId || previous.processIdentityPath !== intent.processIdentityPath
+    || previous.remoteCwd !== intent.remoteCwd || previous.stateDirectory !== intent.stateDirectory
+    || previous.identity?.environmentLeaseId !== intent.identity.environmentLeaseId
+    || previous.identity?.normalizedSessionId !== intent.identity.normalizedSessionId
+    || receipt === null || marker !== markerFor(previous, receipt)) fail("native_remote_launch_identity_mismatch");
+  let stopped = false;
+  try { process.kill(receipt.pid, 0); }
+  catch (error) { if (error.code === "ESRCH") stopped = true; else throw error; }
+  if (!stopped && fingerprint(receipt.pid) === receipt.processStartFingerprint) fail("native_remote_launch_receipt_pending");
+  if (file(intent.processIdentityPath) !== marker) fail("native_remote_launch_identity_mismatch");
+}
+function claim() {
+  const directory = intentDirectory();
+  if (confined(directory)) { storedIntent(directory); return false; }
+  if (!confined(claimDirectory)) {
+    if (file(intent.processIdentityPath) !== null) fail("native_remote_launch_identity_mismatch");
+    try { fs.mkdirSync(path.join(anchor, path.relative(intent.remoteCwd, claimDirectory)), { mode: 0o700 }); }
+    catch (error) { if (error.code === "EEXIST") return false; throw error; }
+    put(path.join(claimDirectory, "intent.json"), JSON.stringify(intent));
+    return true;
+  }
+  const lock = path.join(claimDirectory, "handoff");
+  try { fs.mkdirSync(path.join(anchor, path.relative(intent.remoteCwd, lock)), { mode: 0o700 }); }
+  catch (error) { if (error.code === "EEXIST") { confined(lock); return false; } throw error; }
+  try {
+    if (confined(directory)) { storedIntent(directory); return false; }
+    previousStopped();
+    fs.mkdirSync(path.join(anchor, path.relative(intent.remoteCwd, directory)), { mode: 0o700 });
+    put(path.join(directory, "intent.json"), JSON.stringify(intent));
+    fs.unlinkSync(intent.processIdentityPath);
+    return true;
+  } finally { fs.rmdirSync(lock); }
 }
 try {
   if (mode === "read") { process.stdout.write(JSON.stringify(read())); }
   else if (mode === "launch") {
-    if (confined(claimDirectory)) process.stdout.write(JSON.stringify(read()));
+    if (confined(intentDirectory())) process.stdout.write(JSON.stringify(read()));
     else {
       confined(intent.stateDirectory); confined(intent.diagnosticsDirectory);
-      if (file(intent.processIdentityPath) !== null) fail("native_remote_launch_identity_mismatch");
+      if (confined(claimDirectory)) previousStopped();
+      if (!confined(claimDirectory) && file(intent.processIdentityPath) !== null) fail("native_remote_launch_identity_mismatch");
       const worker = cp.spawn(process.execPath, ["-e", source, "worker", encodedIntent, encodedConfig, source],
         { cwd: intent.remoteCwd, env: process.env, detached: true, stdio: "ignore" });
       worker.unref();
@@ -208,10 +264,7 @@ try {
       fail("native_remote_launch_configuration_changed");
     }
     confined(intent.stateDirectory, true); confined(intent.diagnosticsDirectory, true);
-    if (file(intent.processIdentityPath) !== null) fail("native_remote_launch_identity_mismatch");
-    try { fs.mkdirSync(path.join(anchor, path.relative(intent.remoteCwd, claimDirectory)), { mode: 0o700 }); }
-    catch (error) { if (error.code === "EEXIST") { read(); process.exit(0); } throw error; }
-    put(path.join(claimDirectory, "intent.json"), JSON.stringify(intent));
+    if (!claim()) process.exit(0);
     const shell = 'set -eu; node_binary=$1; script=$2; launch_intent=$3; shift 3; "$node_binary" -e "$script" publish "$launch_intent" "$$"; exec "$@"';
     const child = cp.spawn("sh", ["-c", shell, "paperclip-runner-child", process.execPath, source, encodedIntent,
       config.command, ...config.args], { cwd: config.cwd, env: process.env, detached: true, stdio: "ignore" });
@@ -222,7 +275,7 @@ try {
     const receipt = { schema: "paperclip.native-remote-launch-receipt.v1", intentSha256: hash(intent), nonce: intent.nonce,
       pid, startedAt, processStartFingerprint, processGroupId: null };
     put(intent.processIdentityPath, [intent.nonce, pid, startedAt, intent.identity.runnerInstanceId, processStartFingerprint, ""].join("\n"));
-    put(path.join(claimDirectory, "receipt.json"), JSON.stringify(receipt));
+    put(path.join(intentDirectory(), "receipt.json"), JSON.stringify(receipt));
   } else fail("native_remote_launch_intent_invalid");
 } catch (error) {
   const code = /^native_remote_launch_[a-z_]+$/.test(error.message) ? error.message : "native_remote_launch_receipt_unavailable";
