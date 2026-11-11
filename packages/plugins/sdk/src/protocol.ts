@@ -70,6 +70,7 @@ import type {
   PluginJobContext,
   PluginExecutionWorkspaceMetadata,
   PluginWorkspace,
+  PluginProjectSnapshot,
   ToolRunContext,
   ToolResult,
   PluginLocalFolderListing,
@@ -1854,6 +1855,10 @@ export interface WorkerToHostMethods {
   "projects.getInstanceSecrets": [
     params: { projectId: string; companyId: string },
     result: Record<string, string>,
+  ];
+  "projects.readSnapshots": [
+    params: { projectIds: string[]; companyId: string; entityType: string },
+    result: PluginProjectSnapshot[],
   ];
   "projects.get": [
     params: { projectId: string; companyId: string },

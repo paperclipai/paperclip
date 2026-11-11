@@ -1044,6 +1044,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (!isInCompany(project, companyId) || project.archivedAt) throw new Error("Project instance secrets unavailable");
         return structuredClone(projectInstanceSecrets.get(JSON.stringify([companyId, projectId])) ?? {});
       },
+      async readSnapshots(projectIds, companyId, entityType) {
+        return Promise.all(projectIds.map(async projectId => {
+          const project = await ctx.projects.get(projectId, companyId);
+          if (!project || project.archivedAt) throw new Error("Project snapshot unavailable");
+          const [entity] = await ctx.entities.list({ entityType, scopeKind: "company", scopeId: companyId, externalId: projectId, limit: 1 });
+          const instanceSecrets = await ctx.projects.getInstanceSecrets(projectId, companyId);
+          const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
+          return { projectId, workspaces, entity: entity ?? null, instanceSecrets };
+        }));
+      },
       async list(input) {
         requireCapability(manifest, capabilitySet, "projects.read");
         const companyId = requireCompanyId(input?.companyId);

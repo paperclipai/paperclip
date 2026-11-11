@@ -615,5 +615,10 @@ describe("plugin-provided Runner execution", () => {
     expect(environmentTaskOperationSchema.safeParse({ ...submit, runner: { ...submit.runner, unknownField: true } }).success).toBe(false);
     expect(() => parseEnvironmentTaskResult({ kind: "status" }, "attempt-1", { kind: "accepted", taskId: "attempt-1" })).toThrow();
     expect(parseEnvironmentTaskResult(submit, "attempt-1", { kind: "accepted", taskId: "attempt-1" }).kind).toBe("accepted");
+    const rejected = { kind: "admission_rejected", taskId: "attempt-1", reason: "account_binding_mismatch" };
+    expect(parseEnvironmentTaskResult(submit, "attempt-1", rejected)).toEqual(rejected);
+    expect(() => parseEnvironmentTaskResult(submit, "attempt-2", rejected)).toThrow();
+    expect(() => parseEnvironmentTaskResult(submit, "attempt-1", { ...rejected, reason: "unknown" })).toThrow();
+    expect(() => parseEnvironmentTaskResult({ kind: "stop" }, "attempt-1", rejected)).toThrow();
   });
 });
