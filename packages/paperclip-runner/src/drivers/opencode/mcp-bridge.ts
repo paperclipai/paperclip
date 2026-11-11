@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { toolInputError } from "../tool-input-error.js";
 
@@ -57,6 +58,16 @@ const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 // Native app results/pages are capped at 500 KB before reaching this bridge.
 // Leave room for their delivery envelope, but never cut a completed JSON value.
 const MAX_RESULT_BYTES = 1_048_576;
+const TOOL_DELIVERY_DIAGNOSTIC_SCHEMA = "paperclip.opencode.tool-delivery-diagnostic/v1";
+const MAX_TOOL_DELIVERY_DIAGNOSTICS = 256;
+
+type SocketUse = { requests: number; lastResponseAt: number | null };
+type ToolDelivery = {
+  socketRequestIndex: number;
+  socketIdleMs: number | null;
+  receivedAt: number;
+};
+type ToolDeliveryOutcome = "result" | "error" | "unanswered";
 
 export function canonicalOpenCodeMcpToolName(name: string): string {
   const trimmed = name.trim();
@@ -94,10 +105,41 @@ export async function startOpenCodeMcpBridge(
     };
     try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
   };
+  let deliveryDiagnostics = 0;
+  const diagnoseToolDelivery = (
+    callId: string,
+    delivery: ToolDelivery,
+    outcome: ToolDeliveryOutcome,
+    written: boolean,
+  ) => {
+    if (!options.onDiagnostic || deliveryDiagnostics++ >= MAX_TOOL_DELIVERY_DIAGNOSTICS) return;
+    const diagnostic = {
+      schema: TOOL_DELIVERY_DIAGNOSTIC_SCHEMA,
+      callIdSha256: createHash("sha256").update(callId).digest("hex"),
+      socketRequestIndex: delivery.socketRequestIndex,
+      socketIdleMs: delivery.socketIdleMs,
+      handlerMs: Date.now() - delivery.receivedAt,
+      outcome,
+      written,
+    };
+    try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change delivery. */ }
+  };
   const calls = new Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>();
   const controllers = new Map<string, AbortController>();
+  const socketUses = new WeakMap<Socket, SocketUse>();
   const server = createServer((request, response) => {
+    const use = socketUses.get(request.socket) ?? { requests: 0, lastResponseAt: null };
+    socketUses.set(request.socket, use);
+    const receivedAt = Date.now();
+    const delivery: ToolDelivery = {
+      socketRequestIndex: ++use.requests,
+      socketIdleMs: use.lastResponseAt === null ? null : receivedAt - use.lastResponseAt,
+      receivedAt,
+    };
+    response.once("finish", () => { use.lastResponseAt = Date.now(); });
     void handleRequest(request, response, {
+      delivery,
+      diagnoseToolDelivery,
       secret,
       tools,
       admittedTools,
@@ -182,6 +224,8 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   context: {
+    delivery: ToolDelivery;
+    diagnoseToolDelivery: (callId: string, delivery: ToolDelivery, outcome: ToolDeliveryOutcome, written: boolean) => void;
     secret: string;
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
@@ -198,6 +242,11 @@ async function handleRequest(
   },
 ): Promise<void> {
   setSecurityHeaders(response);
+  // Never let the MCP client reuse a pooled socket for a later request. A
+  // native OpenCode run (Bun fetch) once lost a written tools/call result on
+  // a parallel call and waited about five minutes for Bun's fetch timeout.
+  // A loopback connect per request costs far less than that failure mode.
+  response.setHeader("Connection", "close");
   if (!authorized(request.headers.authorization, context.secret)) {
     response.statusCode = 401;
     response.end();
@@ -326,10 +375,20 @@ async function handleRequest(
       if (!response.writableFinished && waiting.size === 0) context.controllers.get(callId)?.abort();
     });
   }
+  // Record how each call's answer left the bridge, so a client that never
+  // consumes a written result can be told apart from a bridge that never
+  // answered it.
+  let outcome: ToolDeliveryOutcome = "unanswered";
+  response.once("close", () => {
+    context.diagnoseToolDelivery(callId, context.delivery, outcome, response.writableFinished);
+  });
   try {
     const result = await execution;
-    writeRpc(response, id, { content: [{ type: "text", text: safeJson(result) }] });
+    const text = safeJson(result);
+    outcome = "result";
+    writeRpc(response, id, { content: [{ type: "text", text }] });
   } catch (error) {
+    outcome = "error";
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: safeError(error) }] });
   }
 }

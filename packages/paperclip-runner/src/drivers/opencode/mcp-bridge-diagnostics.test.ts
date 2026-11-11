@@ -44,7 +44,7 @@ it("binds closed rejection shapes to the actual offered finish schema without re
   });
   expect(unrelated.result.isError).toBe(true);
   expect(handler).toHaveBeenCalledTimes(2);
-  expect(messages.map(message => JSON.parse(message))).toEqual([
+  expect(messages.map(message => JSON.parse(message)).filter(message => message.schema === "paperclip.opencode.finish-input-diagnostic/v1")).toEqual([
     { schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "offered", schemaSha256: digest },
     ...["string", "array", "number", "boolean"].map((continuationShape, index) => ({
       schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "input_rejected",
