@@ -705,6 +705,24 @@ A live turn is seen only when a poll (`--poll-ms`, 2–5 s) lands inside it, so 
 poll interval can still be missed. A runner replacement or stop clears the live-turn mark, as it does for
 an open tool.
 
+**A tool result that never reaches the agent (`tool_completed`, Codex only).**
+`--provider-fault-message tool_completed` drops (PV2), holds (PV1) or repeats (PV3) Codex's
+`item/completed` for the turn's first Paperclip tool call other than `paperclip_finish` and
+`paperclip_block`. The model has the result, but the runner never records that it reached the model,
+as when Codex cancels the nested exec cell that made the call. In two staging Codex runs
+(2026-11-11) every later `paperclip_finish` was then refused with
+`terminal_call_before_results`, the turn ended with no semantic result, and the same-run recovery
+failed the run. No turn is interrupted, so the workloads are those that save a document and then
+finish (A1, C1):
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads A1 --faults PV2 --provider-fault-message tool_completed --concurrency 1 --tasks 1 --seed 301
+```
+
+The task passes when the fault applied once and the ordinary A1 grade passes (the brief is saved and
+the task is `done`).
+
 | Adapter | `terminal` | `interrupt_ack` |
 | --- | --- | --- |
 | Codex | the `turn/completed` after a `turn/interrupt` | the response to that `turn/interrupt` |

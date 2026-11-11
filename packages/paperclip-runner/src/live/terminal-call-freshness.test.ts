@@ -53,6 +53,47 @@ it("forgets calls of a provider turn lost on restore once a new turn starts (res
   expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: finish.sourceEventId, turnId: "turn-1" })).toEqual([]);
 });
 
+describe("a call whose result never reaches the agent (two staging Codex runs, 2026-11-11)", () => {
+  // Codex cancelled the nested exec cell that made the search, so it never
+  // committed tool.execution.completed for it. The controller had returned
+  // its result. Every finish was refused with terminal_call_before_results
+  // and the turn ended with no semantic result.
+  const commands = [{ type: "semantic_tool.result", payload: { callId: "s", operationId: "paperclip_search_assigned_tools" } }];
+
+  it("refuses the first finish but lets the finish decided after that refusal through", () => {
+    const first = started("f1", "paperclip_finish");
+    const second = started("f2", "paperclip_finish");
+    const events = [
+      event("turn.started", {}), started("s", "paperclip_search_assigned_tools"),
+      started("r", "read_document"), result("r"), completed("r", "read_document"),
+      first, completed("f1", "paperclip_finish"), second,
+    ];
+    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: first.sourceEventId, turnId: "turn-1" }))
+      .toEqual(["paperclip_search_assigned_tools"]);
+    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1" }))
+      .toEqual([]);
+  });
+
+  it("still refuses for a call made after the earlier terminal call", () => {
+    const second = started("f2", "paperclip_block");
+    const later = [{ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }];
+    const events = [
+      event("turn.started", {}), started("f1", "paperclip_finish"), completed("f1", "paperclip_finish"),
+      started("w", "write_document"), second,
+    ];
+    expect(unseenReturnedToolCalls(events, later, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1" }))
+      .toEqual(["write_document"]);
+  });
+
+  it("does not excuse a held terminal call that was decided before the agent saw the first refusal", () => {
+    const first = started("f1", "paperclip_block");
+    const second = started("f2", "paperclip_block");
+    const events = [event("turn.started", {}), started("s", "paperclip_search_assigned_tools"), first, second, completed("f1", "paperclip_block")];
+    expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: second.sourceEventId, turnId: "turn-1" }))
+      .toEqual(["paperclip_search_assigned_tools"]);
+  });
+});
+
 it("counts the controller's semantic_tool.result command as the returned result", () => {
   const block = started("b", "paperclip_block");
   const commands = [{ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }];

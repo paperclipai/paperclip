@@ -11,7 +11,7 @@ import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
 import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
-import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
+import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, TOOL_COMPLETED_WORKLOADS, UNINTERRUPTED_PROVIDER_MESSAGES, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
@@ -221,10 +221,21 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (adapters.some(adapter => !PROVIDER_FAULT_ADAPTERS.includes(adapter))) throw new Error(`Provider message faults (PV*) cover ${PROVIDER_FAULT_ADAPTERS.join(" and ")}; remove the other adapters from --adapters`);
     // Every PV task gets its own restart through --provider-fault-restart; a planned K cell would be a different task.
     if (options.faults.length) throw new Error("Provider message faults (PV*) do not share a wave with planned restart faults (K*); use --provider-fault-restart K1 to restart after each provider fault");
-    // Every planned task gets the fault; only these workloads send the turn/interrupt the rules target.
-    const idle = options.workloads.filter(id => !PROVIDER_FAULT_WORKLOADS.includes(id));
-    if (idle.length) throw new Error(`Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
     const messages = parseProviderMessages(values["provider-fault-message"]);
+    // Every planned task gets the fault. An interrupt message needs a workload that sends turn/interrupt;
+    // tool_completed needs one whose agent saves a document with a Paperclip tool before finishing.
+    const messageFor = (id: WorkloadId) => messages.byWorkload?.[id] ?? messages.message ?? "terminal";
+    const idle = options.workloads.filter(id => !(UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id))
+      ? TOOL_COMPLETED_WORKLOADS : PROVIDER_FAULT_WORKLOADS).includes(id));
+    if (idle.length) {
+      throw new Error(idle.some(id => UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id)))
+        ? `--provider-fault-message tool_completed needs workloads that save a document before finishing (${TOOL_COMPLETED_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`
+        : `Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
+    }
+    // The ACPX tap has no tool-completion message; only the Codex shim drops it.
+    if (options.workloads.some(id => UNINTERRUPTED_PROVIDER_MESSAGES.includes(messageFor(id))) && adapters.some(adapter => adapter !== "codex")) {
+      throw new Error("--provider-fault-message tool_completed shims Codex only; run it with --adapters codex");
+    }
     if (messages.message) options.providerFaultMessage = messages.message;
     if (messages.byWorkload) options.providerFaultMessageByWorkload = messages.byWorkload;
     const delays = parseProviderDelays(values["provider-fault-delays"]);

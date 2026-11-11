@@ -92,7 +92,7 @@ export function instructionCollectionScript(root: string, entry: string) {
 }
 
 
-export function agentInstructionWorkingCopyService(db: Db, options: { environmentRuntime?: EnvironmentRuntimeService } = {}) {
+export function agentInstructionWorkingCopyService(db: Db, options: { environmentRuntime?: EnvironmentRuntimeService; agentDirectoryLockWaitMs?: number } = {}) {
   const revisions = agentInstructionRevisionService(db);
   const scope = (companyId: string, runId: string) => and(eq(copies.companyId, companyId), eq(copies.runId, runId));
   async function get(companyId: string, runId: string) {
@@ -127,7 +127,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   function actorFor(row: Copy): AuthorizationActor {
     return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
   }
-  const directories = agentDirectoryWorkingCopyService(db, get, patch, options.environmentRuntime);
+  const directories = agentDirectoryWorkingCopyService(db, get, patch, options.environmentRuntime, options.agentDirectoryLockWaitMs);
   async function recoverDirectoryCleanup(row: Copy, cleanup: () => Promise<unknown>) {
     // Reserve a later retry before I/O, including lock waits. A blocked owner
     // must not occupy every sweep or prevent other copies from being reclaimed.
