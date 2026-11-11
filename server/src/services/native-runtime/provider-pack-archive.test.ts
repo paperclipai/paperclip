@@ -66,6 +66,25 @@ it("keeps historical/source packs without an archive on the existing path", asyn
   expect(await readProviderPackArchive("/does-not-exist/provider-pack", digest)).toBeNull();
 });
 
+it.each(["v1", "v2"])("cancels a real %s archive hash after its first read chunk", async version => {
+  const { pack } = version === "v2" ? await layeredFixture() : await fixture();
+  const archivePath = version === "v2" ? `${pack}.archives/overlay.tar.zst` : `${pack}.tar.zst`;
+  const controller = new AbortController();
+  const handle = await fs.open(archivePath, "r");
+  const prototype = Object.getPrototypeOf(handle) as typeof handle;
+  await handle.close();
+  const originalStream = prototype.createReadStream;
+  const streaming = vi.spyOn(prototype, "createReadStream").mockImplementation(function(this: typeof handle, options) {
+    const stream = originalStream.call(this, options);
+    stream.once("data", () => controller.abort(new Error("owned archive read stopped")));
+    return stream;
+  });
+  try {
+    await expect(readProviderPackArchive(pack, digest, controller.signal)).rejects.toThrow(/abort|owned archive read stopped/i);
+    expect(controller.signal.aborted).toBe(true);
+  } finally { streaming.mockRestore(); }
+});
+
 async function layeredFixture() {
   const { root, pack } = await fixture();
   await fs.writeFile(path.join(pack, "bin", "large"), Buffer.alloc(1024 * 1024, 42), { mode: 0o755 });
@@ -148,7 +167,9 @@ it.skipIf(!tar || !hasZstd)("rejects a corrupt missing layer before transfer and
   expect((await fs.readdir(root)).some(name => name.includes(".upload-"))).toBe(false);
   await fs.appendFile(`${pack}.archives/0.tar.zst`, "corrupt");
   remote.syncIn.mockClear();
-  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_invalid");
+  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_invalid: size_mismatch");
+  await fs.unlink(`${pack}.archives/0.tar.zst`);
+  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-3` })).rejects.toThrow("runner_remote_provider_archive_invalid: archive_unreadable");
   expect(remote.syncIn).not.toHaveBeenCalled();
 });
 
@@ -248,7 +269,7 @@ it.skipIf(!tar || !hasZstd).each(["v1", "v2"])("installs verified %s archive byt
     expect(await fs.readFile(path.join(targetPath, "bin/tool"))).toEqual(expected);
     expect(JSON.parse(await fs.readFile(path.join(targetPath, "provider-pack.json"), "utf8")).digest).toBe(digest);
   });
-  await uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+  await uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: digest, runner: remote, cwd: root,
     targetPath, reuseRoots: [], verifyDirectory, stageDirectory, verifyUploaded });
   expect(verifyDirectory).not.toHaveBeenCalled();
   expect(stageDirectory).not.toHaveBeenCalled();
@@ -263,7 +284,7 @@ it.each(["absent", "unsupported"])("verifies directory bytes before fallback whe
   remote.execute.mockResolvedValueOnce({ exitCode: 0, timedOut: false });
   remote.execute.mockResolvedValue({ exitCode: 127, timedOut: false });
   const stageDirectory = vi.fn(), verifyUploaded = vi.fn();
-  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+  await expect(uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: digest, runner: remote, cwd: root,
     targetPath: path.join(root, "uploaded"), reuseRoots: [], verifyDirectory: () => { throw Error("directory_digest_mismatch"); },
     stageDirectory, verifyUploaded })).rejects.toThrow("directory_digest_mismatch");
   expect(remote.syncIn).not.toHaveBeenCalled();
@@ -271,11 +292,46 @@ it.each(["absent", "unsupported"])("verifies directory bytes before fallback whe
   expect(verifyUploaded).not.toHaveBeenCalled();
 });
 
+// A retained continuation can select a pack from an earlier release. The
+// controller's build-time archives then carry a different identity. That is an
+// artifact incompatibility, not archive corruption, and it must not clear the
+// remote pack or upload the controller's different pack.
+it.each(["v1", "v2", "directory"])("refuses a selected pack this controller does not ship (%s source)", async source => {
+  const { root, pack } = source === "v2" ? await layeredFixture() : await fixture();
+  if (source === "directory") await fs.unlink(`${pack}.archive.json`);
+  const retained = `sha256:${"b".repeat(64)}`;
+  const remote = { syncIn: vi.fn(), execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }) };
+  const verifyDirectory = vi.fn(), stageDirectory = vi.fn(), verifyUploaded = vi.fn();
+  const upload = uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: retained, runner: remote, cwd: root,
+    targetPath: path.join(root, "uploaded"), reuseRoots: [], verifyDirectory, stageDirectory, verifyUploaded });
+  await expect(upload).rejects.toThrow(
+    `runner_remote_provider_artifact_incompatible: selected provider pack ${"b".repeat(12)} is not the controller's pack ${"a".repeat(12)}`);
+  expect(remote.execute).not.toHaveBeenCalled();
+  expect(remote.syncIn).not.toHaveBeenCalled();
+  for (const step of [verifyDirectory, stageDirectory, verifyUploaded]) expect(step).not.toHaveBeenCalled();
+});
+
+it.skipIf(!tar || !hasZstd).each(["v1", "v2"])("names the failed %s archive check in the run-visible error", async version => {
+  const { pack } = version === "v1" ? await fixture() : await layeredFixture();
+  const archive = version === "v1" ? `${pack}.tar.zst` : `${pack}.archives/overlay.tar.zst`;
+  const bytes = await fs.readFile(archive);
+  await fs.appendFile(archive, "x");
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: size_mismatch");
+  bytes[bytes.length - 1] ^= 1;
+  await fs.writeFile(archive, bytes);
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: sha256_mismatch");
+  const receipt = JSON.parse(await fs.readFile(`${pack}.archive.json`, "utf8"));
+  await fs.writeFile(`${pack}.archive.json`, JSON.stringify({ ...receipt, providerPackDigest: `sha256:${"c".repeat(64)}` }));
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: receipt_identity_mismatch");
+  await fs.writeFile(`${pack}.archive.json`, "{");
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: receipt_unreadable");
+});
+
 it.skipIf(!tar || !hasZstd)("rejects an installed pack that fails final verification", async () => {
   const { root, pack } = await fixture();
   const remote = await runner(root), targetPath = path.join(root, "uploaded");
   const verifyUploaded = vi.fn(async () => { throw Error("installed_digest_mismatch"); });
-  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+  await expect(uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: digest, runner: remote, cwd: root,
     targetPath, reuseRoots: [], verifyDirectory: () => {}, stageDirectory: async () => {}, verifyUploaded }))
     .rejects.toThrow("installed_digest_mismatch");
   expect(remote.syncIn).toHaveBeenCalledOnce();

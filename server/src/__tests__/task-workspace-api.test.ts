@@ -3,11 +3,12 @@ import { mkdtemp } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, authUsers, companyMemberships, executionWorkspaceRepositories, executionWorkspaces, issues, heartbeatRuns, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, executionWorkspaceRepositories, executionWorkspaces, issues, heartbeatRuns, projects, projectWorkspaces } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("task workspace API and native semantic authority", () => {
@@ -54,8 +55,10 @@ const support = await getEmbeddedPostgresTestSupport();
         assigneeAgentId: f.agentId, status: "backlog", workspaceSelection: { kind: "existing", workspaceId: workspace.id } }),
     });
     const response = await create(f.issueId), body = await response.json();
+    // The selection passes the trust checks, but the workspace is the parent's,
+    // so the child gets its own workspace instead of sharing it.
     expect({ status: response.status, body }).toMatchObject({ status: 201, body: {
-      parentId: f.issueId, executionWorkspaceId: workspace.id,
+      parentId: f.issueId, executionWorkspaceId: null,
       executionPolicy: { authorizationPolicy: { trustBoundary: policy.authorizationPolicy.trustBoundary } },
     } });
     const denied = await create(f.blockerId);
@@ -258,5 +261,26 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await server.db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.companyId, f.companyId))).toHaveLength(0);
     expect((await server.db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, unrelated.id)))[0]?.cwd).toBe(f.workspace);
     expect((await server.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]?.projectId).toBeNull();
+  });
+  it("returns real page hrefs for projects and, only while their pages are routed, for workspaces", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const [{ issuePrefix }] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
+    const [workspace] = await server.db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: f.issueId, projectId: null,
+      name: "Website files", cwd: f.workspace, mode: "shared_workspace", strategyType: "task_directory" }).returning();
+    await server.db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: workspace.id }).where(eq(issues.id, f.issueId));
+    const call = (tool: string) => f.authority.execute({ tool, arguments: {}, callId: randomUUID() }) as Promise<any>;
+    const projects = (await call("list_projects")).projects as Array<{ id: string; href?: string }>;
+    expect(projects.find(row => row.id === f.projectId)?.href).toBe(`/${issuePrefix}/projects/${f.projectId}`);
+    const settings = instanceSettingsService(server.db);
+    const workspaceHrefs = async () => [(await call("get_workspace")).workspace?.href,
+      ((await call("list_workspaces")).workspaces as Array<{ id: string; href?: string }>).find(row => row.id === workspace.id)?.href];
+    try {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: false });
+      // The detail route redirects to the dashboard while the feature is off, so no href is offered.
+      expect(await workspaceHrefs()).toEqual([undefined, undefined]);
+      await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+      const href = `/${issuePrefix}/execution-workspaces/${workspace.id}`;
+      expect(await workspaceHrefs()).toEqual([href, href]);
+    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: false }); }
   });
 });

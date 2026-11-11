@@ -126,6 +126,22 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     } as unknown as typeof heartbeatRuns.$inferSelect;
   }
 
+  it("reports only the refusal of a refused exact resume, never the interrupted attempt's provider text", async () => {
+    await seedCompanyAndAgent();
+    const marker = "interrupted-provider-explanation-7f3c";
+    const refusal = "Plugin Runner retained session is not authorized";
+    await reportRunFailure(db, buildRun({
+      errorCode: "adapter_failed",
+      error: `native_session_interrupted: ${marker}; exact checkpoint resume refused: ${refusal}`,
+      resultJson: { nativeExactResumeRefusal: { originalFailureCode: "native_session_interrupted",
+        originalMessage: marker, interruptedAttempt: 1, refusal } },
+    }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const event = mockCaptureRunFailure.mock.calls[0]![0];
+    expect(event.errorMessage).toBe(refusal);
+    expect(JSON.stringify(event)).not.toContain(marker);
+  });
+
   it.each([undefined, "", "off", "true", "invalid"])("does no reporting work without an explicit valid mode: %s", async mode => {
     vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", mode);
     if (mode === undefined) delete process.env.PAPERCLIP_SENTRY_RUN_FAILURES;

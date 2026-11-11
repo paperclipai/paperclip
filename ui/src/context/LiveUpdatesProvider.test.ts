@@ -578,6 +578,11 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       queryKey: queryKeys.issues.documents("issue-1"),
       refetchType: "inactive",
     });
+    for (const ref of ["issue-1", "PAP-9403"]) {
+      expect(invalidations).toContainEqual({
+        queryKey: queryKeys.issues.interactions(ref),
+      });
+    }
   });
 
   it("refreshes all issue document caches when document activity omits a document key", () => {

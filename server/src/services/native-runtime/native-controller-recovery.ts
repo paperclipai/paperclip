@@ -1,4 +1,5 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { posix } from "node:path";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput, type DurablePrpCheckpoint, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
@@ -121,12 +122,35 @@ export async function deferNativeControllerRecovery(db: Db, input: {
   });
 }
 
-/** Bind a read of retained Runner lifecycle to the surviving sandbox. The
- * ordinary admission owner still checks current permissions before execution. */
+/** The retained Runner keeps its state under the directory its own lease
+ * recorded. A workspace can move to a new allocation of the SAME sandbox: its
+ * prior epoch was abandoned, so the last save was restored into a fresh root
+ * named for the new lease. Both roots are canonical siblings under the
+ * sandbox's `.paperclip-workspaces` and carry the same execution-workspace ID.
+ * Anything else (another workspace, another parent, a non-canonical path) is
+ * not the retained allocation and stays refused. */
+function sameSandboxWorkspaceAllocation(recorded: string, current: string): boolean {
+  if (recorded === current) return true;
+  const canonical = (path: string) => posix.isAbsolute(path) && posix.normalize(path) === path && !path.endsWith("/");
+  if (!canonical(recorded) || !canonical(current)) return false;
+  const parent = posix.dirname(recorded);
+  if (posix.basename(parent) !== ".paperclip-workspaces" || posix.dirname(current) !== parent) return false;
+  const workspace = WORKSPACE_ALLOCATION.exec(posix.basename(recorded))?.[1];
+  return Boolean(workspace && WORKSPACE_ALLOCATION.exec(posix.basename(current))?.[1] === workspace);
+}
+
+/** The published allocation names (remote-workspaces publishedWorkspaceDirectory):
+ * exactly `<workspaceId>`, or `<workspaceId>-<epoch>-<leaseId>`. */
+const UUID = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
+const WORKSPACE_ALLOCATION = new RegExp(`^(${UUID})(?:-[1-9][0-9]*-${UUID})?$`);
+
+/** Bind a read of retained Runner lifecycle to the surviving sandbox and
+ * return the directory that Runner wrote under. The ordinary admission owner
+ * still checks current permissions before execution. */
 export async function assertNativeRetainedSandboxBinding(db: Db, input: {
   companyId: string; issueId: string; runId: string;
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
-}): Promise<void> {
+}): Promise<{ remoteCwd: string }> {
   const { target } = input;
   if (target.transport !== "sandbox" || target.sandboxLeaseAcquisition?.outcome !== "resumed"
     || !target.providerKey || !target.environmentId || !target.leaseId) {
@@ -139,8 +163,9 @@ export async function assertNativeRetainedSandboxBinding(db: Db, input: {
     eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.issueId, input.issueId),
     eq(environmentLeases.heartbeatRunId, input.runId), eq(environmentLeases.environmentId, target.environmentId),
     eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, target.sandboxLeaseAcquisition.providerLeaseId)));
-  if (!owner || !owner.resultId || owner.recoveryState
-    || leases.length !== 1 || leases[0].metadata?.remoteCwd !== target.remoteCwd
+  const recordedCwd = leases.length === 1 ? leases[0].metadata?.remoteCwd : undefined;
+  if (!owner || !owner.resultId || owner.recoveryState || typeof recordedCwd !== "string"
+    || !sameSandboxWorkspaceAllocation(recordedCwd, target.remoteCwd)
     || !["active", "released", "expired"].includes(leases[0].status)) {
     throw new Error("native_controller_recovery_missing_evidence:retained_sandbox_binding");
   }
@@ -150,6 +175,7 @@ export async function assertNativeRetainedSandboxBinding(db: Db, input: {
   if (owner.leaseOwner || owner.phase !== "committed") {
     throw new Error("native_controller_recovery_missing_evidence:retained_sandbox_binding");
   }
+  return { remoteCwd: recordedCwd };
 }
 
 /** Only the existing bounded selector chooses history. Never search backwards
@@ -226,13 +252,16 @@ export async function importNativeControllerRecovery(db: Db, input: {
   expectedConfigDigest: string;
   supervisor?: unknown;
   offline?: { writersStopped: true; legacyControllerState?: string; legacyRunnerArtifact?: { version: string; digest: string } };
+  legacyCheckpoint?: { legacyControllerState?: string; legacyRunnerArtifact?: { version: string; digest: string } };
 }): Promise<{ kind: "imported" | "unchanged" } | Exclude<NativeControllerRecoveryOutcome, { kind: "recoverable" } | { kind: "no_prior_execution" }>> {
+  if (input.offline && input.legacyCheckpoint) throw new Error("Conflicting native controller migration authority");
+  const legacy = input.offline ?? input.legacyCheckpoint;
   const supervisor = record(input.supervisor);
   if (input.supervisor !== undefined && (supervisor.schema !== "paperclip.native-session-supervisor.v1" || supervisor.configDigest !== input.expectedConfigDigest)) {
     return { kind: "unsupported", reason: "supervisor_compatibility" };
   }
   return db.transaction(async tx => {
-    const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
+    const [task] = await tx.select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues)
       .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("share");
     const [owner] = await tx.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
@@ -252,11 +281,19 @@ export async function importNativeControllerRecovery(db: Db, input: {
     if (!input.offline && (!(owner.phase === "committed" && owner.resultId) || owner.recoveryState)) {
       return { kind: "missing_evidence" as const, reason: "pending_finalization" };
     }
+    if (input.legacyCheckpoint) {
+      const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.status, ["queued", "running"]),
+        or(eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.issueId, input.issueId),
+          eq(heartbeatRuns.nativeSessionId, input.normalizedSessionId)))).limit(1);
+      if (task.checkoutRunId || active) return { kind: "missing_evidence" as const, reason: "legacy_source_active" };
+    }
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId),
       eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
       eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.nativeSessionId, input.normalizedSessionId))).for("update");
     const profile = record(run?.runnerProfileJson), snapshot = record(profile.sessionCheckpoint), identity = record(snapshot.identity);
-    if (run?.runtimeMode !== "native" || !(run.status === "succeeded" || input.offline && ["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) || !run.finishedAt
+    if (run?.runtimeMode !== "native" || !(run.status === "succeeded" || input.legacyCheckpoint && run.status === "failed"
+      || input.offline && ["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) || !run.finishedAt
       || identity.runId !== input.runId || identity.companyId !== input.companyId || identity.issueId !== input.issueId
       || identity.agentId !== input.agentId || identity.sessionId !== input.normalizedSessionId
       || input.supervisor !== undefined && nativeSha256(snapshot) !== nativeSha256(redactRunnerApiPayloads(supervisor.snapshot))) {
@@ -266,7 +303,7 @@ export async function importNativeControllerRecovery(db: Db, input: {
     if (input.supervisor === undefined) {
       try {
         const admitted = parseNativeExecutionInput(profile.nativeExecutionInput);
-        if (!input.offline || (!checkpoint && admitted.session.lifecyclePolicy.mode !== "per_turn")
+        if (!legacy || (!checkpoint && admitted.session.lifecyclePolicy.mode !== "per_turn")
           || admitted.session.normalizedSessionId !== input.normalizedSessionId
           || admitted.binding.runId !== input.runId || admitted.binding.companyId !== input.companyId
           || admitted.binding.agentId !== input.agentId || admitted.binding.issueId !== input.issueId) {
@@ -274,12 +311,12 @@ export async function importNativeControllerRecovery(db: Db, input: {
         }
       } catch { return { kind: "unsupported" as const, reason: "admitted_input_format" }; }
     }
-    const importing = !checkpoint && input.offline?.legacyControllerState !== undefined;
+    const importing = !checkpoint && legacy?.legacyControllerState !== undefined;
     if (importing) {
       if (!run.runnerInstanceId) return { kind: "missing_evidence" as const, reason: "checkpoint_binding" };
-      checkpoint = captureLegacyDurablePrpCheckpoint(input.offline!.legacyControllerState!, {
+      checkpoint = captureLegacyDurablePrpCheckpoint(legacy!.legacyControllerState!, {
         runId: input.runId, runnerInstanceId: run.runnerInstanceId, normalizedSessionId: input.normalizedSessionId,
-      }, input.offline!.legacyRunnerArtifact);
+      }, legacy!.legacyRunnerArtifact);
     }
     if (!checkpoint || checkpoint.recoveryEvidence.normalizedSessionId !== input.normalizedSessionId
       || checkpoint.recoveryEvidence.runnerInstanceId !== run.runnerInstanceId) {

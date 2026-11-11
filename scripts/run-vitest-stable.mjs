@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 import { invocationEnv } from "./ci-profile/record.mjs";
+import { vitestRetryArgs } from "./ci/vitest-retry.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
 import { loadSelection, selectedShard } from "./ci/test-selection-manifest.mjs";
@@ -102,9 +103,12 @@ const nativeRunnerSuites = [
   "server/src/services/native-runtime/native-runner-restart-preparation.integration.test.ts",
   "server/src/services/native-runtime/native-runner-restart-checkpoint-cost.integration.test.ts",
   "server/src/services/native-runtime/native-runner-restart-diskless.integration.test.ts",
+  "server/src/services/native-runtime/native-cut-turn-start-retry.integration.test.ts",
   "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
   "server/src/services/native-runtime/native-warm-checkpoint-ownership.integration.test.ts",
   "server/src/services/native-runtime/plugin-runner-task-warm.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-release-resume.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-eviction.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
@@ -469,7 +473,8 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
   await new Promise((resolve, reject) => {
     const command = exactFiles ? process.execPath : "pnpm";
     const prefix = exactFiles ? [path.join(scriptsDir, "ci/run-selected-vitest.mjs")] : ["exec", "vitest", "run"];
-    const child = spawn(command, [...prefix, ...sourceOnlyVitestArgs, ...args], {
+    // `vitest list` collection above never retries; only the run does.
+    const child = spawn(command, [...prefix, ...sourceOnlyVitestArgs, ...vitestRetryArgs(), ...args], {
       cwd: repoRoot,
       env: invocationEnv("vitest", env),
       stdio: "inherit",

@@ -2,7 +2,7 @@
  * @fileoverview Frontend API client for external adapter management.
  */
 
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 /**
  * The safe scalar login fields the server projects for an adapter that declares
@@ -67,13 +67,13 @@ export interface AdapterInstallResult {
 
 export const adaptersApi = {
   /** List all registered adapters (built-in + external). */
-  list: (context?: { companyId: string; environmentId?: string | null }) => {
+  list: (context?: { companyId: string; environmentId?: string | null }, options?: RequestOptions) => {
     const query = new URLSearchParams();
     if (context) {
       query.set("companyId", context.companyId);
       if (context.environmentId) query.set("environmentId", context.environmentId);
     }
-    return api.get<AdapterInfo[]>(`/adapters${query.size ? `?${query}` : ""}`);
+    return api.get<AdapterInfo[]>(`/adapters${query.size ? `?${query}` : ""}`, options);
   },
 
   /** Install an external adapter from npm or a local path. */

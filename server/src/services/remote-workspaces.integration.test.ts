@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -13,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, agentTaskSessions, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
-  executionWorkspaceRepositories, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
+  subscribeDatabaseWork, executionWorkspaceRepositories, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issueThreadInteractions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { buildProjectMentionHref, type Environment, type EnvironmentLease } from "@paperclipai/shared";
@@ -25,12 +26,13 @@ import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspace
   clearRemoteWorkspaceLocationForReleasedLease, createRemoteWorkspaceGitAuth, prepareRemoteWorkspaceRepository,
   reserveRemoteWorkspace, saveRemoteWorkspace, shouldUseRemoteWorkspaces } from "./remote-workspaces.js";
 import type { createGitRemoteAuthProvider } from "./git-credentials.js";
-import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
+import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { RemoteWorkspaceRestoreError } from "./remote-workspace-transport.js";
 import { readRemoteRunnerState } from "./native-runtime/native-session-executor.js";
 import { notFound } from "../errors.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
 import { workspaceFileResourceService } from "./workspace-file-resources.js";
 import { nativeWorkspaceExportPendingForLease, preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
@@ -47,6 +49,10 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { resolveRemoteWorkspaceSource } from "./heartbeat/remote-workspace-source.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../__tests__/helpers/recovery-postgres.js";
+import { getExecutionBlocker } from "./execution-blocker.js";
+import { executionControlSchedule } from "./execution-control-work.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { createSystemRecovery } from "./system-recovery-state.js";
 
 const exec = promisify(execFile);
 let databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -82,6 +88,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await db.insert(issues).values({ id: ids.issue, companyId: ids.company, title: "Use a remote workspace", status: "in_progress", assigneeAgentId: ids.agent });
     await db.insert(heartbeatRuns).values({ id: ids.run, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue,
       runtimeMode: "native", status: "running" });
+    invalidateNativeReplacementDiscovery(db);
     await db.insert(environmentLeases).values({ id: ids.lease, companyId: ids.company, environmentId: ids.environment,
       heartbeatRunId: ids.run, issueId: ids.issue, provider: "daytona", providerLeaseId: `allocation-${ids.lease}`, status: "active" });
   });
@@ -91,6 +98,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       ? (row.metadata.uploads as { objectKey: string }[]).map(item => item.objectKey) : [])].filter((value): value is string => !!value))) {
       await storage.deleteObject(ids.company, key);
     }
+    if (temporary && process.env.PAPERCLIP_TEST_HISTORICAL_LISTENER === "1") await db.transaction(async tx => {
+      await tx.execute(sql`select set_config('client_min_messages', 'warning', true)`);
+      await tx.execute(sql`TRUNCATE companies CASCADE`);
+    });
     await db.delete(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.companyId, ids.company));
     await db.delete(workspaceOperations).where(eq(workspaceOperations.companyId, ids.company));
     await db.delete(activityLog).where(eq(activityLog.companyId, ids.company));
@@ -396,7 +407,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "stalled download", "transient restore", "restore lock busy"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -453,6 +464,45 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
       vi.mocked(second.runner!.execute).mockRestore();
     }
+    if (mode === "restore lock busy") {
+      const lockDirectory = path.join(path.dirname(expectedRemoteRoot), ".paperclip-runtime", "workspace-restore-locks");
+      await fs.mkdir(lockDirectory, { recursive: true, mode: 0o700 });
+      const lockPath = path.join(lockDirectory, createHash("sha256").update(expectedRemoteRoot).digest("hex") + ".sqlite");
+      const preload = path.join(root, "advance-lock-deadline.cjs");
+      await fs.writeFile(preload, "let ticks=0;Object.defineProperty(performance,'now',{value:()=>ticks++*120001});");
+      const owner = spawn(process.execPath, ["-e", "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1]);db.exec('BEGIN IMMEDIATE');process.stdout.write('ready');setInterval(()=>{},1000);", lockPath],
+        { stdio: ["ignore", "pipe", "pipe"] });
+      let ready = false; owner.stdout.on("data", data => { ready ||= String(data).includes("ready"); }); owner.stderr.resume();
+      const stopped = new Promise<void>(resolve => owner.once("close", () => resolve()));
+      const run = second.runner!.execute.bind(second.runner);
+      let afterBusy: (() => Promise<void>) | undefined;
+      const spy = vi.spyOn(second.runner!, "execute").mockImplementation(async command => {
+        if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return run(command);
+        const result = await run({ ...command, args: ["--require", preload, ...command.args] });
+        await afterBusy?.(); return result;
+      });
+      try {
+        await vi.waitFor(() => expect(ready).toBe(true), { timeout: 5000 });
+        const attempt = () => prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+          .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+        expect(await attempt()).toMatchObject({ step: "sandbox_restore", retryable: true,
+          message: expect.stringMatching(/stage=restore_lock reason=restore_lock_busy$/) });
+        const authority = readRemoteWorkspaceAuthority(reservedAgain.metadata)!;
+        for (const changed of [{ dirty: true }, { epoch: authority.epoch + 1 }, { writerRunId: randomUUID() }, { snapshotId: randomUUID() }]) {
+          afterBusy = async () => { await db.update(executionWorkspaces).set({ metadata: { ...reservedAgain.metadata,
+            remoteWorkspace: { ...authority, ...changed } } }).where(eq(executionWorkspaces.id, reservedAgain.id)); };
+          try { expect(await attempt()).toMatchObject({ step: "sandbox_restore", retryable: false }); }
+          finally { await db.update(executionWorkspaces).set({ metadata: reservedAgain.metadata }).where(eq(executionWorkspaces.id, reservedAgain.id)); }
+        }
+        expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      } finally { spy.mockRestore(); owner.kill("SIGTERM"); await stopped; }
+      const fence = lockPath.slice(0, -7) + ".fence.json"; await fs.writeFile(fence, "{");
+      const corrupt = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(corrupt).toMatchObject({ step: "sandbox_restore", retryable: false,
+        message: expect.stringMatching(/reason=unsafe_restore_fence$/) });
+      expect(await fs.readFile(fence, "utf8")).toBe("{"); await fs.unlink(fence);
+    }
     if (mode === "missing object") {
       // Storage reports a lost saved object as 404; retrying cannot bring it back.
       const lost: StorageService = { ...storage, getObject: async () => { throw notFound("Object not found"); } };
@@ -462,6 +512,29 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(missing).toMatchObject({ step: "snapshot_download", retryable: false,
         message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_object_missing" });
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+    }
+    if (mode === "stalled download") {
+      let ready!: () => void;
+      const started = new Promise<void>(resolve => { ready = resolve; });
+      const body = new Readable({ read() {} });
+      const stalledStorage: StorageService = { ...storage, getObject: async () => { ready(); return { stream: body }; } };
+      const realTimeout = globalThis.setTimeout;
+      const deadline = vi.spyOn(globalThis, "setTimeout").mockImplementation((fn, ms, ...args) =>
+        realTimeout(fn, ms === 300_000 ? 25 : ms, ...args));
+      const restoring = prepareRemoteWorkspace({ db, storage: stalledStorage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      try {
+        await started;
+        expect(await restoring).toMatchObject({ step: "snapshot_download", retryable: true,
+          message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_download_stalled" });
+        expect(body.destroyed).toBe(true);
+        expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
+          .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));
+        expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      } finally {
+        body.destroy(new Error("test cleanup")); await restoring;
+        deadline.mockRestore();
+      }
     }
     const restored = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second });
     expect(restored.remoteRoot).toBe(expectedRemoteRoot);
@@ -572,7 +645,9 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     // Only the new restore receipt identifies the root; the retired preparation receipt is gone.
     expect(await fs.lstat(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-ready.json")).catch(() => null)).toBeNull();
     expect(JSON.parse(await fs.readFile(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-restored.json"), "utf8")))
-      .toMatchObject({ identity: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      .toMatchObject({ schema: "paperclip.workspace-restored.v1", root: restored.remoteRoot,
+        restorationEpoch: readRemoteWorkspaceAuthority(restored.workspace.metadata)!.epoch,
+        identity: expect.stringMatching(/^[a-f0-9]{64}$/) });
     // A lost reply repeats the same preparation without replacing the restored root again.
     await fs.writeFile(path.join(restored.remoteRoot, "parent-continued.md"), "unsaved parent edits\n");
     // An attempt interrupted after publish left its retired root; the repeat keeps its runtime state.
@@ -685,7 +760,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
   }, 60_000);
 
-  it("cold restores a workspace and prepares its preserved pending repository through normal admission", async () => {
+  it.each(["pending", "needs_repair"] as const)("cold restores a workspace and prepares its preserved %s repository through normal admission", async state => {
     const original = path.join(root, "pending-original"), origin = path.join(root, "pending-origin.git");
     await fs.mkdir(original); await fs.mkdir(origin);
     await fs.writeFile(path.join(original, "saved.txt"), "saved before repository request\n");
@@ -712,7 +787,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
       const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: ids.company,
         executionWorkspaceId: local.id, requestedByIssueId: ids.issue, repoUrl, repositoryIdentity: repoUrl,
-        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"] }).returning();
+        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"],
+        state, failureCode: state === "needs_repair" ? "repository_preparation_failed" : null }).returning();
       vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
       await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, apply: true, writersStopped: true });
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual({ kind: "empty" });
@@ -767,7 +843,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(savedId);
       expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
-        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
+        .toMatchObject([{ ...repository, state: "ready", failureCode: null, pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
           branchName: prepared.find(row => row.id === repository.id)!.branchName, updatedAt: expect.any(Date) }]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
@@ -923,10 +999,12 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     for (const mode of ["abort", "storage_failure"] as const) {
       const controller = new AbortController(), failure = new Error("Saved object unavailable");
       let observedSignal: AbortSignal | undefined;
+      let observedBody: Readable | undefined;
       const interruptedStorage: StorageService = { ...storage, getObject: async (companyId, objectKey, options) => {
         observedSignal = options?.signal;
         if (mode === "storage_failure") throw failure;
         const object = await storage.getObject(companyId, objectKey, options);
+        observedBody = object.stream;
         controller.abort(new DOMException("Saved read cancelled", "AbortError"));
         return object;
       } };
@@ -935,9 +1013,15 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       const access = await remoteFiles.open({ companyId: ids.company, workspaceId: reserved.id, signal: controller.signal })
         .catch(error => { readError = error; return null; });
       await access?.close();
-      expect(observedSignal).toBe(controller.signal);
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      expect(observedSignal?.aborted).toBe(controller.signal.aborted);
       if (mode === "storage_failure") expect(readError).toBe(failure);
-      else expect(readError).toMatchObject({ name: "AbortError" });
+      else {
+        expect(observedSignal?.reason).toBe(controller.signal.reason);
+        expect(readError).toMatchObject({ name: "AbortError" });
+        expect(observedBody?.destroyed).toBe(true);
+        expect(observedBody?.closed).toBe(true);
+      }
       expect(await fs.readdir(savedTemp)).toEqual([]);
     }
     const cancelled = new DOMException("Already cancelled", "AbortError");
@@ -1029,6 +1113,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
       eq(workspaceOperations.heartbeatRunId, nextRun), eq(workspaceOperations.phase, "remote_workspace_restore")));
     expect(operation).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { ...location, state: "pending" } } });
+    // The restore records where it spent its time and the storage requests it sent.
+    expect(operation?.metadata?.restoreTiming).toMatchObject({ schema: "paperclip.remote-workspace-restore-timing.v1",
+      downloadMs: expect.any(Number), decryptMs: expect.any(Number), plaintextVerifyMs: expect.any(Number), publishMs: expect.any(Number),
+      bytes: expect.any(Number), requests: expect.objectContaining({ requests: expect.any(Number) }) });
     await fs.writeFile(path.join(restored.remoteRoot, "saved.txt"), "later agent edits\n");
     await fs.writeFile(path.join(restored.remoteRoot, "newer.txt"), "keep untracked work\n");
     failCleanup = false;
@@ -1064,8 +1152,11 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: await lease(), target: first });
     await fs.writeFile(path.join(prepared.remoteRoot, "shared-result.txt"), "from the first task\n");
     const childInput = { title: "Continue saved work", status: "in_progress" as const, assigneeAgentId: ids.agent };
-    const child = inherited ? await issueService(db).create(ids.company, { ...childInput, parentId: ids.issue })
-      : (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId }).returning())[0]!;
+    // New children never share a parent's workspace; `inherited` is the shape an
+    // older release wrote, which saved-file continuation must still handle.
+    const child = (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId,
+      ...(inherited ? { parentId: ids.issue, executionWorkspaceId: reserved.id, executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode } } : {}) }).returning())[0]!;
     if (inherited) expect(child.executionWorkspaceId).toBe(reserved.id);
     const secondIssue = child.id, secondRun = randomUUID(), secondLease = randomUUID();
     await db.insert(heartbeatRuns).values({ id: secondRun, companyId: ids.company, agentId: ids.agent,
@@ -1168,7 +1259,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`))).map(save => save.metadata?.saveTiming);
     const duration = expect.any(Number), archive = { byteSize: expect.any(Number), entries: expect.any(Number) };
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "failed", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, at: expect.any(String) }]);
+      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, storage: expect.objectContaining({ requests: expect.any(Object) }),
+      at: expect.any(String) }]);
     const beforeSuccess = await workspace(reserved.id);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: beforeSuccess, runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
@@ -1180,6 +1272,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await finalTiming()).toEqual([succeededTiming]);
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "succeeded", totalMs: duration,
       captureMs: duration, transferMs: duration, verifyMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      storage: expect.objectContaining({ encryptMs: duration, digestMs: duration, putMs: duration, verifyMs: duration,
+        bytes: expect.any(Number), requests: expect.any(Object) }),
       at: expect.any(String) }]);
     expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
   }, 60_000);
@@ -1248,6 +1342,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["journal", "ledger"])("respects historical %s generation reservations without changing the committed parent", async highest => {
     const reserved = await reserve({ kind: "empty" }), first = await target("reserved-generations");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "new-generation.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     // A crash after journaling can leave no ledger row; retention can leave a
     // deleted ledger after the source operation is gone. Both remain reserved.
@@ -1305,6 +1400,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it("reserves distinct generations for competing boundaries and fences the losing publication", async () => {
     const reserved = await reserve({ kind: "empty" }), first = await target("competing-boundaries");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "competing-save.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     let arrivals = 0, release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -1341,6 +1437,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["failed", "succeeded"])("protects an active duplicate after its peer %s and cleans it only after the last invocation settles", async peer => {
     const reserved = await reserve({ kind: "empty" }), first = await target("active-duplicate");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "duplicate-save.txt"), "new workspace contents\n");
     let release!: () => void, entered!: () => void, releaseOwnership!: () => void, postUpload!: () => void, uploads = 0, checks = 0;
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
@@ -1409,6 +1506,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["untracked", "malformed-owner", "malformed-active"])("keeps adopted %s work pinned after a newer final save", async marker => {
     const reserved = await reserve({ kind: "empty" }), first = await target("unknown-save-work");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "adopted-save.txt"), "new workspace contents\n");
     const input = { db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
       target: first, assertOwned: async () => undefined, boundary: "repository:legacy" };
     const failed: StorageService = { ...storage, putFile: async () => { throw new Error("old upload failed"); } };
@@ -1424,6 +1522,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     if (marker === "malformed-active") await db.update(workspaceOperations).set({ metadata: sql`jsonb_set(jsonb_set(${workspaceOperations.metadata},
       '{saveWork,unknown}', 'false'::jsonb), '{saveWork,activeIds}', '{"unfinished":"unknown"}'::jsonb)` })
       .where(eq(workspaceOperations.id, old!.sourceOperationId));
+    await fs.writeFile(path.join(prepared.remoteRoot, "after-adopted-save.txt"), "newer final workspace contents\n");
     const final = await saveRemoteWorkspace({ ...input, workspace: await workspace(reserved.id), boundary: "final" });
     const [held] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, old!.sourceOperationId));
     expect(held).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { state: "pending" } } });
@@ -1604,6 +1703,50 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(journal).toMatchObject({ status: "running", metadata: { uncertain: true } });
   }, 60_000);
 
+  // An uncertain provisioning row used to block every later reservation of
+  // the workspace forever. It settles only once the earlier run's sandbox is
+  // provably stopped; until then the reservation names the operator's action.
+  it("settles an uncertain provisioning command once its run's sandbox is provably stopped", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-stop-proof");
+    const execute = first.runner!.execute.bind(first.runner!);
+    first.runner!.execute = async input => {
+      const result = await execute(input);
+      if (input.command === "bash") throw new Error("lost provisioning reply");
+      return result;
+    };
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "printf 'one effect\\n' >> setup-result.txt" })).rejects.toThrow("lost provisioning reply");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+    const nextRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+    const reserveNext = () => reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
+      agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+    const provision = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, ids.company), eq(workspaceOperations.phase, "remote_workspace_provision"))))[0]!;
+    // A failed run alone is not proof: its sandbox may still run the command.
+    await expect(reserveNext()).rejects.toMatchObject({ status: 409,
+      details: { code: "remote_workspace_provision_unverified", operationId: (await provision()).id, runId: ids.run } });
+    expect(await provision()).toMatchObject({ status: "running", metadata: { uncertain: true } });
+    const stopped = await lease();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { ...stopped.metadata, remoteExecutionTermination: remoteTerminationReceipt(stopped,
+        { providerLeaseId: stopped.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, ids.lease));
+    const outcome = await reserveNext().then(() => null, (error: unknown) => error as { details?: { code?: string } });
+    expect(outcome?.details?.code).not.toBe("remote_workspace_provision_unverified");
+    expect(await provision()).toMatchObject({ status: "failed", metadata: { uncertain: false, settledBy: "owner_sandbox_stopped" } });
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(and(eq(activityLog.companyId, ids.company),
+      eq(activityLog.action, "workspace.remote_provision_settled")))).toHaveLength(1);
+  }, 60_000);
+
+  it("records a provisioning command that reported a failing exit as finished, not uncertain", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-exit-failure");
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "exit 3" })).rejects.toThrow("remote_workspace_provision_unverified");
+    const [journal] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
+      eq(workspaceOperations.phase, "remote_workspace_provision")));
+    expect(journal).toMatchObject({ status: "failed", metadata: { uncertain: false, exitCode: 3 } });
+  }, 60_000);
+
   it("preserves enrolled workspaces after disabling enrollment and rejects a legacy writer", async () => {
     const reserved = await reserve({ kind: "empty" });
     expect(shouldUseRemoteWorkspaces({ adapterType: "paperclip_runner", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toBe(true);
@@ -1712,14 +1855,20 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     } finally { await recovered.cleanup(); }
   }, 60_000);
 
-  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action"] as const)(
-    "checks durable remote work at the native safe-replacement decision (%s)", async scenario => {
+  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation", "historical_listener_absent", "historical_listener_later_candidate", "historical_listener_late_proof", "historical_listener_lock_timeout", "historical_listener_late_interaction", "historical_listener_interaction_paused", "historical_listener_own_question"] as const)(
+    "checks durable remote work at the native safe-replacement decision (%s)", async kind => {
+      const historicalListener = kind.startsWith("historical_listener_");
+      const processAcceptance = kind === "historical_listener_guard" && process.env.PAPERCLIP_TEST_HISTORICAL_LISTENER === "1";
+      const scenario = kind === "historical_listener_late_proof" ? "dirty" : kind === "historical_listener_unconfirmed_stop" ? "unconfirmed_stop"
+        : kind === "historical_listener_dirty" ? "dirty" : historicalListener ? "saved" : kind;
+      const shouldSchedule = scenario === "saved" && (!historicalListener || ["historical_listener_guard", "historical_listener_later_candidate", "historical_listener_lock_timeout"].includes(kind));
       const reserved = await reserve({ kind: "empty" }), first = await target("native-replacement-sandbox");
       const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
         lease: await lease(), target: first, assertOwned: async () => undefined });
       await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "work survives a failed provider session\n");
       if (scenario !== "unsaved") await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace,
-        runId: ids.run, lease: prepared.lease, target: first, assertOwned: async () => undefined });
+        runId: ids.run, lease: prepared.lease, target: first, assertOwned: async () => undefined,
+        boundary: kind === "historical_listener_late_proof" ? "initial" : "final" });
       const current = await workspace(reserved.id), authority = readRemoteWorkspaceAuthority(current.metadata)!;
       if (scenario === "dirty" || scenario === "stale_epoch") await db.update(executionWorkspaces).set({ metadata: {
         ...current.metadata, remoteWorkspace: { ...authority, ...(scenario === "dirty" ? { dirty: true, writerRunId: ids.run }
@@ -1729,29 +1878,137 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         .where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
       if (scenario === "delete_requested") await db.update(executionWorkspaceSnapshots).set({ status: "delete_requested" })
         .where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
-      const stopped = (await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      if (processAcceptance) {
+        const { recordHistoricalListenerFailure } = await import("../__tests__/helpers/historical-listener-continuation.js");
+        await recordHistoricalListenerFailure({ db, connectionString: databaseUrl!, runId: ids.run, cwd: prepared.remoteRoot,
+          environmentId: ids.environment, leaseId: ids.lease });
+      }
+      const stopped = kind === "historical_listener_late_proof" ? prepared.lease : (await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
         metadata: { ...prepared.lease.metadata, ...(scenario !== "unconfirmed_stop" ? {
           remoteExecutionTermination: remoteTerminationReceipt(prepared.lease, {
             providerLeaseId: prepared.lease.providerLeaseId, state: "destroyed",
           }),
         } : {}) },
       }).where(eq(environmentLeases.id, ids.lease)).returning())[0]! as EnvironmentLease;
-      if (scenario === "saved") {
+      if (shouldSchedule) {
         await db.transaction(tx => clearRemoteWorkspaceLocationForReleasedLease({ db: tx, lease: stopped }));
         await fs.rm(prepared.remoteRoot, { recursive: true, force: true });
         await expect(fs.stat(prepared.remoteRoot)).rejects.toThrow();
       }
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ids.run));
-      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), runnerProfileJson: {
+      const sessionId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+        ...(historicalListener && !processAcceptance ? { nativeSessionId: sessionId } : {}),
+        ...(historicalListener ? { error: "local_runtime_api_listener_unavailable", errorCode: "native_session_interrupted" } : {}), runnerProfileJson: {
         ...source!.runnerProfileJson, recoveryEventInventoryVersion: 1,
-        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: prepared.remoteRoot } },
+        nativeExecutionInput: processAcceptance ? source!.runnerProfileJson!.nativeExecutionInput : { provider: { kind: "codex" }, workspace: { cwd: prepared.remoteRoot },
+          ...(historicalListener ? { binding: { runId: ids.run, companyId: ids.company, agentId: ids.agent, issueId: ids.issue },
+            session: { normalizedSessionId: sessionId } } : {}) },
       } }).where(eq(heartbeatRuns.id, ids.run));
-      await db.insert(nativeRunFinalizations).values({ runId: ids.run, companyId: ids.company, issueId: ids.issue,
-        phase: "terminal_failure", attempt: 1, failureCode: "native_provider_terminal_failed",
-        failureDetail: { originalFailureCode: "fixture_checkpoint_unusable" } });
+      if (!processAcceptance) await db.insert(nativeRunFinalizations).values({ runId: ids.run, companyId: ids.company, issueId: ids.issue,
+        phase: "terminal_failure", attempt: 1, failureCode: historicalListener ? "native_session_interrupted" : "native_provider_terminal_failed",
+        failureDetail: historicalListener ? { originalFailureCode: "native_session_interrupted", message: "local_runtime_api_listener_unavailable",
+          recoveryMode: "ambiguous_state", providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false }
+          : { originalFailureCode: "fixture_checkpoint_unusable" } });
+      if (historicalListener && !processAcceptance) {
+        const blocked = await issueService(db).update(ids.issue, { status: "blocked" });
+        await db.insert(issueRecoveryActions).values({ companyId: ids.company, sourceIssueId: ids.issue,
+          kind: "active_run_watchdog", cause: "native_session_interrupted", ownerType: "board", status: "active",
+          fingerprint: createHash("sha256").update(`${ids.run}:native_session_interrupted`).digest("hex"),
+          evidence: { runId: ids.run, nativeFailureBlock: { runId: ids.run, statusVersion: blocked!.statusVersion } },
+          nextAction: "Reconcile the original startup failure." });
+      }
+      if (kind === "historical_listener_guard" || kind === "historical_listener_bad_preservation") {
+        const actionId = randomUUID(), preservationId = randomUUID();
+        await db.insert(issueRecoveryActions).values({ id: actionId, companyId: ids.company, sourceIssueId: ids.issue,
+          kind: "active_run_watchdog", cause: "native_continuation_requires_reconciliation", ownerType: "system", status: "resolved", outcome: "blocked",
+          fingerprint: `native-workspace:${ids.run}`, evidence: { runId: ids.run,
+            workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [ids.lease] },
+            automaticRecovery: { replay: "blocked" }, continuationDelivery: "invalidated",
+            systemRecovery: { ...createSystemRecovery(ids.run), state: "complete", preservationOperationIds: [preservationId] },
+            workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: ids.run, status: "recovered", stage: "saving_receipts", attempt: 1, requestIds: [] },
+          }, nextAction: "Files were preserved without replay." });
+        await db.insert(workspaceOperations).values([{ id: preservationId, companyId: ids.company, heartbeatRunId: ids.run, issueId: ids.issue,
+          executionWorkspaceId: reserved.id, phase: "workspace_recovery", status: kind === "historical_listener_bad_preservation" ? "failed" : "succeeded", startedAt: new Date(),
+          metadata: { recoveryActionId: actionId, snapshotId: authority.snapshotId } },
+        { companyId: ids.company, heartbeatRunId: ids.run, issueId: ids.issue, phase: "workspace_finalize", status: "succeeded", startedAt: new Date(),
+          metadata: { owningService: "workspace_recovery", preservationOperationIds: [preservationId] } }]);
+      }
+      if (kind === "historical_listener_absent") await db.update(heartbeatRuns).set({
+        runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'remoteWorkspace'`,
+      }).where(eq(heartbeatRuns.id, ids.run));
+      if (kind === "historical_listener_stale_block") await issueService(db).update(ids.issue, { status: "blocked", actorUserId: "operator" });
+      if (kind === "historical_listener_unknown_event") await db.insert(heartbeatRunEvents).values({ companyId: ids.company, runId: ids.run,
+        agentId: ids.agent, seq: 100, eventType: "future.provider.activity", sourceEventId: "source-provider-event" });
+      if (kind === "historical_listener_budget") await db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, ids.run));
+      if (kind === "historical_listener_checkpoint") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+        ...((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ids.run)))[0]!.runnerProfileJson), sessionCheckpoint: { providerSessionId: "already-started" },
+      } }).where(eq(heartbeatRuns.id, ids.run));
+      if (kind === "historical_listener_resumed") await db.update(heartbeatRuns).set({ sessionIdBefore: "prior-session" }).where(eq(heartbeatRuns.id, ids.run));
+      if (kind === "historical_listener_prior_session") await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: ids.company,
+        agentId: ids.agent, status: "succeeded", nativeSessionId: sessionId });
+      if (kind === "historical_listener_other_message") await db.update(nativeRunFinalizations).set({ failureDetail: {
+        message: "provider reported local_runtime_api_listener_unavailable", originalFailureCode: "native_session_interrupted", recoveryMode: "ambiguous_state",
+        providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false,
+      } }).where(eq(nativeRunFinalizations.runId, ids.run));
+      if (kind === "historical_listener_cancelled") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, ids.issue));
+      if (kind === "historical_listener_provider_event") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
+        agentId: ids.agent, eventType: "turn.started", stream: "system" });
+      const interactionWake = ["historical_listener_late_interaction", "historical_listener_interaction_paused", "historical_listener_own_question"].includes(kind);
+      const interactionId = randomUUID();
+      if (interactionWake) {
+        const priorRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: priorRunId, companyId: ids.company, agentId: ids.agent,
+          nativeIssueId: ids.issue, status: "succeeded", contextSnapshot: { issueId: ids.issue } });
+        await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: ids.company, issueId: ids.issue,
+          kind: "request_confirmation", status: "pending", sourceRunId: kind === "historical_listener_own_question" ? ids.run : priorRunId,
+          payload: { version: 1, prompt: "An obsolete question from earlier work." } });
+        if (kind === "historical_listener_interaction_paused") await issueService(db).update(ids.issue, { status: "backlog" });
+        if (kind === "historical_listener_own_question") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
+          agentId: ids.agent, eventType: "tool.execution.started", stream: "system",
+          payload: { name: "request_confirmation", executionId: "source-question", transport: "process" } });
+      }
       if (scenario === "unknown_action") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
         agentId: ids.agent, eventType: "tool.execution.started", stream: "system",
         payload: { name: "send_email", executionId: "unconfirmed-external-action", transport: "process" } });
+      if (kind === "historical_listener_later_candidate") {
+        const sourceNumber = BigInt(`0x${ids.run.replaceAll("-", "")}`);
+        const parked = Array.from({ length: 100 }, (_, index) => {
+          const hex = (sourceNumber - BigInt(index + 1)).toString(16).padStart(32, "0");
+          return { runId: `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`,
+            issueId: randomUUID(), sessionId: randomUUID() };
+        });
+        await db.insert(issues).values(parked.map(row => ({ id: row.issueId, companyId: ids.company,
+          title: "Preserve unavailable source", status: "in_progress", assigneeAgentId: ids.agent })));
+        await db.insert(heartbeatRuns).values(parked.map(row => ({ id: row.runId, companyId: ids.company, agentId: ids.agent,
+          nativeIssueId: row.issueId, nativeSessionId: row.sessionId, runtimeMode: "native", status: "failed",
+          errorCode: "native_session_interrupted", error: "local_runtime_api_listener_unavailable", runnerProfileJson: {
+            nativeExecutionInput: { binding: { runId: row.runId, companyId: ids.company, agentId: ids.agent, issueId: row.issueId },
+              session: { normalizedSessionId: row.sessionId } },
+          } })));
+        await db.insert(nativeRunFinalizations).values(parked.map(row => ({ runId: row.runId, companyId: ids.company, issueId: row.issueId,
+          phase: "terminal_failure", attempt: 1, failureCode: "native_session_interrupted", failureDetail: {
+            message: "local_runtime_api_listener_unavailable", originalFailureCode: "native_session_interrupted", recoveryMode: "ambiguous_state",
+            providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false,
+          } })));
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scanned: 100, scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        invalidateNativeReplacementDiscovery(db);
+      }
+      if (kind === "historical_listener_lock_timeout") {
+        let release!: () => void, announce!: () => void;
+        const locked = new Promise<void>(resolve => { announce = resolve; });
+        const released = new Promise<void>(resolve => { release = resolve; });
+        const holder = db.transaction(async tx => {
+          await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, ids.issue)).for("update");
+          announce(); await released;
+        });
+        await locked;
+        try {
+          await expect(reconcileSafeNativeReplacements(db)).rejects.toThrow();
+          expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        } finally { release(); await holder; }
+      }
       let replacement;
       if (scenario === "deletion_race" || scenario === "controller_claim_race") {
         let release!: () => void, announce!: () => void;
@@ -1783,12 +2040,102 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
           expect(blocked).toBe(true);
         } finally { release(); await deletion; replacement = await pending; }
       } else replacement = await reconcileSafeNativeReplacements(db);
-      expect(replacement).toMatchObject({ scheduled: scenario === "saved" ? 1 : 0 });
+      expect(replacement).toMatchObject({ scheduled: shouldSchedule ? 1 : 0 });
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, ids.run));
-      expect(successors).toHaveLength(scenario === "saved" ? 1 : 0);
-      if (scenario === "saved") expect(successors[0]).toMatchObject({ status: "scheduled_retry",
+      expect(successors).toHaveLength(shouldSchedule ? 1 : 0);
+      if (shouldSchedule) expect(successors[0]).toMatchObject({ status: "scheduled_retry",
         contextSnapshot: { retryOfRunId: ids.run, forceFreshSession: true } });
-      else expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8"))
+      if (kind === "historical_listener_later_candidate") {
+        for (let pass = 0; pass < 3 && await executionControlSchedule(db).replacement() !== null; pass++) {
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        }
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+      }
+      if (kind === "historical_listener_guard") expect(await getExecutionBlocker(db, ids.company, ids.issue)).toBeNull();
+      if (["historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message",
+        "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_stale_block", "historical_listener_bad_preservation", "historical_listener_dirty", "historical_listener_unconfirmed_stop", "historical_listener_absent", "historical_listener_late_proof"].includes(kind)) {
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+      }
+      if (interactionWake) {
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        let wakes = 0;
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+          if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+        });
+        try {
+          await issueThreadInteractionService(db).skipInteraction({ id: ids.issue, companyId: ids.company,
+            status: kind === "historical_listener_interaction_paused" ? "backlog" : "blocked" }, interactionId, {}, { userId: "local-board" });
+          expect(wakes).toBeGreaterThan(0);
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: kind === "historical_listener_late_interaction" ? 1 : 0 });
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+          expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, ids.run)))
+            .toHaveLength(kind === "historical_listener_late_interaction" ? 1 : 0);
+          expect(await executionControlSchedule(db).replacement()).toBeNull();
+        } finally { unsubscribe(); }
+      }
+      if (kind === "historical_listener_late_proof") {
+        let wakes = 0;
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+          if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+        });
+        try {
+          const saved = await saveRemoteWorkspace({ db, storage, workspace: await workspace(reserved.id), runId: ids.run,
+            lease: await lease(), target: first, assertOwned: async () => undefined });
+          expect(wakes).toBeGreaterThan(0);
+          expect(await executionControlSchedule(db).replacement()).toBeNull();
+          const priorWakes = wakes, active = await lease(), pluginId = randomUUID();
+          await db.update(environmentLeases).set({ metadata: { ...active.metadata, driver: "sandbox", pluginId,
+            provider: "daytona", sandboxProviderPlugin: true } }).where(eq(environmentLeases.id, ids.lease));
+          const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+            isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }),
+            call: async (_id: string, method: string) => {
+              expect(method).toBe("environmentReleaseLease");
+              return { providerLeaseId: active.providerLeaseId, state: "destroyed" };
+            },
+          } as never });
+          await runtime.releaseRunLeases(ids.run, "failed");
+          expect(wakes).toBeGreaterThan(priorWakes);
+          expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 1 });
+          expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+          expect(await executionControlSchedule(db).replacement()).toBeNull();
+          const restored = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
+          try { expect(await fs.readFile(path.join(restored.root, "saved.txt"), "utf8")).toBe("work survives a failed provider session\n"); }
+          finally { await restored.cleanup(); }
+        } finally { unsubscribe(); }
+      }
+      if (kind === "historical_listener_bad_preservation") {
+        expect(await getExecutionBlocker(db, ids.company, ids.issue)).toMatchObject({ cause: "native_continuation_requires_reconciliation" });
+
+      }
+      if (processAcceptance) {
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        const { completeHistoricalListenerSuccessor } = await import("../__tests__/helpers/historical-listener-continuation.js");
+        await completeHistoricalListenerSuccessor({ db, runId: successors[0]!.id, root: path.join(root, "successor-runtime"),
+          prepareWorkspace: async () => {
+            const leaseId = randomUUID(), runId = successors[0]!.id;
+            const [nextLease] = await db.insert(environmentLeases).values({ id: leaseId, companyId: ids.company,
+              environmentId: ids.environment, heartbeatRunId: runId, issueId: ids.issue, provider: "daytona",
+              providerLeaseId: `allocation-${leaseId}`, status: "active" }).returning();
+            const next = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue,
+              runId, agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
+              existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+            const nextTarget = { ...await target("historical-successor"), leaseId, sandboxId: nextLease.providerLeaseId! };
+            const nextPrepared = await prepareRemoteWorkspace({ db, storage, workspace: next, runId,
+              lease: nextLease as EnvironmentLease, target: nextTarget });
+            return { cwd: nextPrepared.remoteRoot, finalize: async () => {
+              const { workspaceOperationService } = await import("./workspace-operations.js");
+              const recorder = workspaceOperationService(db).createRecorder({ companyId: ids.company, issueId: ids.issue, heartbeatRunId: runId });
+              const saved = await recorder.recordOperation({ phase: "workspace_finalize", cwd: nextPrepared.remoteRoot, run: async () => {
+                await saveRemoteWorkspace({ db, storage, workspace: nextPrepared.workspace, runId, lease: nextPrepared.lease,
+                  target: nextTarget, assertOwned: async () => undefined });
+                return { status: "succeeded", exitCode: 0 };
+              } });
+              expect(saved.status).toBe("succeeded");
+            } };
+          } });
+      }
+      if (!shouldSchedule) expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8"))
         .toBe("work survives a failed provider session\n");
       if (scenario === "unknown_action") {
         const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, ids.run));

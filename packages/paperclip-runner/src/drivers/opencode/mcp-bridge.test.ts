@@ -84,6 +84,42 @@ describe("OpenCode MCP bridge", () => {
     expect(handler).toHaveBeenCalledOnce();
   });
 
+  it("abandons a call on disconnect only after every waiting connection is gone", async () => {
+    let started!: () => void;
+    const begun = new Promise<void>(resolve => { started = resolve; });
+    const aborted = vi.fn();
+    const handler = vi.fn(({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => { aborted(); reject(new Error("abandoned")); }, { once: true });
+      started();
+    }));
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "documents.write", inputSchema: { type: "object" } }], timeoutMs: null, handler,
+    });
+    bridges.push(bridge);
+    const body = JSON.stringify({ jsonrpc: "2.0", id: "retried", method: "tools/call", params: { name: "documents.write", arguments: {} } });
+    const post = (signal: AbortSignal) => fetch(bridge.url, {
+      method: "POST", body, signal,
+      headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+    });
+    const first = new AbortController();
+    const retry = new AbortController();
+    const firstResponse = post(first.signal).catch(() => "dropped");
+    await begun;
+    const retryResponse = post(retry.signal).catch(() => "dropped");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    first.abort();
+    expect(await firstResponse).toBe("dropped");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(aborted).not.toHaveBeenCalled();
+    retry.abort();
+    expect(await retryResponse).toBe("dropped");
+    for (let attempt = 0; attempt < 100 && !aborted.mock.calls.length; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
   it("binds to loopback, requires authentication, and exposes only its closed catalog", async () => {
     const bridge = await startOpenCodeMcpBridge({
       secret: "session-secret",
@@ -359,4 +395,25 @@ it("reports conflicting request IDs without repeating the accepted action", asyn
   expect(await (await rpc(bridge, { ...body, params: { name: "probe", arguments: { name: "second" } } })).json()).toMatchObject({ result: { isError: true } });
   expect(handler).toHaveBeenCalledOnce();
   expect(rejected).toHaveBeenCalledExactlyOnceWith({ tool: "probe", callId: "same", arguments: { name: "second" } }, "Duplicate call identity conflict.");
+});
+
+// The schema owner supplies scope policy; the transport only returns its guidance.
+it("returns missing-field guidance before dispatch and accepts an explicit retry", async () => {
+  const guidance = "Use the requested task UUID. For the active task, use read_document with key only.";
+  const handler = vi.fn(async () => ({ accepted: true }));
+  const bridge = await startOpenCodeMcpBridge({ tools: [{ name: "read_task_document", inputSchema: {
+    type: "object", required: ["taskId", "key"], additionalProperties: false,
+    properties: { taskId: { type: "string", description: guidance }, key: { type: "string" } },
+  } }], handler });
+  bridges.push(bridge);
+  const request = { id: "scope-retry", method: "tools/call", params: { name: "read_task_document", arguments: { key: "sentry-case" } } };
+  type ScopeResponse = { result: { isError?: boolean; content: Array<{ text: string }> } };
+  const rejected = await (await rpc(bridge, request)).json() as ScopeResponse;
+  expect(rejected).toMatchObject({ result: { isError: true } });
+  expect(handler).not.toHaveBeenCalled();
+  expect(rejected.result.content[0].text).toContain(guidance);
+  const taskId = "00000000-0000-4000-8000-000000000005";
+  const accepted = await (await rpc(bridge, { ...request, params: { ...request.params, arguments: { key: "sentry-case", taskId } } })).json() as ScopeResponse;
+  expect(accepted.result.isError).not.toBe(true);
+  expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { key: "sentry-case", taskId } }));
 });

@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, promises as fs } from "node:fs";
+import { constants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -7,6 +7,7 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import type { ObjectJournalIOPriority } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 
@@ -32,6 +33,7 @@ export interface RunLogReadOptions {
   /** Include the start of the first NDJSON record when reading a log tail. */
   alignStartToRecord?: boolean;
   signal?: AbortSignal;
+  priority?: ObjectJournalIOPriority;
 }
 
 export interface RunLogReadResult {
@@ -615,9 +617,28 @@ export async function flushInFlightRunLogMirrors(): Promise<void> {
 }
 
 
-export async function openLegacyRunLogForMigration(logRef: string) {
+export async function openLegacyRunLogForMigration(logRef: string, options: { requireCanonicalLocalFile?: boolean } = {}) {
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  const file = resolveWithin(basePath, logRef);
+  const base = options.requireCanonicalLocalFile ? await fs.realpath(basePath) : basePath;
+  const file = resolveWithin(base, logRef);
+  if (options.requireCanonicalLocalFile) {
+    if (await fs.realpath(file) !== file) throw new Error("native_log_archive_source_alias");
+    const descriptor = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await descriptor.stat();
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error("native_log_archive_source_not_private");
+      return {
+        stream: descriptor.createReadStream({ highWaterMark: 4 * 1024 * 1024 }), bytes: stat.size, source: "local" as const,
+        async assertUnchanged() {
+          const current = await fs.lstat(file);
+          if (await fs.realpath(file) !== file || !current.isFile() || current.nlink !== 1
+            || current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size
+            || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs)
+            throw new Error("legacy_log_source_changed");
+        },
+      };
+    } catch (error) { await descriptor.close(); throw error; }
+  }
   try {
     const stat = await fs.stat(file);
     if (!stat.isFile()) throw new Error("Legacy run log is not a regular file");

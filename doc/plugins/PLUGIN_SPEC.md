@@ -3,9 +3,9 @@
 Status: proposed complete spec for the post-V1 plugin system
 
 This document is the complete specification for Paperclip's plugin and extension architecture.
-It expands the brief plugin notes in [doc/SPEC.md](../SPEC.md) and should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
+It should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
 
-This is not part of the V1 implementation contract in [doc/SPEC-implementation.md](../SPEC-implementation.md).
+This is not part of the V1 implementation contract.
 It is the full target architecture for the plugin system that should follow V1.
 
 ## Current implementation caveats
@@ -412,6 +412,8 @@ export interface PaperclipPluginManifestV1 {
       /** Optional agent detail tab offered beside a task for manual selection.
        * Declared board GET route scoped to agent :entityId controls readiness for automatic opening.
        */
+      /** Agent-only detail tab: require this plugin environment driver key. */
+      agentEnvironmentDriver?: string;
       taskSidePanel?: {
         availabilityPath: string;
         /** Match runtime.activity.recorded for automatic opening; manual views need no mapping. */
@@ -423,6 +425,14 @@ export interface PaperclipPluginManifestV1 {
   };
 }
 ```
+
+Agent detail tabs can declare `agentEnvironmentDriver` to restrict settings navigation,
+direct plugin views, and manual task side panels to agents that use that driver.
+The host matches the effective agent environment's plugin key and driver key.
+An agent with no explicit environment inherits the instance default. Missing or
+unavailable configuration hides the restricted view. A transient connection
+failure preserves the last known configuration. Eligibility does not depend
+on runtime readiness, agent lifecycle state, or automatic panel activation.
 
 Rules:
 

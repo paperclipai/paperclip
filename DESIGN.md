@@ -95,22 +95,43 @@ missing photos use the shared initials fallback. Match ownership by the stored
 author user ID and the authenticated viewer ID, never by display name or the bot
 that relayed a message from another channel.
 
+Images produced in a task turn appear as compact thumbnails in a wrapping grid.
+Keep the first image's row and each tile mounted as more results arrive. Documents,
+video, and authored messages retain their chronological positions and separate
+image batches. Open thumbnails in the existing gallery, with keyboard navigation
+and downloads. Images without an originating run stay separate. Generated native
+image preparation receipts are redundant with those tiles; identify them by the
+attachment-preparation marker and links to the image, author, and originating run,
+independent of receipt wording or image title. Older receipts use their exact
+historical preparation sentence as a fallback. Authored progress text stays visible.
+
 ## Contextual feedback
 
 Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted
 until its run appears or a newer execution outcome ends admission.
+An older intent resolving cannot acknowledge a follow-up. When Send reopens a
+completed task, retain startup feedback while the previous task status catches up.
 Use the sent message's selected recipient through reassignment. Choosing the
 recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 
-A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
-admission. Reserve `Working` and `Thinking` for execution. A saved message that
-starts this queued turn stays in history, including when it reopens an older
+A queued turn shows the same `Working` header and shimmering `Thinking` activity
+as a running turn, starting at message submission. Keep specific server holds,
+such as `Waiting for maintenance` or agent setup, visible during admission.
+This is presentation only; queue and execution authority stay unchanged. A saved
+message that starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
 the composer queue with their existing edit, order and discard controls.
+
+Queued messages render Markdown and show compact local attachment thumbnails.
+Keep paragraph boundaries and wrap thumbnails and controls within narrow rows.
+Omit inline images from the compact text preview. On
+submit, move the text and attachment previews out of the composer together.
+Retain upload receipts while saving so a rejected or uncertain send restores
+the draft without discarding files added for the next message.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
@@ -153,7 +174,7 @@ results in place; keep failures actionable inline. Notifications for other work
 remain useful. Repeated delivery of the same run outcome must refresh cached state
 without repeating its toast, including after reconnecting. A terminal outcome
 delivered more than five minutes after the run finished is historical and should
-refresh state silently. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
+refresh state silently. Expected cancellation is neutral gray, not an error. A busy workspace is a transient system wait with no user action. Show it only as a quiet status in the composer strip and the Workspace property row, never as a pinned banner, conversation notice or toast. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
 paused.” and “Resume this task to send a message.” with a “Resume task” action.
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
@@ -239,8 +260,8 @@ semantic tokens.
 
 Review **Design proposals → Foundations → Typography → Type specification**
 (`design-foundations-typography--type-specification`). The proposal and the
-opt-in design sandbox use Inter Variable for interface text and bundled Paper
-Mono for all monospace text, including IDs, code and run diagnostics.
+opt-in design sandbox use Inter Variable for interface text. All product
+monospace text uses bundled Paper Mono, including IDs, code and run diagnostics.
 
 **Conversation styles** (`design-foundations-typography--conversation-styles`)
 shows the same composition as the sandbox task detail page by mounting
@@ -822,6 +843,13 @@ status picker with its monospaced task ID, project and people. The title remains
 editable and the existing task-actions menu stays at the upper right. Typography
 and spacing use the shared tokens; toggling off restores the ordinary header.
 
+Task breadcrumbs link the immediate parent before the current task. Each task
+title displays at most 48 Unicode code points, including an ellipsis; saved
+titles, hover text and accessible names retain the full title. The parent uses
+at most 40% of the breadcrumb row, and both titles truncate when space runs out.
+Mobile omits the collection link and parent identifier to preserve both titles
+and the current task identifier. Private parents show a noninteractive label.
+
 The local task detail also offers a **Thread preview** selector. DES-1 opens a
 complete synthetic conversation matching the staging transcript layout; other
 tasks start with their saved thread. Synthetic runner events pass through
@@ -869,7 +897,7 @@ paused. Agent execution is outside this visual sandbox.
 - Token layer is the single source (`ui/src/index.css`, per above) consumed via CSS variables / Tailwind theme — never values copied into components.
 - Lint/grep gates pass: zero hardcoded hex values, zero arbitrary spacing values, zero raw font-size declarations in `ui/src/components/**` and `ui/src/pages/**` outside the token layer and a documented allowlist (third-party overrides, intentional opt-outs commented inline).
 - `pnpm build`, `pnpm typecheck`, and `pnpm build-storybook` pass.
-- AGENTS.md links here and states the token-only rule.
+- AGENTS.md links here for the token-only rule.
 
 Aspirational (NOT gating this run): no duplicate components; every component has exactly one story covering its variants; all UI copy says "task".
 
@@ -1018,7 +1046,13 @@ or certify backend behavior or keyboard accessibility.
 
 Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
+first, source selection next where present, and view/actions last. The agent roster filter icon opens model, status, harness and connection selectors.
+Each selector includes an All option. Selected filters intersect with name, role
+and title search. Clear filters resets metadata selectors and keeps the search.
+Filter choices use the same metadata as the roster cells, including harness defaults,
+local credentials, connection pools, and agents that still need setup. Filters stay
+active across list and org-chart views, retain matching nodes' ancestors, and preserve
+bulk selection. The count reports matching agents, without ancestor context.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
 Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.
@@ -1052,3 +1086,39 @@ a visible Reload page action. Keep the character inline and embed the marked
 `offline-recovery` section from `ui/src/index.css` at build time so the page needs
 no network requests or cached assets. Preserve the supplied character palette
 through the offline tokens.
+
+### Agent overview and Identity editing
+
+Agent headers lead with the 24px custom title and crown on one line, followed by “harness • name.” The harness logo and label link to the agent’s Harness / Runtime subtab with hover and keyboard-focus feedback. The logo has a 4px gap before its label; Chat and New task share the default 40px button height. Header spacing is reduced by 4px at each vertical edge.
+The character renders in a 102px square (20% smaller than 128px, rounded to a whole pixel) with an 8px gap before the title, without CSS transform scaling. Reporting relationships live in Profile; its creation date shares the
+header metadata position with the Skills count. Empty Direct reports sections
+are hidden. The overview character tracks the page cursor, including paused
+agents, while respecting reduced-motion and custom-avatar fallbacks. Chat sits
+beside the text-only New task action. Recent tasks applies its raised surface to
+the table, leaving the section heading on the page background.
+
+Identity panels share 24px insets and gutters from the token layer. Advanced
+management contains the external-profile controls. New files accept a portable
+basename (letters, numbers, hyphens and underscores) with a fixed `.md` suffix.
+Clicking file content enters editing without creating a dirty draft. The Identity
+save footer slides from the viewport bottom only for unsaved changes or a save
+in progress; undoing or discarding changes hides it. Successful saves swap the
+orange-dot unsaved label for a rising green-dot saved label, hold it for two
+seconds after arrival, then dismiss the footer. Copy feedback appears beside
+the edit action for five seconds and then fades. File rows use monospaced,
+single-line truncated names, 4px row spacing, a filled ROOT chip, and borderless
+size labels. Hover uses the shared menu-option radius and muted highlight fill
+with foreground text. The preview title uses 18px Paper Mono at medium (500) weight. Creation dates come from
+recorded new-file saves; existing files without creation metadata show their
+last modification date. Disclosure panels animate height and opacity and respect
+reduced motion.
+
+Agent roster rows reveal a muted MessagesSquare icon and “Chat” action on row
+hover, using the task-list inline action treatment. Keyboard focus also reveals
+the action; its reserved cell prevents layout movement. Its tooltip waits for
+Radix’s standard 700ms hover delay on each entry, without the instant-tooltip
+provider or warm-up shortcut; keyboard focus retains immediate accessible help.
+
+Task-list titles use the remaining row width before truncating. Empty recovery,
+external-status, and metadata slots do not reserve space; populated details and
+trailing actions retain their existing layout.

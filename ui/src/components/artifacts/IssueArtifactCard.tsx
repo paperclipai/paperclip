@@ -1,3 +1,5 @@
+import { isPatchFile } from "@/lib/patch";
+import { loadAttachmentText, TEXT_PREVIEW_MAX_BYTES } from "@/lib/text-preview";
 import { useContext, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -30,6 +32,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import {
   CommitCard,
   DataCard,
+  DocumentCard,
   FileCard,
   ImageCard,
   LinkPreviewCard,
@@ -70,6 +73,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
   ) : null;
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [csvRequested, setCsvRequested] = useState(false);
+  const [patchRequested, setPatchRequested] = useState(false);
   const image = isImageLikeOutput(props.contentType, props.filename);
   const video = isVideoLikeOutput(props.contentType, props.filename);
   const csv =
@@ -86,6 +90,16 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
     enabled: localCsv && !tooLarge && csvRequested,
     staleTime: Infinity,
   });
+  const patch = isPatchFile(props.filename, props.contentType) && isTextAttachment({ contentType: props.contentType, originalFilename: props.filename });
+  const patchEligible = patch && (props.byteSize === null || props.byteSize <= TEXT_PREVIEW_MAX_BYTES)
+    && /^\/api\/attachments\/[a-zA-Z0-9-]+\/content$/.test(props.contentPath);
+  const patchData = useQuery({
+    queryKey: ["artifact-patch", props.id, props.contentPath, props.updatedAt],
+    queryFn: ({ signal }) => loadAttachmentText(props.contentPath, signal),
+    enabled: patchEligible && patchRequested,
+    staleTime: Infinity,
+  });
+  const patchView = useQueryView(patchData);
   // Read the CSV preview through the shared view: a loaded preview stays
   // visible during a transient refetch failure,and a no-data failure shows
   // readable copy with Retry.
@@ -136,6 +150,12 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
       </>
     );
   }
+  if (patchEligible && patchData.data !== undefined) {
+    return <DocumentCard {...props} patch body={patchData.data} actions={<>
+      {openTextAction}
+      {downloadPath ? <Button asChild size="sm" variant="outline"><a href={downloadPath} download={props.filename}>Download file</a></Button> : null}
+    </>} />;
+  }
   if (localCsv && !tooLarge && data.data) {
     return (
       <DataCard
@@ -168,6 +188,11 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
         actions={
           <>
             {openTextAction}
+            {patchEligible && patchView.kind !== "error" ? (
+              <Button variant="outline" size="sm" disabled={patchData.isFetching} onClick={() => setPatchRequested(true)}>
+                {patchData.isFetching ? "Loading preview…" : "Preview patch"}
+              </Button>
+            ) : null}
             {localCsv && !tooLarge && dataView.kind !== "error" ? (
               <Button
                 variant="outline"
@@ -181,6 +206,9 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
           </>
         }
       />
+      {patchEligible && patchView.kind === "error" ? (
+        <QueryErrorState size="inline" error={patchView.error} action="load the patch preview" onRetry={patchView.retry} retrying={patchView.isFetching} />
+      ) : patchEligible && patchData.isFetching ? <p role="status" className="text-xs text-muted-foreground">Loading patch preview…</p> : null}
       {csv && (tooLarge || dataView.kind === "error" || !localCsv) && (
         <div className="px-2 text-xs text-muted-foreground" role="status">
           {tooLarge

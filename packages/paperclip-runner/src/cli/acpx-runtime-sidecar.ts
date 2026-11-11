@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { recordSidecarShutdownThenQueue, sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
 import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
@@ -120,6 +121,11 @@ const MAX_PENDING_INPUTS = 16;
 const MAX_BUFFERED_OUTPUT_BYTES = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
 const MAX_EVENT_PAYLOAD_BYTES = 256 * 1024;
 let outputFailed = false;
+process.stdout.on("error", () => {
+  outputFailed = true;
+  requestShutdown("ACPX sidecar output failed");
+});
+process.stderr.on("error", () => undefined);
 let goalSourceRevision = 0;
 function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
   return { ...acpxGoalProjection(...args), providerRevision: ++goalSourceRevision };
@@ -145,6 +151,7 @@ function reportRetainedAcpxCleanupFailure(
 
 interface PendingTool {
   turnId: string;
+  startedAt: number;
   settle(value: unknown): void;
   reject(error: Error): void;
   cleanup(): void;
@@ -176,6 +183,13 @@ let openParams: AcpxSidecarOpenParams | null = null;
 let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
+let turnStartedInProcess = false;
+/**
+ * A restored session runs in a new provider process whose MCP request ids
+ * restart. The controller keys semantic calls by run and call id, so prefix
+ * this process's ids to keep them distinct from calls earlier in the run.
+ */
+let callIdNamespace: string | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
@@ -218,12 +232,19 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
-  if (!inputClosed) lines.pause();
-  pendingInput = enqueueAcpxSidecarInput(
-    pendingInput,
-    () => shutdown(reason),
-    (error) => diagnostic("sidecar_shutdown_failed", safeMessage(error)),
-  );
+  if (!recordSidecarShutdownThenQueue(
+    () => diagnostic("sidecar_shutdown_requested", JSON.stringify(sidecarShutdownSnapshot(
+      reason, tools, inputs.size, permissions.size, normalizingTools.size,
+    ))),
+    () => {
+      if (!inputClosed) lines.pause();
+      pendingInput = enqueueAcpxSidecarInput(
+        pendingInput,
+        () => shutdown(reason),
+        (error) => diagnostic("sidecar_shutdown_failed", safeMessage(error)),
+      );
+    },
+  )) outputFailed = true;
 }
 
 async function receiveLine(line: string): Promise<void> {
@@ -374,6 +395,9 @@ async function dispatch(
     );
     host = openedHost;
     openParams = params;
+    callIdNamespace = params.expectedIdentity === undefined
+      ? null
+      : `r${randomUUID().replaceAll("-", "").slice(0, 12)}`;
     emit("runtime.process", {
       role: "sidecar",
       pid: process.pid,
@@ -393,6 +417,7 @@ async function dispatch(
   if (request.command === "run.attach") {
     requireHost();
     if (turnId) throw new Error("cannot attach a run during an active turn");
+    if (turnStartedInProcess) throw new Error("cannot attach another run after this sidecar started a turn");
     const attachedTools = parseTools(request.params.tools);
     if (
       canonicalJson(attachedTools) !== canonicalJson(openParams?.tools ?? [])
@@ -415,6 +440,7 @@ async function dispatch(
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
     const activeAgent = openParams!.agent;
     turnId = currentTurnId;
+    turnStartedInProcess = true;
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
     const extensions = bindAcpxExtensionTurn({
@@ -821,7 +847,10 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
   if (!activeTurnId || !activeRunId || call.signal.aborted) {
     throw new Error("ACPX tool call is not bound to an active turn");
   }
-  const callId = boundedIdentity(call.callId, "callId");
+  const providerCallId = boundedIdentity(call.callId, "callId");
+  const callId = callIdNamespace === null
+    ? providerCallId
+    : boundedIdentity(`${callIdNamespace}:${providerCallId}`, "callId");
   if (tools.has(callId) || normalizingTools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
   if (tools.size + normalizingTools.size >= MAX_PENDING_TOOLS) {
@@ -892,6 +921,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       call.signal.addEventListener("abort", abort, { once: true });
       tools.set(callId, {
         turnId: activeTurnId,
+        startedAt: performance.now(),
         settle: (result) => {
           // A pipe write alone does not prove receiver admission. Only this
           // call's turn-bound tool.resolve success confirms runnerd accepted
@@ -924,6 +954,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     call.signal.addEventListener("abort", abort, { once: true });
     tools.set(callId, {
       turnId: activeTurnId,
+      startedAt: performance.now(),
       settle,
       reject,
       cleanup: () => call.signal.removeEventListener("abort", abort),

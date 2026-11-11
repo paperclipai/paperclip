@@ -21,7 +21,8 @@ export type ComposerAgent = {
 };
 
 const codexModels: ModelOption[] = [
-  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", detail: "Agent default" },
+  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", detail: "Agent default" },
+  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
   { id: "gpt-6-astra", label: "GPT-6 Astra", detail: "Extended effort range" },
   { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
   { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
@@ -30,7 +31,7 @@ const codexModels: ModelOption[] = [
 ];
 
 export const composerAgents: ComposerAgent[] = [
-  { id: "codex", name: "Codie", role: "Engineering", harness: "Codex", adapterType: "codex_local", defaultModel: "gpt-5.6-sol", models: codexModels, manualPattern: "Model ID, e.g. gpt-5.6-sol" },
+  { id: "codex", name: "Codie", role: "Engineering", harness: "Codex", adapterType: "codex_local", defaultModel: "gpt-6.1-sol", models: codexModels, manualPattern: "Model ID, e.g. gpt-6.1-sol" },
   { id: "claude", name: "Clara", role: "Research", harness: "Claude Code", adapterType: "claude_local", defaultModel: "claude-sonnet-5", models: [
     { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
     { id: "claude-opus-5", label: "Claude Opus 5" },
@@ -62,7 +63,7 @@ export const composerAgents: ComposerAgent[] = [
     { id: "sonnet-4.6", label: "Sonnet 4.6" },
   ], manualPattern: "Cursor model ID" },
   { id: "cursor-cloud", name: "Cloudy", role: "Remote engineering", harness: "Cursor Cloud", adapterType: "cursor_cloud", defaultLabel: "Account default", models: [], manualPattern: "Cursor Cloud model ID" },
-  { id: "runner", name: "Runa", role: "Operations", harness: "Paperclip Runner", adapterType: "paperclip_runner", provider: "Codex profile", defaultModel: "gpt-5.6-sol", models: codexModels, manualPattern: "Codex model ID" },
+  { id: "runner", name: "Runa", role: "Operations", harness: "Paperclip Runner", adapterType: "paperclip_runner", provider: "Codex profile", defaultModel: "gpt-6.1-sol", models: codexModels, manualPattern: "Codex model ID" },
   { id: "grok", name: "Grok", role: "Investigation", harness: "Grok CLI", adapterType: "grok_local", defaultModel: "grok-build", models: [
     { id: "grok-build", label: "Grok Build" },
     { id: "grok-4.7", label: "Grok 4.7" },
@@ -86,9 +87,9 @@ export const composerAgents: ComposerAgent[] = [
     { id: "kimi-code/kimi-for-coding", label: "K2.8 Preview" },
     { id: "kimi-code/k3", label: "K3" },
   ], manualPattern: "kimi-code/model" },
-  { id: "long-labels", name: "Alexandra Engineering Coordinator", role: "Engineering", harness: "Codex", adapterType: "codex_local", defaultModel: "gpt-5.6-sol", models: [
-    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol Extended Context Preview", detail: "Agent default" },
-  ], manualPattern: "Model ID, e.g. gpt-5.6-sol" },
+  { id: "long-labels", name: "Alexandra Engineering Coordinator", role: "Engineering", harness: "Codex", adapterType: "codex_local", defaultModel: "gpt-6.1-sol", models: [
+    { id: "gpt-6.1-sol", label: "GPT-6.1 Sol Extended Context Preview", detail: "Agent default" },
+  ], manualPattern: "Model ID, e.g. gpt-6.1-sol" },
 ];
 
 /** Share the capsule-avatar palettes used by the agent persona stories. */

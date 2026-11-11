@@ -281,8 +281,16 @@ one attempt, two expected provider admissions, and 1,000-cent company and agent
 hard stops. Automatic infrastructure retries are disabled. Existing campaign
 reports retain failures, timings, usage, runtime costs, and source identity.
 Source-server startup prepares the existing shared/plugin SDK build dependencies
-before importing native tool authority. Installed-package checks never execute
-checkout build helpers.
+before importing native tool authority. The six source-local plugin-fixture
+journeys retain the actual certified shared/SDK outputs before server listen,
+fingerprinting, agent setup and human dispatch. Exact bytes, completion markers,
+source/lock/helper hashes remain in Actions-only `diagnostics/source-plugin-sdk`.
+The original hidden completion-marker bytes use the explicit non-hidden archival
+name `build-completion-receipt.json`, with original/retained paths and hashes
+recorded so bounded upload staging preserves them. The public report does not
+publish those files. Startup failure does not trigger
+a post-failure rebuild or manufacture missing output evidence. Installed-package
+checks never execute checkout build helpers.
 
 ## Configured repository and conversion checks
 
@@ -686,7 +694,7 @@ so a content mismatch cannot suppress the communication evidence.
 The source thread is observed for 120 seconds. The probe retains a later
 correction even if an earlier reply already passes delivery and access. A later
 clarification does not erase an earlier accessible delivery.
-The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. The onboarding cell records its naturally occurring timing.
+The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. Reaching the gate depends on the source agent running the instructed wait: the completion reply is published inside the run finalizer's own transaction, so the isolated-server entrypoint cannot hold it without a product hook. If no completion turn is still active and the turn that received this task's Done facts has succeeded or published its reply before the gate reports `waiting`, the cell fails at once with `restart boundary not reached (agent skipped gate)` rather than a generic timeout. That failure is agent compliance (the restart was never exercised), not restart robustness. A completion turn that fails or is cancelled before the gate is not blamed on the agent, because delivery can retry it; if the wait then times out, the timeout names that turn and its status as `restart boundary not reached`. After the restart, the chat navigation retries an abort caused by the old document's reload. The onboarding cell records its naturally occurring timing.
 
 The mechanical oracle requires a run-attributed source reply after durable
 completion, plus the actual saved output or a navigable task/output link.
@@ -822,6 +830,33 @@ matching API-key or subscription credential.
 Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
 
+## Private framework evidence
+
+The protected TestOps reporter (`PAPERCLIP_CHAT_COMPLETION_TESTOPS=v1`) uses
+Playwright's official JSON and JUnit reporters only with an approved private-cell
+preflight. Other runs, including generic private full-stack runs, keep the existing
+HTML and blob reporters. A setup failure can retain its SDK audit without a
+framework report; a malformed present framework report still fails closed. The immutable
+JSON source is retained in `snapshots/playwright-framework-original.txt` and is
+parsed and deeply inspected as registered Playwright JSON, including decoded
+inline text/JSON attachment bodies. The text suffix preserves source bytes; it
+does not exempt the file from JSON privacy checks. Unsupported inline carriers
+fail closed.
+
+`snapshots/playwright-framework.json` preserves the report and maps attachment
+paths to their owned canonical files with byte counts and SHA-256 hashes.
+Original status, errors, and nested user steps remain unchanged. Sealed originals
+retain all owned attachments. The final-results tree references those originals
+instead of storing another copy of registered Playwright output attachments.
+The downloader verifies each reference against the sealed original inventory,
+then restores exact referenced bytes into the derived selected report tree.
+Neither sealed inventory changes. Registered metadata and attachments are not
+silently rewritten: JSON values that need privacy redaction fail closed.
+Unknown, missing, changed, or foreign attachments fail validation. Native
+snapshots and other unregistered evidence are not removed. The existing physical
+byte, entry, archive, ZIP expansion, time, and privacy bounds remain unchanged.
+A complete evidence transfer does not attest that the feature passed.
+
 ## Local commands
 
 When the host cannot start embedded Postgres, set
@@ -839,7 +874,7 @@ runner binaries:
 ```bash
 pnpm install
 pnpm exec playwright install chromium
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 ```
 
 List cells without loading credentials or starting Paperclip:
@@ -1184,6 +1219,13 @@ unavailable/terminated test process produce a `launcher/environment failure`
 diagnostic and exit 2. Assertion failures retain the test runner's exit status
 and output; assess installed-product failures from those assertions separately.
 
+PR CI runs `pnpm test:e2e:runner:unit` as the required "Runner support suite"
+job in `pr-trusted.yml`. It runs when server, CLI, package or UI source
+changes, and on every full CI run. The suite pins workflow security policy,
+evidence oracles, profile versions, suite hashes and dated fixtures. When a
+change to one of those is deliberate, update the pin in the same pull request
+and name the reason. Do not weaken a security check to make it pass.
+
 The OpenRouter ranking snapshot is tracked in `openrouter-models.json`; nightly
 runs never mutate it. Refresh it deliberately, review the source/capture/hash
 diff, and rerun credential-free checks:
@@ -1200,6 +1242,27 @@ workspace and package store can be removed before export. Source-provenance
 changes can repeat the dependency install; this bounds retained builder disk
 at the cost of install-cache granularity. The build reports workspace and pack
 sizes, and final runtime and CLI checks still execute in the published image.
+
+Build speed comes from two layout rules. The revision-metadata step sits above
+both `COPY --from` steps, so the cached base and CLI layers download while the
+builder stages compile. Both copies use `--link`, so they do not wait for that
+download. The Rust build keeps no dependency layer: retaining Cargo's target
+and registry trees (about 1.2 GB) exhausted the builder disk during the
+default-branch cache export.
+
+To publish only the image for a branch, without a paid gate, dispatch with
+`image_only`. Authorization, target resolution, catalog validation and the
+signed, verified image publication run unchanged; every campaign job is
+skipped. Keep a selector that includes a Daytona cell:
+
+```bash
+gh workflow run runner-full-stack-e2e.yml \
+  --ref master \
+  -f target_branch=fix/example \
+  -f all=false \
+  -f id=core-compatibility.runner-codex.daytona.message-marker \
+  -f image_only=true
+```
 
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
@@ -1622,6 +1685,16 @@ case. All 20 imported case IDs and full names remain stable. The lane uses the
 existing native Codex/local cells and the existing native OpenCode/local
 task-workspaces cell. It does not qualify the historical 355-result snapshot.
 
+The sibling **Reliability — staging soak** plan runs the seven staging-soak
+reliability cases through this same lane: six on native OpenCode with DeepSeek
+1017, and `queue-steer` on steering-capable native Codex.
+Bootstrap it with `-f testops_plan=reliability -f testops_case=all` (or one case);
+a TestOps launch names its plan through its case IDs. A launch never mixes the
+two plans, and each keeps its own full-plan denominator. Its TestOps identities
+come from the trusted `runner-e2e-testops-registration.yml` workflow; until they
+are committed, selection fails closed. See
+[the Reliability plan](EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
 The protected `runner-e2e-testops-reporting` environment supplies `ALLURE_TOKEN`.
 Only default-branch selection and reporting code receives this token. The
 ordinary paid provider jobs, their authorization and their evidence paths stay
@@ -1807,7 +1880,7 @@ Journey discovery and grader calibration do not establish a live provider pass.
 
 `first-task` is a suite in the main Runner E2E catalog. A full
 `pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
-includes its 52 executions alongside the other suites in one shared dashboard,
+includes its 56 executions alongside the other suites in one shared dashboard,
 campaign result bundle, and history entry. Suite/profile selectors narrow that
 same harness; they do not invoke a separate onboarding reporting program.
 
@@ -1819,14 +1892,17 @@ select the Codex or Claude adapter family; **the production onboarding model
 default is retained**, even when it differs from that profile's normal harness
 model. Configured and provider-observed model identities are reported separately.
 
-There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
-`runner-acpx-claude`, local only (52 cells). `runner-codex` selects OpenAI in the
+There are fourteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (56 cells). `runner-codex` selects OpenAI in the
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
-Claude profile directly. Both Legacy profiles select Legacy runner in Advanced
-before authentication and creation. All four paths are labeled
-`production-wizard`; there is no post-onboarding runner switch. Persona,
+Claude profile directly. Both Legacy profiles configure the inactive setup record
+through the normal agent API before authentication, reload, and finish the saved
+setup in the wizard. They are labeled `api-configured-legacy-setup`; the native
+paths retain `production-wizard`. The UI exposes no runner dropdown, and there
+is no post-onboarding runner switch. Legacy coverage proves setup resumption,
+not the fresh-agent automatic default. Persona,
 managed instructions, skills, seeded question, and task invocation are preserved. The native path removes the legacy
 Paperclip operational skill because Runner supplies that contract through its
 protocol; other assigned skills, including `/first-task`, are retained.
@@ -1836,6 +1912,7 @@ separate campaign reservation because they do not create task cost events.
 | First response / control | Complete journey |
 | --- | --- |
 | `interview-first-response` | `interview-plan-accept` |
+| | `plan-only-accept` |
 | `clear-task-first-response` | `task-card-accept` |
 | | `accept-while-running` |
 | `ambiguous-task-first-response` | `task-reply-accept` |
@@ -1849,8 +1926,13 @@ per-attempt marker drive all conversations. Clarification supplies facts only;
 acceptance is a separate explicit user reply or browser-approved confirmation.
 The harness waits for a new user comment to persist before recording a reply
 checkpoint; the composer clearing is only optimistic UI state.
-The interview journey requests a saved plan. Execution journeys require exactly
-one correctly parented/assigned subtask and its completed output document.
+The interview journey saves a plan, accepts its checkbox proposal through the
+browser, and requires exactly one correctly parented/assigned subtask and its
+completed output document. A retained plan alone fails this execution journey.
+The separate `plan-only-accept` journey explicitly forbids implementation after
+plan approval. It requires a retained plan and completed onboarding task, with
+no new agents, execution tasks, or finished output at any observed checkpoint.
+Other execution journeys require the same assigned child and completed output.
 Rejection and revision must not execute the rejected/superseded scope. Closing
 an unexecuted task after rejection is allowed. A completed onboarding parent
 without the approved child is graded as a behavior failure, not retried as an
@@ -3452,6 +3534,80 @@ pnpm test:e2e:runner -- --list --suite feedback-persistence --environment dayton
 pnpm test:e2e:runner -- --id feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion --max-automatic-retries 0 --max-parallel 1
 ```
 
+### Optional owned Docker PostgreSQL lane
+
+The default embedded PostgreSQL lane and portable CI behavior are unchanged.
+An explicit local alternative is available with
+`PAPERCLIP_RUNNER_E2E_DATABASE_LANE=owned-docker-postgres`. It requires an
+already running local Unix-socket Docker Linux/arm64 engine and the installed
+official `postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336`
+image (PostgreSQL `18.6-1.pgdg13+2`); the harness never pulls an image or starts
+an engine. Ambient database URLs remain scrubbed and cannot select a target.
+
+Each attempt owns one labeled container and labeled local data volume, a random
+loopback-only published port and private mode0600 credentials/config/receipt.
+No password is placed in argv or native/model environment. Context/engine,
+image, labels, mounts and port binding are verified; uncertain startup or
+cleanup retains its private receipt and fails closed. Cleanup never selects
+resources by a broad label sweep. Results and fingerprints explicitly bind
+this database lane and image/version; they do not claim embedded18.1 coverage.
+Historical embedded result interpretation remains unchanged.
+
+An infrastructure-only check uses normal source onboarding/migrations/API
+health, verifies zero companies/agents/native runs, then cleans up exact owned
+resources. Run only from an audited immutable source snapshot after the
+operator has authorized this infrastructure check:
+
+```sh
+PAPERCLIP_RUNNER_E2E_SOURCE_SHA=<snapshot-sha> node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/docker-postgres-health.ts --run-owned-infrastructure-health
+```
+
+Its receipt is retained under `results/chat-catalog-campaign/`; it is never a
+scenario measurement or feature acceptance. Missing/changed ownership or an
+unknown inspection result is not proof that a resource is absent.
+
+### Chat catalog remote OpenCode campaign
+
+The explicit `chat-features` matrix now selects `runner-opencode` with native
+`paperclip_runner`, provider `opencode`, and exact model
+`openrouter/deepseek/deepseek-v4.1-flash-1017`. Its credential is an encrypted
+`OPENROUTER_API_KEY` reference. OpenCode remains pinned to the runner-owned
+1.18.34 executable; this candidate does not change the previously qualified
+OpenCode model for other suites. `local` means the selected execution host,
+including an isolated AWS worker, rather than a requirement to use a developer laptop.
+
+This is a new 244-cell behavioral campaign. Historical Codex results and passes
+remain separate and do not qualify the new provider/model. Named-provider feature
+requests retain their original meaning. Unavailable-model history requires an
+actually admitted failed OpenCode run with the exact configured provider/model;
+a preflight rejection does not establish that prerequisite. Provider/account
+qualification, paid-job approval, and owned AWS Spot capacity must be established
+before remote admission. Discovery and credential-free controls establish none
+of those live outcomes.
+
+
+### Explicit chat provider setup health
+
+`chat-setup-health.runner-opencode.local.setup-only` is a diagnostic cell, outside
+all 244 chat catalog scenarios and excluded from `--all`. It reuses the exact
+chat OpenCode/OpenRouter/DeepSeek profile, ordinary trusted fixture setup, owned
+Docker PostgreSQL and normal teardown. One agent's ordinary automatic hello is
+expected; it makes no explicit environment-test call and sends no chat/task
+request. No heartbeat runs, issues, conversations or comments may exist.
+
+Select this cell explicitly with retries zero through the existing Product E2E
+workflow. A failed readiness check fails health and retains only closed check
+codes/categories. Public pause fences automatic setup retries; failed pause
+requests the existing owned supervisor's shutdown before further API observations.
+Multiple probe receipts fail health. Setup-probe usage/cost is unavailable, never
+zero. This diagnostic cannot qualify a catalog scenario or rewrite prior results.
+
+The manual `chat-features` suite uses the production default of no native active-turn
+cap (`timeoutSec: 0`). Zero describes only that per-turn cap; it does not mean zero
+cost or an unlimited cell. Existing finite scenario, Playwright, launcher watchdog,
+public cancellation and owned-process cleanup bounds remain in force. Setup evidence
+records the effective saved policy separately from authored legacy turn declarations.
+Earlier results with the 120-second cap remain unchanged historical measurements.
 
 ### Model-spend readiness and operating reconciliation
 
@@ -3600,3 +3756,38 @@ tree. The sealed original and final inventories remain unchanged. The existing
 normalizer and TestOps exporter consume the derived files. Registered raw JSON
 remains subject to deep JSON and decoded-body privacy checks regardless of its
 text suffix. No existing physical byte, entry, ZIP, time, or archive bound changes.
+
+### Work timeline narrative calibration
+
+`activity.work-timeline` keeps its original human query, three native runs and
+720000 ms attempt bound. Its v2 oracle accepts command exit-code wording and
+incidental summary mentions without using the first worker-name match as proof
+of a handoff. It requires an ordered failed command and pause, a recorded human
+reassignment to the different repair worker, and that worker's verified repair.
+Command, filename, digest, task/run, audit, link, privacy and read-only checks
+remain independent. The deterministic owner/verifier and production timeline
+route regressions do not qualify the actual model journey. Historical failures
+retain their original grades; a missing human handoff narrative still fails.
+
+The timeline API projects initial assignment and delegation only from complete
+`issue.created` audit facts or explicitly fresh `issue.child_created` receipts
+inside the requested window. Child receipts require `createdByRequest: true`;
+false, absent or malformed flags do not establish initial ownership. The first
+bounded receipt is selected before validation, and the issue creation time must
+also be in the requested window. This is not an all-history completeness proof.
+It uses the saved actor,
+target and timestamp, and requires a readable recorded parent for delegation.
+It does not use current ownership as creation evidence. Missing or malformed
+legacy creation details leave initial ownership unknown. The API performs no
+all-history ownership-presence query. Recorded canonical and legacy ownership
+clears emit `unassigned` events with their actual actor and timestamp, without a
+target edge. Event markers are not currently rendered by the timeline chart.
+
+User identities in the timeline require active membership in the requested
+company. This gate covers receipt validation, identity lookup, and public actor,
+event and edge output, including raw IDs. Canonical audit rows remain unchanged.
+The public child and accepted-plan schemas strip idempotency and conversation
+keys; private service replay controls do not imply HTTP replay support. The
+accepted-plan fresh-child list excludes keyed/title reuse reported by its
+existing callback for supported task inputs. This is not a universal internal
+conversation-creation provenance guarantee.

@@ -7,6 +7,11 @@ import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "
 const secret = "q2a-exact-secret-value";
 
 describe("registered run secret redaction", () => {
+  it("omits host-only legacy settlement receipts from full and nested run responses", () => {
+    const proof = { schema: "paperclip.legacy-process-settlement.v1", processPid: 42 };
+    expect(redactRegisteredSecretValues({ id: "run", legacyProcessSettlement: proof,
+      nested: [{ legacyProcessSettlement: proof, status: "failed" }] }, [])).toEqual({ id: "run", nested: [{ status: "failed" }] });
+  });
   it("strips private credential fields and denies names unless the caller supplies an authorized projection", () => {
     const input = { resultJson: { configurationIncomplete: {
       credentialAccess: { connectionName: "private name", grantId: "private grant", secret: "private value" },

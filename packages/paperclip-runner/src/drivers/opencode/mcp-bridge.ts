@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { toolInputError } from "../tool-input-error.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -93,7 +94,7 @@ export async function startOpenCodeMcpBridge(
     };
     try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
   };
-  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
+  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>();
   const controllers = new Map<string, AbortController>();
   const server = createServer((request, response) => {
     void handleRequest(request, response, {
@@ -185,7 +186,7 @@ async function handleRequest(
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
     validators: Map<string, ValidateFunction>;
-    calls: Map<string, { fingerprint: string; promise: Promise<unknown> }>;
+    calls: Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
     onRejectedCall: OpenCodeMcpBridgeOptions["onRejectedCall"];
@@ -285,8 +286,7 @@ async function handleRequest(
         ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
       context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
     }
-    const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
-    const error = `Invalid tool input${detail ? `: ${detail}` : "."}`;
+    const error = toolInputError(validator);
     try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     writeRpc(response, id, {
       isError: true,
@@ -309,9 +309,22 @@ async function handleRequest(
   );
   if (!existing) {
     if (context.calls.size >= 2_048) context.calls.delete(context.calls.keys().next().value!);
-    context.calls.set(callId, { fingerprint, promise: execution });
+    context.calls.set(callId, { fingerprint, promise: execution, waiting: new Set() });
     context.controllers.set(callId, controller!);
     void execution.finally(() => context.controllers.delete(callId)).catch(() => undefined);
+  }
+  // A client that drops its connection has abandoned the call just like one
+  // that sends notifications/cancelled. Abort once no connection still waits
+  // on this call identity, so a call still waiting to be handed to the
+  // controller is never dispatched after every client gave up. A live retry
+  // of the same call keeps it alive.
+  const waiting = (existing ?? context.calls.get(callId))?.waiting;
+  if (waiting && context.controllers.has(callId)) {
+    waiting.add(response);
+    response.once("close", () => {
+      waiting.delete(response);
+      if (!response.writableFinished && waiting.size === 0) context.controllers.get(callId)?.abort();
+    });
   }
   try {
     const result = await execution;

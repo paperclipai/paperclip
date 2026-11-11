@@ -7,6 +7,82 @@ type ShutdownLogger = {
   error(obj: object, msg: string): void;
 };
 
+export const PRE_DRAIN_SHUTDOWN_BUDGET_MS = 20_000;
+
+export type ShutdownStepResult<T> =
+  | { outcome: "completed"; value: T; durationMs: number }
+  | { outcome: "timed_out"; durationMs: number }
+  | { outcome: "failed"; error: unknown; durationMs: number };
+
+export async function afterStalledShutdownStep<T>(result: ShutdownStepResult<T>, onStalled: () => Promise<void>) {
+  if (result.outcome !== "completed") await onStalled();
+  return result;
+}
+
+export async function runBoundedShutdownStep<T>(input: {
+  step: string;
+  signal: "SIGINT" | "SIGTERM";
+  timeoutMs: number;
+  run: () => Promise<T>;
+  log: ShutdownLogger;
+  now?: () => number;
+}): Promise<ShutdownStepResult<T>> {
+  const now = input.now ?? Date.now;
+  const startedAt = now();
+  const timeoutMs = Math.max(0, input.timeoutMs);
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const result = await Promise.race([
+      Promise.resolve()
+        .then(input.run)
+        .then(
+          (value) => ({ outcome: "completed" as const, value }),
+          (error: unknown) => ({ outcome: "failed" as const, error }),
+        ),
+      new Promise<{ outcome: "timed_out" }>((resolve) => {
+        timer = setTimeout(() => resolve({ outcome: "timed_out" }), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    const durationMs = now() - startedAt;
+    const fields = { signal: input.signal, step: input.step, durationMs, timeoutMs };
+    if (result.outcome === "completed") {
+      input.log.info(fields, "shutdown step completed");
+      return { outcome: "completed", value: result.value, durationMs };
+    }
+    if (result.outcome === "failed") {
+      input.log.error({ ...fields, err: result.error }, "shutdown step failed; continuing shutdown");
+      return { outcome: "failed", error: result.error, durationMs };
+    }
+    input.log.info(fields, "shutdown step timed out; continuing shutdown without it");
+    return { outcome: "timed_out", durationMs };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function createPreDrainShutdownBudget(input: {
+  signal: "SIGINT" | "SIGTERM";
+  budgetMs?: number;
+  log: ShutdownLogger;
+  now?: () => number;
+}) {
+  const now = input.now ?? Date.now;
+  const deadline = now() + (input.budgetMs ?? PRE_DRAIN_SHUTDOWN_BUDGET_MS);
+  return {
+    run<T>(step: string, run: () => Promise<T>) {
+      return runBoundedShutdownStep({
+        step,
+        signal: input.signal,
+        timeoutMs: deadline - now(),
+        run,
+        log: input.log,
+        now,
+      });
+    },
+  };
+}
+
 export async function drainRunExecutionFinalizersForShutdown(input: {
   signal: "SIGINT" | "SIGTERM";
   drain: (() => Promise<void>) | null;
@@ -56,8 +132,10 @@ export async function closeHttpListenerForShutdown(input: {
   signal: "SIGINT" | "SIGTERM";
   timeoutMs?: number;
   drainRequests?: (signal: AbortSignal) => Promise<void>;
+  closeRunAdmission?: () => void;
   log: ShutdownLogger;
 }): Promise<"closed" | "timed_out" | "not_listening"> {
+  input.closeRunAdmission?.();
   if (!input.server.listening) return "not_listening";
   const timeoutMs = input.timeoutMs ?? 5_000;
   let timer: NodeJS.Timeout | null = null;

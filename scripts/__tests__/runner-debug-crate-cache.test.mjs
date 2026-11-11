@@ -37,6 +37,28 @@ test("every debug binary must be complete before the restored units are marked f
   assert.throws(() => debugContract(root, { ...metadata, workspace_members: [] }), /Review/);
 });
 
+test("the process-table library is cached with the crate, and any other workspace member needs review", t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "runner-debug-cache-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const table = { id: "table", name: "paperclip-process-table", targets: [{ name: "paperclip_process_table", kind: ["lib"] }] };
+  const withTable = { workspace_members: ["core", "table"], packages: [...metadata.packages, table] };
+  const contract = debugContract(root, withTable);
+  assert.ok(contract.cachedPaths.some(entry => entry.endsWith("/deps/libpaperclip_process_table-*")));
+  assert.ok(contract.required.some(item => item.label === "the process-table lib rlib"));
+  for (const item of contract.required) {
+    const filename = path.join(root, item.glob.replaceAll("*", "0123456789abcdef"));
+    mkdirSync(path.dirname(filename), { recursive: true });
+    writeFileSync(filename, "cached artifact");
+  }
+  assert.equal(markCurrent({ root, ...contract }).action, "marked");
+  rmSync(path.join(root, contract.required.find(item => item.label === "the process-table lib rlib").glob.replaceAll("*", "0123456789abcdef")));
+  assert.match(markCurrent({ root, ...contract }).reason, /process-table lib rlib/);
+  const tableWithBin = { ...table, targets: [...table.targets, { name: "probe", kind: ["bin"] }] };
+  assert.throws(() => debugContract(root, { ...withTable, packages: [...metadata.packages, tableWithBin] }), /Review/);
+  const other = { id: "other", name: "paperclip-other", targets: [{ name: "other", kind: ["lib"] }] };
+  assert.throws(() => debugContract(root, { workspace_members: ["core", "other"], packages: [...metadata.packages, other] }), /Review/);
+});
+
 test("debug cache keys invalidate source, included inputs, deletions and compiler flags", t => {
   const root = mkdtempSync(path.join(os.tmpdir(), "runner-debug-key-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

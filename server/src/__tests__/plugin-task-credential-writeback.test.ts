@@ -8,9 +8,12 @@ import { agents, companies, companyMemberships, createDb, environmentLeases, env
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
-import { registerPluginTaskCredentialHandoff, settlePluginTaskCredentialHandoff } from "../services/plugin-task-credential-writeback.js";
+import { registerPluginTaskCredentialHandoff, settlePluginTaskCredentialHandoff, syncPluginTaskCredentialHandoff } from "../services/plugin-task-credential-writeback.js";
 import { executeEnvironmentTask, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { secretService } from "../services/secrets.js";
+import { syncManagedAiCredentials } from "../services/managed-ai-credential-writeback.js";
+import { appendNativeCredentialUpdate } from "../services/native-runtime/native-credential-updates.js";
+import type { PrpEvent } from "../vendor/paperclip-runner/index.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: async () => {} }));
@@ -26,17 +29,24 @@ suite("durable plugin task credential handoff", () => {
     database = await startEmbeddedPostgresTestDatabase("plugin-task-credential-"); db = createDb(database.connectionString);
   }, 90_000);
   afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
-  async function fixture(dispatched = true) {
+  async function fixture(dispatched = true, provider: "codex" | "grok" = "codex") {
+    const selectedProvider = provider === "codex" ? "openai" as const : "xai" as const;
+    const credential = (token: string, year = 2020) => provider === "codex" ? auth(token, year) : JSON.stringify({
+      "https://issuer.example.test::11111111-1111-4111-8111-111111111111": {
+        key: "fixture-access", refresh_token: token, expires_at: `${year}-01-01T00:00:00Z`,
+      },
+    });
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), pluginId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
     const owner = `fixture-${randomUUID()}`;
     await db.insert(companies).values({ id: companyId, name: "Task credential fixture", issuePrefix: `C${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "paperclip_runner" });
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const service = aiConnectionService(db);
-    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: "Fixture Codex", loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("fixture-original"));
-    const [selection] = await service.quotaAccounts(companyId, owner);
+    await service.save(companyId, owner, { provider: selectedProvider, method: "subscription", ownership: "personal", name: "Fixture account", loginSessionId: "fixture", agentIds: [], allAgents: true }, credential("fixture-original"));
+    const [selection] = await service.quotaAccounts(companyId, owner, true);
     const managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner",
-      binding: { mode: "responsible_user", provider: "openai", method: "subscription" }, config: { provider: "codex" } });
+      binding: { mode: "responsible_user", provider: selectedProvider, method: "subscription" },
+      config: provider === "codex" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "grok" } });
     expect(managed.credentialWriteback).toBeDefined();
     await db.insert(environments).values({ id: environmentId, name: `Fixture ${environmentId}`, driver: "plugin", status: "active", config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-tasks", version: "1.0.0", status: "ready", manifestJson: {
@@ -49,7 +59,7 @@ suite("durable plugin task credential handoff", () => {
     // Recovery must not depend on the original controller or its private home.
     await rm(managed.home!, { recursive: true, force: true });
     const calls: string[] = [];
-    let failExport = false;
+    let failExport = false, exported: string | null = auth("fixture-refreshed", 2021);
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }),
       call: async (_plugin: string, _method: string, params: any) => {
         calls.push(params.operation.kind);
@@ -58,24 +68,153 @@ suite("durable plugin task credential handoff", () => {
         if (params.operation.kind === "credentials") {
           expect(params.operation.accountIdentity).toBe(managed.sessionIdentity);
           if (failExport) throw new Error("fixture export unavailable");
-          return { kind: "credentials", taskId: "fixture-task", credential: { type: "codex-auth-json", authJson: auth("fixture-refreshed", 2021) } };
+          return { kind: "credentials", taskId: "fixture-task", credential: exported === null ? null : { type: "codex-auth-json", authJson: exported } };
         }
         return { kind: "accepted", taskId: "fixture-task" };
       } } as unknown as PluginWorkerManager;
     const lease = () => db.select().from(environmentLeases).where(and(eq(environmentLeases.id, leaseId), eq(environmentLeases.companyId, companyId))).then(rows => rows[0]!);
-    return { companyId, agentId, runId, environmentId, leaseId, owner, selection: selection!, managed, workers, calls, lease,
+    return { accountCredential: credential, companyId, agentId, runId, environmentId, leaseId, owner, selection: selection!, managed, workers, calls, lease,
+      synchronize: () => syncPluginTaskCredentialHandoff(db, { companyId, leaseId, expectedTaskId: "fixture-task" }, async accountIdentity => {
+        const result = await executeEnvironmentTask(db, workers, { companyId, leaseId, expectedTaskId: "fixture-task", operation: { kind: "credentials", accountIdentity } });
+        if (result.kind !== "credentials") throw new Error("Unexpected credential result");
+        return result.credential;
+      }),
+      exportCredential(value: string | null) { exported = value; },
       failExport(value: boolean) { failExport = value; }, credential: () => service.credential(selection!),
-      settle: () => settleDispatchedEnvironmentTask(db, workers, { companyId, id: leaseId }) };
+      settle: (executionStopObserved = false) => settleDispatchedEnvironmentTask(db, workers, { companyId, id: leaseId }, { executionStopObserved }) };
   }
+  it.each(["codex", "grok"] as const)("writes managed %s refreshes without any plugin or invocation home", async provider => {
+    const f = await fixture(true, provider);
+    const read = vi.fn(async () => f.accountCredential("fixture-refreshed", 2021));
+    expect(await syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider, read)).toBe("rotated");
+    expect(await f.credential()).toBe(f.accountCredential("fixture-refreshed", 2021));
+    expect(await syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider, read)).toBe("unchanged");
+    await secretService(db).rotate(f.managed.credentialWriteback!.secretId, { value: f.accountCredential("fixture-reconnected", 2022) }, { userId: f.owner });
+    read.mockClear();
+    expect(await syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider, read)).toBe("binding_changed");
+    expect(read).not.toHaveBeenCalled();
+    expect(await f.credential()).toBe(f.accountCredential("fixture-reconnected", 2022));
+    expect(f.calls).toEqual([]);
+  });
+  it.each((["codex", "grok"] as const).flatMap(provider => ["{partial", "{}"].map(snapshot => [provider, snapshot] as const)))(
+    "rejects unusable %s snapshots for retry: %s", async (provider, snapshot) => {
+      const f = await fixture(true, provider);
+      await expect(syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider, async () => snapshot))
+        .rejects.toThrow("snapshot invalid");
+      expect(await f.credential()).toBe(f.accountCredential("fixture-original"));
+      expect(await syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider,
+        async () => f.accountCredential("fixture-refreshed", 2021))).toBe("rotated");
+    },
+  );
+  it.each(["codex", "grok"] as const)("rechecks %s authority after the exporter yields", async provider => {
+    const f = await fixture(true, provider);
+    const result = await syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider, async () => {
+      await secretService(db).rotate(f.managed.credentialWriteback!.secretId, { value: f.accountCredential("fixture-reconnected", 2022) }, { userId: f.owner });
+      return f.accountCredential("fixture-refreshed", 2021);
+    });
+    expect(result).toBe("binding_changed");
+    expect(await f.credential()).toBe(f.accountCredential("fixture-reconnected", 2022));
+  });
+  it("replays a validated PRP refresh into the tenant secret after export failure", async () => {
+    const f = await fixture(), normalizedSessionId = randomUUID(), runnerInstanceId = randomUUID();
+    await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native", nativeSessionId: normalizedSessionId, runnerInstanceId })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(environmentLeases).set({ status: "retained" }).where(eq(environmentLeases.id, f.leaseId));
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v3", schemaVersion: 3, eventType: "auth.credentials.updated", priority: 0,
+      sourceKind: "runner", sourceInstanceId: runnerInstanceId, sourceEventId: "live-refresh", sourceSeq: 1,
+      runId: f.runId, normalizedSessionId, emittedAt: "2020-01-01T00:00:00Z",
+      payload: { schema: "paperclip.auth.credentials.updated.v1", provider: "codex", bindingId: "harness-auth", revision: 1, detection: "credential_store" },
+    };
+    const notification = { companyId: f.companyId, agentId: f.agentId, runnerInstanceId, normalizedSessionId,
+      event, synchronizeCredentials: f.synchronize };
+    f.failExport(true);
+    await expect(appendNativeCredentialUpdate(db, notification)).rejects.toThrow();
+    expect(await f.credential()).toBe(auth("fixture-original"));
+    f.failExport(false);
+    await appendNativeCredentialUpdate(db, notification);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
+    expect(f.calls).toEqual(["credentials", "credentials"]);
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
+  });
+  it("writes repeated live refreshes without stopping or completing the warm task", async () => {
+    const f = await fixture();
+    expect(await f.synchronize()).toBe("rotated");
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
+    expect(await f.synchronize()).toBe("unchanged");
+    f.exportCredential(auth("fixture-next-refresh", 2022));
+    expect(await f.synchronize()).toBe("rotated");
+    expect(await f.credential()).toBe(auth("fixture-next-refresh", 2022));
+    expect(f.calls).toEqual(["credentials", "credentials", "credentials"]);
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
+    expect(await f.settle()).toBe("completed");
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete", outcome: "unchanged" });
+  });
+  it("keeps live export failures replayable and rejects missing snapshots", async () => {
+    const f = await fixture(); f.failExport(true);
+    await expect(f.synchronize()).rejects.toThrow();
+    f.failExport(false); f.exportCredential(null);
+    await expect(f.synchronize()).rejects.toThrow("snapshot unavailable");
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
+    expect(await f.credential()).toBe(auth("fixture-original"));
+    f.exportCredential(auth("fixture-refreshed", 2021));
+    expect(await f.synchronize()).toBe("rotated");
+    expect(f.calls).not.toContain("complete");
+  });
+  it("fences live writeback after explicit reconnect and physical task replacement", async () => {
+    const f = await fixture();
+    await secretService(db).rotate(f.managed.credentialWriteback!.secretId, { value: auth("fixture-reconnected", 2022) }, { userId: f.owner });
+    expect(await f.synchronize()).toBe("binding_changed");
+    expect(f.calls).toEqual([]);
+    expect(await f.credential()).toBe(auth("fixture-reconnected", 2022));
+    await db.update(environmentLeases).set({ providerLeaseId: "replacement-task" }).where(eq(environmentLeases.id, f.leaseId));
+    await expect(f.synchronize()).rejects.toThrow("lease unavailable");
+    expect(f.calls).toEqual([]);
+  });
+  it("records a null retirement export without treating it as a secret rotation", async () => {
+    const f = await fixture(); f.exportCredential(null);
+    expect(await f.settle()).toBe("completed");
+    expect(f.calls).toContain("credentials");
+    expect(await f.credential()).toBe(auth("fixture-original"));
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete", outcome: "no_credentials" });
+  });
+  it("exports a dispatched stopped task even after the dispatch flag was cleared", async () => {
+    const f = await fixture();
+    const metadata = { ...(await f.lease()).metadata, runnerTaskDispatched: false, runnerTaskExecutionStopped: true,
+      runnerTaskIdentity: { runnerId: "fixture-runner" } };
+    await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, f.leaseId));
+    expect(await f.settle()).toBe("stopped");
+    expect(f.calls).toEqual(["credentials"]);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete", outcome: "rotated" });
+  });
   it("persists refreshed credentials before completing a stopped task, after controller files disappear", async () => {
     const f = await fixture();
-    expect(await f.settle()).toBe(true);
+    expect(await f.settle()).toBe("completed");
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect(f.calls.indexOf("credentials")).toBeLessThan(f.calls.indexOf("complete"));
     const saved = await f.lease();
     expect(saved.metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
     expect(JSON.stringify(saved.metadata)).not.toContain("fixture-refreshed");
     expect(JSON.stringify(saved.metadata)).not.toContain(f.managed.home!);
+  });
+  it("writes back credentials before completing a task whose stop was already observed, without stopping it again", async () => {
+    const f = await fixture();
+    expect(await f.settle(true)).toBe("completed");
+    expect(f.calls).toEqual(["status", "credentials", "complete"]);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
+  });
+  it("leaves an observed-stop task for cleanup when credential writeback fails", async () => {
+    const f = await fixture(); f.failExport(true);
+    await expect(f.settle(true)).rejects.toThrow("termination is unconfirmed");
+    expect(f.calls).toEqual(["status", "credentials"]);
+    expect(await f.lease()).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
+    f.failExport(false);
+    expect(await f.settle()).toBe("completed");
+    expect(f.calls.slice(2)).toEqual(["stop", "status", "credentials", "complete"]);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
   });
   it("keeps a failed transfer pending and recovers through a fresh cleanup after run and environment deletion", async () => {
     const f = await fixture(); f.failExport(true);
@@ -86,7 +225,7 @@ suite("durable plugin task credential handoff", () => {
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     await db.delete(environments).where(eq(environments.id, f.environmentId));
     f.failExport(false);
-    expect(await f.settle()).toBe(true);
+    expect(await f.settle()).toBe("completed");
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect(f.calls.at(-1)).toBe("complete");
   });
@@ -104,7 +243,7 @@ suite("durable plugin task credential handoff", () => {
       expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
     } finally { await db.execute(sql`drop trigger reject_runner_credential_save on company_secret_versions; drop function reject_runner_credential_save()`); }
     const receiver = createDb(database.connectionString);
-    expect(await settleDispatchedEnvironmentTask(receiver, f.workers, { companyId: f.companyId, id: f.leaseId })).toBe(true);
+    expect(await settleDispatchedEnvironmentTask(receiver, f.workers, { companyId: f.companyId, id: f.leaseId })).toBe("completed");
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect(f.calls.filter(call => call === "credentials")).toHaveLength(2);
     expect(f.calls.at(-1)).toBe("complete");
@@ -113,13 +252,13 @@ suite("durable plugin task credential handoff", () => {
   it("does not overwrite an explicit account replacement", async () => {
     const f = await fixture();
     await secretService(db).rotate(f.managed.credentialWriteback!.secretId, { value: auth("fixture-reconnected", 2022) }, { userId: f.owner });
-    expect(await f.settle()).toBe(true);
+    expect(await f.settle()).toBe("completed");
     expect(f.calls).not.toContain("credentials");
     expect(await f.credential()).toBe(auth("fixture-reconnected", 2022));
   });
   it("allows concurrent cleanup to complete the same durable handoff", async () => {
     const f = await fixture();
-    expect(await Promise.all([f.settle(), f.settle()])).toEqual([true, true]);
+    expect(await Promise.all([f.settle(), f.settle()])).not.toContain(false);
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
   });

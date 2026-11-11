@@ -7,9 +7,11 @@ import {
   rm,
   writeFile,
   copyFile,
+  mkdtemp,
   lstat,
 } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import type { RunnerE2EResult } from "./types.js";
 import { assertRunnerE2EResultsPath } from "./results-root.js";
 import {
@@ -70,9 +72,32 @@ export function isStandardEvidenceFile(relative: string) {
     || extension === ".zip");
 }
 
+// Diagnostic metadata only: never an admission, completeness or grading receipt.
+// inventoryComplete describes the listed standard files, not a sealed original tree.
+interface PrivateEvidenceBudget {
+  bound: string; listedFiles: number; filesExamined: number; bytesExamined: number;
+  inventoryComplete: boolean; scanFinished: boolean; requiredEvidenceComplete: boolean | null;
+  byKind: Record<string, { files: number; bytes: number }>;
+}
+const evidenceBudgetKinds = ["json", "log", "image", "video", "zip", "html", "text", "asset"];
+function evidenceBudgetKind(extension: string): string {
+  return extension === ".json" ? "json" : extension === ".log" ? "log" : [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(extension) ? "image"
+    : [".webm", ".mp4"].includes(extension) ? "video" : extension === ".zip" ? "zip" : extension === ".html" ? "html"
+    : [".txt", ".md", ".xml"].includes(extension) ? "text" : "asset";
+}
+function budgetFailure(message: string, budget: PrivateEvidenceBudget, bound: string) {
+  budget.bound = bound;
+  return Object.assign(new Error(message), { evidenceBudget: budget });
+}
+function scannerBudgetBound(reason: string): string {
+  return reason === "zip inspection exceeded its expanded-byte bound" ? "zip-expanded-bytes"
+    : reason === "zip inspection exceeded its time bound" ? "zip-time"
+    : reason === "embedded report exceeded its byte bound" ? "html-encoded-bytes" : "none";
+}
 export interface EvidencePackageResult {
   files: string[];
   leaks: Array<{ file: string; reason: string }>;
+  budget?: PrivateEvidenceBudget;
   missing: string[];
 }
 
@@ -103,7 +128,7 @@ export function isStandardEvidencePath(relative: string) {
   return ALLOWED_DIRECTORIES.has(segments[0]);
 }
 
-async function inspectZip(source: string, secrets: readonly string[]) {
+export async function inspectZip(source: string, secrets: readonly string[]) {
   // Failure traces can exceed Node's child-process output buffer. Stream the
   // expanded archive through the exact-value scanner with enough overlap to
   // detect a credential split across stdout chunks, without retaining the
@@ -119,9 +144,13 @@ async function inspectZip(source: string, secrets: readonly string[]) {
     let carry = Buffer.alloc(0);
     let leak: string | null = null;
     let spawnError: Error | null = null;
+    let expanded = 0;
+    const timer = setTimeout(() => { leak = "zip inspection exceeded its time bound"; unzip.kill(); }, 30_000);
 
     unzip.stdout.on("data", (chunk: Buffer) => {
       if (leak) return;
+      expanded += chunk.length;
+      if (expanded > 256 * 1024 * 1024) { leak = "zip inspection exceeded its expanded-byte bound"; unzip.kill(); return; }
       const data = Buffer.concat([carry, chunk]);
       leak = findSecretLeak(data, secrets, { includeShapes: false });
       carry = data.subarray(Math.max(0, data.length - overlap));
@@ -134,6 +163,7 @@ async function inspectZip(source: string, secrets: readonly string[]) {
       spawnError = error;
     });
     unzip.on("close", (code) => {
+      clearTimeout(timer);
       if (leak) return resolve(leak);
       if (spawnError) {
         return resolve(`zip could not be inspected: ${spawnError.message}`);
@@ -145,6 +175,23 @@ async function inspectZip(source: string, secrets: readonly string[]) {
       );
     });
   });
+}
+
+/** Playwright HTML contains a compressed report, which a plaintext HTML scan
+ * cannot inspect. It receives the same independent ZIP check as blob reports. */
+export async function inspectEmbeddedReport(raw: string, secrets: readonly string[]) {
+  const payloads = [...raw.matchAll(/data:application\/zip;base64,([A-Za-z0-9+/=]+)/g)];
+  if (!payloads.length) return /playwrightReportBase64/.test(raw) ? "embedded report encoding could not be inspected" : null;
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "runner-report-scan-"));
+  try {
+    for (const [index, payload] of payloads.entries()) {
+      if (payload[1]!.length > 128 * 1024 * 1024) return "embedded report exceeded its byte bound";
+      const filename = path.join(temporary, `${index}.zip`);
+      await writeFile(filename, Buffer.from(payload[1]!, "base64"), { mode: 0o600 });
+      const issue = await inspectZip(filename, secrets); if (issue) return issue;
+    }
+    return null;
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
 export async function packageEvidence(input: {
@@ -163,7 +210,10 @@ export async function packageEvidence(input: {
   const available = await walk(input.privateDir, "", Boolean(input.privateCell));
   const standard = available.filter(isStandardEvidencePath);
 
-  if (input.privateCell && standard.length > 4096) throw new Error("Private cell evidence exceeds entry allowance");
+  const budget: PrivateEvidenceBudget | undefined = input.privateCell ? { bound: "none", listedFiles: Math.min(standard.length, 4097), filesExamined: 0, bytesExamined: 0,
+    inventoryComplete: false, scanFinished: false, requiredEvidenceComplete: null,
+    byKind: Object.fromEntries(evidenceBudgetKinds.map(kind => [kind, { files: 0, bytes: 0 }])) } : undefined;
+  if (input.privateCell && standard.length > 4096) throw budgetFailure("Private cell evidence exceeds entry allowance", budget!, "entries");
   const privateSecrets = input.privateCell ? normalizedSecrets(input.secrets).flatMap(value => [value, encodeURIComponent(value), Buffer.from(value).toString("base64"), Buffer.from(value).toString("base64url")]) : [];
   const compact = input.privateCell?.layout === "original" && standard.includes(PRIVATE_FRAMEWORK_REPORT)
     ? await validatePrivateFrameworkReport(input.privateDir) : undefined;
@@ -176,8 +226,12 @@ export async function packageEvidence(input: {
     if (input.privateCell) {
       assertSecretFree(relative, privateSecrets, "private cell evidence path");
       const metadata = await lstat(source);
+      if (Number.isSafeInteger(metadata.size) && metadata.size >= 0 && Number.isSafeInteger(budget!.bytesExamined + metadata.size)) {
+        budget!.filesExamined++; budget!.bytesExamined += metadata.size;
+        const counter = budget!.byKind[evidenceBudgetKind(extension)]!; counter.files++; counter.bytes += metadata.size;
+      }
       if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 256 * 1024 * 1024 - privateBytes)
-        throw new Error("Private cell evidence exceeds byte allowance");
+        throw budgetFailure("Private cell evidence exceeds byte allowance", budget!, "physical-bytes");
       privateBytes += metadata.size;
       if (!Number.isSafeInteger(privateBytes)) throw new Error("Invalid private cell evidence byte accounting");
       const asset = cellTraceAsset(relative, input.privateCell.owner, input.privateCell.layout);
@@ -199,6 +253,10 @@ export async function packageEvidence(input: {
       if (input.privateCell && inspectPrivateFrameworkMetadata(relative.split(path.sep).join("/"), raw, input.secrets)) {
         assertSecretFree(raw, input.secrets, "private framework metadata");
         await copyFile(source, destination); files.push(relative); continue;
+      }
+      if (extension === ".html") {
+        const issue = await inspectEmbeddedReport(raw, input.secrets);
+        if (issue) { if (budget && budget.bound === "none") budget.bound = scannerBudgetBound(issue); leaks.push({ file: relative, reason: issue }); continue; }
       }
       const parsed = extension === ".json" ? JSON.parse(raw) : null;
       const leak =
@@ -233,6 +291,7 @@ export async function packageEvidence(input: {
     } else if (extension === ".zip") {
       const leak = await inspectZip(source, input.secrets);
       if (leak) {
+        if (budget && budget.bound === "none") budget.bound = scannerBudgetBound(leak);
         leaks.push({ file: relative, reason: leak });
         continue;
       }
@@ -254,6 +313,7 @@ export async function packageEvidence(input: {
     }
   }
 
+  if (budget) { budget.inventoryComplete = true; budget.scanFinished = true; }
   const missing = input.expectPassScreenshot
     ? [
         ...REQUIRED_PASS_FILES.filter((required) => !files.includes(required) && !(compact && required === path.join("html-report", "index.html"))),
@@ -284,7 +344,8 @@ export async function packageEvidence(input: {
     "utf8",
   );
   files.push("evidence-manifest.json");
-  return { files, leaks, missing };
+  if (budget && input.expectPassScreenshot) budget.requiredEvidenceComplete = missing.length === 0 && leaks.length === 0;
+  return { files, leaks, missing, ...(budget ? { budget } : {}) };
 }
 
 export async function publishRunnerE2EAttemptEvidence(input: {

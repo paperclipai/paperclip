@@ -1,4 +1,5 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
+import { BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS } from "../services/heartbeat/retries.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -30,7 +31,10 @@ import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import { requestTaskRetry } from "../services/task-retry.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { currentControllerProcessStamp } from "../services/controller-process-identity.js";
+import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -499,6 +503,14 @@ async function spawnOrphanedProcessGroup() {
   };
 }
 
+
+/** Failure retry accounting with every automatic failure retry already used. */
+const spentFailureRetryAccounting = {
+  version: 1,
+  failureRetries: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+  maxTurnContinuations: 0,
+};
+
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<
@@ -851,6 +863,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processPid?: number | null;
     processGroupId?: number | null;
     processLossRetryCount?: number;
+    failureRetryBudgetSpent?: boolean;
     runtimeMode?: "legacy" | "native";
     includeIssue?: boolean;
     runErrorCode?: string | null;
@@ -914,10 +927,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       status: input?.runStatus ?? "running",
       wakeupRequestId,
-      contextSnapshot:
-        input?.includeIssue === false
+      contextSnapshot: {
+        ...(input?.includeIssue === false
           ? (input?.contextSnapshot ?? {})
-          : { ...(input?.contextSnapshot ?? {}), issueId },
+          : { ...(input?.contextSnapshot ?? {}), issueId }),
+        ...(input?.failureRetryBudgetSpent ? { executionRetryAccounting: spentFailureRetryAccounting } : {}),
+      },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
@@ -3542,6 +3557,97 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it("keeps a lost preparation from an older build without a controller stamp in the charged lane", async () => {
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId)))).toEqual([expect.objectContaining({
+      status: "scheduled_retry", scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1 })]);
+  });
+
+  it("continues a chain whose preparations were killed twice and then interrupted again, without a Retry", async () => {
+    const { companyId, agentId, runId: firstRunId } = await seedRunFixture({ adapterType: "paperclip_runner",
+      agentStatus: "idle", runtimeMode: "legacy" });
+    const preparing = async (runId: string, owner: "killed" | "current") => {
+      const live = currentControllerProcessStamp();
+      const bootId = owner === "current" ? controllerLeases.legacyControllerBootId : randomUUID();
+      const pid = Number(spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"],
+        { encoding: "utf8" }).stdout);
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date(), executionStage: "preparing",
+        runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } }, controllerBootId: bootId,
+        controllerProcess: owner === "current" ? live
+          : { bootId, pid, hostHash: live.hostHash, processStartedAt: new Date(Date.now() - 120_000).toISOString() },
+        controllerLeaseExpiresAt: sql`clock_timestamp() + interval '45 seconds'` }).where(eq(heartbeatRuns.id, runId));
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    };
+    const successorOf = async (runId: string) => (await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId))))[0];
+    const heartbeat = heartbeatService(db);
+
+    await preparing(firstRunId, "killed");
+    await heartbeat.reapOrphanedRuns();
+    const second = await successorOf(firstRunId);
+    expect(second).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "interrupted_preparation",
+      scheduledRetryAttempt: 1 });
+
+    await preparing(second!.id, "killed");
+    await heartbeat.reapOrphanedRuns();
+    const third = await successorOf(second!.id);
+    expect(third).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "interrupted_preparation",
+      scheduledRetryAttempt: 2 });
+    expect(third!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0, interruptedPreparations: 2 });
+
+    await preparing(third!.id, "current");
+    const drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM");
+    expect(drained.interruptedRunIds).toEqual([third!.id]);
+    const exited = randomUUID();
+    await db.update(heartbeatRuns).set({ controllerBootId: exited, controllerProcess: { bootId: exited,
+      pid: Number(spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout),
+      hostHash: currentControllerProcessStamp().hostHash, processStartedAt: new Date(Date.now() - 120_000).toISOString() } })
+      .where(eq(heartbeatRuns.id, third!.id));
+    await settleUnrecoverableExecutions(db);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: true });
+    expect(await successorOf(third!.id)).toMatchObject({ agentId, status: "scheduled_retry",
+      scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 3 });
+  });
+
+  it("retries within the failure budget even when a legacy process-loss counter is set", async () => {
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    // Earlier releases wrote this counter; nothing writes it now.
+    await db.update(heartbeatRuns).set({ processLossRetryCount: 1 }).where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const retries = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId),
+    ));
+    expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+  });
+
+  it("does not promise a process-loss retry once the failure budget is spent", async () => {
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { ...(seeded!.contextSnapshot ?? {}), executionRetryAccounting: spentFailureRetryAccounting },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost",
+      error: "Process lost -- server may have restarted" });
+    expect(reaped?.resultJson).toMatchObject({ processLossDiagnostic: { retryEligible: false } });
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId),
+    ))).toEqual([]);
+  });
+
   it("keeps an orphaned legacy run that reached adapter dispatch held for reconciliation", async () => {
     const { companyId, runId, issueId } = await seedRestartOrphanedLegacySetup("dispatching");
 
@@ -4845,6 +4951,94 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
   });
 
+  it.each([
+    { name: "still preparing", resumes: true },
+    { name: "admitted to dispatch", stage: "dispatching", resumes: false },
+    { name: "with a dispatch handoff receipt", handoff: true, resumes: false },
+    { name: "with a process identity", processStarted: true, resumes: false },
+    { name: "with an adapter.invoke event", invoked: true, resumes: false },
+    { name: "with a workspace restore failure", restoreFailure: true, resumes: false },
+  ] as Array<{ name: string; resumes: boolean; stage?: string; handoff?: boolean; processStarted?: boolean;
+    invoked?: boolean; restoreFailure?: boolean }>)("resumes a legacy run that a graceful shutdown stopped before adapter dispatch ($name)", async (variant) => {
+    const { resumes } = variant;
+    const { agentId, runId, issueId } = await seedRunFixture({ adapterType: "process", agentStatus: "running" });
+    await db.update(heartbeatRuns).set({
+      controllerBootId: controllerLeases.legacyControllerBootId,
+      controllerLeaseExpiresAt: new Date(Date.now() + 60_000),
+      executionStage: variant.stage ?? "preparing",
+      startedAt: new Date(),
+      ...(variant.handoff ? { usageJson: { budgetDispatch: { reservationId: randomUUID(), recoveryLeaseOwner: null,
+        admittedAt: new Date().toISOString(), handedOffAt: new Date().toISOString() } } } : {}),
+      ...(variant.processStarted ? { processStartedAt: new Date() } : {}),
+      ...(variant.restoreFailure ? { resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" } } : {}),
+    }).where(eq(heartbeatRuns.id, runId));
+    // Setup had not reached the adapter: no adapter.invoke was recorded.
+    if (!variant.invoked) await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+
+    const result = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
+
+    expect(result.interruptedRunIds).toEqual([runId]);
+    const [interrupted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(interrupted).toMatchObject({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
+    if (resumes) {
+      expect(interrupted!.resultJson?.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+      expect(result.retryRunIds).toHaveLength(1);
+      expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+      expect(await getExecutionBlocker(db, interrupted!.companyId, issueId)).toBeNull();
+      expect(await selectRecoveryRunsByAgent(agentId)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: result.retryRunIds[0], retryOfRunId: runId, status: "scheduled_retry" }),
+      ]));
+    } else {
+      expect(interrupted!.resultJson?.executionRecovery).toBeUndefined();
+      expect(result.retryRunIds).toEqual([]);
+      expect(await selectRecoveryActionsForIssue(issueId)).toEqual([
+        expect.objectContaining({ cause: "legacy_execution_requires_reconciliation" }),
+      ]);
+      expect(await getExecutionBlocker(db, interrupted!.companyId, issueId)).toMatchObject({ runId });
+    }
+  });
+
+  it.each([
+    { name: "before dispatch", startedWork: false },
+    { name: "after an adapter.invoke event", startedWork: true },
+  ])("lets Retry start a run only for a pre-dispatch shutdown hold saved by an older server ($name)", async ({ startedWork }) => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({ adapterType: "process", agentStatus: "idle" });
+    // The older server committed the interruption and its no-replay hold
+    // without the bootstrap certificate.
+    await db.update(heartbeatRuns).set({
+      status: "interrupted", errorCode: "server_shutdown_interrupted", error: "Interrupted by graceful server shutdown (SIGTERM)",
+      finishedAt: new Date(), startedAt: new Date(Date.now() - 1_000),
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: null, executionStage: "preparing",
+      resultJson: { stopReason: "interrupted", timeoutFired: false, timeoutSource: "default", timeoutConfigured: false, effectiveTimeoutSec: 0 },
+    }).where(eq(heartbeatRuns.id, runId));
+    if (!startedWork) await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${runId}`, status: "active",
+      evidence: { runId, originalFailureCode: "server_shutdown_interrupted", adapterRecovery: "unsupported_or_unknown", attempt: 1 },
+      nextAction: "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing.",
+      attemptCount: 1, maxAttempts: 3,
+    });
+
+    if (startedWork) {
+      // The adapter may have acted: the hold stays and no replay is admitted.
+      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId });
+      return;
+    }
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    const heartbeat = heartbeatService(db);
+    const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "responsible-user",
+      idempotencyKey: randomUUID(), observedRunId: runId });
+    expect(receipt.accepted).toBe(true);
+    await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(wake?.payload?.executionWait).toBeUndefined();
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs.filter(run => run.id !== runId)).toHaveLength(1);
+    await heartbeat.drainActiveRunExecutions();
+  });
+
   it("suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       adapterType: "paperclip_runner",
@@ -5110,7 +5304,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       adapterType: "process",
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      failureRetryBudgetSpent: true,
     });
     const heartbeat = heartbeatService(db);
     await heartbeat.reapOrphanedRuns();
@@ -5135,7 +5329,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       adapterType: "process",
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      failureRetryBudgetSpent: true,
       runErrorCode: "process_lost",
       runError: "Authorization: Bearer sk-test-recovery-secret",
     });
@@ -5212,7 +5406,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      failureRetryBudgetSpent: true,
     });
     await db.insert(issueTreeHolds).values({
       companyId,
@@ -7512,11 +7706,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.retryOfRunId, runId))
       .then((rows) => rows[0] ?? null);
+    // The interrupted preparation spent no provider work: it starts its own
+    // lane and keeps the one transient failure already spent (section F).
     expect(successor).toMatchObject({
       agentId,
       status: "scheduled_retry",
-      scheduledRetryAttempt: 2,
+      scheduledRetryAttempt: 1,
       scheduledRetryReason: "interrupted_preparation",
+      contextSnapshot: expect.objectContaining({
+        executionRetryAccounting: expect.objectContaining({ failureRetries: 1 }),
+      }),
     });
     const sourceIssue = await db
       .select({ status: issues.status })
