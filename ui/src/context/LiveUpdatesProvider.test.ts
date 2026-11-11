@@ -41,6 +41,28 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     }
     client.clear();
   });
+  it("refreshes cached tasks whose relation summaries embed a changed blocker", () => {
+    const client = new QueryClient();
+    const blocker = { id: "blocker-uuid", identifier: "PAP-3808", title: "Blocker", status: "blocked" };
+    const dependentKey = queryKeys.issues.detail("PAP-3797");
+    const dependentByIdKey = queryKeys.issues.detail("dependent-uuid");
+    const blockedTaskKey = queryKeys.issues.detail("PAP-3900");
+    const unrelatedKey = queryKeys.issues.detail("PAP-1");
+    client.setQueryData(dependentKey, { id: "dependent-uuid", identifier: "PAP-3797", blockedBy: [blocker], blocks: [] });
+    client.setQueryData(dependentByIdKey, { id: "dependent-uuid", identifier: "PAP-3797", blockedBy: [blocker], blocks: [] });
+    client.setQueryData(blockedTaskKey, { id: "blocked-uuid", identifier: "PAP-3900", blockedBy: [], blocks: [blocker] });
+    client.setQueryData(unrelatedKey, { id: "other-uuid", identifier: "PAP-1", blockedBy: [], blocks: [] });
+    // Authenticated events can carry only the UUID; the dependent cache is still found by its summary id.
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "blocker-uuid", action: "issue.updated", actorType: "user", actorId: "user-1",
+      details: { status: "done", _previous: { status: "blocked" } },
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(dependentKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(dependentByIdKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(blockedTaskKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(unrelatedKey)?.isInvalidated).toBe(false);
+    client.clear();
+  });
   it("drops cached decision content when its access is revoked", () => {
     const client = new QueryClient();
     const receiptKey = ["issues", "decision-receipts", "chat-1", "user-1"];

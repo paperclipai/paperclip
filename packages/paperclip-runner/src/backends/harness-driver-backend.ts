@@ -167,6 +167,8 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         recovered: false,
         reason: recovered.reason,
         ...(recovered.failureClass ? { failureClass: recovered.failureClass } : {}),
+        ...(recovered.resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
+        ...(recovered.runnerExitConfirmed ? { runnerExitConfirmed: true as const } : {}),
       };
     }
     try {
@@ -916,7 +918,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   close(input: { reason: string }) {
-    return this.#session.close(input);
+    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#explicitlyCancelled });
   }
 }
 

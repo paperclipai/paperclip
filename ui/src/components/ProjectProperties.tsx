@@ -3,14 +3,12 @@ import { accessApi } from "@/api/access";
 import { canManageProjectPrivacy } from "@/lib/issuePrivacy";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, type ReactNode } from "react";
-import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
 import { ProjectGitAuthorization } from "./ProjectGitAuthorization";
 import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";
-import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
@@ -25,6 +23,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";
+import { QueryErrorState, useQueryView } from "./QueryView";
 import { Badge } from "@/components/ui/badge";
 import { ProjectAccessMembers } from "./ProjectAccessMembers";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -48,11 +47,9 @@ export type ProjectConfigFieldKey =
   | "visibility"
   | "goals"
   | "env"
-  | "workspace_storage_provider"
   | "execution_workspace_enabled"
   | "execution_workspace_default_mode"
   | "execution_workspace_shared_concurrency"
-  | "execution_workspace_environment"
   | "execution_workspace_base_ref"
   | "execution_workspace_branch_template"
   | "execution_workspace_worktree_parent_dir"
@@ -240,7 +237,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const { data: availableSecrets = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
     queryFn: () => secretsApi.list(selectedCompanyId!),
@@ -263,18 +259,23 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
   });
-  const { data: environments } = useQuery({
-    queryKey: queryKeys.environments.list(selectedCompanyId!),
-    queryFn: () => environmentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && environmentsEnabled,
+  const providerConfiguration = project.workspaceProvider;
+  const projectStoragePluginId = project.executionWorkspacePolicy?.storageProviderPluginId ?? null;
+  const showStorageAvailability = Boolean(projectStoragePluginId || providerConfiguration?.providers.length);
+  const storagePluginUnavailable = Boolean(projectStoragePluginId
+    && !providerConfiguration?.providers.some(provider => provider.id === projectStoragePluginId));
+  const projectEnvironments = useQuery({
+    queryKey: queryKeys.projects.environments(project.companyId),
+    queryFn: () => projectsApi.environmentOptions(project.companyId),
+    enabled: Boolean(project.companyId) && showStorageAvailability && !storagePluginUnavailable,
   });
+  const projectEnvironmentView = useQueryView(projectEnvironments);
 
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
   const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id && !workspace.metadata?.githubRepositoryId);
   const storedExecutionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
-  const providerConfiguration = project.workspaceProvider;
   const executionWorkspacePolicy = providerConfiguration?.effectivePolicy ?? storedExecutionWorkspacePolicy;
   const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
@@ -283,7 +284,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   // Absent/unset round-trips as "auto" — we only write a value once the user picks one.
   const executionWorkspaceSharedConcurrency: SharedWorkspaceConcurrency =
     executionWorkspacePolicy?.sharedWorkspaceConcurrency ?? "auto";
-  const executionWorkspaceEnvironmentId = executionWorkspacePolicy?.environmentId ?? "";
   const executionWorkspaceStrategy = executionWorkspacePolicy?.workspaceStrategy ?? {
     type: "git_worktree",
     baseRef: "",
@@ -298,16 +298,9 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   // policy reads as "not managed", which would show the local folder the policy
   // exists to hide.
   const hideHostPaths = experimentalSettings === undefined || managedSandboxOnly;
-  const runSelectableEnvironments = filterManagedSandboxSelectableEnvironments(
-    environments ?? [],
-    managedSandboxOnly,
-  ).filter((environment) => {
-    if (environment.driver === "local" || environment.driver === "ssh") return true;
-    if (environment.driver !== "sandbox") return false;
-    const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
-    return provider !== null && provider !== "fake";
-  });
-  const showExecutionWorkspaceEnvironmentControl = environmentsEnabled && runSelectableEnvironments.length > 1;
+  const storageEnvironmentNames = projectEnvironmentView.data?.groups
+    .filter(group => group.storageProviderPluginId === projectStoragePluginId)
+    .flatMap(group => group.environments.map(environment => environment.name)) ?? [];
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
@@ -733,38 +726,24 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
           )}
         </div>}
 
-        {providerConfiguration ? (
-          <div className="py-1.5 space-y-2">
-            <label className="flex items-center gap-2 text-sm font-medium" htmlFor="workspace-storage-provider">
-              Workspace storage
-              <SaveIndicator state={fieldState("workspace_storage_provider")} />
-            </label>
-            <select
-              id="workspace-storage-provider"
-              aria-label="Workspace storage provider"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-              disabled={Boolean(storedExecutionWorkspacePolicy?.storageProviderPluginId) || (!onUpdate && !onFieldUpdate)}
-              value={storedExecutionWorkspacePolicy?.storageProviderPluginId ?? "core"}
-              onChange={(event) => {
-                const policy = { enabled: true, ...storedExecutionWorkspacePolicy };
-                policy.storageProviderPluginId = event.target.value === "core" ? null : event.target.value;
-                commitField("workspace_storage_provider", { executionWorkspacePolicy: policy });
-              }}
-            >
-              <option value="core">Core / local</option>
-              {providerConfiguration.providers.map(provider => (
-                <option key={provider.id} value={provider.id}>{provider.displayName}</option>
-              ))}
-              {storedExecutionWorkspacePolicy?.storageProviderPluginId && !providerConfiguration.providers.some(provider => provider.id === storedExecutionWorkspacePolicy.storageProviderPluginId) ? (
-                <option value={storedExecutionWorkspacePolicy.storageProviderPluginId}>Unavailable provider</option>
-              ) : null}
-            </select>
+        {showStorageAvailability ? (
+          <div className="py-1.5 space-y-1" data-testid="project-storage-availability">
+            <div className="text-sm font-medium">Available in</div>
+            {storagePluginUnavailable ? (
+              <p role="alert" className="text-sm text-destructive">Storage plugin unavailable</p>
+            ) : projectEnvironmentView.kind === "loading" || projectEnvironmentView.kind === "reconnecting" ? (
+              <p role="status" className="text-sm text-muted-foreground">Loading environments…</p>
+            ) : projectEnvironmentView.kind === "error" ? (
+              <QueryErrorState error={projectEnvironmentView.error} size="inline" action="load project environments"
+                onRetry={projectEnvironmentView.retry} retrying={projectEnvironmentView.isFetching} />
+            ) : (
+              <p className="text-sm">{storageEnvironmentNames.length ? storageEnvironmentNames.join(", ") : "No available environments"}</p>
+            )}
             <p className="text-xs text-muted-foreground">
-              {storedExecutionWorkspacePolicy?.storageProviderPluginId
-                ? `This project stays on ${providerConfiguration.displayName}.`
-                : "A project moved to a storage plugin stays on that plugin."}
+              {providerConfiguration?.displayName ?? "Core / local"} workspace storage was chosen when this project was created and does not change.
             </p>
-            {providerConfiguration.error ? <p role="alert" className="text-xs text-destructive">{providerConfiguration.error}</p> : null}
+            {providerConfiguration?.error && !storagePluginUnavailable
+              ? <p role="alert" className="text-xs text-destructive">{providerConfiguration.error}</p> : null}
           </div>
         ) : null}
 
@@ -901,34 +880,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                         <div className="text-xs text-muted-foreground">
                           Host-managed implementation: <span className="text-foreground">Git worktree</span>
                         </div>
-                        {showExecutionWorkspaceEnvironmentControl ? (
-                          <div>
-                            <div className="mb-1 flex items-center gap-1.5">
-                              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <span>Environment</span>
-                                <SaveIndicator state={fieldState("execution_workspace_environment")} />
-                              </label>
-                            </div>
-                            <select
-                              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                              value={executionWorkspaceEnvironmentId}
-                              onChange={(e) =>
-                                commitField(
-                                  "execution_workspace_environment",
-                                  updateExecutionWorkspacePolicy({
-                                    environmentId: e.target.value || null,
-                                  })!,
-                                )}
-                            >
-                              <option value="">No environment</option>
-                              {runSelectableEnvironments.map((environment) => (
-                                <option key={environment.id} value={environment.id}>
-                                  {environmentDisplayLabel(environment)}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        ) : null}
+
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">

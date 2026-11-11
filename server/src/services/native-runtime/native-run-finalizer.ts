@@ -1,5 +1,6 @@
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { isContextCompactionRun } from "../context-compaction.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE } from "../remote-workspace-transport.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
@@ -28,6 +29,7 @@ import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.j
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
@@ -60,6 +62,7 @@ import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  supersedeHandedOffDecision,
   supersedeStaleOwnerCompletion,
   type NativeAuthoritativeIssueStatus,
 } from "./status-arbiter.js";
@@ -309,6 +312,11 @@ export function readWorkspaceFailureCause(value: unknown): string | null {
 
 function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined,
   failureCause?: string | null) {
+  if (failureCode === "native_workspace_sync_out_retry_exhausted" && isSandboxStorageExhausted(failureCause)) {
+    return "Saving the workspace stopped because the sandbox disk is full. The agent's result is kept, and Paperclip "
+      + "saves the files again from the retained sandbox without repeating the agent's work; follow the run's recovery "
+      + `action if that cannot free enough space. Last cause: ${failureCause}`;
+  }
   if (failureCode === "native_workspace_sync_out_retry_exhausted") {
     // This code also covers local-directory and plugin workspaces, so the
     // message stays general and defers to the recovery action's next step.
@@ -324,6 +332,16 @@ function terminalFinalizationFailureMessage(failureCode: string, failureScope: "
   return failureScope === "workspace"
     ? `Native workspace finalization failed (${failureCode}).`
     : `Native run finalization failed (${failureCode}).`;
+}
+
+/**
+ * A full sandbox disk stops every copy-back the same way: the archive is built
+ * in that sandbox, and nothing frees space between finalizer attempts. It is
+ * recognised on the first failure and handed to saved-work recovery, which can
+ * reclaim the retained sandbox's inactive provider cache before saving again.
+ */
+function isSandboxStorageExhausted(failureCause: string | null | undefined) {
+  return typeof failureCause === "string" && failureCause.startsWith(`${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}:`);
 }
 
 const NATIVE_FINALIZATION_RETRY_LIMIT = 3;
@@ -476,6 +494,7 @@ async function recordRetryableFailure(input: {
       : readFinalizationFailureCount(input.run.resultJson) + 1;
     const budgetExhausted =
       input.permanent === true ||
+      (input.failureScope === "workspace" && isSandboxStorageExhausted(failureCause)) ||
       (workspaceFinalizeAttempt !== null
         ? workspaceFinalizeAttempt >= 3
         : finalizationFailureCount! >= NATIVE_FINALIZATION_RETRY_LIMIT);
@@ -1638,6 +1657,10 @@ export async function finalizeNativeRun(input: {
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
       providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
       failureRetryCount: executionFailureRetryCount(run),
+      // Only the task's current owner may turn its own failed continuation
+      // into a blocker; the committer rechecks that under the issue lock.
+      failedTurnContinuationUsed: terminalState === "failed" && ownsProviderFailureDecision && !reviewContext
+        && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -1684,6 +1707,7 @@ export async function finalizeNativeRun(input: {
     // new owner's task. The status committer rechecks this under the issue lock.
     if (!isConversation(authoritativeIssue)) {
       proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId, run.id);
+      if (!reviewContext) proposedDecision = supersedeHandedOffDecision(proposedDecision, authoritativeIssue);
     }
     if (proposedDecision.statusAction === "done") {
       const continuation = record(run.contextSnapshot?.executionContinuation);
@@ -1782,6 +1806,7 @@ export async function finalizeNativeRun(input: {
           ? { agentId: run.agentId, reviewContext }
           : undefined,
         requireProviderFailureOwner: decision.reasonCode?.startsWith("native_provider_overloaded")
+          || decision.reasonCode === "native_run_failed_continuation_exhausted"
           ? { agentId: run.agentId, reviewContext } : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait

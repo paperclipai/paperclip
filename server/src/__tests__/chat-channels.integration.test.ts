@@ -4194,6 +4194,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
+    it("finds terminal GitHub responses by native issue binding before legacy run context", async () => {
+      const f = await toolReplyFixture();
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      // Newer runs of the same agent that do not bind this issue: one is natively
+      // bound to another issue although its legacy context names this issue, and
+      // one names another issue in its context. Neither may hide the stopped run.
+      await db.insert(heartbeatRuns).values([
+        { companyId: f.companyId, agentId: f.assignedAgentId, status: "running", runtimeMode: "native",
+          nativeIssueId: randomUUID(), contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 60_000) },
+        { companyId: f.companyId, agentId: f.assignedAgentId, status: "running",
+          contextSnapshot: { issueId: randomUUID() }, createdAt: new Date(Date.now() + 120_000) },
+      ]);
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("keeps terminal GitHub responses waiting while a natively bound newer run is active", async () => {
+      const f = await toolReplyFixture();
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      // The newer run binds this issue natively; its legacy context is ignored.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        status: "running", runtimeMode: "native", nativeIssueId: issueId, contextSnapshot: { issueId: randomUUID() },
+        createdAt: new Date(Date.now() + 60_000) });
+      const baseline = f.responseWrites.length;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        expect(f.responseWrites).toHaveLength(baseline);
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+          eq(chatActions.kind, "github_response_comment")));
+        expect(action).toMatchObject({ status: "processed" });
+        expect(action.result?.final).not.toBe(true);
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
     it("settles a deleted Board-origin request without starving unrelated terminal GitHub replies", async () => {
       const invalid = await toolReplyFixture();
       const valid = await toolReplyFixture();
@@ -11618,7 +11666,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(resolveSlackTaskAuthority(db, binding)).resolves.toMatchObject({ slackUserId: "UBOARD" });
   });
 
-  it.each([false, true])("applies Slack mention settings to channel replies while exempting DMs (DM=%s)", async (isDM) => {
+  it.each([false, true])("allows Slack thread replies without mentions while exempting DMs (DM=%s)", async (isDM) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     expect((await service.get(endpoint.id)).requireAtMention).toBe(false);
@@ -11632,29 +11680,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).toHaveBeenCalledTimes(2);
     expect((await service.update(endpoint.id, { requireAtMention: true })).requireAtMention).toBe(true);
     await send("7100.3", false, "subscribed_message");
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 3 : 2);
+    expect(wakeup).toHaveBeenCalledTimes(3);
     const [filtered] = await db.select().from(chatDeliveries).where(and(
       eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.state, "filtered")));
-    if (isDM) {
-      expect(filtered).toBeUndefined();
-    } else {
-      expect(filtered.redactedError).toBe("Message did not @mention the bot");
-      expect(filtered.normalizedEvent).toMatchObject({ filtering: { contentRetained: false } });
-      expect(filtered.normalizedEvent).not.toHaveProperty("message.text");
-    }
+    expect(filtered).toBeUndefined();
     // Both Slack callback kinds can carry an explicit mention. Retries cannot
     // produce a second wakeup for the same provider message.
     await send("7100.4", true);
     await send("7100.4", true, "mention");
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 4 : 3);
+    expect(wakeup).toHaveBeenCalledTimes(4);
     const conversations = await readChatConversationsByEndpointId(endpoint.id);
     expect(conversations).toHaveLength(1);
     const comments = await readIssueCommentsByIssueId(conversations[0].issueId);
-    expect(comments).toHaveLength(isDM ? 4 : 3);
+    expect(comments).toHaveLength(4);
     expect(conversations[0].externalThreadId).toBe(thread.thread.id);
     await service.update(endpoint.id, { requireAtMention: false });
     await send("7100.5", false);
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 5 : 4);
+    expect(wakeup).toHaveBeenCalledTimes(5);
     if (isDM) {
       await service.update(endpoint.id, { requireAtMention: true, allowDirectMessages: false });
       await send("7100.6", false);
@@ -11662,7 +11704,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it.each([false, true])("rechecks queued Slack channel mentions but exempts DMs before drain (DM=%s)", async (isDM) => {
+  it.each([
+    { isDM: false, isReply: false },
+    { isDM: false, isReply: true },
+    { isDM: true, isReply: false },
+  ])("rechecks queued Slack channel roots but exempts replies and DMs (DM=$isDM, reply=$isReply)", async ({ isDM, isReply }) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, {
       deferWebhookProcessing: true, scheduleDeferredWork: () => undefined,
@@ -11670,14 +11716,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const channelId = isDM ? "D-QUEUED-MENTION" : "C-QUEUED-MENTION";
     const thread = makeThread({ channelId, id: `slack:${channelId}:${isDM ? "" : "7300.1"}`, isDM });
     await deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
-      message: makeMessage({ id: "7300.1", text: "Start work" }), trigger: isDM ? "direct_message" : "subscribed_message" });
+      message: makeMessage({ id: "7300.1", text: "@maya start", mentioned: true }), trigger: isDM ? "direct_message" : "mention" });
+    const [starter] = await readChatDeliveriesByEndpointId(endpoint.id);
+    await db.update(chatDeliveries).set({ nextAttemptAt: new Date(0) }).where(eq(chatDeliveries.id, starter.id));
+    await service.processPendingDeliveries(25, starter.id);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const nextThread = isReply || isDM ? thread.thread : makeThread({ channelId, id: `slack:${channelId}:7300.2` }).thread;
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: nextThread,
+      message: makeMessage({ id: "7300.2", text: "Continue work" }), trigger: isDM ? "direct_message" : "subscribed_message" });
     await service.update(endpoint.id, { requireAtMention: true });
-    const [delivery] = await readChatDeliveriesByEndpointId(endpoint.id);
+    const delivery = (await readChatDeliveriesByEndpointId(endpoint.id)).find(row => row.id !== starter.id)!;
     await db.update(chatDeliveries).set({ nextAttemptAt: new Date(0) }).where(eq(chatDeliveries.id, delivery.id));
     await service.processPendingDeliveries(25, delivery.id);
-    expect(wakeup).toHaveBeenCalledTimes(isDM ? 1 : 0);
-    expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(isDM ? 1 : 0);
-    expect((await readChatDeliveriesById(delivery.id))[0].state).toBe(isDM ? "processed" : "filtered");
+    const allowed = isDM || isReply;
+    expect(wakeup).toHaveBeenCalledTimes(allowed ? 2 : 1);
+    expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(1);
+    const [result] = await readChatDeliveriesById(delivery.id);
+    expect(result.state).toBe(allowed ? "processed" : "filtered");
+    if (!allowed) {
+      expect(result.redactedError).toBe("Message did not @mention the bot");
+      expect(result.normalizedEvent).toMatchObject({ filtering: { contentRetained: false } });
+      expect(result.normalizedEvent).not.toHaveProperty("message.text");
+    }
   });
 
   it("snapshots channel workspace defaults on new tasks and preserves them on replies", async () => {

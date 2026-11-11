@@ -149,6 +149,8 @@ export const createRunnerdCodexTransport: (
   runner.createRunnerdCodexTransport;
 export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
+export const defaultCapabilityRunnerdBinaryAsync =
+  runner.defaultCapabilityRunnerdBinaryAsync;
 export const runnerBinaryTarget = runner.runnerBinaryTarget;
 export const coldAdmissionTimeoutMs = runner.coldAdmissionTimeoutMs;
 export const unreadSteeredMessageIds = runner.unreadSteeredMessageIds;
@@ -217,6 +219,8 @@ export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDisc
 export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;
 export const bundledRemoteProviderPackManifestPath = runner.bundledRemoteProviderPackManifestPath;
 export const bundledRemoteRunnerBinary = runner.bundledRemoteRunnerBinary;
+export const bundledRemoteRunnerRelease = runner.bundledRemoteRunnerRelease;
+export const BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH = runner.BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH;
 
 export const externalOperationDigest = runner.externalOperationDigest;
 export const digestPaperclipSemanticContent = runner.digestPaperclipSemanticContent;

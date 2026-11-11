@@ -7,7 +7,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const indexName = "heartbeat_runs_wakeup_request_id_idx";
-const migrationFile = "0464_heartbeat_runs_wakeup_request_index.sql";
+const migrationFile = "0469_heartbeat_runs_wakeup_request_index.sql";
 
 (support.supported ? describe : describe.skip)("heartbeat runs wakeup request index migration", () => {
   it("builds a valid index concurrently and replays over an index that already exists", async () => {

@@ -979,6 +979,43 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  // Staging run e892cf75: a governed wait was saved, shutdown confirmation of the
+  // retained execution was still pending, and the coordinator scheduled the
+  // same run to settle it. Its own recovery action then cancelled that resume.
+  it.each(["own-resume", "other-run", "no-resume-policy"] as const)(
+    "lets a saved governed wait settle on its own same-run resume (%s)", async mode => {
+      const f = await seedRecoveryAdmission();
+      const context = { issueId: f.issueId, mutation: "interaction", wakeReason: "issue_commented",
+        interactionId: randomUUID(), interactionKind: "ask_user_questions", interactionStatus: "answered" };
+      await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
+        failureCode: "native_governed_wait_settlement_pending" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      const resumedRunId = mode === "other-run" ? randomUUID() : f.runId;
+      await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+        kind: "active_run_watchdog", ownerType: "agent", ownerAgentId: f.agentId, returnOwnerAgentId: f.agentId,
+        cause: "native_governed_wait_settlement_pending", fingerprint: `governed-wait:${f.runId}`,
+        evidence: { runId: resumedRunId, sourceFailureCode: "native_governed_wait_settlement_pending",
+          recoveryMode: "exact_checkpoint_resume", coordinatorAttempt: 1, providerSessionEstablished: true },
+        nextAction: "Resume the exact persisted native session on the same heartbeat run.",
+        wakePolicy: mode === "no-resume-policy" ? null
+          : { kind: "resume_native_run", runId: resumedRunId, notBefore: new Date().toISOString() },
+        maxAttempts: 3, attemptCount: 1 });
+      const dispatch = vi.fn(async () => "settled the saved governed wait");
+      const gate = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId,
+        runId: f.runId, reservationId: f.reservation.id, recoveryLeaseOwner: f.owner, expectedStatus: "running",
+        enforceContinuationOwnership: true, now: new Date(), dispatch });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      if (mode === "own-resume") {
+        expect({ dispatched: gate.dispatched, status: run!.status, errorCode: run!.errorCode })
+          .toEqual({ dispatched: true, status: "running", errorCode: null });
+        if (gate.dispatched) expect(await gate.resultPromise).toBe("settled the saved governed wait");
+      } else {
+        // Any other reconciliation hold on the task still stops this run.
+        expect(gate).toMatchObject({ dispatched: false, cancellation: { outcome: "cancelled", errorCode: "execution_reconciliation_required" } });
+        expect(dispatch).not.toHaveBeenCalled();
+      }
+    });
+
   it("rechecks recovery lease expiry after waiting for the issue lock", async () => {
     const f = await seedRecoveryAdmission();
     const expiresAt = new Date(Date.now() + 1_000);

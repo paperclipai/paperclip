@@ -1285,7 +1285,7 @@ export function createPluginWorkerHandle(
       if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
         return { companyId: directCompanyId, projectGit: { projectId: params.resourceId as string } };
       }
-      if (method === "workspaceOperation" && isRecord(params.operation)) {
+      if ((method === "workspaceOperation" || method === "workspacePrepare") && isRecord(params.operation)) {
         const operation = params.operation;
         const source = operation.kind === "prepare" ? operation.source : operation.binding;
         const workspaceId = isRecord(source) ? readNonEmptyString(operation.kind === "prepare" ? source.id : source.projectWorkspaceId) : null;

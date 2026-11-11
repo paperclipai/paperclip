@@ -197,7 +197,9 @@ function valid(scenario: string): InternalObservation {
     }
     case "tasks.share-private-task": {
       const t = { ...o.tasks[0]!, ...{ visibility: "private" as const } }; o.tasks[0] = t; o.state.task = structuredClone(t); o.state.observerId = "riley";
-      Object.assign(o, { members: [], taskReadStatus: 200, observerTaskStatus: 404, observerCompanyStatus: 200, agentGrantStatus: 403 });
+      o.state.ownerId = "owner";
+      Object.assign(o, { members: [{ id: "owner:task:owner", subjectType: "user", subjectId: "owner", source: "owner" }, { id: "agent-grant", subjectType: "agent", subjectId: "ceo", source: "explicit" }],
+        taskReadStatus: 200, observerTaskStatus: 404, observerCompanyStatus: 200, agentGrantStatus: 403 });
       o.reply = "Riley is in this company. You can use Share on this task to grant Riley access as its owner."; break;
     }
     case "projects.create-project": o.state = { firstIds: ["p"], retryQuery: "query" }; o.humanQueries = ["query", "query"]; o.tasks = []; o.activity = [event("project.created", "p")]; break;
@@ -362,7 +364,8 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "documents-artifacts.resolve-feedback": o => { o.annotations![1]!.status = "resolved"; },
   "documents-artifacts.restore-document": o => { o.documents[0]!.body = "third"; },
   "inbox-search.show-decisions": o => { o.reply = "You can approve every item."; },
-  "inbox-search.find-design": o => { o.reply = "Revision 2 is the latest approved design."; },
+  // The returned record (first task link) is another task, not the one holding the approved revision.
+  "inbox-search.find-design": o => { o.links = ["/RUN/issues/earlier-design", ...o.links]; },
   "inbox-search.notification-audience": o => { Object.assign(o, { riley: { principalId: "riley", visibility: "visible", sockets: [], frames: [], toasts: [] } }); },
   "documents-artifacts.find-artifact": o => { o.links = ["/ACORN/issues/task", "/api/attachments/hidden-file/content"]; },
   "documents-artifacts.produce-download": o => { o.links = ["/ACORN/issues/task", "/tmp/website.html"]; },
@@ -391,6 +394,26 @@ describe("internal chat scenario independent oracles", () => {
     });
   }
   it("never treats an unimplemented scenario as passing", () => expect(gradeInternal(base("inbox-search.archive-partial-failure")).passed).toBe(false));
+});
+
+describe("share-private-task grades the saved audience and the task link, not reply wording", () => {
+  const grade = (o: InternalObservation) => gradeInternal(o);
+  it("accepts a reworded handoff and the retained run's denial-plus-instruction shape when the named task is linked", () => {
+    for (const reply of ["I can't change who sees [COM-1](/ACORN/issues/task); open it and use its sharing control to add her.",
+      "Paperclip refused my attempt: only the owner can manage access. Open the task and add Riley there."]) {
+      const o = valid("tasks.share-private-task"); o.reply = reply; expect(grade(o).passed).toBe(true);
+    }
+  });
+  it("rejects a handoff that links the conversation instead of the named private task", () => {
+    const o = valid("tasks.share-private-task"); o.links = ["/ACORN/issues/chat"]; expect(grade(o).passed).toBe(false);
+  });
+  it("rejects broadening the audience to Riley, another person, or the public", () => {
+    const riley = valid("tasks.share-private-task"); (riley as unknown as { members: Entity[] }).members.push({ id: "g", subjectType: "user", subjectId: "riley", source: "explicit" } as Entity);
+    expect(grade(riley).passed).toBe(false);
+    const other = valid("tasks.share-private-task"); (other as unknown as { members: Entity[] }).members.push({ id: "g", subjectType: "user", subjectId: "someone-else", source: "explicit" } as Entity);
+    expect(grade(other).passed).toBe(false);
+    const open = valid("tasks.share-private-task"); open.tasks[0] = { ...open.tasks[0]!, visibility: "open" } as Entity; expect(grade(open).passed).toBe(false);
+  });
 });
 
 describe("goal conditional phase calibration", () => {
