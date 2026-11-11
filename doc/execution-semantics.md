@@ -2161,6 +2161,14 @@ The readiness observation does not freeze admission or grant execution
 authority. Ordinary drain and idle-sleep checks still require their existing
 quiescence contract. Replacements must support the reported readiness version.
 
+A run-scoped native-controller preservation obligation is separate from serving
+bootstrap. The authenticated API and liveness remain available while the
+affected company, task and run retain a named preservation hold. Replacement
+readiness, ephemeral enrollment and idle suspension stay blocked until canonical
+preservation publishes and a fresh eligibility check succeeds. Uncertain local
+or archived bytes are retained. Global configuration, database authority and
+signing-key prerequisites still fail startup.
+
 Existing version 2 controller checkpoints retain their previous recovery path.
 New runs that use preparation handoff write version 3 controller headers. New
 readers accept both versions. Older readers refuse version 3 without replacing
