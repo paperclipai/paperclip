@@ -112,8 +112,10 @@ async function authorizeTerminalTask(tx: Db, actor: AuthorizationActor, issue: I
   if (!(await access.decide({ actor, action: "issue:read", resource })).allowed) throw notFound("Task not found");
   if (actor.type === "agent" && (issue.assigneeAgentId !== actor.agentId || issue.assigneeUserId)) {
     const task = issue.identifier ?? issue.id;
-    throw forbidden(issue.assigneeAgentId && !issue.assigneeUserId
-      ? `Agents may complete only their own case work. Agent ${issue.assigneeAgentId} owns primary task ${task} and closes the case with a terminal handoff; ask that agent on ${task}.`
+    const [owner] = issue.assigneeAgentId && !issue.assigneeUserId ? await tx.select({ name: agents.name }).from(agents)
+      .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId))).limit(1) : [];
+    throw forbidden(owner
+      ? `Agents may complete only their own case work. ${owner.name} (agent ${issue.assigneeAgentId}) owns primary task ${task}. To close the case, hand it to that agent with handoff_case and closure instructions; that agent records the terminal handoff.`
       : `Agents may complete only their own case work. Primary task ${task} has no assigned agent to close the case.`,
     { primaryTaskId: issue.id, assigneeAgentId: issue.assigneeAgentId });
   }

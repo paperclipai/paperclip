@@ -513,7 +513,7 @@ describeEmbeddedPostgres("cases routes", () => {
 
     for (const status of ["done", "cancelled"] as const) {
       const denied = await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status }).expect(403);
-      expect(denied.body.error).toBe(`Agents may complete only their own case work. Agent ${owner.id} owns primary task ${primary!.identifier} and closes the case with a terminal handoff; ask that agent on ${primary!.identifier}.`);
+      expect(denied.body.error).toBe(`Agents may complete only their own case work. ${owner.name} (agent ${owner.id}) owns primary task ${primary!.identifier}. To close the case, hand it to that agent with handoff_case and closure instructions; that agent records the terminal handoff.`);
     }
     const upsert = await otherHttp
       .post(`/api/companies/${company.id}/cases`)
