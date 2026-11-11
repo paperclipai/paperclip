@@ -1645,7 +1645,7 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderForm(
       [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
       {
-        adapterType: "cursor_cloud",
+        adapterType: "hermes_gateway",
         adapterConfig: {},
       },
       { hidePromptTemplate: false },
