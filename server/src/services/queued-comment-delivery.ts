@@ -1,6 +1,11 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 
+/** The wake reason an inbound chat message records (see chat inbound wakeups). */
+export const EXTERNAL_CHAT_MESSAGE_WAKE_REASON = "External chat message received";
+/** The error a saved wake records when a completed run already received all of its messages. */
+export const QUEUED_MESSAGES_DELIVERED_REASON = "Queued messages were already delivered to a completed run";
+
 /**
  * Per-comment consumption (work-intent outbox, invariant 4). A succeeded run
  * of the wake's agent that started after the comment's latest revision
