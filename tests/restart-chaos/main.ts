@@ -691,7 +691,9 @@ async function main(): Promise<number> {
         observer.record.diskFull.appliedSaves = receiptsForIssue(await diskFullSeam?.receipts() ?? [], observer.record.issueId).length;
       }
       // T1: a mid-tool fault only counts when one of the task's faults started while its loop ran (workloads.ts).
-      const toolOracle = withDiskFullCheck(withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults), observer.plan, observer.record);
+      // DF1 restarts nothing, so T1's mid-tool restart check does not apply; the disk-full check replaces it.
+      const toolOracle = isDiskFullFault(observer.plan.fault) ? withDiskFullCheck(oracle, observer.plan, observer.record)
+        : withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults);
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;

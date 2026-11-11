@@ -224,6 +224,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // Only a remote sandbox workspace has a save the sandbox disk can refuse; a local run has none.
     if (env !== "daytona" || values.storage !== "s3") throw new Error("The disk-full fault (DF1) needs a remote sandbox workspace save; run it with --env daytona --storage s3");
     if (providerFaults.length) throw new Error("The disk-full fault (DF1) does not share a wave with provider message faults (PV*)");
+    // The matrix planner builds its cells from restart and provider faults only; DF1 would silently drop out.
+    if (values.matrix) throw new Error("The disk-full fault (DF1) is not a --matrix cell; run it as a planned wave");
   }
   if (providerFaults.length) {
     if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");

@@ -457,8 +457,8 @@ save, so the harness refuses other setups. Use R1 with `--workspace-repo`. With 
 and the task fails as `not_applied` (wave `w-20261111T131314-s9411`). An unchanged workspace also
 skips the capture.
 
-The observer clicks Retry in the board UI, as for every other cell. In wave `w-20261111T131941-s9412`
-the disk-full rest showed "Recover saved files", not a Retry button, while the API reported
+The observer clicks Retry in the board UI, as for every other cell. In waves `w-20261111T131941-s9412`
+and `w-20261111T134316-s9413` the disk-full rest showed "Recover saved files", not a Retry button, while the API reported
 `canRetry: true`; R3 records this as `ui_retry_button_missing`.
 
 ## Config faults (CF1–CF3, `config-wave.ts`)

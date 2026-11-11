@@ -44,6 +44,8 @@ describe("DF1 planning", () => {
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", IMAGE, "--adapters", "codex", "--workloads", "B1", "--faults", "DF1"])).toThrow(/--storage s3/);
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", IMAGE, "--adapters", "codex", "--faults", "DF1", "--storage", "s3", "--storm-minutes", "5"]))
       .toThrow(/storm/);
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", IMAGE, "--adapters", "codex", "--workloads", "B1", "--faults", "DF1", "--storage", "s3", "--matrix"]))
+      .toThrow(/--matrix/);
   });
 });
 
