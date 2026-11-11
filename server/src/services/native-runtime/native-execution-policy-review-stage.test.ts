@@ -6,7 +6,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
-import { gateDoneOnConfiguredReview, type NativeStatusDecision } from "./status-arbiter.js";
+import { gateDoneOnConfiguredReview, supersedeStaleOwnerCompletion, type NativeStatusDecision } from "./status-arbiter.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
@@ -177,6 +177,15 @@ describe.skipIf(!support.supported)("native completion with a configured review 
       .toMatchObject({ statusAction: "in_progress", reasonCode: "execution_stage_transition_rejected" });
     const open = { ...done, statusAction: "in_progress", toStatus: "in_progress" } as NativeStatusDecision;
     expect(gateDoneOnConfiguredReview(open, { kind: "starts", patch: {}, state: {} as never }, "worker")).toBe(open);
+  });
+
+  it("lets a newer run's ownership win before the review policy maps a stale Done", () => {
+    const done = { policyVersion: "test", statusAction: "done", toStatus: "done", reasonCode: "decision_superseded_by_new_evidence",
+      unblockDescriptor: null, effects: [{ kind: "release_checkout" }] } as unknown as NativeStatusDecision;
+    const heldByNewer = { status: "in_progress", assigneeAgentId: "worker", assigneeUserId: null, executionRunId: "newer-run" };
+    const superseded = supersedeStaleOwnerCompletion(done, heldByNewer, "worker", "older-run");
+    expect(superseded.statusAction).toBe("preserve");
+    expect(gateDoneOnConfiguredReview(superseded, { kind: "rejected", message: "No eligible review participant." }, "worker")).toBe(superseded);
   });
 
   it("fails closed when the stored policy cannot be read", () => {

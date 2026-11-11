@@ -239,11 +239,13 @@ export async function reassessNativeStatusFromSource(
       decision = resolveNativeFinalizerStatus({ assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
         requiredQualityReviewSatisfied: false, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId });
     }
-    decision = gateDoneOnConfiguredReview(decision, reviewStage, row.agentId);
     // New evidence from a reassigned-away run cannot close the new owner's task.
+    // Ownership is checked first, as in the finalizer, so a stale run cannot
+    // turn its result into a review or a recovery for itself.
     if (currentIssue && !currentIssue.conversationAgentId) {
       decision = supersedeStaleOwnerCompletion(decision, { ...currentIssue, status: row.issueStatus }, row.agentId, row.runId);
     }
+    decision = gateDoneOnConfiguredReview(decision, reviewStage, row.agentId);
     let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
     try {
       committed = await commitNativeStatusDecision({
