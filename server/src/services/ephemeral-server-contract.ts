@@ -5,7 +5,7 @@ import { isValidLocalEncryptedMasterKey } from "../secrets/local-encrypted-provi
 import { agentInstructionsBundleMode } from "./agent-instructions.js";
 import { skillInstallationMaintenance } from "./skill-installation-maintenance.js";
 import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
-import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
+import { findLocalNativeControllerObligation } from "./native-runtime/native-controller-migration.js";
 import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
 import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
@@ -44,8 +44,12 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
  * volume data is adopted by the owning maintenance commands before removal. */
 export async function assertEphemeralServerData(db: Db) {
   if (!ephemeralServerEnabled()) return;
-  const { blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
-  if (blockers.length) throw new Error(`Volume-free server data is not eligible: ${blockers.join(", ")}`);
+  const { blockers, controller } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
+  if (!blockers.length) return;
+  const detail = (blocker: string) => blocker === "native_controllers_require_migration" && controller
+    ? `${blocker} (run ${controller.runId} on task ${controller.issueId}: controller state at ${controller.source} is not proven by the database, and this filesystem has no volume-free owner marker, so it may be the only copy of that run's progress; adopt it with the native controller migration before starting a volume-free server)`
+    : blocker;
+  throw new Error(`Volume-free server data is not eligible: ${blockers.map(detail).join(", ")}`);
 }
 
 export async function readEphemeralServerDataEligibility(db: Db, options: { purpose?: "migration" | "startup" } = {}) {
@@ -71,7 +75,8 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
   )).limit(1);
   if (localTrace) blockers.push("provider_traces_require_migration");
   if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
-  if (await hasLocalNativeControllerObligations(db)) blockers.push("native_controllers_require_migration");
+  const controller = await findLocalNativeControllerObligation(db);
+  if (controller) blockers.push("native_controllers_require_migration");
   if (await hasLocalRuntimeSkillObligations(db)) blockers.push("runtime_skill_assets_require_migration");
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
@@ -81,5 +86,5 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
     if (page.inspected < 50 || !page.after) break;
     after = page.after;
   }
-  return { eligible: blockers.length === 0, blockers };
+  return { eligible: blockers.length === 0, blockers, controller };
 }
