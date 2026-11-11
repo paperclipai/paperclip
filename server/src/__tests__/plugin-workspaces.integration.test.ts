@@ -93,6 +93,44 @@ const support = await getEmbeddedPostgresTestSupport();
         const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
         expect(retained.providerRef).toBe(`checkout:${workspaceId}`);
       });
+
+    it("polls bounded requests using the provider's advertised preparation deadline", async () => {
+      const f = await fixture();
+      const deadline = new Date(Date.now() + 30_000).toISOString();
+      const phases: string[] = [];
+      const workers = {
+        getWorker: () => ({ supportedMethods: ["workspaceOperation", "workspacePrepare"] }),
+        call: async (pluginId: string, method: string, params: any, timeout: number) => {
+          expect(method).toBe("workspacePrepare");
+          expect(timeout).toBeLessThanOrEqual(15_000);
+          phases.push(params.phase);
+          if (params.phase === "submit") return { kind: "pending", deadline };
+          expect(params.deadline).toBe(deadline);
+          if (phases.length === 2) throw new Error("lost status reply");
+          const { phase: _phase, ...original } = params;
+          return f.workers.call(pluginId, "workspaceOperation", original);
+        },
+      } as unknown as WorkspaceWorkers;
+      expect(await preparePluginWorkspace(db, workers, f.input)).toBeTruthy();
+      expect(phases).toEqual(["submit", "poll", "poll"]);
+      expect(f.calls).toHaveLength(1);
+    });
+
+    it("stops preparation at the provider deadline before issuing a poll", async () => {
+      const f = await fixture();
+      const workers = {
+        getWorker: () => ({ supportedMethods: ["workspaceOperation", "workspacePrepare"] }),
+        call: async (_pluginId: string, method: string, params: { phase: string }) => {
+          expect(method).toBe("workspacePrepare");
+          expect(params.phase).toBe("submit");
+          return { kind: "pending", deadline: new Date(Date.now() - 1).toISOString() };
+        },
+      } as unknown as WorkspaceWorkers;
+      await expect(preparePluginWorkspace(db, workers, f.input)).rejects.toMatchObject({
+        kind: "provider", reason: "deadline_exceeded", retryable: true,
+      });
+    });
+
     it.each([
       ["missing", undefined],
       ["stopped", { status: "stopped", supportedMethods: [] }],

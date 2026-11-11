@@ -125,6 +125,38 @@ export const pluginWorkspaceParamsSchema = z
 /** Finalization receives the originating run/agent context; maintenance remains agent-independent. */
 export type PluginWorkspaceParams = z.infer<typeof pluginWorkspaceParamsSchema>;
 
+export const pluginWorkspacePrepareParamsSchema = pluginWorkspaceParamsSchema.extend({
+  phase: z.enum(["submit", "poll", "finish"]),
+}).refine((input) => input.operation.kind === "prepare");
+export type PluginWorkspacePrepareParams = z.infer<typeof pluginWorkspacePrepareParamsSchema>;
+
+export type PluginWorkspacePrepareResult =
+  | { kind: "unsupported" }
+  | { kind: "pending" | "ready_to_finish"; deadline: string }
+  | Extract<PluginWorkspaceResult, { kind: "prepared" }>;
+
+export function parseWorkspacePrepareResult(
+  params: PluginWorkspacePrepareParams,
+  value: unknown,
+): PluginWorkspacePrepareResult {
+  const result = z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("unsupported") }).strict(),
+    z.object({ kind: z.literal("pending"), deadline: z.string().datetime() }).strict(),
+    z.object({ kind: z.literal("ready_to_finish"), deadline: z.string().datetime() }).strict(),
+  ]).safeParse(value);
+  if (result.success) {
+    if (result.data.kind === "unsupported" && params.phase !== "submit")
+      throw new Error("Workspace provider withdrew asynchronous preparation");
+    if (result.data.kind === "ready_to_finish" && (params.phase !== "poll" ||
+      params.operation.kind !== "prepare" || !params.operation.fresh?.recoverySnapshots.length))
+      throw new Error("Unexpected workspace preparation continuation");
+    return result.data;
+  }
+  const prepared = parseWorkspaceProviderResult(params, value);
+  if (prepared.kind !== "prepared") throw new Error("Workspace provider returned the wrong preparation result");
+  return prepared;
+}
+
 export function parseWorkspaceProviderResult(
   params: PluginWorkspaceParams,
   value: unknown,
