@@ -75,7 +75,7 @@ function eventActorValues(actor: CaseActor) {
     actorUserId: actor.actorType === "user" ? actor.actorId : null,
     actorAgentId: actor.agentId,
     runId: actor.runId && isUuidLike(actor.runId) ? actor.runId : null,
-    apiKeyId: actor.apiKeyId,
+    apiKeyId: actor.apiKeyId && isUuidLike(actor.apiKeyId) ? actor.apiKeyId : null,
   };
 }
 

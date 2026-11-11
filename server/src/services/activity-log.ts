@@ -169,9 +169,10 @@ export function publishActivity(publication: ActivityPublication) {
 export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  const apiKeyId = readNonEmptyString(input.apiKeyId)
+  const candidateApiKeyId = readNonEmptyString(input.apiKeyId)
     ?? readNonEmptyString(input.agentApiKeyId)
     ?? readNonEmptyString(currentRequestActor()?.keyId);
+  const apiKeyId = candidateApiKeyId && isUuidLike(candidateApiKeyId) ? candidateApiKeyId : null;
   const insert = (runner: Db) => runner.insert(activityLog).values({
     ...(receipt ? { id: receipt.id } : {}),
     companyId: input.companyId,
