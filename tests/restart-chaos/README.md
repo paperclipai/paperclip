@@ -921,8 +921,8 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona
 ```
 
 SR1U is SR1 where the parked owner's stop stays unconfirmed even when forced. The harness boots the
-server with `PAPERCLIP_TEST_WARM_RETIREMENT_FAULT=unconfirmed` (test instrumentation, ignored when
-`NODE_ENV=production`), so every retirement of a warm sandbox owner fails. This is the staging shape
+server with `PAPERCLIP_TEST_WARM_RETIREMENT_FAULT=unconfirmed` (test instrumentation, armed only when
+`NODE_ENV=test`, as in the harness server), so every retirement of a warm sandbox owner fails. This is the staging shape
 where a follow-up failed with `Controller journal drain timed out` or `runner did not durably suspend
 before checkpoint` before any provider work and nothing ever restarted the task. The follow-up must
 fail once with `failureCause: native_predecessor_retirement_unproven`, re-queue itself in the

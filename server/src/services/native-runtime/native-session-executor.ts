@@ -778,8 +778,8 @@ function sandboxProviderLeaseId(target?: AdapterExecutionTarget | null): string 
 async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
   options?: Parameters<typeof closeWarmNativeSession>[2]) {
   // Chaos cell SR1U: a sandbox owner whose stop stays unconfirmed even when
-  // forced. Test instrumentation only; never armed in production.
-  if (process.env.NODE_ENV !== "production" && process.env.PAPERCLIP_TEST_WARM_RETIREMENT_FAULT === "unconfirmed" && entry.providerLeaseId) {
+  // forced. Test instrumentation only: armed only in a NODE_ENV=test server.
+  if (process.env.NODE_ENV === "test" && process.env.PAPERCLIP_TEST_WARM_RETIREMENT_FAULT === "unconfirmed" && entry.providerLeaseId) {
     entry.retirementUnproven = true;
     throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId,
       new Error("warm Runner stop unconfirmed (injected test fault)"));

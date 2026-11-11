@@ -81,8 +81,9 @@ export async function releaseUnchangedFallbackWorkspace(db: Db, run: Run): Promi
     let authority: ReturnType<typeof readRemoteWorkspaceAuthority>;
     try { authority = readRemoteWorkspaceAuthority(workspace?.metadata); } catch { return false; }
     if (!workspace || !authority) return false;
-    // Another writer took the workspace on: nothing of this run's remains in it.
-    if (authority.writerRunId !== run.id) return authority.epoch > reference.data.epoch;
+    // Another writer took the workspace on, so another run already continues
+    // the task. Do not queue a second attempt beside it.
+    if (authority.writerRunId !== run.id) return false;
     // The heartbeat that owns this writer is the caller, and it started no runner.
     return Boolean(await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority, callerOwnsWriter: true }));
   });

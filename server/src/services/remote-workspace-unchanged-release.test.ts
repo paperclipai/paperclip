@@ -194,6 +194,16 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
       ? { dirty: false, writerRunId: null, snapshotId: f.savedA.snapshotId } : { dirty: true, writerRunId: f.runB });
   });
 
+  it.each([1, 0])("queues no fallback attempt beside another writer (epoch change %i)", async epochChange => {
+    const f = await preparedFollowUp();
+    await f.end({ status: "failed", errorCode: "adapter_failed" });
+    const current = await f.workspace();
+    const authority = readRemoteWorkspaceAuthority(current.metadata)!;
+    await db.update(executionWorkspaces).set({ metadata: { ...current.metadata, remoteWorkspace: { ...authority,
+      writerRunId: randomUUID(), epoch: authority.epoch + epochChange } } }).where(eq(executionWorkspaces.id, current.id));
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(false);
+  });
+
   it("keeps the full save while the writer's owner may still act, and while it is still running", async () => {
     const f = await preparedFollowUp();
     await f.end({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
