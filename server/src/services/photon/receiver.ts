@@ -76,10 +76,18 @@ export class PhotonReceiver {
     this.request();
   }
   private request(): void {
-    if (this.stopped) return;
+    if (this.closing || (this.stopped && this.failureDebt.size === 0)) return;
     this.requested = true;
     if (this.running) return;
     this.running = (async () => {
+      if (this.stopped) {
+        // The existing reader cadence owns reporting recovery, never new
+        // intake, until the current callback durably accepts responsibility.
+        this.requested = false;
+        await this.retryFailureDebt();
+        if (this.failureDebt.size === 0 && this.timer) clearInterval(this.timer);
+        return;
+      }
       while (this.requested && !this.stopped) {
         this.requested = false;
         await this.catchUp();
@@ -211,12 +219,12 @@ export class PhotonReceiver {
       if (receipt?.kind !== "recorded") throw new Error("Photon failure responsibility was not recorded by the current owner");
     }
     catch (reportingError) {
-      // Preserve responsibility after the request owner finishes. A stopped
-      // receiver may retry reporting during close, never restart intake.
+      // Preserve the original error and pause intake. Keep the existing
+      // reader interval solely for serialized reporting retry: persistence
+      // recovery must not depend on somebody else calling close().
       this.failureDebt.set(error, reportingError);
       this.stopped = true;
       this.requested = false;
-      if (this.timer) clearInterval(this.timer);
     }
   }
   private async retryFailureDebt(): Promise<void> {

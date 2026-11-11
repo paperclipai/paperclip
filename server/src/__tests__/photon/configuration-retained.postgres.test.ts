@@ -1017,6 +1017,61 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     await db.transaction(tx => assertPhotonCompanyRetired(tx, f.companyId));
   });
 
+  it("company destructive recheck reads encoded Photon obligations before deleting retired-looking records", async () => {
+    const c = await managedConfiguration();
+    await c.service.configure(c.endpoint.id, { action: "remove" }, f.userId);
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, c.endpoint.id));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, c.connection.id));
+    expect(endpoint?.status).toBe("archived");
+    expect(connection).toMatchObject({ enabled: false, status: "archived", credentialSecretRefs: [] });
+    const settled = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    if (!settled || settled.phase !== "retired") throw new Error("normal Photon retirement did not settle");
+    const receiverId = randomUUID();
+    const senderId = randomUUID();
+    const sequence = (settled.acceptedSequence ?? -1) + 1;
+    const obligations = [
+      photonExternalStateSchema.parse({ ...settled, pending: {
+        deliveryId: "retained-company-delete", sequence,
+        previousSequence: settled.acceptedSequence, frameDigest: "a".repeat(64),
+      } }),
+      photonExternalStateSchema.parse({ ...settled, localResourceId: receiverId,
+        localResource: { id: receiverId, controller: {}, leaseDigest: "b".repeat(64), closed: false },
+        localClosureConfirmed: undefined }),
+      photonExternalStateSchema.parse({ ...settled,
+        senderResource: { id: senderId, controller: {}, leaseDigest: "c".repeat(64), closed: false } }),
+    ];
+    for (const parsed of obligations) {
+      const obligation = photonExternalStateSchema.parse(JSON.parse(JSON.stringify(parsed)));
+      // Exercise the real encoded company/endpoint CAS owner, never insert a
+      // raw external-owner key that would mask the destructive-gate defect.
+      await c.state.update(PHOTON_EXTERNAL_STATE, () => obligation);
+      expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toEqual(obligation);
+      expect(await db.select().from(chatSdkState).where(and(
+        eq(chatSdkState.companyId, f.companyId), eq(chatSdkState.endpointId, c.endpoint.id),
+        eq(chatSdkState.stateKey, PHOTON_EXTERNAL_STATE)))).toEqual([]);
+      await expect(db.transaction(async tx => {
+        await tx.select({ id: companies.id }).from(companies)
+          .where(eq(companies.id, f.companyId)).for("no key update");
+        await chatCompanyDeletion.deleteCompanyData(tx, f.companyId);
+        // Roll back an unsafe baseline deletion while preserving its precise
+        // rejection difference from the required normal retirement conflict.
+        throw new Error("destructive_gate_accepted_retained_photon_obligation");
+      })).rejects.toMatchObject({ status: 409, details: { code: "photon_retirement_pending" } });
+      expect(await db.select().from(companies).where(eq(companies.id, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, c.endpoint.id))).toEqual([endpoint]);
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.id, c.connection.id))).toEqual([connection]);
+      expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toEqual(obligation);
+    }
+    // The positive final gate still accepts the SAME settled identity and ACK
+    // prefix. It does not rewrite progress or require a second provider call.
+    await c.state.update(PHOTON_EXTERNAL_STATE, () => settled);
+    const requests = structuredClone(c.requests);
+    await db.transaction(tx => chatCompanyDeletion.deleteCompanyData(tx, f.companyId));
+    expect(c.requests).toEqual(requests);
+    expect(await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, c.endpoint.id))).toEqual([]);
+    expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toBeNull();
+  });
+
   it("an unavailable or older stopped cleanup owner cannot authorize company deletion", async () => {
     const c = await managedConfiguration();
     const remove = vi.fn(async () => { throw new Error("latest owner intentionally unavailable"); });

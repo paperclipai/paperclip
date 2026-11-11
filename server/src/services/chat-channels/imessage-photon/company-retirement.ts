@@ -1,9 +1,9 @@
 import { and, asc, eq, gt, sql } from "drizzle-orm";
-import { chatEndpoints, chatSdkState, toolConnections, type Db } from "@paperclipai/db";
+import { chatEndpoints, toolConnections, type Db } from "@paperclipai/db";
 import { HttpError, conflict } from "../../../errors.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { readPhotonExternalState } from "./external-contract.js";
-import { PHOTON_EXTERNAL_STATE } from "./external-store.js";
+import { PHOTON_EXTERNAL_STATE, photonStateFor } from "./external-store.js";
 
 import type { EndpointRecord } from "../runtime-types.js";
 import type { chatCredentialMutationLease } from "../../chat-credential-mutation-lease.js";
@@ -40,10 +40,11 @@ async function assertEndpointRetired(tx: Transaction, endpoint: typeof chatEndpo
   const companyId = endpoint.companyId;
   const [connection] = await tx.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId),
     eq(toolConnections.id, endpoint.connectionId))).for("update");
-  const [row] = await tx.select().from(chatSdkState).where(and(eq(chatSdkState.companyId, companyId),
-    eq(chatSdkState.endpointId, endpoint.id), eq(chatSdkState.stateKey, PHOTON_EXTERNAL_STATE))).for("update");
   let state;
-  try { state = readPhotonExternalState(row?.value ?? null); } catch { throw pending(); }
+  try {
+    state = readPhotonExternalState(await photonStateFor(tx, { companyId, endpointId: endpoint.id })
+      .read(PHOTON_EXTERNAL_STATE));
+  } catch { throw pending(); }
   if (endpoint.status !== "archived" || !connection || connection.enabled || connection.status !== "archived"
     || connection.credentialSecretRefs.length !== 0
     || state && (state.identity.companyId !== companyId || state.identity.endpointId !== endpoint.id

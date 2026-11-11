@@ -303,6 +303,45 @@ describe("Photon publication receipts", () => {
 });
 
 describe("Photon durable event recovery", () => {
+  it("retries the original failure on the existing reader cadence without restarting stopped intake", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const f = photonFixture(), source = new Error("controlled catch-up failure"), reporting = new Error("controlled SQL failure");
+    let releaseLive!: () => void, attempted!: () => void;
+    const live = new Promise<void>(resolve => { releaseLive = resolve; });
+    const reported = new Promise<void>(resolve => { attempted = resolve; });
+    for (const resource of [f.client.messages, f.client.chats, f.client.groups, f.client.polls])
+      resource.subscribeEvents.mockImplementation(() => new TypedEventStream((async function* () { await live; })(), async () => { releaseLive(); }));
+    const failure = vi.fn<(error: unknown) => Promise<void | { kind: "recorded" | "obsolete" }>>(async () => { attempted(); throw reporting; });
+    const catchUp = vi.fn(() => new TypedEventStream((async function* () { throw source; })()));
+    const admit = vi.fn();
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit, failure, catchUp });
+    try {
+      receiver.start(); await reported; await new Promise<void>(resolve => setImmediate(resolve));
+      expect(failure).toHaveBeenCalledTimes(1);
+      failure.mockResolvedValue({ kind: "obsolete" });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure, "stopped intake must retain the existing reader's reporting retry").toHaveBeenCalledTimes(2);
+      failure.mockResolvedValue(undefined);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure).toHaveBeenCalledTimes(3);
+      expect(catchUp).toHaveBeenCalledTimes(1); expect(admit).not.toHaveBeenCalled();
+      expect(await f.state.read("checkpoint")).toBeNull();
+      failure.mockResolvedValue({ kind: "recorded" });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure).toHaveBeenCalledTimes(4);
+      expect(failure.mock.calls.every(([error]) => error === source)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(failure).toHaveBeenCalledTimes(4); expect(catchUp).toHaveBeenCalledTimes(1);
+      const closed = receiver.close(); expect(receiver.close()).toBe(closed); await closed;
+      expect(f.client.close).toHaveBeenCalledTimes(1);
+    } finally {
+      failure.mockResolvedValue({ kind: "recorded" });
+      try { await receiver.close(); } finally { vi.useRealTimers(); }
+    }
+  });
+
   it("initial obsolete failure receipt cannot certify stopped responsibility", async () => {
     const f = photonFixture(); let attempted!: () => void, releaseLive!: () => void;
     const reported = new Promise<void>(resolve => { attempted = resolve; });

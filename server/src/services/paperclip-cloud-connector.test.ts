@@ -933,6 +933,14 @@ describe("Photon authenticated receiver capability (controlled HTTP responses)",
       await expect(connector.photonReceiverAvailable()).resolves.toBe(supported);
     }
   });
+  it("treats explicit disabled Photon enrollment as unavailable while retaining version one compatibility", async () => {
+    const keys = config();
+    for (const enrollmentEnabled of [undefined, true, false]) {
+      const connector = createPaperclipCloudConnector({ config: keys.config, request: async () => Response.json({ active: true, status: "active", profiles: [],
+        photonReceiver: { version: 1, ...(enrollmentEnabled === undefined ? {} : { enrollmentEnabled }) } }) });
+      await expect(connector.photonReceiverAvailable()).resolves.toBe(enrollmentEnabled !== false);
+    }
+  });
   it("never turns uncertain authority or malformed status into local fallback", async () => {
     const keys = config();
     const bodies = [
@@ -941,6 +949,7 @@ describe("Photon authenticated receiver capability (controlled HTTP responses)",
       { active: true, status: "active", profiles: [42] },
       { active: true, status: "active", profiles: [], photonReceiver: null },
       { active: true, status: "active", profiles: [], photonReceiver: { version: 2 } },
+      ...[null, "false", 0, {}, []].map(enrollmentEnabled => ({ active: true, status: "active", profiles: [], photonReceiver: { version: 1, enrollmentEnabled } })),
     ];
     for (const body of bodies) {
       const connector = createPaperclipCloudConnector({ config: keys.config, request: async () => Response.json(body) });

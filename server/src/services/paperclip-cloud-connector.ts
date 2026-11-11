@@ -426,7 +426,8 @@ export function createPaperclipCloudConnector(input: {
       // Unknown versions, malformed responses and rejected requests retain debt.
       if (response.photonReceiver === undefined) return false;
       if (!isRecord(response.photonReceiver) || response.photonReceiver.version !== 1) throw badEnvelope();
-      return true;
+      if (response.photonReceiver.enrollmentEnabled !== undefined && typeof response.photonReceiver.enrollmentEnabled !== "boolean") throw badEnvelope();
+      return response.photonReceiver.enrollmentEnabled !== false;
     },
     async photonReceiverOperation(values: { subject: string; companyId: string; operation: Record<string, unknown> }): Promise<unknown> {
       const response = await call("photon-receiver", values, { field: "operation", value: JSON.stringify(values.operation) });

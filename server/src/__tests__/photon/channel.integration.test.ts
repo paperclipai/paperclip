@@ -69,6 +69,7 @@ import { issueThreadInteractionService } from "../../services/issue-thread-inter
 import { resolveExternalChatQuestionResponse } from "../../services/native-runtime/external-chat-question-response.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../../services/chat-run-publications.js";
 import { PhotonChatAdapter } from "../../services/photon/adapter.js";
+import { PhotonReceiver } from "../../services/photon/receiver.js";
 import { PhotonCloudClient, PhotonError } from "../../services/photon/cloud.js";
 import { photonFixture, photonEvent as livePhotonEvent, photonChat, stream } from "./fixture.js";
 
@@ -433,6 +434,77 @@ describe("iMessage Photon channel control plane", () => {
       expect(errors).toEqual([]);
     } finally { unsubscribe(); db.$client.options.debug = debug; if ("stop" in worker) worker.stop(); }
   });
+
+  it("recovers local intake through normal Runtime ownership after a real failure-write rollback", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const started: PhotonReceiver[] = [], start = PhotonReceiver.prototype.start;
+    vi.spyOn(PhotonReceiver.prototype, "start").mockImplementation(function(this: PhotonReceiver) { started.push(this); start.call(this); });
+    const t = await setup(), source = new PhotonError("network", "controlled recoverable Photon interruption"), persistence = new Error("controlled real failure-write rollback");
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+    coordinators.push(coordinator);
+    const transaction = db.transaction.bind(db);
+    let armed = true, rolledBack = false, failureWrites = 0, primary: unknown;
+    db.transaction = (work, ...args) => transaction(async tx => {
+      const result = await work(tx);
+      if (result && typeof result === "object" && "kind" in result && result.kind === "recorded") {
+        const [endpoint] = await tx.select({ status: chatEndpoints.status, healthMessage: chatEndpoints.healthMessage })
+          .from(chatEndpoints).where(and(eq(chatEndpoints.companyId, t.companyId), eq(chatEndpoints.id, t.endpoint.id)));
+        if (endpoint?.status === "attention" && endpoint.healthMessage === source.message) {
+          failureWrites++;
+          if (armed) { armed = false; throw persistence; }
+        }
+      }
+      return result;
+    }, ...args).catch(error => { if (error === persistence) rolledBack = true; throw error; });
+    try {
+      await t.service.registerReceiverWork(coordinator, () => true).ready;
+      const first = t.service.runtime.get(t.endpoint.id); expect(first).not.toBeNull();
+      const remove = vi.spyOn(t.service.runtime, "removeEndpoint");
+      const replay = vi.mocked(PhotonChatAdapter.prototype.recoveryStream);
+      await vi.waitFor(() => expect(replay.mock.calls.length).toBeGreaterThan(0), { timeout: 5000 });
+      const originalReads = replay.mock.calls.length, originalStarts = started.length;
+      replay.mockImplementationOnce(() => new TypedEventStream((async function* () { throw source; })()));
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(rolledBack).toBe(true), { timeout: 5000 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(failureWrites).toBe(1); expect(t.service.runtime.get(t.endpoint.id)).toBe(first);
+      expect(remove).not.toHaveBeenCalled();
+      const [beforeRecovery] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      expect(beforeRecovery.status).not.toBe("attention");
+      const incoming = photonEvent(1), getMessage = t.f.client.messages.get.getMockImplementation();
+      if (!getMessage) throw new Error("normal controlled message lookup absent");
+      t.f.client.messages.get.mockImplementation(async guid => guid === incoming.message.guid ? incoming.message : getMessage(guid));
+      replay.mockImplementation(() => stream([incoming, { type: "catchup.complete", headSequence: 1 }]));
+      // The rollback was a one-shot real SQL fault. No direct failure callback,
+      // Runtime reset or manual retry schedules recovery: only its existing reader cadence.
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(failureWrites, "restored SQL must be retried by the stopped receiver's owned reader").toBe(2), { timeout: 5000 });
+      await vi.waitFor(() => {
+        const current = t.service.runtime.get(t.endpoint.id);
+        expect(current).not.toBeNull(); expect(current).not.toBe(first);
+      }, { timeout: 5000 });
+      await vi.waitFor(async () => expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id))).toHaveLength(1), { timeout: 5000 });
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(started).toHaveLength(originalStarts + 1);
+      expect(replay).toHaveBeenCalledTimes(originalReads + 2);
+      expect(t.wakeup).not.toHaveBeenCalled(); // First normal intake remains unlinked.
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(connection.enabled).toBe(true); expect(connection.credentialSecretRefs.length).toBeGreaterThan(0);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
+    } catch (error) { primary = error; throw error; }
+    finally {
+      db.transaction = transaction;
+      const cleanup: unknown[] = [];
+      try { await coordinator.stop(); } catch (error) { cleanup.push(error); }
+      // Baseline failure still settles its actual debt under the same current
+      // callback before service shutdown fences that callback. This is cleanup,
+      // not the successful recovery observation asserted above.
+      for (const receiver of started) try { await receiver.close(); } catch (error) { cleanup.push(error); }
+      try { await t.service.shutdown(); } catch (error) { cleanup.push(error); }
+      vi.useRealTimers();
+      if (cleanup.length) throw new AggregateError(primary ? [primary, ...cleanup] : cleanup, "Photon failure-write recovery fixture cleanup remains owned");
+    }
+  }, 30_000);
 
   it("recovers a Photon transport loss through the receiver worker and cancels fatal recovery", async () => {
     const t = await setup();
