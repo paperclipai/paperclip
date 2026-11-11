@@ -204,6 +204,21 @@ prevents the current work. New current questions still define a waiting path.
 Approvals, governed tool/credential/connection requests, and configured review
 stages retain their gates; a later message does not grant approval.
 
+One exception keeps the asking agent's own wait honest. When a native turn ends
+without a completion report, the Runner's default report claims completion and
+cites only the agent's final message (`provider:<provider>:agent-message`), with
+no artifact or verification. If the same agent still has its own pending,
+undismissed ordinary question on the task, native status finalization does not
+close the task. The decision is `in_review` with reason
+`own_question_unanswered`, the checkout is released, and the question stays
+pending. The person's answer continues the task as usual. If the person dismisses
+the question instead, and no other pending, undismissed question of that agent
+remains, the dismissal transaction saves a durable wake intent for the assignee
+(`issue_question_dismissed`, one idempotency key per question) in the native status
+wake outbox, so it continues without the answer and a failed delivery is retried. A completion report with its own evidence, a
+dismissed question, and an answered question keep the historical-question rule
+above.
+
 A permission denial is not, by itself, a blocker. If an instructed step is denied at an authorization boundary but the issue's own deliverable is complete, the right disposition is `done`, not `blocked` (see the review-delegation rules in §6).
 
 This requirement is prospective-only on rollout: it applies to transitions into `blocked` made after the feature ships, gated on the blocked-transition timestamp against the rollout marker, not on issue `createdAt`. Issues already blocked at upgrade time are untouched — no backfilled notifications, no retroactive validation, no `needs_attention` storm on deploy. Triage of pre-existing prose-blocked issues is a one-time opt-in digest, not a default.
@@ -3337,6 +3352,14 @@ backup source when all of these are true: the lease is `released` with policy
 run, it has a confirmed stop-and-retain receipt with state `stopped`, and no
 unsaved writer or pending native workspace export is bound to it. The backup
 stamp, single-owner, and later-provider-work checks above still apply.
+
+A run can also start while its terminal predecessor still holds the warm lease
+as `active`, because the predecessor releases the lease only after it saves its
+instruction and workspace files. Before it selects a lease, acquisition waits up
+to 20 seconds for that release when the matching lease belongs to a run that
+ended in the last two minutes. It then resumes the warm sandbox. A predecessor
+that is still running, or that ended earlier and never released its lease,
+causes no wait; that run gets a new sandbox as before.
 
 Reuse also skips a warm sandbox while its previous run's workspace export is
 still saving. A run that starts in that window gets a new sandbox, waits for
