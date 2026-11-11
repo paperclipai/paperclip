@@ -2,13 +2,14 @@ import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, agents, chatEndpointLeases, chatEndpoints, chatConversations, chatEndpointResources, companies, chatSdkState, companySecrets, createDb, toolConnections } from "@paperclipai/db";
+import { applyPendingMigrations, companyMemberships, agents, chatEndpointLeases, chatEndpoints, chatConversations, chatEndpointResources, chatPublications, companies, chatSdkState, companySecrets, createDb, toolConnections } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { createChatMilestoneFixtures } from "../helpers/chat-milestone-fixtures.js";
 import { chatChannelService } from "../../services/chat-channels.js";
-import { createChatSdkRuntime } from "../../services/chat-sdk-runtime.js";
+import { createChatSdkRuntime, type CreateChatSdkEndpointRuntimeOptions } from "../../services/chat-sdk-runtime.js";
+import { ChatRuntime, createChatRuntime } from "../../services/chat-runtime.js";
 import { heartbeatService } from "../../services/heartbeat.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { PhotonChatAdapter } from "../../services/photon/adapter.js";
@@ -34,6 +35,7 @@ import { createPhotonExternalOwner, PhotonLocalResources } from "../../services/
 import type { ProcessProbe } from "../../services/owner-proof.js";
 
 import { deleteCompany } from "../../services/company-deletion.js";
+import { connectionManagementService } from "../../services/connection-management.js";
 import { toolAccessService } from "../../services/tool-access.js";
 import { preparePhotonCompanyDeletion, assertPhotonCompanyRetired, lockPhotonCompanyMutation, registerPhotonRemovalOwner } from "../../services/chat-channels/imessage-photon/company-retirement.js";
 import { chatCompanyDeletion } from "../../services/chat-channels/company-deletion.js";
@@ -46,7 +48,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
   let f: Awaited<ReturnType<ReturnType<typeof createChatMilestoneFixtures>["create"]>>;
   let directory: string;
   const services: ReturnType<typeof chatChannelService>[] = [];
-  const runtimes: ReturnType<typeof createChatSdkRuntime>[] = [];
+  const runtimes: (ReturnType<typeof createChatSdkRuntime> | ReturnType<typeof createChatRuntime>)[] = [];
   const heartbeats: ReturnType<typeof heartbeatService>[] = [];
   const owners: ReturnType<typeof createPhotonExternalRuntimeOwner>[] = [];
   const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -105,6 +107,146 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     expect(connection).toMatchObject({enabled:true,status:"active",healthStatus:"healthy"});
     expect(connection!.credentialSecretRefs.length).toBeGreaterThan(0);
   });
+  it("positively unsupported Cloud retains normal local Photon intake across restart without staging a handoff",async()=>{
+    // Preserve the real service/configuration/credential SQL owners. Only the
+    // provider HTTP response and unused SDK start are controlled boundaries.
+    const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+    const config = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
+      signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      sealPrivateKey: sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+    const status = vi.fn(async () => Response.json({ active: true, status: "active", profiles: [] }));
+    const connector = cloudConnectors.createPaperclipCloudConnector({ config, request: status });
+    vi.spyOn(cloudConnectors, "paperclipCloudConnectorConfigFromEnv").mockReturnValue(config);
+    vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockReturnValue(connector);
+    const runtime=createChatSdkRuntime();runtimes.push(runtime);
+    vi.spyOn(PhotonChatAdapter.prototype,"initialize").mockResolvedValue(undefined);
+    vi.spyOn(PhotonReceiver.prototype,"start").mockImplementation(()=>undefined);
+    const fetchProvider: typeof fetch=async(input,init)=>{
+      const url=new URL(input instanceof Request?input.url:String(input));
+      expect(url.origin).toBe("https://spectrum.photon.codes");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Basic "+Buffer.from("project:controlled-project-secret").toString("base64"));
+      if(url.pathname==="/projects/project/"&&init?.method==="GET")return Response.json({succeed:true,data:{id:"project",name:"Controlled Photon"}});
+      if(url.pathname==="/projects/project/imessage/tokens"&&init?.method==="POST")return Response.json({succeed:true,data:{type:"dedicated",auth:{line:"controlled-line-token"},numbers:{line:"+15555550100"},expiresIn:300}});
+      throw new Error("unexpected controlled Spectrum request");
+    };
+    const heartbeat=heartbeatService(db);heartbeats.push(heartbeat);
+    const service=chatChannelService(db,{runtime,heartbeat,fetch:fetchProvider,publicBaseUrl:"https://tenant.example"});services.push(service);
+    const created=await service.create(f.companyId,{provider:"imessage-photon",assignedAgentId:f.agentId},f.userId);
+    if(!created)throw new Error("normal Photon endpoint creation failed");
+    const endpointId=created.id;
+    await service.configure(endpointId,{action:"configure",credentials:{projectSecret:"controlled-project-secret"},photon:{allocation:"dedicated",projectId:"project",lineId:"line"}},f.userId);
+    const [endpoint]=await db.select().from(chatEndpoints).where(eq(chatEndpoints.id,endpointId));
+    expect(endpoint?.setup,"normal configuration must stage Photon handoff subject").toMatchObject({photonExternalSubject:f.userId});
+    expect(endpoint?.status).toBe("verifying");
+    const state = photonStateFor(db, { companyId: f.companyId, endpointId });
+    expect(await state.read(PHOTON_EXTERNAL_STATE), "a positively unsupported Cloud must not persist an enrolling receiver").toBeNull();
+    expect(runtime.get(endpointId)).not.toBeNull();
+    await service.shutdown();
+    const restarted = createChatSdkRuntime(); runtimes.push(restarted);
+    const next = chatChannelService(db, { runtime: restarted, heartbeat, fetch: fetchProvider, publicBaseUrl: "https://tenant.example" }); services.push(next);
+    // Restart an already-configured endpoint through its NORMAL reconstruction
+    // entrypoint, not a second configuration or synthetic status transition.
+    await expect(next.reconcileProviderRuntimes()).resolves.toEqual({ eligible: 1, local: 1, ownedElsewhere: 0, failed: 0 });
+    expect(restarted.get(endpointId), "restart must retain actual normal local runtime creation").not.toBeNull();
+    expect(await state.read(PHOTON_EXTERNAL_STATE)).toBeNull();
+    expect(status.mock.calls.length).toBeGreaterThan(0);
+    const [connection]=await db.select().from(toolConnections).where(eq(toolConnections.id,endpoint!.connectionId));
+    expect(connection).toMatchObject({enabled:true,status:"active",healthStatus:"healthy"});
+    expect(connection!.credentialSecretRefs.length).toBeGreaterThan(0);
+  });
+  it("normal receiver cancellation settles only the exact never-created resource and retains its enrolled business intent",async()=>{
+    // Preserve the real service/configuration/credential SQL owners. Only the
+    // provider HTTP response and unused SDK start are controlled boundaries.
+    const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+    const config = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
+      signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      sealPrivateKey: sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+    const status = vi.fn(async () => Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } }));
+    const connector = cloudConnectors.createPaperclipCloudConnector({ config, request: status });
+    vi.spyOn(cloudConnectors, "paperclipCloudConnectorConfigFromEnv").mockReturnValue(config);
+    vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockReturnValue(connector);
+    const runtime=createChatSdkRuntime();runtimes.push(runtime);
+    let cancelledAbort: (() => Promise<void>) | undefined;
+    const replace = runtime.replaceEndpoint.bind(runtime);
+    vi.spyOn(runtime, "replaceEndpoint").mockImplementation(async options => {
+      const lifecycle: CreateChatSdkEndpointRuntimeOptions & { onConstructionAborted?(): Promise<void> } = options;
+      cancelledAbort = lifecycle.onConstructionAborted;
+      const replacing = replace(options);
+      const joined = replacing.then(value => ({ value }), error => ({ error }));
+      await runtime.removeEndpoint(options.endpointId);
+      const result = await joined;
+      if ("error" in result) throw result.error;
+      return result.value;
+    });
+    const allocate = vi.spyOn(photonClients, "createOwnedPhotonClient");
+    vi.spyOn(PhotonChatAdapter.prototype,"initialize").mockResolvedValue(undefined);
+    vi.spyOn(PhotonReceiver.prototype,"start").mockImplementation(()=>undefined);
+    const fetchProvider: typeof fetch=async(input,init)=>{
+      const url=new URL(input instanceof Request?input.url:String(input));
+      expect(url.origin).toBe("https://spectrum.photon.codes");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Basic "+Buffer.from("project:controlled-project-secret").toString("base64"));
+      if(url.pathname==="/projects/project/"&&init?.method==="GET")return Response.json({succeed:true,data:{id:"project",name:"Controlled Photon"}});
+      if(url.pathname==="/projects/project/imessage/tokens"&&init?.method==="POST")return Response.json({succeed:true,data:{type:"dedicated",auth:{line:"controlled-line-token"},numbers:{line:"+15555550100"},expiresIn:300}});
+      throw new Error("unexpected controlled Spectrum request");
+    };
+    let replaceBeforeLockedCommit = false;
+    const normalStore = photonStores.createPhotonExternalStore;
+    vi.spyOn(photonStores, "createPhotonExternalStore").mockImplementation(database => {
+      const store = normalStore(database), retained = store.retained.bind(store);
+      return { ...store, retained: async (...args: Parameters<typeof store.retained>) => {
+        const [expected, update, after] = args;
+        if (replaceBeforeLockedCommit) {
+          replaceBeforeLockedCommit = false;
+          if (!expected.localResource) throw new Error("actual receiver descriptor absent");
+          const changedId = randomUUID();
+          const newer = { ...expected, localResourceId: changedId,
+            localResource: { ...expected.localResource, id: changedId, closed: false } };
+          delete newer.localClosureConfirmed; // An unclosed replacement has no true-only close receipt.
+          expect(newer.localClosureConfirmed).toBeUndefined();
+          expect(newer.localResource.closed).toBe(false);
+          // Controlled store-contract race: use REAL SQL but feed the update its
+          // latest locked owner, rather than the earlier preliminary snapshot.
+          await photonStateFor(database, expected.identity).update(PHOTON_EXTERNAL_STATE, () => newer);
+          return retained(newer, update, after);
+        }
+        return retained(...args);
+      } };
+    });
+    const heartbeat=heartbeatService(db);heartbeats.push(heartbeat);
+    const service=chatChannelService(db,{runtime,heartbeat,fetch:fetchProvider,publicBaseUrl:"https://tenant.example"});services.push(service);
+    const created=await service.create(f.companyId,{provider:"imessage-photon",assignedAgentId:f.agentId},f.userId);
+    if(!created)throw new Error("normal Photon endpoint creation failed");
+    const endpointId=created.id;
+    await expect(service.configure(endpointId,{action:"configure",credentials:{projectSecret:"controlled-project-secret"},photon:{allocation:"dedicated",projectId:"project",lineId:"line"}},f.userId)).rejects.toMatchObject({ status: 422 });
+    const [endpoint]=await db.select().from(chatEndpoints).where(eq(chatEndpoints.id,endpointId));
+    expect(endpoint?.setup,"normal configuration must stage Photon handoff subject").toMatchObject({photonExternalSubject:f.userId});
+    expect(endpoint?.status).toBe("attention");
+    const state = photonStateFor(db, { companyId: f.companyId, endpointId });
+    const retained = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(allocate).not.toHaveBeenCalled();
+    expect(retained?.localClosureConfirmed, "a superseded pre-constructor receiver must settle its exact never-created resource").toBe(true);
+    expect(retained?.localResource?.closed).toBe(true);
+    expect(retained).toMatchObject({ phase: "enrolling", initialSequence: null, joinedSequence: null, acceptedSequence: null, pending: null });
+    expect(retained?.senderResource).toBeUndefined();
+    expect(runtime.get(endpointId)).toBeNull();
+    if (!cancelledAbort || !retained) throw new Error("normal exact receiver cancellation owner absent");
+    await cancelledAbort(); // Same caller's lost cleanup reply is idempotent.
+    expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toEqual(retained);
+    replaceBeforeLockedCommit = true;
+    await expect(cancelledAbort()).rejects.toThrow("receiver changed during close commit");
+    const raced = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(raced?.handoffId).toBe(retained.handoffId);
+    expect(raced?.localResourceId).not.toBe(retained.localResourceId);
+    expect(raced?.localResource?.closed).toBe(false);
+    expect(raced?.localClosureConfirmed).toBeUndefined();
+    if (!raced) throw new Error("controlled later receiver owner absent");
+    // Controlled replacement of the durable handoff identity is a negative CAS
+    // port, not fabricated Cloud acceptance or process-birth evidence.
+    const newer = { ...raced, handoffId: randomUUID() };
+    await state.update(PHOTON_EXTERNAL_STATE, () => newer);
+    await cancelledAbort();
+    expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toEqual(newer);
+  });
 
   it("unchanged external intake stays idle but changed or revoked authority is immediately due and retires normally",async()=>{
     const [endpoint]=await db.select().from(chatEndpoints).where(eq(chatEndpoints.id,f.endpointId)); if(!endpoint)throw new Error("fixture endpoint absent");
@@ -113,6 +255,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     const changedNotify=vi.fn();
     const configured={provider:"imessage-photon" as const,userName:"Agent",intakeAfter:1,credentials:{allocation:"dedicated" as const,projectId:"project",projectSecret:"controlled-secret",lineId:"line",phoneNumber:"+15555550100"}};
     const makeOwner=()=>createPhotonExternalRuntimeOwner(db,{
+      retainConstructionCleanup: () => { throw new Error("revoked fixture cannot allocate a never-created resource"); },
       broker:()=>brokerAvailable?({instanceIdentity:()=>({instanceId:"instance",environment:"test" as const}),photonReceiverOperation:async({operation})=>{
         requests.push(structuredClone(operation));
         const value=readPhotonExternalState(await photonStateFor(db,{companyId:f.companyId,endpointId:f.endpointId}).read(PHOTON_EXTERNAL_STATE));
@@ -187,14 +330,82 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     }
   });
 
-  async function managedConfiguration() {
+  it("normal remove fences an unaccepted Photon enrollment before removing its credentials",async()=>{
+    // Preserve the real service/configuration/credential SQL owners. Only the
+    // provider HTTP response and unused SDK start are controlled boundaries.
+    const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+    const config = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
+      signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      sealPrivateKey: sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+    const connector = cloudConnectors.createPaperclipCloudConnector({ config,
+      request: async () => Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } }) });
+    vi.spyOn(cloudConnectors, "paperclipCloudConnectorConfigFromEnv").mockReturnValue(config);
+    vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockReturnValue(connector);
+    const currentAdmin = randomUUID();
+    const requests: Record<string, unknown>[] = [];
+    vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation, subject }) => {
+      requests.push(structuredClone(operation));
+      const retained = readPhotonExternalState(await photonStateFor(db, { companyId: f.companyId, endpointId }).read(PHOTON_EXTERNAL_STATE));
+      if (!retained) throw new Error("actual original enrollment intent absent");
+      if (operation.kind === "cancel-enrollment") {
+        expect(subject).toBe(currentAdmin);
+        expect(operation).toEqual({ kind: "cancel-enrollment", binding: retained.binding, handoffId: retained.handoffId, originalSubject: retained.identity.subject });
+        expect(retained).toMatchObject({ phase: "retiring", localClosureConfirmed: true, enrollmentCancellation: "requested" });
+        // Controlled exact Cloud cancellation API receipt, NOT a physical claim.
+        // The independent Cloud owner controls qualify its atomic floor below.
+        return { binding: retained.binding, handoffId: retained.handoffId, phase: "cancelled" };
+      }
+      throw new Error("Photon retirement owner absent");
+    });
+    const runtime=createChatSdkRuntime();runtimes.push(runtime);
+    vi.spyOn(PhotonChatAdapter.prototype,"initialize").mockResolvedValue(undefined);
+    vi.spyOn(PhotonReceiver.prototype,"start").mockImplementation(()=>undefined);
+    const fetchProvider: typeof fetch=async(input,init)=>{
+      const url=new URL(input instanceof Request?input.url:String(input));
+      expect(url.origin).toBe("https://spectrum.photon.codes");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Basic "+Buffer.from("project:controlled-project-secret").toString("base64"));
+      if(url.pathname==="/projects/project/"&&init?.method==="GET")return Response.json({succeed:true,data:{id:"project",name:"Controlled Photon"}});
+      if(url.pathname==="/projects/project/imessage/tokens"&&init?.method==="POST")return Response.json({succeed:true,data:{type:"dedicated",auth:{line:"controlled-line-token"},numbers:{line:"+15555550100"},expiresIn:300}});
+      throw new Error("unexpected controlled Spectrum request");
+    };
+    const heartbeat=heartbeatService(db);heartbeats.push(heartbeat);
+    const service=chatChannelService(db,{runtime,heartbeat,fetch:fetchProvider,publicBaseUrl:"https://tenant.example"});services.push(service);
+    const created=await service.create(f.companyId,{provider:"imessage-photon",assignedAgentId:f.agentId},f.userId);
+    if(!created)throw new Error("normal Photon endpoint creation failed");
+    const endpointId=created.id;
+    await service.configure(endpointId,{action:"configure",credentials:{projectSecret:"controlled-project-secret"},photon:{allocation:"dedicated",projectId:"project",lineId:"line"}},f.userId);
+    const [endpoint]=await db.select().from(chatEndpoints).where(eq(chatEndpoints.id,endpointId));
+    const state = photonStateFor(db, { companyId: f.companyId, endpointId });
+    const original = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    if (!endpoint || !original) throw new Error("normal original Photon intent absent");
+    expect(original.phase).toBe("enrolling"); expect(runtime.get(endpointId)).not.toBeNull();
+    expect(requests).toEqual([]); // Configuration never attempted a Cloud enrollment.
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: currentAdmin, status: "active", membershipRole: "owner" });
+    await db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.userId)));
+    const management = connectionManagementService(db), resource = { type: "connection_management" as const, companyId: f.companyId,
+      connectionId: endpoint.connectionId, provider: "imessage-photon", purpose: "chat" as const, operation: "POST /chat-endpoints/:endpointId/configure" };
+    await expect(management.authorize({ type: "board", userId: f.userId, source: "session" }, "connections:configure", resource)).rejects.toMatchObject({ status: 403 });
+    await expect(management.authorize({ type: "board", userId: randomUUID(), source: "session" }, "connections:configure", resource)).rejects.toMatchObject({ status: 403 });
+    const authority = await management.authorize({ type: "board", userId: currentAdmin, source: "session" }, "connections:configure", resource);
+    await expect(service.configure(endpointId, { action: "remove" }, currentAdmin, authority),
+      "ordinary removal must fence an unaccepted enrollment instead of stranding missing Cloud custody").resolves.toMatchObject({ status: "archived" });
+    const [removed] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
+    expect(removed.credentialSecretRefs).toEqual([]);
+    expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toMatchObject({ phase: "retired", enrollmentCancellation: "fenced",
+      handoffId: original.handoffId, binding: original.binding, initialSequence: original.initialSequence, acceptedSequence: original.acceptedSequence });
+    expect(requests.map(value => value.kind)).toEqual(["cancel-enrollment"]);
+    await expect(service.configure(endpointId, { action: "remove" }, currentAdmin, authority)).rejects.toMatchObject({ status: 409 });
+  });
+
+  async function managedConfiguration(useNormalRegistry = false) {
+    const createRegistry = useNormalRegistry ? createChatRuntime : createChatSdkRuntime;
     // The real connector object/composition is retained; only the provider RPC
     // port is controlled here. This is not managed distribution/auth proof.
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const config = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
       signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
       sealPrivateKey: sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
-    const connector = cloudConnectors.createPaperclipCloudConnector({ config });
+    const connector = cloudConnectors.createPaperclipCloudConnector({ config, request: async () => Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } }) });
     vi.spyOn(cloudConnectors, "paperclipCloudConnectorConfigFromEnv").mockReturnValue(config);
     vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockReturnValue(connector);
     vi.spyOn(PhotonChatAdapter.prototype, "initialize").mockResolvedValue(undefined);
@@ -207,7 +418,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
         data: { type: "dedicated", auth: { line: "controlled-line-token" }, numbers: { line: "+15555550100" }, expiresIn: 300 } });
       throw new Error("unexpected controlled Spectrum request");
     };
-    let runtime = createChatSdkRuntime(); runtimes.push(runtime);
+    let runtime = createRegistry(); runtimes.push(runtime);
     const heartbeat = heartbeatService(db); heartbeats.push(heartbeat);
     let service = chatChannelService(db, { runtime, heartbeat, fetch: fetchProvider, publicBaseUrl: "https://tenant.example" }); services.push(service);
     const endpoint = await service.create(f.companyId, { provider: "imessage-photon", assignedAgentId: f.agentId }, f.userId);
@@ -239,14 +450,55 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       return operation.kind === "status" ? { binding, handoffId: retained.handoffId, phase: retirement } : { binding };
     });
     return { get service() { return service; }, get runtime() { return runtime; }, endpoint, connection, state, retained, requests,
-      async reconstructExternal(control: ReturnType<typeof photonFixture>) {
+      async reconstructExternal(control: ReturnType<typeof photonFixture>, cancelFirstReplacement = false, constructorFault?: Error, expectedReservationFailure = false) {
         // Retain controlled enrolled history, but really join the original local
         // service and its receiver lease before reconstructing the normal owner.
         await service.shutdown();
-        runtime = createChatSdkRuntime(); runtimes.push(runtime);
+        runtime = createRegistry(); runtimes.push(runtime);
         service = chatChannelService(db, { runtime, heartbeat, fetch: fetchProvider, publicBaseUrl: "https://tenant.example" }); services.push(service);
-        vi.spyOn(photonClients, "createOwnedPhotonClient").mockReturnValue(control.adapter.client);
-        let observedCloudBirth = false;
+        const clients: { client: ReturnType<typeof photonFixture>["adapter"]["client"]; methods: { method: string; active?: unknown }[]; closeAttempts: number; joined: boolean }[] = [];
+        const births: { runtime: NonNullable<ReturnType<typeof runtime.get>>; resourceId: string }[] = [];
+        const allocate = vi.spyOn(photonClients, "createOwnedPhotonClient");
+        if (constructorFault) allocate.mockImplementation(() => { throw constructorFault; });
+        else allocate.mockImplementation(() => {
+          // Distinct controlled client for EVERY actual factory allocation. The
+          // shared provider port owns send receipts; each client owns its close.
+          const owned = photonFixture(), methods: { method: string; active?: unknown }[] = [];
+          const row = { client: owned.adapter.client, methods, closeAttempts: 0, joined: false };
+          const close = async () => {
+            row.closeAttempts++;
+            if (row.joined) return;
+            await control.client.close(); // Existing shared controlled close-fault port.
+            await owned.client.close();
+            row.joined = true;
+          };
+          const channel = (name: "chats" | "messages" | "attachments" | "groups" | "polls" | "events") => new Proxy(owned.adapter.client[name], {
+            get(target, key, receiver) {
+              const method = Reflect.get(target, key, receiver);
+              if (typeof method !== "function") return method;
+              return (...args: unknown[]) => {
+                if (row.joined) throw new Error("Controlled Photon client used after its own close");
+                const operation = `${name}.${String(key)}`;
+                methods.push({ method: operation, ...(operation === "chats.setTyping" ? { active: args[1] } : {}) });
+                if (["chats.get", "messages.sendText", "chats.setTyping"].includes(operation)) expect(args[0]).toBe(control.chat.guid);
+                // These are actual method invocations, not prefilled roles or
+                // provider outcomes. One provider receipt map spans clients.
+                const providerMethod = Reflect.get(control.adapter.client[name], key);
+                if (typeof providerMethod !== "function") throw new Error("Unsupported controlled Photon method");
+                return Reflect.apply(providerMethod, control.adapter.client[name], args);
+              };
+            },
+          });
+          row.client = new Proxy(owned.adapter.client, { get(target, key, receiver) {
+            if (key === "close") return close;
+            if (key === "chats" || key === "messages" || key === "attachments" || key === "groups" || key === "polls" || key === "events") return channel(key);
+            return Reflect.get(target, key, receiver);
+          } });
+          clients.push(row);
+          return row.client;
+        });
+        let observedCloudBirth = false, cancel = cancelFirstReplacement;
+        let cancelledAbort: (() => Promise<void>) | undefined;
         const replace = runtime.replaceEndpoint.bind(runtime);
         vi.spyOn(runtime, "replaceEndpoint").mockImplementation(async options => {
           const selected = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
@@ -256,7 +508,24 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
           expect(typeof options.callbacks.onPhotonUsefulClientDebt).toBe("function");
           expect(typeof options.callbacks.onPhotonSenderRuntimeClosed).toBe("function");
           observedCloudBirth = true;
-          return replace(options); // Actual normal Runtime/SDK; callbacks unchanged.
+          if (cancel) {
+            cancel = false;
+            const lifecycle: CreateChatSdkEndpointRuntimeOptions & { onConstructionAborted?(): Promise<void> } = options;
+            cancelledAbort = lifecycle.onConstructionAborted;
+            // Actual registry queue cancellation before its constructor runs.
+            const replacing = replace(options);
+            const joined = replacing.then(value => ({ value }), error => ({ error }));
+            const removal = runtime.removeEndpoint(endpoint.id).then(() => ({ complete: true as const }), error => ({ error }));
+            const [result, removed] = await Promise.all([joined, removal]);
+            if ("error" in result && "error" in removed) throw new AggregateError([result.error, removed.error], "Controlled cancellation and normal removal both retained cleanup failures");
+            if ("error" in result) throw result.error;
+            if ("error" in removed) throw removed.error;
+            return result.value;
+          }
+          const constructed = await replace(options); // Actual normal Runtime/SDK; callbacks unchanged.
+          if (!selected?.senderResource) throw new Error("actual prebirth sender descriptor absent");
+          births.push({ runtime: constructed, resourceId: selected.senderResource.id });
+          return constructed;
         });
         // Complete existing direct-message history, matching normal inbound
         // ensureResource: same company/endpoint/canonical thread, available DM.
@@ -274,6 +543,51 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
         if (!conversation) throw new Error("normal outbound conversation fixture absent");
         const published = await service.publishBoardMessage(endpoint.id, conversation.id,
           "Controlled ordinary sender bootstrap", randomUUID(), f.userId);
+        if (cancelFirstReplacement || constructorFault || expectedReservationFailure) {
+          expect(published?.state).not.toBe("published");
+          expect(control.client.messages.sendText).not.toHaveBeenCalled();
+          if (!published || published.state !== "delivery_unknown") throw new Error("actual original publication unknown receipt absent");
+          const originalId = published.id;
+          return { cancelledAbort: async () => { if (!cancelledAbort) throw new Error("normal never-created cleanup callback absent"); await cancelledAbort(); },
+            retryOriginalPublication: async () => {
+              // The normal FIFO deliberately blocks later publications behind
+              // unknown delivery. Only the explicit operator Retry authorizes
+              // this ORIGINAL publication; no new row or implicit resend.
+              const authority = await connectionManagementService(db).authorize({ type: "board", userId: f.userId, source: "session" },
+                "connections:configure", { type: "connection_management", companyId: f.companyId, connectionId: connection.id,
+                  provider: "imessage-photon", purpose: "chat", operation: "POST /chat-endpoints/:endpointId/publications/:publicationId/resolve" });
+              await authority.reauthorize();
+              await service.resolvePublication(endpoint.id, originalId, "retry_anyway", f.userId);
+              const [current] = await db.select().from(chatPublications).where(and(eq(chatPublications.companyId, f.companyId),
+                eq(chatPublications.endpointId, endpoint.id), eq(chatPublications.id, originalId)));
+              if (!current) throw new Error("original publication receipt missing after ordinary operator Retry");
+              expect(current.id).toBe(originalId); expect(current.payload).toEqual(published.payload);
+              return current;
+            },
+            verifyUsefulOwnership: async () => {
+              expect(births).toHaveLength(1); // One actual successful Runtime constructor.
+              const birth = births[0]; if (!birth) throw new Error("normal Runtime birth witness absent");
+              expect(runtime.get(endpoint.id)).toBe(birth.runtime);
+              const current = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+              expect(current?.senderResource).toMatchObject({ id: birth.resourceId, closed: false });
+              expect(new Set(clients.map(row => row.client)).size).toBe(clients.length);
+              expect(clients.filter(row => row.methods.length === 0)).toHaveLength(1); // Constructor bootstrap, drained by external handoff.
+              expect(clients.flatMap(row => row.methods)).toEqual([
+                { method: "chats.get" }, { method: "messages.sendText" }, { method: "chats.setTyping", active: false },
+              ]);
+              for (const client of clients) { expect(client.closeAttempts).toBe(1); expect(client.joined).toBe(true); }
+            },
+            joinCurrentSender: async () => {
+              const birth = births[0]; if (!birth) throw new Error("normal Runtime birth witness absent");
+              await runtime.removeEndpoint(endpoint.id); // Normal actual SDK+adapter join and captured close CAS.
+              expect(runtime.get(endpoint.id)).toBeNull(); expect(runtime.hasUnsettledLifecycle()).toBe(false);
+              const closed = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+              expect(closed?.senderResource).toMatchObject({ id: birth.resourceId, closed: true });
+              expect(closed?.handoffId).toBe(retained.handoffId); expect(closed?.acceptedSequence).toBe(retained.acceptedSequence);
+              for (const client of clients) expect(client.joined).toBe(true);
+            } };
+
+        }
         expect(published?.redactedError, "ordinary publication must not retain a redacted failure").toBeNull();
         expect(published?.state).toBe("published");
         expect(control.client.messages.sendText).toHaveBeenCalledOnce();
@@ -285,6 +599,125 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       },
       pendingRetirement() { retirement = "retiring"; }, finishRetirement() { retirement = "retired"; } };
   }
+
+  it("normal publication cancellation before construction settles only its exact never-created sender and permits ordinary retry", async () => {
+    const c = await managedConfiguration(), control = photonFixture();
+    const retry = await c.reconstructExternal(control, true);
+    if (!retry) throw new Error("cancelled publication retry control absent");
+    expect(photonClients.createOwnedPhotonClient).not.toHaveBeenCalled();
+    const aborted = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(aborted?.senderResource?.closed, "cancelled normal replacement must settle the exact never-constructed sender allocation").toBe(true);
+    expect(aborted).toMatchObject({ phase: "external", handoffId: c.retained.handoffId, binding: c.retained.binding });
+    expect(aborted?.localClosureConfirmed).toBeUndefined(); // No invented receiver close.
+    const published = await retry.retryOriginalPublication();
+    expect(published?.state).toBe("published");
+    expect(control.client.messages.sendText).toHaveBeenCalledOnce();
+    await retry.verifyUsefulOwnership();
+    const current = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(current?.senderResource?.id).not.toBe(aborted?.senderResource?.id);
+    expect(current?.senderResource?.closed).toBe(false);
+    expect(current?.acceptedSequence).toBe(c.retained.acceptedSequence);
+    await retry.cancelledAbort(); // Lost original cleanup reply after a newer slot.
+    expect(readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE))).toEqual(current);
+    await retry.joinCurrentSender();
+  });
+
+  it("ordinary authorized publication retries a failed never-created sender receipt before any new reservation", async () => {
+    const failure = new Error("controlled never-created SQL receipt write failed");
+    let failReceipt = false;
+    const normalStore = photonStores.createPhotonExternalStore;
+    vi.spyOn(photonStores, "createPhotonExternalStore").mockImplementation(database => {
+      const store = normalStore(database), retained = store.retained.bind(store);
+      return { ...store, retained: async (...args: Parameters<typeof store.retained>) => {
+        const [expected] = args;
+        if (failReceipt && expected.senderResource?.closed === false) throw failure;
+        return retained(...args);
+      } };
+    });
+    const c = await managedConfiguration(), control = photonFixture();
+    failReceipt = true;
+    try {
+    const retry = await c.reconstructExternal(control, true);
+    if (!retry) throw new Error("ordinary publication retry control absent");
+    const pending = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(pending?.senderResource?.closed).toBe(false);
+    expect(c.runtime.hasUnsettledLifecycle()).toBe(true);
+    expect(photonClients.createOwnedPhotonClient).not.toHaveBeenCalled();
+    failReceipt = false; // Repair the controlled fault only at explicit ordinary Retry.
+    const published = await retry.retryOriginalPublication();
+    expect(published?.state, "ordinary publication must join the original failed abort receipt before its sender preflight").toBe("published");
+    expect(control.client.messages.sendText).toHaveBeenCalledOnce();
+    await retry.verifyUsefulOwnership();
+    expect(c.runtime.hasUnsettledLifecycle()).toBe(false);
+    const current = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(current?.senderResource?.id).not.toBe(pending?.senderResource?.id);
+    expect(current?.acceptedSequence).toBe(c.retained.acceptedSequence);
+    await retry.joinCurrentSender();
+    } finally { failReceipt = false; } // Normal service shutdown can join any retained exact receipt.
+  });
+
+  it("ordinary publication joins a lost reservation reply and failed direct never-created receipt before allocating again", async () => {
+    const lost = new Error("controlled sender reservation committed reply lost");
+    const cleanupFailure = new Error("controlled direct never-created receipt write failed");
+    let loseReply = false, failCleanup = false, observedLostReply = false, observedCleanupFailure = false;
+    const normalStore = photonStores.createPhotonExternalStore;
+    vi.spyOn(photonStores, "createPhotonExternalStore").mockImplementation(database => {
+      const store = normalStore(database), current = store.current.bind(store), retained = store.retained.bind(store);
+      return { ...store,
+        current: async <T,>(...args: Parameters<typeof store.current<T>>): Promise<T> => {
+          const result = await current<T>(...args);
+          const parsed = photonExternalStateSchema.safeParse(result);
+          if (loseReply && parsed.success && parsed.data.senderResource?.closed === false) {
+            loseReply = false; observedLostReply = true; throw lost;
+          }
+          return result;
+        },
+        retained: async (...args: Parameters<typeof store.retained>) => {
+          if (failCleanup && args[0].senderResource?.closed === false) {
+            failCleanup = false; observedCleanupFailure = true; throw cleanupFailure;
+          }
+          return retained(...args);
+        },
+      };
+    });
+    const c = await managedConfiguration(true), control = photonFixture();
+    expect(c.runtime).toBeInstanceOf(ChatRuntime);
+    loseReply = true; failCleanup = true;
+    const retry = await c.reconstructExternal(control, false, undefined, true);
+    if (!retry) throw new Error("ordinary reservation-failure retry control absent");
+    expect(c.runtime).toBeInstanceOf(ChatRuntime);
+    expect(observedLostReply).toBe(true); expect(observedCleanupFailure).toBe(true);
+    const pending = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(pending?.senderResource?.closed).toBe(false);
+    expect(c.runtime.hasUnsettledLifecycle()).toBe(true);
+    expect(photonClients.createOwnedPhotonClient).not.toHaveBeenCalled();
+    const published = await retry.retryOriginalPublication();
+    expect(published?.state).toBe("published");
+    expect(control.client.messages.sendText).toHaveBeenCalledOnce();
+    await retry.verifyUsefulOwnership();
+    expect(c.runtime.hasUnsettledLifecycle()).toBe(false);
+    const settled = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(settled?.senderResource?.id).not.toBe(pending?.senderResource?.id);
+    expect(settled?.acceptedSequence).toBe(c.retained.acceptedSequence);
+    await retry.joinCurrentSender();
+  });
+
+  it("an entered normal sender constructor cannot turn its unknown allocation into never-created cleanup on publication retry", async () => {
+    const c = await managedConfiguration(), control = photonFixture();
+    const retry = await c.reconstructExternal(control, false, new Error("controlled constructor entry failure"));
+    if (!retry) throw new Error("constructor failure retry control absent");
+    const pending = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(pending?.senderResource?.closed).toBe(false);
+    expect(photonClients.createOwnedPhotonClient).toHaveBeenCalledOnce();
+    const next = await retry.retryOriginalPublication();
+    expect(next?.state).not.toBe("published");
+    expect(control.client.messages.sendText).not.toHaveBeenCalled();
+    expect(photonClients.createOwnedPhotonClient).toHaveBeenCalledOnce();
+    const retained = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    expect(retained?.senderResource?.id).toBe(pending?.senderResource?.id);
+    expect(retained?.senderResource?.closed).toBe(false);
+    expect(retained?.failure).toMatchObject({ code: "sender_close", nextAttemptAt: null });
+  });
 
   it("normal receiver worker settles a paused or archived Photon owner after exact retirement", async () => {
     const c = await managedConfiguration();
@@ -363,6 +796,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       if (!current) throw new Error("retained sender owner absent");
       await c.state.update(PHOTON_EXTERNAL_STATE, () => ({ ...current, failure: { code: "sender_close" as const, attempts: 3, nextAttemptAt: new Date().toISOString() } }));
       const replacement = createPhotonExternalRuntimeOwner(db, {
+        retainConstructionCleanup: (id, cleanup) => c.runtime.retainPendingConstructionCleanup(id, cleanup),
         broker: () => ({ instanceIdentity: () => ({ instanceId: "instance", environment: "test" as const }), photonReceiverOperation: async () => { throw new Error("unknown sender must not invoke provider"); } }),
         endpointRecord: async id => {
           const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, id)); if (!endpoint) return null;
@@ -403,6 +837,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     if (!endpointRow) throw new Error("current endpoint missing");
     const leaseStopFailure = new Error("controlled finite lease stop reply lost before sender birth");
     const neverBorn = createPhotonExternalRuntimeOwner(db, {
+      retainConstructionCleanup: (id, cleanup) => c.runtime.retainPendingConstructionCleanup(id, cleanup),
       broker: () => broker,
       withReceiverLease: async (_record, work) => { await work({ token }); throw leaseStopFailure; },
       endpointRecord: async () => ({ endpoint: endpointRow, assignedAgentName: "Agent", connectionName: c.connection.name,

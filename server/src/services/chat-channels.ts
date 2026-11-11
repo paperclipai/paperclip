@@ -919,6 +919,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ownership: id => discordGatewayOwnerships.get(id), currentRuntime: id => runtime.get(id),
     release: ownership => stopDiscordGatewayOwnership(ownership, { removeRuntime: false, notifyStopped: false }),
     removeRuntime: async id => { runtimeVersions.delete(id); return runtime.removeEndpoint(id); },
+    joinConstructionCleanup: id => runtime.joinPendingConstructionCleanup(id),
+    retainConstructionCleanup: (id, cleanup) => runtime.retainPendingConstructionCleanup(id, cleanup),
     config: async record => {
       const config = runtimeConfig(record.endpoint, record.endpoint.botUsername ?? record.assignedAgentName, await resolveCredentials(record.endpoint));
       if (config.provider !== "imessage-photon") throw new Error("Photon external provider changed");
@@ -1097,11 +1099,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             ? await photonExternalRuntimeOwner.reserveLocalRuntime(record, context, discordOwnership, providerConfig) : null;
           const photonSenderAllocation = providerConfig?.provider === "imessage-photon" && await photonExternalRuntimeOwner.placement(record)
             ? await photonExternalRuntimeOwner.reserveSenderRuntime(record, context, discordOwnership ?? undefined) : null;
+          const photonConstructionAllocation = photonSenderAllocation ?? photonAllocation;
           instance = providerConfig === null
             ? await replaceSpekoChannelRuntime(runtime, record, persistence)
             : await runtime.replaceEndpoint({
             companyId: record.endpoint.companyId,
             endpointId: record.endpoint.id,
+            onConstructionAborted: photonConstructionAllocation
+              ? () => photonExternalRuntimeOwner.runtimeConstructionAborted(photonConstructionAllocation, context) : undefined,
             providerConfig,
             persistence,
             concurrency: record.endpoint.concurrencyPolicy,
@@ -1172,7 +1177,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   : undefined,
             },
           });
-          if (photonAllocation) photonExternalRuntimeOwner.attachLocalRuntime(photonAllocation, instance);
+          if (photonAllocation) photonExternalRuntimeOwner.attachLocalRuntime(photonAllocation.resourceId, instance);
           if (photonSenderAllocation) photonExternalRuntimeOwner.attachSenderRuntime(photonSenderAllocation.resourceId, instance);
           context.endpointRuntime = instance;
           runtimeContexts.set(instance as object, context);
@@ -3522,10 +3527,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict,
     legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials,
     persistCredentials, clearCredentials, resolveCredentials, prepareProviderInventory,
-    prepareCredentialRemoval: async endpointId => {
+    prepareCredentialRemoval: async (endpointId, authority) => {
       const record = await endpointRecord(endpointId);
       if (record?.endpoint.provider !== "imessage-photon") return "unhandled";
-      await photonExternalRuntimeOwner.retire(endpointId);
+      await photonExternalRuntimeOwner.retire(endpointId, authority);
       // Also joins local-only/retired-registry resources and their short lease.
       await invalidateRuntime(endpointId);
       return "settled";

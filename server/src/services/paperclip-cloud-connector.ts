@@ -419,6 +419,15 @@ export function createPaperclipCloudConnector(input: {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.slackEvents?.version === 1;
     },
+    async photonReceiverAvailable(): Promise<boolean> {
+      const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
+      if (response.active !== true || response.status !== "active" || (!Array.isArray(response.profiles) || !response.profiles.every(value => typeof value === "string"))) throw badEnvelope();
+      // Only a valid authenticated legacy status is positive lack of support.
+      // Unknown versions, malformed responses and rejected requests retain debt.
+      if (response.photonReceiver === undefined) return false;
+      if (!isRecord(response.photonReceiver) || response.photonReceiver.version !== 1) throw badEnvelope();
+      return true;
+    },
     async photonReceiverOperation(values: { subject: string; companyId: string; operation: Record<string, unknown> }): Promise<unknown> {
       const response = await call("photon-receiver", values, { field: "operation", value: JSON.stringify(values.operation) });
       if (!isRecord(response.photonReceiver)) throw badEnvelope();
@@ -733,9 +742,10 @@ function parseCloudHandoff(value: unknown): { kind: "paperclip_cloud"; session: 
   return { kind: "paperclip_cloud", session };
 }
 
-export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation" | "photonReceiverOperation"> & {
+export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation" | "photonReceiverOperation" | "photonReceiverAvailable"> & {
   instanceIdentity?: () => Readonly<{ instanceId: string; environment: PaperclipCloudConnectorEnvironment }>;
   photonReceiverOperation?: ReturnType<typeof createPaperclipCloudConnector>["photonReceiverOperation"];
+  photonReceiverAvailable?: ReturnType<typeof createPaperclipCloudConnector>["photonReceiverAvailable"];
   slackFormOperation?: ReturnType<typeof createPaperclipCloudConnector>["slackFormOperation"];
 };
 export type PaperclipCloudGoogleWorkspaceConnector = PaperclipCloudConnector;

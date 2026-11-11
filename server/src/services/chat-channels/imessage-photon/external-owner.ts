@@ -44,6 +44,7 @@ export async function handoffCheckpoint(state: PhotonState, identity: PhotonExte
 }
 export interface PhotonExternalBroker {
   instanceIdentity(): { instanceId: string; environment: PhotonExternalBinding["environment"] };
+  photonReceiverAvailable?(): Promise<boolean>;
   photonReceiverOperation(input: { subject: string; companyId: string; operation: Record<string, unknown> }): Promise<unknown>;
 }
 /** Resource IDs identify a retained object; ONLY awaiting its real close confirms
@@ -255,16 +256,32 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     });
     // Caller can now use ONLY the ordinary authenticated delivery ACK.
   }
-  async function retire(retained: PhotonExternalState): Promise<void> {
+  async function retire(retained: PhotonExternalState, cleanup?: { responsibleUserId?: string | null; reauthorize(): Promise<void> }): Promise<void> {
     if (retained.phase === "retired") return;
-    if (retained.phase !== "retiring") retained = await options.store.retained(retained, value => ({ ...value, phase: "retiring", failure: value.failure?.code === "sender_close" ? value.failure : null }));
+    if (retained.phase !== "retiring") retained = await options.store.retained(retained, value => ({ ...value, phase: "retiring", ...(value.phase === "enrolling" ? { enrollmentCancellation: "requested" as const } : {}), failure: value.failure?.code === "sender_close" ? value.failure : null }));
     try {
       const sender = await repairSender(retained); retained = sender.state;
       if (!sender.closed) throw new PhotonSenderResourceUnknown("Photon original sender process or resource closure remains unknown");
       const physical = await repair(retained); retained = physical.state;
       if (!physical.closed) throw new PhotonPhysicalResourceUnknown("Photon original local resource closure is unknown; physical retirement remains held");
       const request = { subject: retained.identity.subject, companyId: retained.identity.companyId };
-      await requireBroker().photonReceiverOperation({ ...request, operation: { kind: "retire", binding: retained.binding } });
+      if (retained.enrollmentCancellation === "requested") {
+        await cleanup?.reauthorize();
+        const cancellation = z.object({ binding: photonExternalBindingSchema, handoffId: z.string().uuid(),
+          phase: z.enum(["cancelled", "staged", "active", "retiring", "retired"]) }).strict().parse(
+          await requireBroker().photonReceiverOperation({ companyId: retained.identity.companyId,
+            subject: cleanup?.responsibleUserId ?? retained.identity.subject,
+            operation: { kind: "cancel-enrollment", binding: retained.binding, handoffId: retained.handoffId, originalSubject: retained.identity.subject } }));
+        if (!isDeepStrictEqual(cancellation.binding, retained.binding) || cancellation.handoffId !== retained.handoffId)
+          throw new Error("Photon enrollment cancellation tuple changed");
+        if (cancellation.phase === "cancelled" || cancellation.phase === "retired") {
+          await cleanup?.reauthorize();
+          await options.store.retained(retained, value => ({ ...value, phase: "retired",
+            ...(cancellation.phase === "cancelled" ? { enrollmentCancellation: "fenced" as const } : {}), failure: null }));
+          options.notify(retained.identity); return;
+        }
+        throw new Error("Photon original physical close or queue drain remains outstanding");
+      } else await requireBroker().photonReceiverOperation({ ...request, operation: { kind: "retire", binding: retained.binding } });
       const response = z.object({ binding: photonExternalBindingSchema, handoffId: z.string().uuid(),
         phase: z.enum(["staged", "active", "retiring", "retired"]) }).strict().parse(await requireBroker().photonReceiverOperation({ ...request, operation: { kind: "status", binding: retained.binding } }));
       if (!isDeepStrictEqual(response.binding, retained.binding) || response.handoffId !== retained.handoffId) throw new Error("Photon retirement tuple changed");

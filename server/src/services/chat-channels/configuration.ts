@@ -81,7 +81,7 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   getWebhookPublicBaseUrl: () => string | null;
   invalidateRuntime: (endpointId: string) => Promise<boolean>;
   /** Provider-owned durable/resource settlement before destroying credentials. */
-  prepareCredentialRemoval?: (endpointId: string) => Promise<"settled" | "unhandled">;
+  prepareCredentialRemoval?: (endpointId: string, authority: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) => Promise<"settled" | "unhandled">;
   reconcileProviderResourceRows: ReturnType<typeof createChatResourceReconciliation>["reconcileProviderResourceRows"];
   reconcileDiscordCommands: ReturnType<typeof createDiscordCommands>["reconcileDiscordCommands"];
   runtimeFor: (endpoint: EndpointRow, input?: { requireDiscordOwnership?: boolean; waitForDiscordOwnership?: boolean }) => Promise<ChatEndpointRuntime>;
@@ -461,7 +461,10 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     if (input.action === "remove") {
       const settleRemovalRuntime = async (invalidateUnhandled = true) => {
         await credentialLease.assertOwned();
-        const result = await options.prepareCredentialRemoval?.(endpoint.id);
+        const result = await options.prepareCredentialRemoval?.(endpoint.id, {
+          responsibleUserId: managementContext?.responsibleUserId ?? actorUserId,
+          reauthorize: async () => { await managementContext?.reauthorize(); await credentialLease.assertOwned(); },
+        });
         await credentialLease.assertOwned();
         if (result !== "settled" && invalidateUnhandled) await invalidateRuntime(endpoint.id).catch(() => undefined);
       };

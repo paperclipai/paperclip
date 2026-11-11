@@ -53,7 +53,7 @@ async function assertEndpointRetired(tx: Transaction, endpoint: typeof chatEndpo
 }
 
 /** Before agent termination or destructive SQL: keep consumer and credentials alive on 409. */
-export async function preparePhotonCompanyDeletion(db: Db, companyId: string) {
+export async function preparePhotonCompanyDeletion(db: Db, companyId: string, actorUserId?: string | null) {
   let cursor: string | undefined;
   while (true) {
     const endpoints = await db.select({ id: chatEndpoints.id }).from(chatEndpoints).where(and(
@@ -62,7 +62,7 @@ export async function preparePhotonCompanyDeletion(db: Db, companyId: string) {
     if (!endpoints.length) return;
     const owner = owners.get(db);
     if (!owner) throw pending();
-    for (const endpoint of endpoints) await owner.remove(endpoint.id, async () => undefined);
+    for (const endpoint of endpoints) await owner.remove(endpoint.id, async () => undefined, actorUserId);
     cursor = endpoints[endpoints.length - 1]!.id;
   }
 }

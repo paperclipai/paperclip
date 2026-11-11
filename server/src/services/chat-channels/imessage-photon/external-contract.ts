@@ -42,6 +42,7 @@ export const photonExternalStateSchema = z.object({
   phase: z.enum(["enrolling", "joining", "external", "retiring", "retired"]),
   // The complete non-secret enrollment input survives an ambiguous broker reply.
   binding: photonExternalBindingSchema,
+  enrollmentCancellation: z.enum(["requested", "fenced"]).optional(),
   acceptedRetirement: z.object({ binding: photonExternalBindingSchema, handoffId: z.string().uuid() }).strict().nullable(),
   initialSequence: sequence.nullable(),
   joinedSequence: sequence.nullable(), acceptedSequence: sequence.nullable(),
@@ -53,6 +54,8 @@ export function readPhotonExternalState(value: unknown): PhotonExternalState | n
   if (value === null) return null;
   const state = photonExternalStateSchema.parse(value);
   assertPhotonExternalBinding(state.identity, state.binding);
+  if (state.enrollmentCancellation && !["retiring", "retired"].includes(state.phase)
+    || state.enrollmentCancellation === "fenced" && state.phase !== "retired") throw new Error("Photon enrollment cancellation phase changed");
   if (state.localResource?.closed === true && state.localClosureConfirmed !== true
     || state.localClosureConfirmed === true && state.localResource && state.localResource.closed !== true)
     throw new Error("Photon physical close receipt and original descriptor disagree");

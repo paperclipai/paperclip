@@ -550,7 +550,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
       return result.company;
     },
 
-    remove: (id: string) => deleteCompany(db, id),
+    remove: (id: string, actorUserId?: string | null) => deleteCompany(db, id, actorUserId),
 
     stats: () =>
       Promise.all([

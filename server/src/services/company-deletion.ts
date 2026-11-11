@@ -63,8 +63,8 @@ import {
   routines,
 } from "@paperclipai/db";
 
-export async function deleteCompany(db: Db, id: string) {
-  await preparePhotonCompanyDeletion(db, id);
+export async function deleteCompany(db: Db, id: string, actorUserId?: string | null) {
+  await preparePhotonCompanyDeletion(db, id, actorUserId);
   const lifecycle = createAgentLifecycle(db);
   const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));
   for (const agent of companyAgents) {

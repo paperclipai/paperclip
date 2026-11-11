@@ -1371,7 +1371,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
-    const company = await svc.remove(companyId);
+    const company = await svc.remove(companyId, req.actor.type === "board" ? req.actor.userId : undefined);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;

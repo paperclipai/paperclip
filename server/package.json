@@ -129,6 +129,8 @@
     "@chat-adapter/teams",
     "@chat-adapter/telegram",
     "@discordjs/ws",
+    "@grpc/grpc-js",
+    "@photon-ai/advanced-imessage",
     "acpx"
   ],
   "devDependencies": {

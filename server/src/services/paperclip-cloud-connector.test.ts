@@ -917,3 +917,40 @@ describe("Slack form normal connector terminal reply contracts", () => {
     await expect(call({})).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
   });
 });
+
+
+describe("Photon authenticated receiver capability (controlled HTTP responses)", () => {
+  it("distinguishes a valid legacy absence from supported version one using the normal signed status request", async () => {
+    const keys = config();
+    for (const supported of [false, true]) {
+      const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { request: string };
+        const claims = JSON.parse(Buffer.from(body.request.split(".")[1]!, "base64url").toString());
+        expect(claims).toMatchObject({ iss: instanceId, op: "status", sub: "instance-capabilities", cid: "instance-capabilities" });
+        return Response.json({ active: true, status: "active", profiles: [], ...(supported ? { photonReceiver: { version: 1 } } : {}) });
+      });
+      const connector = createPaperclipCloudConnector({ config: keys.config, request });
+      await expect(connector.photonReceiverAvailable()).resolves.toBe(supported);
+    }
+  });
+  it("never turns uncertain authority or malformed status into local fallback", async () => {
+    const keys = config();
+    const bodies = [
+      { active: false, status: "suspended", profiles: [] },
+      { active: true, status: "active" },
+      { active: true, status: "active", profiles: [42] },
+      { active: true, status: "active", profiles: [], photonReceiver: null },
+      { active: true, status: "active", profiles: [], photonReceiver: { version: 2 } },
+    ];
+    for (const body of bodies) {
+      const connector = createPaperclipCloudConnector({ config: keys.config, request: async () => Response.json(body) });
+      await expect(connector.photonReceiverAvailable()).rejects.toBeInstanceOf(Error);
+    }
+    for (const status of [401, 403, 503]) {
+      const connector = createPaperclipCloudConnector({ config: keys.config, request: async () => Response.json({ error: "REAUTHORIZATION_REQUIRED" }, { status }) });
+      await expect(connector.photonReceiverAvailable()).rejects.toBeInstanceOf(Error);
+    }
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: async () => { throw new Error("controlled network interruption"); } });
+    await expect(connector.photonReceiverAvailable()).rejects.toBeInstanceOf(Error);
+  });
+});

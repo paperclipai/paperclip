@@ -528,6 +528,8 @@ export interface ChatSdkRuntimeCallbacks {
 
 export interface CreateChatSdkEndpointRuntimeOptions {
   callbacks: ChatSdkRuntimeCallbacks;
+  /** Invoked only if registry replacement fails before constructor entry. */
+  onConstructionAborted?(): Promise<void>;
   companyId: string;
   concurrency?: ConcurrencyConfig | ConcurrencyStrategy;
   /** Start Discord's long-lived Gateway listener for the elected owner only. */
@@ -3208,6 +3210,51 @@ export class ChatSdkEndpointNotRegisteredError extends Error {
 }
 
 /** Process-local lifecycle registry; durable state remains in Paperclip persistence. */
+/** Pending receipt ownership only; each registry keeps its existing lifecycle queue. */
+export class ChatRuntimeConstructionCleanup {
+  private readonly pending = new Map<string, Set<() => Promise<void>>>();
+
+  has(endpointId?: string): boolean {
+    return endpointId === undefined ? this.pending.size > 0 : this.pending.has(endpointId);
+  }
+
+  endpointIds(): Iterable<string> { return this.pending.keys(); }
+
+  retain(endpointId: string, cleanup: () => Promise<void>): void {
+    const owners = this.pending.get(endpointId) ?? new Set<() => Promise<void>>();
+    owners.add(cleanup);
+    this.pending.set(endpointId, owners);
+  }
+
+  private completed(endpointId: string, cleanup: () => Promise<void>): void {
+    const owners = this.pending.get(endpointId);
+    if (!owners) return;
+    owners.delete(cleanup);
+    if (!owners.size && this.pending.get(endpointId) === owners) this.pending.delete(endpointId);
+  }
+
+  async join(endpointId: string): Promise<void> {
+    const owners = this.pending.get(endpointId);
+    if (!owners) return;
+    const errors: unknown[] = [];
+    for (const cleanup of [...owners]) {
+      try { await cleanup(); this.completed(endpointId, cleanup); }
+      catch (error) { errors.push(error); }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, "Chat never-created resource cleanup remains owned");
+  }
+
+  async abort(endpointId: string, cleanup: (() => Promise<void>) | undefined, primary: unknown): Promise<never> {
+    if (cleanup) {
+      this.retain(endpointId, cleanup);
+      try { await cleanup(); this.completed(endpointId, cleanup); }
+      catch (error) { throw new AggregateError([primary, error], "Chat runtime construction abort cleanup failed"); }
+    }
+    throw primary;
+  }
+}
+
 export class ChatSdkRuntime {
   private readonly endpoints = new Map<string, ChatSdkEndpointRuntime>();
   private readonly retiringEndpoints = new Map<
@@ -3215,6 +3262,7 @@ export class ChatSdkRuntime {
     ChatSdkEndpointRuntime
   >();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
+  private readonly constructionCleanup = new ChatRuntimeConstructionCleanup();
   private readonly replacementGenerations = new Map<string, number>();
   private shuttingDown = false;
 
@@ -3230,7 +3278,7 @@ export class ChatSdkRuntime {
 
   /** Retirement failures retain their owner even after get/list hide it. */
   hasUnsettledLifecycle(): boolean {
-    return this.retiringEndpoints.size > 0 || this.lifecycleTails.size > 0;
+    return this.retiringEndpoints.size > 0 || this.constructionCleanup.has() || this.lifecycleTails.size > 0;
   }
 
   private enqueueLifecycle<T>(
@@ -3255,15 +3303,32 @@ export class ChatSdkRuntime {
     return result;
   }
 
+  /** Transfer a captured never-created cleanup responsibility before returning its failure. */
+  retainPendingConstructionCleanup(endpointId: string, cleanup: () => Promise<void>): void {
+    this.constructionCleanup.retain(endpointId, cleanup);
+  }
+
+  /** Join only never-created cleanup; preserve active Runtime/consumer ownership. */
+  async joinPendingConstructionCleanup(endpointId: string): Promise<void> {
+    await this.enqueueLifecycle(endpointId, () => this.constructionCleanup.join(endpointId));
+  }
+
   private async retireEndpoint(endpointId: string): Promise<boolean> {
-    const previous =
-      this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId);
-    if (!previous) return false;
-    this.endpoints.delete(endpointId);
-    this.retiringEndpoints.set(endpointId, previous);
-    await previous.shutdown();
-    this.retiringEndpoints.delete(endpointId);
-    return true;
+    const previous = this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId);
+    const hadAbort = this.constructionCleanup.has(endpointId), errors: unknown[] = [];
+    if (previous) {
+      this.endpoints.delete(endpointId);
+      this.retiringEndpoints.set(endpointId, previous);
+      try { await previous.shutdown(); this.retiringEndpoints.delete(endpointId); }
+      catch (error) { errors.push(error); }
+    }
+    // Independent never-created receipt settlement must still be attempted when
+    // a predecessor's real shutdown fails. Both owners remain retryable.
+    try { await this.constructionCleanup.join(endpointId); }
+    catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, "Chat runtime retirement and construction cleanup failed");
+    return Boolean(previous || hadAbort);
   }
 
   private nextReplacementGeneration(endpointId: string): number {
@@ -3287,17 +3352,25 @@ export class ChatSdkRuntime {
   async replaceEndpoint(
     options: CreateChatSdkEndpointRuntimeOptions,
   ): Promise<ChatSdkEndpointRuntime> {
-    if (this.shuttingDown) throw new Error("Chat SDK runtime is shutting down");
+    const abort = (primary: unknown): Promise<never> => this.constructionCleanup.abort(options.endpointId, options.onConstructionAborted, primary);
+    if (this.shuttingDown) {
+      return await this.enqueueLifecycle(options.endpointId, () => abort(new Error("Chat SDK runtime is shutting down")));
+    }
     const generation = this.nextReplacementGeneration(options.endpointId);
     return await this.enqueueLifecycle(options.endpointId, async () => {
-      this.assertReplacementCurrent(options.endpointId, generation);
-      await this.retireEndpoint(options.endpointId);
-      this.assertReplacementCurrent(options.endpointId, generation);
-      const next = createChatSdkEndpointRuntime(options);
-      this.endpoints.set(options.endpointId, next);
-      // The service installs callback context before initialize() starts the
-      // Discord gateway. Preserve that caller-owned initialization boundary.
-      return next;
+      let constructionStarted = false;
+      try {
+        this.assertReplacementCurrent(options.endpointId, generation);
+        await this.retireEndpoint(options.endpointId);
+        this.assertReplacementCurrent(options.endpointId, generation);
+        constructionStarted = true;
+        const next = createChatSdkEndpointRuntime(options);
+        this.endpoints.set(options.endpointId, next);
+        return next;
+      } catch (primary) {
+        if (!constructionStarted) return await abort(primary);
+        throw primary;
+      }
     });
   }
 
@@ -3325,6 +3398,7 @@ export class ChatSdkRuntime {
     const endpointIds = new Set([
       ...this.endpoints.keys(),
       ...this.retiringEndpoints.keys(),
+      ...this.constructionCleanup.endpointIds(),
       ...this.lifecycleTails.keys(),
     ]);
     const results = await Promise.allSettled(
