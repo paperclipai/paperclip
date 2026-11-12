@@ -473,7 +473,7 @@ export class PaperclipRunnerToolAuthority {
             tool: call.tool, arguments: call.arguments, callApi })
         : await executeNativeWorkflowTool({ db: this.db, binding: this.binding,
             tool: call.tool, arguments: call.arguments, callApi });
-      return result === undefined ? null : { result };
+      return result === undefined ? null : { result: call.tool === "update_case" ? result : apiToolResult(result) };
     }
     const input = record(call.arguments);
     if (call.tool === "create_project") {
@@ -853,8 +853,8 @@ export class PaperclipRunnerToolAuthority {
       case "read_workflow":
       case "create_workflow":
       case "update_workflow":
-        return executeNativeWorkflowTool({ db: this.db, binding: this.binding, tool: call.tool, arguments: call.arguments,
-          callApi: (receiptKey, request) => this.#callApi(receiptKey, request, { dedicatedCaseTool: call.tool }) });
+        return apiToolResult(await executeNativeWorkflowTool({ db: this.db, binding: this.binding, tool: call.tool, arguments: call.arguments,
+          callApi: (receiptKey, request) => this.#callApi(receiptKey, request, { dedicatedCaseTool: call.tool }) }));
       case "read_case":
       case "update_case":
         if (context.issue.workMode !== "standard") throw forbidden("Case tools require standard work mode");

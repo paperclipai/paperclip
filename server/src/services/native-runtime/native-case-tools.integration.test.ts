@@ -33,6 +33,40 @@ describe("native case tools through authenticated production routes", () => {
     return { ...f, record: record!, authority, call };
   }
   type CaseFixture = Awaited<ReturnType<typeof fixture>>;
+  it("keeps workflow API identities out of semantic result identities", async () => {
+    const f = await fixture();
+    const listed = await f.call("list_workflows");
+    expect(listed).toMatchObject({ ok: true, data: [], apiOperationId: "GET /api/companies/{companyId}/workflows" });
+    expect(listed).not.toHaveProperty("operationId");
+    const created = await f.call("create_workflow", { idempotencyKey: "semantic-workflow", name: "Procedure", prompt: "Verify the receipt." }) as { data: { id: string } };
+    const read = await f.call("read_workflow", { workflowId: created.data.id });
+    const updated = await f.call("update_workflow", { workflowId: created.data.id, idempotencyKey: "semantic-update", name: "Verified procedure" });
+    for (const [result, apiOperationId] of [
+      [created, "POST /api/companies/{companyId}/workflows"],
+      [read, "GET /api/workflows/{id}"],
+      [updated, "PATCH /api/workflows/{id}"],
+    ] as const) {
+      expect(result).toMatchObject({ ok: true, apiOperationId });
+      expect(result).not.toHaveProperty("operationId");
+    }
+    expect(read).toHaveProperty("snapshot");
+    const failed = await f.call("read_workflow", { workflowId: randomUUID() });
+    expect(failed).toMatchObject({ ok: false, status: 404, apiOperationId: "GET /api/workflows/{id}" });
+    expect(failed).not.toHaveProperty("operationId");
+  });
+  it.each(["list_workflows", "read_workflow", "create_workflow", "update_workflow"])("normalizes recovered %s receipts", async tool => {
+    const f = await fixture();
+    const created = await f.call("create_workflow", { idempotencyKey: "recovery-seed", name: "Procedure", prompt: "Verify the receipt." }) as { data: { id: string } };
+    const input = tool === "list_workflows" ? {} : tool === "read_workflow" ? { workflowId: created.data.id }
+      : tool === "create_workflow" ? { idempotencyKey: "recover-create", name: "New procedure", prompt: "Verify again." }
+      : { workflowId: created.data.id, idempotencyKey: "recover-update", name: "Updated procedure" };
+    const original = await f.call(tool, input);
+    const replacement = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: true, workMode: "standard" });
+    const recovered = await replacement.recover({ tool, callId: randomUUID(), arguments: input });
+    expect(recovered).toEqual({ result: original });
+    expect(recovered!.result).toMatchObject({ ok: true, apiOperationId: expect.any(String) });
+    expect(recovered!.result).not.toHaveProperty("operationId");
+  });
   type CaseDocument = { id: string; key: string; body: string; latestRevisionId: string; latestRevisionNumber: number };
   type DocumentPage = { ok: boolean; status: number; data: { id: string; handoffVersion: number; phase: string | null;
     workIssue: { statusVersion: number }; readPage: { mode: "json_text"; section: "document"; text: string;
