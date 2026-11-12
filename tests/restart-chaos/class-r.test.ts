@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
   CR1_DEFAULT_HOLD_SECONDS, CR5_FIRE_WINDOW_MS, PROVIDER_KILL_SCRIPT, classRHoldMs, classRRedeploys, findDaytonaPluginWorker, killedPidsFromOutput,
-  parseClassROptions, providerKillCommand, runPluginStall, waitForPluginActivation, watchLabels, withClassRCheck, type ClassRRecord,
+  parseClassROptions, providerKillCommand, runPluginStall, waitForPluginActivation, watchLabels, withReplacementPluginStall, withClassRCheck, type ClassRRecord,
 } from "./class-r.js";
 import { executeInWaveSandboxes } from "./daytona-runner-logs.js";
 import { parseCommand } from "./config.js";
@@ -35,7 +38,7 @@ describe("class R options", () => {
   it("needs Daytona, its own fault for each option and no storm or crash point", () => {
     expect(() => parseClassROptions({ ...base, env: "local", faults: ["CR1"] }, {})).toThrow(/--env daytona/);
     expect(() => parseClassROptions({ ...base, faults: ["K15"] }, { cr1: "60" })).toThrow(/add CR1 to --faults/);
-    expect(() => parseClassROptions({ ...base, faults: ["K15"] }, { cr3: "60" })).toThrow(/add CR3, CR4 or CR5 to --faults/);
+    expect(() => parseClassROptions({ ...base, faults: ["K15"] }, { cr3: "60" })).toThrow(/add CR3, CR4, CR5 or CR6 to --faults/);
     expect(parseClassROptions({ ...base, faults: ["CR4", "CR5"] }, { cr3: "50" })).toEqual({ cr3StallMs: [50_000, 50_000] });
     expect(() => parseClassROptions({ ...base, stormMinutes: 10, faults: ["CR1"] }, {})).toThrow(/storm/);
     expect(() => parseClassROptions({ ...base, faults: ["CR1", "MS1"] }, {})).toThrow(/MS1-MS3/);
@@ -174,6 +177,26 @@ describe("CR3 stall", () => {
     const result = await waitForPluginActivation({ timeoutMs: outcome === "timed_out" ? 0 : 60_000, cancelled: () => false, sleep: async () => {},
       readLog: () => lines.slice(0, ++reads).join("\n") });
     expect(result).toBe(outcome);
+  });
+  it.each([
+    ["CR6", "stops the worker while the plugin activates", ["starting"], 1],
+    ["CR4", "waits for the activation before it stops the worker", ["plugin-loader: loadAll complete"], 1],
+    ["K1", "leaves the plugin alone", ["plugin-loader: loadAll complete"], 0],
+  ] as const)("%s %s", async (kind, _what, log, frozen) => {
+    const root = mkdtempSync(path.join(tmpdir(), "class-r-replacement-"));
+    try {
+      const logPath = path.join(root, "server.log");
+      writeFileSync(logPath, ["old boot: plugin-loader: loadAll complete", ...log].join("\n"));
+      const freeze = vi.fn(() => [11]);
+      const into: { pluginStall?: unknown } = {};
+      const healthyAt = await withReplacementPluginStall(kind, { ...base, holdMs: 0, logPath, logOffset: "old boot: plugin-loader: loadAll complete".length,
+        activationTimeoutMs: 0, into: into as never, freezer: { freeze, thaw: () => {} } } as never, async () => 1234);
+      expect(healthyAt).toBe(1234);
+      expect(freeze).toHaveBeenCalledTimes(frozen);
+      if (frozen) expect(into.pluginStall).toMatchObject({ workerPid: 11, error: null });
+      if (kind === "CR4") await expect(withReplacementPluginStall(kind, { ...base, holdMs: 0, logPath, logOffset: 10_000,
+        activationTimeoutMs: 0, into: {}, freezer: { freeze, thaw: () => {} } } as never, async () => 1)).rejects.toThrow(/activation timed_out/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("fails when the worker could not be stopped or is missing", async () => {
     const missed = await runPluginStall({ ...base, freezer: { freeze: () => [], thaw: () => {} } });

@@ -16,6 +16,8 @@
  * - CR4: a K1 restart (SIGKILL, no hold); as soon as the replacement is healthy its Daytona plugin worker is
  *   stopped for the same stall, so the run's reattachment reads (saved state, identity marker, process check)
  *   stall while the run recovers.
+ * - CR6: a K1 restart; the replacement's Daytona plugin worker is stopped as soon as it forks, while the server
+ *   activates the plugin at boot, so its `initialize` call times out.
  * - CR5: the CR3 stall, fired a few seconds after the task is assigned, so it covers the run's launch: the
  *   runnerd launch call and its identity read. The stall is not meant to cross the T1 tool loop.
  *
@@ -32,7 +34,7 @@ import { readFileSync } from "node:fs";
 import type { AdapterId, FaultKind, FaultReceipt, WaveOptions } from "./types.js";
 import { ProcessFreezer, descendantPids, readProcessTable, type ProcessRow } from "./time-faults.js";
 
-export const CLASS_R_FAULT_KINDS = ["CR1", "CR2", "CR3", "CR4", "CR5"] as const;
+export const CLASS_R_FAULT_KINDS = ["CR1", "CR2", "CR3", "CR4", "CR5", "CR6"] as const;
 export type ClassRFaultKind = (typeof CLASS_R_FAULT_KINDS)[number];
 
 export function isClassRFault(kind: string): kind is ClassRFaultKind {
@@ -44,7 +46,7 @@ export const CR1_DEFAULT_HOLD_SECONDS = 360;
 /** Staging's ninth run stalled one plugin RPC for more than 40 s. */
 export const CR3_DEFAULT_STALL_SECONDS = 45;
 export const CR3_MIN_STALL_SECONDS = 41;
-export const PLUGIN_STALL_FAULT_KINDS = ["CR3", "CR4", "CR5"] as const;
+export const PLUGIN_STALL_FAULT_KINDS = ["CR3", "CR4", "CR5", "CR6"] as const;
 export function isPluginStallFault(kind: string): boolean {
   return (PLUGIN_STALL_FAULT_KINDS as readonly string[]).includes(kind);
 }
@@ -87,12 +89,12 @@ export function parseClassROptions(options: Pick<WaveOptions, "env" | "faults" |
   for (const kind of ["CR1", "CR2"] as const) {
     if (given[kind] !== undefined && !kinds.includes(kind)) throw new Error(`--${flags[kind]} sets ${kind}; add ${kind} to --faults`);
   }
-  if (given.CR3 !== undefined && !kinds.some(isPluginStallFault)) throw new Error(`--${flags.CR3} sets CR3-CR5; add CR3, CR4 or CR5 to --faults`);
+  if (given.CR3 !== undefined && !kinds.some(isPluginStallFault)) throw new Error(`--${flags.CR3} sets CR3-CR6; add CR3, CR4, CR5 or CR6 to --faults`);
   if (!kinds.length) return {};
-  if (options.env !== "daytona") throw new Error("Class R faults (CR1-CR5) act on the remote Daytona sandbox; run them with --env daytona");
-  if (options.stormMinutes) throw new Error("Class R faults (CR1-CR5) are planned per task; do not combine them with --storm-minutes");
-  if (options.crashPoint) throw new Error("Class R faults (CR1-CR5) do not combine with --crash-point");
-  if (options.faults.some(kind => kind.startsWith("MS"))) throw new Error("Class R faults (CR1-CR5) do not combine with MS1-MS3");
+  if (options.env !== "daytona") throw new Error("Class R faults (CR1-CR6) act on the remote Daytona sandbox; run them with --env daytona");
+  if (options.stormMinutes) throw new Error("Class R faults (CR1-CR6) are planned per task; do not combine them with --storm-minutes");
+  if (options.crashPoint) throw new Error("Class R faults (CR1-CR6) do not combine with --crash-point");
+  if (options.faults.some(kind => kind.startsWith("MS"))) throw new Error("Class R faults (CR1-CR6) do not combine with MS1-MS3");
   return {
     ...(kinds.includes("CR1") ? { cr1HoldMs: parseRange(values.cr1 ?? String(CR1_DEFAULT_HOLD_SECONDS), flags.CR1, 0, CLASS_R_MAX_HOLD_SECONDS) } : {}),
     ...(kinds.includes("CR2") ? { cr2HoldMs: parseRange(values.cr2 ?? "0", flags.CR2, 0, CLASS_R_MAX_HOLD_SECONDS) } : {}),
@@ -251,18 +253,32 @@ export async function runPluginStall(input: {
   return stall;
 }
 
-export async function stallAfterPluginActivation(input: {
+export interface ReplacementPluginStallInput {
   serverPid: number; holdMs: number; cancelled: () => boolean; record: (event: string, data: Record<string, unknown>) => void;
-  logPath: string; logOffset: number; into: { pluginStall?: PluginStallRecord }; activationTimeoutMs?: number;
-}): Promise<PluginStallRecord> {
-  const activation = await waitForPluginActivation({ timeoutMs: input.activationTimeoutMs ?? 120_000, cancelled: input.cancelled,
-    readLog: () => { try { return readFileSync(input.logPath).subarray(input.logOffset).toString("utf8"); } catch { return ""; } } });
+  logPath: string; logOffset: number; into: { pluginStall?: PluginStallRecord } | undefined; activationTimeoutMs?: number;
+}
+
+export async function stallReplacementPlugin(input: ReplacementPluginStallInput & { afterActivation: boolean }): Promise<PluginStallRecord> {
+  const activation = input.afterActivation
+    ? await waitForPluginActivation({ timeoutMs: input.activationTimeoutMs ?? 120_000, cancelled: input.cancelled,
+      readLog: () => { try { return readFileSync(input.logPath).subarray(input.logOffset).toString("utf8"); } catch { return ""; } } })
+    : "activated";
   const stall = activation === "activated" ? await runPluginStall({ ...input, findWorkerWithinMs: 60_000 })
     : { workerPid: null, command: null, frozenPids: [], frozenAt: null, thawedAt: null,
       error: `The replacement's plugin activation ${activation}; CR4 stalls only an activated plugin` };
-  input.into.pluginStall = stall;
+  if (input.into) input.into.pluginStall = stall;
   if (stall.error) throw new Error(stall.error);
   return stall;
+}
+
+export async function withReplacementPluginStall(kind: FaultKind, input: ReplacementPluginStallInput,
+  waitForHealth: () => Promise<number>): Promise<number> {
+  if (kind !== "CR4" && kind !== "CR6") return waitForHealth();
+  const stall = stallReplacementPlugin({ ...input, afterActivation: kind === "CR4" }).then(() => null, (error: unknown) => error);
+  const healthyAt = await waitForHealth();
+  const failure = await stall;
+  if (failure) throw failure;
+  return healthyAt;
 }
 
 export function findDaytonaPluginWorker(rows: ReadonlyArray<{ pid: number; ppid: number; command: string }>, serverPid: number,

@@ -42,7 +42,7 @@ import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type Mul
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 import { ephemeralServerEnvironment } from "./ephemeral-server.js";
-import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, stallAfterPluginActivation, type ClassRHooks } from "./class-r.js";
+import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, withReplacementPluginStall, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -57,8 +57,8 @@ export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SI
   // MS1 leaves the primary alone; MS2 freezes it; MS3 stops it gracefully (multi-server.ts).
   MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM",
   // CR1 stops the server like K15; CR2 signals only the sandbox's provider (SIGTERM to the server with a hold);
-  // CR3 and CR5 stop the Daytona plugin worker; CR4 kills the server, then stops the replacement's (class-r.ts).
-  CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP", CR4: "SIGKILL", CR5: "SIGSTOP" };
+  // CR3 and CR5 stop the Daytona plugin worker; CR4 and CR6 kill the server, then stop the replacement's (class-r.ts).
+  CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP", CR4: "SIGKILL", CR5: "SIGSTOP", CR6: "SIGKILL" };
 
 /** The checkout's commit, for the K14 receipt. */
 function checkoutSha(root: string): string | null {
@@ -536,7 +536,7 @@ export class ChaosSupervisor {
       else outage = await replaceController({
         requestId: `chaos-${receipt.faultId}-${requestedBy}`,
         previousPid: previous.pid,
-        outage: { signal: receipt.signal === "SIGTERM" ? "SIGTERM" : "SIGKILL", holdMs: kind === "CR4" ? 0 : holdMs },
+        outage: { signal: receipt.signal === "SIGTERM" ? "SIGTERM" : "SIGKILL", holdMs: kind === "CR4" || kind === "CR6" ? 0 : holdMs },
         // A K4 hold may outlast the Runner's 7-minute reconnect grace on
         // purpose (--k4-hold-max-seconds); the replacement still gets the
         // normal startup allowance after the hold.
@@ -585,9 +585,9 @@ export class ChaosSupervisor {
             receipt.repeatedRestart.firstStopPhase = await this.waitForCrashLoopPhase(replacement, receipt.repeatedRestart.stopOn, receipt.phases);
             return;
           }
-          receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases);
-          if (kind === "CR4") await stallAfterPluginActivation({ into: receipt.classR!, serverPid: replacement.pid!, holdMs, cancelled: () => this.shuttingDown,
-            logPath: this.paths.serverLogPath, logOffset: receipt.serverLogOffsetAtStart, record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
+          receipt.healthyAt = await withReplacementPluginStall(kind, { into: receipt.classR, serverPid: replacement.pid!, holdMs, cancelled: () => this.shuttingDown,
+            logPath: this.paths.serverLogPath, logOffset: receipt.serverLogOffsetAtStart, record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) },
+          () => this.waitForHealth(replacement, receipt.phases));
         },
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },
