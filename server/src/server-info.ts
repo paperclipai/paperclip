@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "@paperclipai/shared";
 import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 
@@ -9,7 +11,26 @@ type BuildCommitCommand = () => string | null;
 
 const SHORT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
+// Git finds a repository through a `.git` entry in the working directory or in
+// one of its parents, or through GIT_DIR. A packaged or container install has
+// neither, so `git show` can only fail there, and the failed start still blocks
+// the event loop for the length of a process start. Look before starting git:
+// without a checkout the answer is the build commit, with no child process.
+function workingDirectoryIsInsideGitCheckout(): boolean {
+  if (process.env.GIT_DIR) return true;
+  let directory = process.cwd();
+  for (;;) {
+    if (existsSync(join(directory, ".git"))) return true;
+    const parent = dirname(directory);
+    if (parent === directory) return false;
+    directory = parent;
+  }
+}
+
 function defaultGitCommand() {
+  if (!workingDirectoryIsInsideGitCheckout()) {
+    throw new Error("The working directory is not inside a Git checkout");
+  }
   return execFileSync(
     "git",
     ["show", "-s", "--format=%H%n%h%n%s%n%cI", "HEAD"],
@@ -167,7 +188,8 @@ export function createServerInfoSnapshot(
 // without the Node process restarting: a managed dev-server restart re-runs the
 // code while keeping this module alive, so a commit captured once at boot goes
 // stale. Re-read git HEAD on demand, throttled by a short TTL so frequent health
-// polls don't spawn git on every request.
+// polls don't spawn git on every request. Only a checkout pays for that: outside
+// one, a refresh starts no process (see workingDirectoryIsInsideGitCheckout).
 const GIT_INFO_CACHE_TTL_MS = 3000;
 const processStartedAt = new Date().toISOString();
 let gitInfoCache: { value: ServerGitInfo; expiresAt: number } | null = null;
