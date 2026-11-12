@@ -1757,8 +1757,13 @@ without a semantic result. The reattachment then fails with
 `native_remote_recovery_lease_mismatch`, `native_plugin_recovery_lease_mismatch`
 or `runner_remote_process_identity_unavailable`. The server requests the task
 Retry itself, once per run, under the authority of the user who sent the message,
-assigned the task, or clicked Retry. It does this only when the run recorded no
-provider turn or its last provider turn is settled. Activity records the request
+assigned the task, or clicked Retry. It does this when the run recorded no
+provider turn, when its last provider turn is settled, or when the refused
+reattachment proved the Runner process gone (`process_verification` /
+`process_not_running`). In that last case an unsettled turn's outcome is
+unknown: the server records `native.interrupted_turn_outcome_unknown` on the run
+first, and the Retry starts a fresh provider session over the saved work, so the
+turn is never replayed. Activity records the request
 as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
 recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
 server requested gets no second automatic attempt. A system wake (for example a
@@ -1769,8 +1774,12 @@ before it is sent, holds no turn command and no turn event
 (`providerTurnIssued: false` on `native.remote_runner_recovery_failed`). The run
 must also have no turn or tool event, and the Retry runs under the run's
 responsible user. Missing events alone never qualify, because a turn can reach
-the provider before its events are stored. Other system wakes and runs with an
-in-flight provider turn do not continue automatically. For these failed runs, a
+the provider before its events are stored. An automatic retry of owed work (a
+system wake whose run has `retryOfRunId`, such as `transient_failure_retry`)
+also continues under the run's responsible user once the refusal proved its
+Runner process gone, because losing the Runner to a restart is not the task's
+failure. Other system wakes, and in-flight provider turns without that proof,
+do not continue automatically. For these failed runs, a
 recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
 continuation.
