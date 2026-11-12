@@ -70,9 +70,12 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
       const answerable = parsed.data.questions.filter(question => !!question.prompt.trim()
         && (question.options.length >= 2 || question.options.some(option => option.freeText)));
       if (!answerable.length) continue;
-      const form = record(shownQuestionForm(payload)?.questionSet);
-      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shownQuestionForm(payload))).join("\n"),
-        links: strings(form?.description, ...(Array.isArray(form?.questions) ? form.questions.map(question => record(question)?.prompt) : [])).flatMap(markdownLinkTargets) });
+      // The shown form is the canonical questionSet when present, else the legacy questions; both render each
+      // prompt with Markdown, and the questionSet also renders its description.
+      const shown = shownQuestionForm(payload), form = record(shown?.questionSet);
+      const prompts = [form?.questions, shown?.questions].flatMap(list => Array.isArray(list) ? list.map(question => record(question)?.prompt) : []);
+      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shown)).join("\n"),
+        links: strings(form?.description, ...prompts).flatMap(markdownLinkTargets) });
     } else if (row.kind === "request_confirmation") {
       if (!payload || payload.toolAction || payload.secretProposal || payload.connectionAuthorization || typeof payload.prompt !== "string" || !payload.prompt.trim()) continue;
       cards.push({ id: row.id, kind: "request_confirmation", runId: row.sourceRunId,

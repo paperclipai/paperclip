@@ -119,6 +119,10 @@ describe("links a response card renders", () => {
     expect(cards([review])[0]!.links).toEqual(["/COM/issues/COM-3#document-draft"]);
     expect(replyOrCardLinks(["/COM/agents/ceo"], [card!])).toEqual(["/COM/agents/ceo", "/COM/issues/COM-1", "/COM/issues/COM-2", "/COM/issues/COM-9"]);
   });
+  it("reads prompt links from a legacy question form without a questionSet", () => {
+    const question = goalQuestion(); question.payload.questions[0]!.prompt = "Which goal? See [the growth goal](/COM/goals/growth).";
+    expect(cards([question])[0]!.links).toEqual(["/COM/goals/growth"]);
+  });
   it("finds no link in a card without Markdown links, such as cohort 4's ambiguous-task options", () => {
     const question = goalQuestion();
     question.payload.questions[0]!.options = [{ id: "com-1", label: "COM-1 in Launch project" }, { id: "com-2", label: "COM-2 in Experiments project" }];
