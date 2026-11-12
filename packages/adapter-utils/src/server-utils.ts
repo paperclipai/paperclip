@@ -4433,18 +4433,58 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
-export async function ensurePaperclipSkillSymlink(
+const pendingSkillLinkOperations = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialize symlink materialization for a single target path inside this
+ * process. Concurrent runs of different agents share one skills directory, so
+ * two reconciles can otherwise race between `lstat` and `symlink` (TOCTOU) and
+ * fail the whole run with EEXIST.
+ */
+function serializeSkillLinkOperation<T>(
+  target: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = path.resolve(target);
+  const previous = pendingSkillLinkOperations.get(key) ?? Promise.resolve();
+  const current = previous.then(operation, operation);
+  const settled = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingSkillLinkOperations.set(key, settled);
+  void settled.then(() => {
+    if (pendingSkillLinkOperations.get(key) === settled) {
+      pendingSkillLinkOperations.delete(key);
+    }
+  });
+  return current;
+}
+
+async function skillLinkResolvesTo(target: string, source: string): Promise<boolean> {
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return false;
+  return path.resolve(path.dirname(target), linkedPath) === path.resolve(source);
+}
+
+async function ensurePaperclipSkillSymlinkUnlocked(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (
-    linkSource,
-    linkTarget,
-  ) => fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void>,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
-    await linkSkill(source, target);
-    return "created";
+    try {
+      await linkSkill(source, target);
+      return "created";
+    } catch (error) {
+      // Another run (possibly in another process) won the race and already
+      // materialized this skill. Treat a matching link as success; EEXIST with
+      // a foreign occupant is still an error for the caller to reconcile.
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+      if (await skillLinkResolvesTo(target, source)) return "created";
+      throw error;
+    }
   }
 
   if (!existing.isSymbolicLink()) {
@@ -4455,7 +4495,7 @@ export async function ensurePaperclipSkillSymlink(
   if (!linkedPath) return "skipped";
 
   const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) {
+  if (resolvedLinkedPath === path.resolve(source)) {
     return "skipped";
   }
 
@@ -4468,8 +4508,27 @@ export async function ensurePaperclipSkillSymlink(
   }
 
   await fs.unlink(target);
-  await linkSkill(source, target);
+  try {
+    await linkSkill(source, target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+    if (await skillLinkResolvesTo(target, source)) return "repaired";
+    throw error;
+  }
   return "repaired";
+}
+
+export async function ensurePaperclipSkillSymlink(
+  source: string,
+  target: string,
+  linkSkill: (source: string, target: string) => Promise<void> = (
+    linkSource,
+    linkTarget,
+  ) => fs.symlink(linkSource, linkTarget),
+): Promise<"created" | "repaired" | "skipped"> {
+  return serializeSkillLinkOperation(target, () =>
+    ensurePaperclipSkillSymlinkUnlocked(source, target, linkSkill),
+  );
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {
