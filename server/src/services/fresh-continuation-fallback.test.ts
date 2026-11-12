@@ -735,6 +735,19 @@ suite("fresh-continuation fallback", () => {
     expect(await executionControlSchedule(db).disposition()).toBeNull();
   }, 60_000);
 
+  it("schedules no disposition scan for a held record the backlog pass leaves alone, and still does for an eligible one", async () => {
+    const overdueCheck = (actionId: string) => db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+      freshContinuationCheck: { kind: "backoff", checkedAt: Date.now() - 7_200_000, nextCheckAt: Date.now() - 3_600_000 } })}::jsonb` })
+      .where(eq(issueRecoveryActions.id, actionId));
+    const old = await heldBacklog("native_restart_recovery_blocked", 3 * 24 * 60 * 60_000);
+    await overdueCheck(old.actionId!);
+    expect(await nextFreshContinuationCheckAt(db)).toBeNull();
+    expect(await executionControlSchedule(db).disposition()).toBeNull();
+    const recent = await heldBacklog("native_restart_recovery_blocked", 60 * 60_000);
+    await overdueCheck(recent.actionId!);
+    expect(await nextFreshContinuationCheckAt(db)).not.toBeNull();
+  }, 60_000);
+
   it("tells the agent the previous attempt was cut off and which actions are unverified", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted" });
     await db.insert(toolInvocations).values({ companyId, agentId, issueId: f.issueId, runId: f.runId, toolName: "github.create_pull_request",

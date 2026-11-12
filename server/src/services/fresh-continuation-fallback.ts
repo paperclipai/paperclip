@@ -660,6 +660,12 @@ export const BACKLOG_CONTINUATION_SOURCE_CODES = [
 export const BACKLOG_CONTINUATIONS_PER_MINUTE = 10;
 const BACKLOG_CONTINUATIONS_PER_PASS = 5;
 
+/** Holds the disposition pass (unresolvedExecutionDispositions) handles itself, whatever their age. */
+function liveDispositionHoldSql() {
+  return and(inArray(issueRecoveryActions.status, ["active", "escalated"]), eq(issueRecoveryActions.kind, "active_run_watchdog"))!;
+}
+
+/** The backlog pass's eligibility: the one predicate its listing and its deadline query share. */
 function recentInterruptionSourceSql(now: Date) {
   return sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
     and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
@@ -713,7 +719,7 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
 }
 
 /** The earliest time a deferred check becomes due again, if any. */
-export async function nextFreshContinuationCheckAt(db: Db): Promise<number | null> {
+export async function nextFreshContinuationCheckAt(db: Db, now = new Date()): Promise<number | null> {
   // The same records the held-run query and the disposition pass would select;
   // a deadline on a record nothing would act on never schedules a scan.
   // That includes active holds that backed off: the disposition pass rechecks
@@ -722,7 +728,10 @@ export async function nextFreshContinuationCheckAt(db: Db): Promise<number | nul
     .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
       eq(issues.companyId, issueRecoveryActions.companyId)))
     .where(and(heldExecutionWhere({ includeActive: true }),
-      sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`));
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`,
+      // A record the backlog pass leaves alone schedules nothing; active holds
+      // stay with the disposition pass, which rechecks them when due.
+      or(liveDispositionHoldSql(), recentInterruptionSourceSql(now))));
   return held?.at ? Number(held.at) : null;
 }
 
