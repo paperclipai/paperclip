@@ -166,6 +166,25 @@ it("re-publishes an already-published build with bounded parallel, replayable wr
   expect(peak).toBeLessThanOrEqual(8);
 });
 
+it("refuses a colliding build even when another asset's storage outage fails first", async () => {
+  const root = await directory(), { provider, objects } = storage();
+  await fs.writeFile(path.join(root, "chunk-a.js"), "alpha");
+  await fs.writeFile(path.join(root, "chunk-b.js"), "beta");
+  objects.set("ui-assets/v1/chunk-b.js", Buffer.from("different bytes"));
+  const put = provider.putObjectConditional!.bind(provider), get = provider.getObject.bind(provider);
+  provider.putObjectConditional = async input => {
+    if (input.objectKey.endsWith("chunk-a.js")) throw Object.assign(new Error("Please reduce your request rate."), { name: "SlowDown", $metadata: { httpStatusCode: 503 } });
+    return put(input);
+  };
+  // The collision is found only after the outage on chunk-a has exhausted its retries.
+  provider.getObject = async input => {
+    if (input.objectKey.endsWith("chunk-b.js")) await new Promise(resolve => setTimeout(resolve, 100));
+    return get(input);
+  };
+  const retained = retainedUiAssets(provider, { sleep: async () => {}, concurrency: 2 });
+  await expect(publishRetainedUiAssetsAtStartup(retained, root, () => {})).rejects.toThrow("collides");
+});
+
 it("stops starting new assets after one collides, and still refuses the build", async () => {
   const root = await directory(), { provider, objects } = storage();
   for (let index = 0; index < 30; index++) await fs.writeFile(path.join(root, `chunk-${String(index).padStart(2, "0")}.js`), `v${index}`);

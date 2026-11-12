@@ -113,18 +113,27 @@ export function retainedUiAssets(provider: StorageProvider, options: { sleep?: (
     await visit("");
     // Each asset is an independent conditional write. A build has hundreds, so
     // a bounded pool replaces hundreds of serial round trips with a few dozen.
-    // The first failure stops new assets from starting; ones in flight finish.
+    // The first failure stops new assets from starting; ones in flight finish,
+    // and a collision among them outranks an outage.
     let next = 0;
-    let failure: { error: unknown } | null = null;
+    const failure: { found: boolean; error: unknown } = { found: false, error: null };
     const worker = async () => {
-      while (!failure && next < assets.length) {
+      while (!failure.found && next < assets.length) {
         const asset = assets[next++]!;
         try { await publishAsset(asset.filename, asset.objectKey); }
-        catch (error) { failure ??= { error }; }
+        // A collision refuses the build; an outage only lets it start on local
+        // files. A storage outage on one asset must never hide a collision
+        // found on another.
+        catch (error) {
+          if (!failure.found || (isTransientStorageError(failure.error) && !isTransientStorageError(error))) {
+            failure.found = true;
+            failure.error = error;
+          }
+        }
       }
     };
     await Promise.all(Array.from({ length: Math.min(concurrency, assets.length) }, worker));
-    if (failure) throw (failure as { error: unknown }).error;
+    if (failure.found) throw failure.error;
   }
   const serve: RequestHandler = async (req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") { next(); return; }

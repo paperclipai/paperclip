@@ -1998,13 +1998,58 @@ describe("startServer feedback export wiring", () => {
     expect(deliveryWorkRegisterMock).not.toHaveBeenCalled();
   });
 
-  it("checks eligible volume-free data once, before the app is created, and then starts", async () => {
+  // Staging, 2026-11-11: the gate's findings included run state this boot's
+  // own dispatch and recovery had just written. Run first, the gate sees only
+  // state a previous process left: no queue, run admission, recovery, or
+  // dispatch of this boot can write before it.
+  it("checks volume-free data once, before any of this boot's own startup work can write run state", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     volumeFreeMocks.config.mockReturnValue("postgres://paperclip@db.internal:5432/paperclip");
     await expect(startServer()).resolves.toBeDefined();
+    await settleStartupHousekeeping();
     expect(volumeFreeMocks.data).toHaveBeenCalledOnce();
-    expect(volumeFreeMocks.data.mock.invocationCallOrder[0]).toBeLessThan(createAppMock.mock.invocationCallOrder[0]!);
+    const gate = volumeFreeMocks.data.mock.invocationCallOrder[0]!;
+    expect(volumeFreeMocks.claim.mock.invocationCallOrder[0]).toBeLessThan(gate);
+    for (const writer of [createAppMock, heartbeatServiceFactoryMock, deliveryWorkRegisterMock, fakeServer.listen,
+      heartbeatServiceMock.recoverNativeRunsAfterRestart, heartbeatServiceMock.registerRunDispatchWork]) {
+      expect(writer).toHaveBeenCalled();
+      expect(Math.min(...writer.mock.invocationCallOrder)).toBeGreaterThan(gate);
+    }
     expect(getStartupRecoveryState().phase).toBe("ready");
+  });
+
+  it("runs every deferred recovery pass after readiness when one throws, logs it, and keeps the failed queue registered", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true, heartbeatSchedulerIntervalMs: 30000 }));
+    const failure = new Error("residual recovery store unavailable");
+    heartbeatServiceMock.registerResidualRecoveryWork.mockImplementationOnce(() => ({ ready: Promise.reject(failure) }));
+    heartbeatServiceMock.registerActiveRunSilenceWork.mockImplementationOnce(() => { throw new Error("silence registration broke"); });
+    let releaseDispatch!: () => void;
+    const dispatchPass = new Promise<void>((_resolve, reject) => { releaseDispatch = () => reject(new Error("dispatch pass failed")); });
+    heartbeatServiceMock.registerRunDispatchWork.mockImplementationOnce(() => ({ ready: dispatchPass,
+      retries: { reconciliationSnapshot: () => ({ revision: "startup-retries:1", reconciled: true }), stop: vi.fn(async () => {}) } }));
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
+    const starting = startServer();
+    try {
+      await starting;
+      expect(getStartupRecoveryState().phase).toBe("ready");
+      expect(startupQueuedRunPassOutstanding()).toBe(true);
+      releaseDispatch();
+      // The queued-run pass failed, and "Waiting for server restart" still clears.
+      await vi.waitFor(() => expect(startupQueuedRunPassOutstanding()).toBe(false));
+      await vi.waitFor(() => expect(heartbeatServiceMock.registerStoppedInstructionCollectionWork).toHaveBeenCalledOnce());
+      // Every pass after the failures still ran.
+      for (const later of [heartbeatServiceMock.registerIssueStateRecoveryWork, heartbeatServiceMock.registerDeferredReceiptWork,
+        heartbeatServiceMock.registerProviderLimitResumeWork, heartbeatServiceMock.registerScheduledRetryCancellationWork,
+        heartbeatServiceMock.registerNativePendingEffectWork]) expect(later).toHaveBeenCalledOnce();
+      // The failed queues were registered with the coordinator, which retries them.
+      expect(heartbeatServiceMock.registerResidualRecoveryWork).toHaveBeenCalledOnce();
+      expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledOnce();
+      const failures = vi.mocked(logger.error).mock.calls.filter(([fields]) =>
+        typeof fields === "object" && fields !== null && "startupRecoveryPass" in fields);
+      expect(failures.map(([fields]) => (fields as { startupRecoveryPass: string }).startupRecoveryPass))
+        .toEqual(["ResidualRecovery", "ActiveRunSilence", "RunDispatch"]);
+      expect(fakeServer.close).not.toHaveBeenCalled();
+    } finally { releaseDispatch(); await starting.catch(() => {}); timer.mockRestore(); }
   });
 
   // Staging, 2026-11-11: the first full queued-run dispatch pass of a busy
@@ -2035,29 +2080,6 @@ describe("startServer feedback export wiring", () => {
       await vi.waitFor(() => expect(heartbeatServiceMock.registerStoppedInstructionCollectionWork).toHaveBeenCalledOnce());
       expect(heartbeatServiceMock.registerScheduledRetryCancellationWork).toHaveBeenCalledOnce();
     } finally { releaseDispatch(); await starting.catch(() => {}); timer.mockRestore(); }
-  });
-
-  // The same boot spent most of its 85 s before the listener publishing
-  // several hundred shared UI assets one at a time. Publication now runs
-  // alongside startup, and readiness still waits for it.
-  it("binds the listener while shared UI assets publish, and refuses readiness for a colliding build", async () => {
-    let finishPublication!: (outcome: { error: unknown } | null) => void;
-    const publication = new Promise<{ error: unknown } | null>(resolve => { finishPublication = resolve; });
-    const createApp = createAppMock.getMockImplementation()!;
-    createAppMock.mockImplementationOnce(async (database, options) => {
-      const app = await createApp(database, options) as unknown as { locals: Record<string, unknown> };
-      app.locals.retainedUiAssetsPublication = publication;
-      return app as never;
-    });
-    const starting = startServer();
-    try {
-      await vi.waitFor(() => expect(fakeServer.listening).toBe(true), { timeout: 2_000 });
-      await settleStartupHousekeeping();
-      expect(getStartupRecoveryState().phase).not.toBe("ready");
-      finishPublication({ error: new Error("Static build asset name collides with different published bytes") });
-      await expect(starting).rejects.toThrow("collides");
-      expect(getStartupRecoveryState().phase).not.toBe("ready");
-    } finally { finishPublication(null); await starting.catch(() => {}); }
   });
 
   it("closes the bound listener when native startup recovery fails", async () => {
