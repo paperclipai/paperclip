@@ -115,6 +115,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       releasePolicy: null,
     })),
     getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    isOwedInteractionAnswer: vi.fn(async () => false),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
@@ -592,6 +593,34 @@ describe("releaseIssueExecution", () => {
     expect(transaction.reopenIssue).toHaveBeenCalledTimes(1);
     expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
     expect(result.outcome.kind).toBe("promoted");
+  });
+
+  it.each([
+    ["owed answer on a done task", "done", "user", true, "promoted"],
+    ["answer already delivered or saved after completion", "done", "user", false, "released"],
+    ["answer on a cancelled task", "cancelled", "user", true, "released"],
+    ["agent-requested interaction wake", "done", "agent", true, "released"],
+  ] as const)("handles a person's answer queued behind a turn that closed the task: %s", async (_label, status, actor, owed, outcome) => {
+    const queue = [wakeCandidate({ agentId: ISSUE.assigneeAgentId!, requestedByActorType: actor,
+      payload: { issueId: ISSUE.id, mutation: "interaction", interactionId: "11111111-1111-4111-8111-111111111111", interactionStatus: "answered" } })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      isOwedInteractionAnswer: vi.fn(async () => owed),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "in_progress" })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe(outcome);
+    if (outcome === "promoted") {
+      expect(transaction.reopenIssue).toHaveBeenCalledWith(expect.objectContaining({ status: "in_progress" }));
+      expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    } else {
+      expect(transaction.reopenIssue).not.toHaveBeenCalled();
+      expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ reason: "Deferred execution wake no longer applies to a terminal task" }));
+    }
   });
 
   it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {

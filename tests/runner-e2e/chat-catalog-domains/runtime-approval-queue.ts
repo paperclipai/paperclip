@@ -52,6 +52,23 @@ export function classifyApprovalSuccessors(runs: SuccessorRun[], questionId: str
   }
   return { bound, relay, other };
 }
+type SavedRevision = { id?: unknown; documentId?: unknown; createdByRunId?: unknown; createdByAgentId?: unknown; createdAt?: unknown; body?: unknown };
+/**
+ * Where the current Acorn document came from. A later worker turn (the one bound to the answer, or the lead's relay
+ * turn) counts. So does the worker's settling turn, but only for a revision it saved after the answer was saved: an
+ * agent may read the answered question on its own task, and the answer still reaches exactly one bound turn later.
+ * A revision saved before the answer existed, by another agent, or no longer current does not count.
+ */
+export function acornWorkSource(input: { revisions: SavedRevision[]; documents: Array<{ id?: unknown; latestRevisionId?: unknown }>; workerId: string;
+  successorRunIds: string[]; settlingRunId: string; answeredAt: unknown }) {
+  const answered = typeof input.answeredAt === "string" ? Date.parse(input.answeredAt) : NaN;
+  const current = input.revisions.filter(row => row.createdByAgentId === input.workerId && typeof row.body === "string" && /\bAcorn\b/.test(row.body)
+    && input.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
+  if (current.some(row => typeof row.createdByRunId === "string" && input.successorRunIds.includes(row.createdByRunId))) return "delivered_turn" as const;
+  if (Number.isFinite(answered) && current.some(row => row.createdByRunId === input.settlingRunId && typeof row.createdAt === "string" && Date.parse(row.createdAt) > answered))
+    return "settling_turn_after_answer" as const;
+  return null;
+}
 export function gradeApprovalQueue(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("real-question-response-and-ordinary-queue-evidence", !!o, "The actual native question, human response, separate queue mutations and once-only consuming native input are required."); if (!o) return c.result();
@@ -118,7 +135,7 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     humanId: session.user.id, ordinaryQueueOwned: true, ordinaryQueuedBeforeAnswer: true };
 }, gradeApprovalQueue, {
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
-  authentication: "human-session", expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v6",
+  authentication: "human-session", expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v7",
   sourceFiles: ["chat-catalog-domains/runtime-approval-queue.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
     const canonicalPhase = await pollUntil({ label: "Canonical naming answer guidance while real worker remains active", deadlineAt: Date.now() + 150_000,
@@ -236,8 +253,10 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
   },
   async observe(ctx, state) { const o = await observeRuntime(ctx, state);
     const question = state.questionBefore as IssueThreadInteraction; state.questionAfter = (await ctx.input.api.get<IssueThreadInteraction[]>(`/api/issues/${(state.task as Entity).id}/interactions`)).find(row => row.id === question.id);
-    const successorIds = [state.consumerRunId, ...((state.relayRunIds as string[] | undefined) ?? [])];
-    state.actualAcornResult = o.revisions.some(row => successorIds.includes(row.createdByRunId) && row.createdByAgentId === (state.worker as Entity).id && /Acorn/i.test(row.body ?? "") && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
+    const successorRunIds = [state.consumerRunId, ...((state.relayRunIds as string[] | undefined) ?? [])].filter((id): id is string => typeof id === "string");
+    state.acornWorkSource = acornWorkSource({ revisions: o.revisions, documents: o.documents, workerId: (state.worker as Entity).id, successorRunIds,
+      settlingRunId: String(state.workerRunId), answeredAt: (state.questionAfter as IssueThreadInteraction | undefined)?.resolvedAt });
+    state.actualAcornResult = state.acornWorkSource !== null;
     state.initialWorkRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && (row.body ?? "").includes(String(state.initialMarker))); return o; },
   async verifyResult(ctx, state) { const source = ctx.input.page.url(), task = state.task as Entity;
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" }); await ctx.input.page.reload({ waitUntil: "domcontentloaded" });

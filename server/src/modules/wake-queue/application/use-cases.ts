@@ -374,6 +374,19 @@ async function promoteDeferredWake(
           workingCandidate.queuedCommentIds.length > 0));
   }
 
+  // A person's answer saved while the task was still open is owed input. The
+  // worker may have finished its turn without reading it; closing the task
+  // must not silently drop it. It reopens the task straight to in_progress,
+  // because an answer continues the assignee's own execution.
+  let reopenForAnswer = false;
+  if (
+    !shouldReopen &&
+    currentIssue.status === "done" &&
+    workingCandidate.requestedByActorType === "user" &&
+    workingCandidate.agentId === currentIssue.assigneeAgentId &&
+    await ports.transaction.isOwedInteractionAnswer({ companyId: run.companyId, issueId: currentIssue.id, payload: workingCandidate.payload })
+  ) shouldReopen = reopenForAnswer = true;
+
   // Agent continuations can outlive the work they addressed. Live,
   // non-self feedback with an explicit resume intent must still be read
   // after completion; it cannot revive a cancelled task. Other stale
@@ -412,6 +425,7 @@ async function promoteDeferredWake(
       companyId: run.companyId,
       issueId: currentIssue.id,
       runId: run.id,
+      ...(reopenForAnswer ? { status: "in_progress" as const } : {}),
     });
     if (reopened) {
       postCommitEffects.push({
