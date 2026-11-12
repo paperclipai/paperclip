@@ -727,7 +727,8 @@ run's agents, the task view from `/api/issues/:id`, pending questions and approv
 approvals, failure chains and next events from `/api/heartbeat-runs/:id/events`, and duplicated comments and
 subtasks from comments and the issue list. Per release the table counts failed runs and the time from the old
 build's last answer to each surviving run's next event. Web and API continuity are reported for both the health
-probe and every API request the harness made: requests, failures (any answer that is not 2xx, or no answer), slow
+probe and every API request the harness made: requests, failures (no answer, a server error, or 401, 403, 408 or 429;
+a deliberate 400, 404, 409 or 422 answer is not a failure), slow
 answers and the longest gap between successful answers. Runs come from the company run list, or from every task's
 run list when that list is full, so no task's early runs are lost. A queued or running run with no activity for 5
 minutes is not a live owner, the same window the drain uses.

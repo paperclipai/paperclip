@@ -8,6 +8,7 @@ import type { HealthSample } from "./hosted-release.js";
 
 export const HOSTED_TOKEN_ENV = "PAPERCLIP_HOSTED_TOKEN";
 const TRANSIENT_STATUSES = new Set([502, 503, 504]);
+export const ANSWERED_REFUSALS: ReadonlySet<number> = new Set([400, 404, 409, 422]);
 
 export function hostedAuthPaths(env: NodeJS.ProcessEnv = process.env): string[] {
   const paths = [path.join(os.homedir(), ".paperclip", "auth.json")];
@@ -48,7 +49,7 @@ export class HostedApi {
           ...(body === undefined ? {} : { "content-type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await response.text();
-      this.requests.push({ at: started, ok: response.ok, reachable: response.status < 500, status: response.status, ms: Date.now() - started, method });
+      this.requests.push({ at: started, ok: response.ok || ANSWERED_REFUSALS.has(response.status), reachable: response.status < 500, status: response.status, ms: Date.now() - started, method });
       return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text) };
     } catch (error) {
       this.requests.push({ at: started, ok: false, reachable: false, status: null, ms: Date.now() - started, method });
