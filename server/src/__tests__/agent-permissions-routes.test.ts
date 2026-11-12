@@ -63,6 +63,7 @@ const mockBuiltInAgentService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
+  decideReads: vi.fn(),
   hasPermission: vi.fn(),
   getMembership: vi.fn(),
   ensureMembership: vi.fn(),
@@ -2409,6 +2410,7 @@ describe("agent permission routes", () => {
         status: "todo",
       },
     ]);
+    mockAccessService.decideReads.mockResolvedValue([{ allowed: true }]);
 
     const app = await createApp({
       type: "agent",
@@ -2432,6 +2434,7 @@ describe("agent permission routes", () => {
       },
     ]);
     expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      readCondition: expect.anything(),
       touchedByUserId: "board-user",
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",
