@@ -58,9 +58,9 @@ import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
-import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
-import { AgentDirectoryPreparationDeferral, agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
+import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
@@ -706,7 +706,6 @@ type WarmNativeSession = {
   providerLeaseId?: string;
   /** A successor's retirement of this owner failed; it stays registered for its own sandbox. */
   retirementUnproven?: boolean;
-  retirementDeferred?: boolean;
   observabilityCompatibilityKey?: string;
   runId: string;
   issueId: string;
@@ -835,7 +834,6 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
   for (;;) {
     try {
       await closeWarmNativeSession(entry, reason, options);
-      entry.retirementDeferred = false;
       return;
     } catch (error) {
       if (error instanceof AgentDirectoryOperationBusyError) {
@@ -843,8 +841,7 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
           await new Promise(resolve => setTimeout(resolve, warmRetirementDirectoryWait.pollMs));
           continue;
         }
-        entry.retirementDeferred = true;
-        throw new AgentDirectoryPreparationDeferral(error);
+        throw new NativePredecessorRetirementDirectoryBusyError(entry.runId, error);
       }
       entry.retirementUnproven = true;
       throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
@@ -852,7 +849,7 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
   }
 }
 
-export const warmRetirementDirectoryWait = { timeoutMs: 60_000, pollMs: 1_000 };
+export const warmRetirementDirectoryWait = { timeoutMs: 300_000, pollMs: 1_000 };
 
 /**
  * An owner whose retirement stayed unproven lives only in its own sandbox,
@@ -956,10 +953,6 @@ export async function claimWarmNativeInstructionCopy(input: {
       forgetWarmNativeSession(scope, entry);
     } finally { entry.busy = false; }
   };
-  if (entry.retirementDeferred) {
-    await retire(entry.closeOnReleaseReason ?? "warm instruction retirement resumed after the agent directory was busy");
-    return null;
-  }
   try {
     const preparationChanged = input.forceRetirement === true || entry.observabilityCompatibilityKey !== input.observabilityCompatibilityKey || entry.githubAccess?.ready === false || entry.instructionWorkingCopy.preparationKey !== input.preparationKey;
     // The prior capability may close over an expired remote lease. Rebind
@@ -12682,8 +12675,7 @@ async function executePaperclipNativeSessionAttempt(
         // An unretired predecessor failed this run before it launched a Runner.
         // It is not a provider failure: the heartbeat boundary sends the next
         // attempt to a fresh sandbox, or keeps today's preservation.
-        findNativePredecessorRetirementUnproven(error) ||
-        error instanceof AgentDirectoryPreparationDeferral
+        findNativePredecessorRetirementUnproven(error)
       ) {
         // This is not a provider failure and must not overwrite the durable
         // result/coordinator state. The heartbeat boundary will either hand an
@@ -12693,10 +12685,6 @@ async function executePaperclipNativeSessionAttempt(
           await trace.end(taskSettleScope, { outcome: "ok" });
         }
         await trace.finish("ok");
-        const startup = nativeSessionStartups.get(input.execution.binding.runId);
-        if (error instanceof AgentDirectoryPreparationDeferral && startup && freshClaimAttempt !== undefined) {
-          startup.unstartedClaim = { leaseOwner, attempt: freshClaimAttempt };
-        }
         throw error;
       }
       const now = new Date();

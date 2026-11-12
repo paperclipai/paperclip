@@ -87,7 +87,6 @@ import { REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, RemoteRunnerRecoveryError, readRe
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { AgentDirectoryOperationBusyError, agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
-import { AgentDirectoryPreparationDeferral } from "../heartbeat/agent-directory-busy.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -11214,7 +11213,7 @@ describe("native warm session supervision", () => {
       }
     });
 
-    it("defers a run whose wait outlasts the budget, then retires without a second handoff", async () => {
+    it("fails a run whose wait outlasts the budget without abandoning the owner, which a later run retires", async () => {
       const identity = "warm-instruction-directory-busy";
       const f = busyFixture(identity);
       Object.assign(warmRetirementDirectoryWait, { timeoutMs: 0, pollMs: 20 });
@@ -11222,18 +11221,16 @@ describe("native warm session supervision", () => {
         await f.start();
         f.agentLock.holder = `${identity}-other-task`;
         const contended = await f.claim(`${identity}-follow-up`, f.target("sandbox-a", "resumed")).catch(error => error);
-        expect(contended).toBeInstanceOf(AgentDirectoryPreparationDeferral);
+        expect(contended).toMatchObject({ code: "native_predecessor_retirement_directory_busy", predecessorRunId: identity });
         expect(contended.cause).toBeInstanceOf(AgentDirectoryOperationBusyError);
-        expect(contended).not.toMatchObject({ code: "native_predecessor_retirement_unproven" });
         expect(await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "environment delete" }))
           .toMatchObject({ closed: 0, busy: 1, failed: 0 });
-        expect(await f.claim(`${identity}-fresh-sandbox`, f.target("sandbox-b", "replacement"), false).catch(error => error))
-          .toBeInstanceOf(AgentDirectoryPreparationDeferral);
+        expect(await f.claim(`${identity}-fresh-sandbox`, f.target("sandbox-b", "replacement")).catch(error => error))
+          .toMatchObject({ code: "native_predecessor_retirement_directory_busy" });
         expect(f.collected).toEqual([]);
         f.agentLock.holder = null;
-        expect(await f.claim(`${identity}-follow-up-retry`, f.target("sandbox-a", "resumed"), false)).toBeNull();
-        expect(f.adopted).toEqual([`${identity}-follow-up`]);
-        expect(f.collected).toEqual([`${identity}-follow-up`]);
+        expect(await f.claim(`${identity}-follow-up-retry`, f.target("sandbox-a", "resumed"))).toBeNull();
+        expect(f.collected).toEqual([`${identity}-follow-up-retry`]);
         expect(readNativeSessionIdleWork()).toBe("none");
       } finally {
         f.agentLock.holder = null;

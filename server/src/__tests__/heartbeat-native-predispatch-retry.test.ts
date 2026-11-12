@@ -3,8 +3,6 @@ import { and, eq } from "drizzle-orm";
 import { activityLog, agents, authUsers, companyMemberships, createDb, environmentLeases, environments, heartbeatRuns, issueComments,
   issueRecoveryActions, issues } from "@paperclipai/db";
 import { NativePredecessorRetirementUnprovenError } from "../services/native-runtime/predecessor-retirement.js";
-import { AgentDirectoryOperationBusyError } from "../services/agent-directory-working-copies.js";
-import { AgentDirectoryPreparationDeferral } from "../services/heartbeat/agent-directory-busy.js";
 import type { NativeRunIdentity, NativeSession, NativeSessionBackend, PrpEvent } from "@paperclipai/paperclip-runner";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
@@ -38,8 +36,7 @@ vi.mock("../services/budget-reservations.js", async importOriginal => {
 const support = await getRecoveryPostgresSupport({});
 
 function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescriptorOnce?: { failed: boolean };
-  unretiredPredecessorOnce?: { failed: boolean; environmentId: string }; turnMessages?: Map<string, string>;
-  directoryBusyOnce?: { failed: boolean } } = {}):
+  unretiredPredecessorOnce?: { failed: boolean; environmentId: string }; turnMessages?: Map<string, string> } = {}):
   NonNullable<HeartbeatServiceOptions["nativeSessionBackendFactory"]> {
   return execution => {
     let identity: NativeRunIdentity;
@@ -79,10 +76,6 @@ function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescripto
         if (options.failDescriptorOnce && !options.failDescriptorOnce.failed) {
           options.failDescriptorOnce.failed = true;
           throw Object.assign(new Error("could not serialize access due to concurrent update"), { name: "PostgresError", code: "40001" });
-        }
-        if (options.directoryBusyOnce && !options.directoryBusyOnce.failed) {
-          options.directoryBusyOnce.failed = true;
-          throw new AgentDirectoryPreparationDeferral(new AgentDirectoryOperationBusyError());
         }
         const unretired = options.unretiredPredecessorOnce;
         if (unretired && !unretired.failed) {
@@ -252,26 +245,6 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
       expect(renderPaperclipWakePrompt(retried!.contextSnapshot?.paperclipWake)).toContain("- retried wake: issue_monitor_due");
       expect(turnMessages.get(successor!.id)).toContain("- retried wake: issue_monitor_due");
       expect(turnMessages.has(run!.id)).toBe(false);
-    } finally {
-      await heartbeat.drainActiveRunExecutions();
-      await closeIdleWarmNativeSessionsForRestart();
-      await db.$client.end();
-    }
-  }, 90_000);
-
-  it("waits for a busy agent directory met while retiring a predecessor instead of failing the run", async () => {
-    const db = createDb(fixture.current.temporary.connectionString, { maxConnections: 4 });
-    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db, { directoryBusyOnce: { failed: false } }) });
-    try {
-      const { runId, issueId } = await startTask(db, heartbeat);
-      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-      expect(run?.status).not.toBe("failed");
-      expect(run?.resultJson ?? {}).not.toHaveProperty("failureCause", "native_predecessor_retirement_unproven");
-      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
-      await waitForCondition("the deferred run to finish", async () => {
-        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.current.companyId));
-        return runs.some(candidate => candidate.status === "succeeded");
-      }, 60_000);
     } finally {
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();
