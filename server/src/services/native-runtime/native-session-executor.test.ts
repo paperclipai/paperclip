@@ -86,7 +86,8 @@ import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-autho
 import { REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
-import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
+import { AgentDirectoryOperationBusyError, agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
+import { AgentDirectoryPreparationDeferral } from "../heartbeat/agent-directory-busy.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -11158,6 +11159,83 @@ describe("native warm session supervision", () => {
       await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }).catch(() => undefined);
     }
   });
+
+  it("waits for another run of the agent to release its directory lock while retiring a predecessor", async () => {
+    const identity = "warm-instruction-directory-busy";
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    const close = vi.fn(async () => undefined);
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const agentLock = { holder: null as string | null };
+    const collected: string[] = [];
+    const copy = (runId: string) => ({ runId, root: `/tmp/${identity}`, preparationKey: "before", hasChanges: async () => false,
+      collectStopped: async () => {
+        if (agentLock.holder !== null) throw new AgentDirectoryOperationBusyError();
+        collected.push(runId);
+      } });
+    const target = (providerLeaseId: string, outcome: "created" | "resumed" | "replacement") => ({ kind: "remote" as const,
+      transport: "sandbox" as const, environmentId: identity, remoteCwd: `/tmp/${identity}`, sandboxLeaseAcquisition: { outcome, providerLeaseId } });
+    const claim = (runId: string, claimTarget: ReturnType<typeof target>) => claimWarmNativeInstructionCopy({ priorExecution: warmExecution,
+      companyId: warmExecution.binding.companyId, agentId: warmExecution.binding.agentId,
+      executionWorkspaceId: warmExecution.binding.executionWorkspaceId, workspace: warmExecution.workspace,
+      environmentId: identity, target: claimTarget, runId, preparationKey: "changed", adopt: async () => ({ ...copy(runId), preparationKey: "changed" }) });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: target("sandbox-a", "created"), instructionWorkingCopy: copy(identity) });
+      agentLock.holder = `${identity}-other-task`;
+      const contended = await claim(`${identity}-follow-up`, target("sandbox-a", "resumed")).catch(error => error);
+      expect(contended).toBeInstanceOf(AgentDirectoryPreparationDeferral);
+      expect(contended.cause).toBeInstanceOf(AgentDirectoryOperationBusyError);
+      expect(contended).not.toMatchObject({ code: "native_predecessor_retirement_unproven" });
+      expect(await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "environment delete" }))
+        .toMatchObject({ closed: 0, busy: 1, failed: 0 });
+      expect(await claim(`${identity}-fresh-sandbox`, target("sandbox-b", "replacement")).catch(error => error))
+        .toBeInstanceOf(AgentDirectoryPreparationDeferral);
+      expect(collected).toEqual([]);
+      agentLock.holder = null;
+      expect(await claim(`${identity}-follow-up-retry`, target("sandbox-a", "resumed"))).toBeNull();
+      expect(collected).toEqual([`${identity}-follow-up-retry`]);
+      expect(readNativeSessionIdleWork()).toBe("none");
+    } finally {
+      agentLock.holder = null;
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }).catch(() => undefined);
+    }
+  });
+
+  it("retries an idle close whose file collection met another run's directory lock", async () => {
+    const identity = "warm-idle-directory-busy";
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 10 } },
+    } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession?.({ close: async () => undefined });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let busyCollections = 0;
+    const collectStopped = vi.fn(async () => {
+      if (busyCollections++ === 0) throw new AgentDirectoryOperationBusyError();
+    });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        instructionWorkingCopy: { runId: identity, root: `/tmp/${identity}`, preparationKey: "same", hasChanges: async () => false, collectStopped } });
+      await vi.waitFor(() => expect(collectStopped).toHaveBeenCalledTimes(1));
+      expect(readNativeSessionIdleWork()).toBe("present");
+      await vi.waitFor(() => expect(collectStopped).toHaveBeenCalledTimes(2), { timeout: 8_000 });
+      await vi.waitFor(() => expect(readNativeSessionIdleWork()).toBe("none"));
+    } finally {
+      random.mockRestore();
+      await closeIdleWarmNativeSessionsForRestart();
+    }
+  }, 15_000);
 
   it.each(["idle", "edit", "add", "remove", "projectless"])("retains the actual agent_files copy across warm turns, then retires for %s", async ending => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "warm-agent-files-")));

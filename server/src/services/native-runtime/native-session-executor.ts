@@ -59,6 +59,8 @@ import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@pa
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
+import { AgentDirectoryPreparationDeferral, agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
@@ -830,6 +832,7 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
   }
   try { await closeWarmNativeSession(entry, reason, options); }
   catch (error) {
+    if (error instanceof AgentDirectoryOperationBusyError) throw new AgentDirectoryPreparationDeferral(error);
     entry.retirementUnproven = true;
     throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
   }
@@ -1107,6 +1110,10 @@ async function closeIdleWarmNativeSessions(input: {
       closed += 1;
     } catch (error) {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+      if (!detach && error instanceof AgentDirectoryOperationBusyError) {
+        busy += 1;
+        continue;
+      }
       const destroyed = !detach && input.forceStopUnsettled && input.db
         ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
           logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
@@ -8604,6 +8611,10 @@ function armWarmNativeSessionIdleTimer(
       .then(() => { forgetWarmNativeSession(sessionId, current); })
       .catch(error => {
         if (released) current.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+        if (!released && error instanceof AgentDirectoryOperationBusyError) {
+          armWarmNativeSessionIdleTimer(sessionId, current, agentDirectoryBusyRetryDelayMs());
+          return;
+        }
         logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
           providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error) },
         released ? "idle warm native session detach failed" : "idle warm native session close failed");
@@ -12651,7 +12662,8 @@ async function executePaperclipNativeSessionAttempt(
         // An unretired predecessor failed this run before it launched a Runner.
         // It is not a provider failure: the heartbeat boundary sends the next
         // attempt to a fresh sandbox, or keeps today's preservation.
-        findNativePredecessorRetirementUnproven(error)
+        findNativePredecessorRetirementUnproven(error) ||
+        error instanceof AgentDirectoryPreparationDeferral
       ) {
         // This is not a provider failure and must not overwrite the durable
         // result/coordinator state. The heartbeat boundary will either hand an
@@ -12661,6 +12673,10 @@ async function executePaperclipNativeSessionAttempt(
           await trace.end(taskSettleScope, { outcome: "ok" });
         }
         await trace.finish("ok");
+        const startup = nativeSessionStartups.get(input.execution.binding.runId);
+        if (error instanceof AgentDirectoryPreparationDeferral && startup && freshClaimAttempt !== undefined) {
+          startup.unstartedClaim = { leaseOwner, attempt: freshClaimAttempt };
+        }
         throw error;
       }
       const now = new Date();
