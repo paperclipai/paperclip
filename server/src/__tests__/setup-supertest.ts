@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
+import { cleanupAtProcessEnd, createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import { createRequire } from "node:module";
 import type { AddressInfo, Server as NetServer } from "node:net";
 import os from "node:os";
@@ -33,13 +33,14 @@ process.env.PAPERCLIP_CONFIG = path.join(paperclipTestHome, "config.json");
 process.env.PAPERCLIP_INSTANCE_ID = `vt-${process.pid}`;
 // Setup-file afterAll hooks run before suites drain asynchronous heartbeats.
 // Cleanup at worker exit, after all suite teardown, avoids deleting live state.
-process.once("exit", cleanupPaperclipTestHome);
+cleanupAtProcessEnd(cleanupPaperclipTestHome);
 
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;
 
 if (!process.env.CODEX_HOME) {
-  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-codex-home-"));
+  const { home: codexHome, cleanup: cleanupCodexHome } = createIsolatedTestHome("paperclip-vitest-codex-home-");
+  cleanupAtProcessEnd(cleanupCodexHome);
   fs.writeFileSync(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-vitest"}\n', { mode: 0o600 });
   process.env.CODEX_HOME = codexHome;
 }

@@ -13,6 +13,11 @@ import {
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 
+// A staged runtime owns disk-backed workspace snapshots until it restores or
+// calls cleanupWorkspaceSnapshot(). Not every engine path under test does
+// either, so release every staged runtime after each test (idempotent).
+const preparedRuntimes = vi.hoisted(() => [] as Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }>);
+
 // Wrap the staging seam + both sandbox bridges in call-recording spies that
 // still delegate to the real implementations (a runner-backed sandbox test
 // exercises them end-to-end against a local runner). This lets the staging
@@ -22,7 +27,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
   return {
     ...actual,
-    prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
+    prepareAdapterExecutionTargetRuntime: vi.fn(async (...args: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>) => {
+      const prepared = await actual.prepareAdapterExecutionTargetRuntime(...args);
+      preparedRuntimes.push(prepared);
+      return prepared;
+    }),
     startAdapterExecutionTargetPaperclipBridge: vi.fn(actual.startAdapterExecutionTargetPaperclipBridge),
     startAdapterExecutionTargetProcessSessionBridge: vi.fn(actual.startAdapterExecutionTargetProcessSessionBridge),
   };
@@ -72,6 +81,7 @@ async function makeTempRoot() {
 }
 
 afterEach(async () => {
+  for (const prepared of preparedRuntimes.splice(0)) await prepared.cleanupWorkspaceSnapshot?.();
   defaultGeminiTestHome = undefined;
   // A remote run stages a process-session bridge whose detached event writer can
   // still be flushing a trailing event file into `.../process-sessions/<id>/events`

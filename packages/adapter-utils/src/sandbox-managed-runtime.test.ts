@@ -20,7 +20,7 @@ import {
   assertSyncOperationsConfined,
   escapeTarExcludeLiteral,
   mirrorDirectory,
-  prepareSandboxManagedRuntime,
+  prepareSandboxManagedRuntime as prepareSandboxManagedRuntimeUntracked,
   REFERENCED_SOURCE_IGNORE_FAILURE_REASONS,
   resolveReferencedSourceIgnore,
   type PreparedSandboxManagedRuntime,
@@ -31,7 +31,7 @@ import {
   type SandboxSyncResult,
 } from "./sandbox-managed-runtime.js";
 import {
-  prepareCommandManagedRuntime,
+  prepareCommandManagedRuntime as prepareCommandManagedRuntimeUntracked,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
 import { SYNC_OPERATION_CONCURRENCY_LIMIT } from "./sync-operation-schedule.js";
@@ -45,6 +45,26 @@ import {
   type StartupTracer,
 } from "./acpx-engine/startup-timing.js";
 import type { RunProcessResult } from "./server-utils.js";
+
+// A prepared runtime owns disk-backed workspace snapshots until the caller
+// restores the workspace or calls cleanupWorkspaceSnapshot(). Many tests here
+// inspect only the staged side, so release every runtime after each test.
+// Cleanup is idempotent, so runtimes that already restored are unaffected.
+const preparedRuntimes: Array<Pick<PreparedSandboxManagedRuntime, "cleanupWorkspaceSnapshot">> = [];
+function releaseAfterEach<Args extends unknown[], Prepared extends Pick<PreparedSandboxManagedRuntime, "cleanupWorkspaceSnapshot">>(
+  prepare: (...args: Args) => Promise<Prepared>,
+): (...args: Args) => Promise<Prepared> {
+  return async (...args) => {
+    const prepared = await prepare(...args);
+    preparedRuntimes.push(prepared);
+    return prepared;
+  };
+}
+const prepareSandboxManagedRuntime = releaseAfterEach(prepareSandboxManagedRuntimeUntracked);
+const prepareCommandManagedRuntime = releaseAfterEach(prepareCommandManagedRuntimeUntracked);
+afterEach(async () => {
+  for (const prepared of preparedRuntimes.splice(0)) await prepared.cleanupWorkspaceSnapshot();
+});
 
 function toArrayBuffer(bytes: Buffer): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;

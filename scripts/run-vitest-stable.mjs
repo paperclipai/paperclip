@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -410,6 +410,40 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
+// Each run owns a private root for its home, TMPDIR and collection files.
+// Remove it when the run ends, on pass or fail. Tests can leave read-only
+// directories behind, so make real directories writable first; entries that
+// are not directories, including symlinks, are never followed.
+function removeTestRoot(testRoot) {
+  const makeWritable = (directory) => {
+    chmodSync(directory, 0o700);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) makeWritable(path.join(directory, entry.name));
+    }
+  };
+  try {
+    makeWritable(testRoot);
+    rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    if (error?.code !== "ENOENT") console.warn(`[test:run] could not remove ${testRoot}: ${error.message}`);
+  }
+}
+
+// A stopping signal ends the active run and removes its root before the
+// wrapper exits with the same signal.
+let stopSignal = null;
+let activeRun = null;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(signal, () => {
+    stopSignal = signal;
+    if (activeRun?.child) activeRun.child.kill(signal);
+    else {
+      if (activeRun) removeTestRoot(activeRun.testRoot);
+      process.kill(process.pid, signal);
+    }
+  });
+}
+
 function isolatedTestEnv() {
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
@@ -455,8 +489,19 @@ async function collectVitestList(filters, { testRoot, env }, name) {
 }
 
 async function runVitest(args, label, testShard = null, exactFiles = false) {
+  if (stopSignal) throw new Error(`stopped by ${stopSignal}`);
   console.log(`\n[test:run] ${label}`);
   const isolated = isolatedTestEnv();
+  activeRun = { testRoot: isolated.testRoot, child: null };
+  try {
+    await runVitestInRoot(isolated, args, label, testShard, exactFiles);
+  } finally {
+    activeRun = null;
+    removeTestRoot(isolated.testRoot);
+  }
+}
+
+async function runVitestInRoot(isolated, args, label, testShard, exactFiles) {
   const { env } = isolated;
   if (testShard) {
     const file = path.resolve(repoRoot, chatSuite);
@@ -493,6 +538,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
       env: invocationEnv("vitest", env),
       stdio: "inherit",
     });
+    if (activeRun) activeRun.child = child;
     child.once("error", reject);
     child.once("close", (code, signal) => {
       if (code === 0) resolve();
@@ -538,7 +584,13 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     // Wait for both children even on failure so no sibling is abandoned.
     const args = ["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite];
     const workers = chatShardWorkers(shardIndex, shardCount);
-    const collected = await collectVitestList(args, isolatedTestEnv(), "all");
+    const collection = isolatedTestEnv();
+    let collected;
+    try {
+      collected = await collectVitestList(args, collection, "all");
+    } finally {
+      removeTestRoot(collection.testRoot);
+    }
     const results = await Promise.allSettled(workers.map((shard) =>
       runVitest(args, "chat integration test shard", { ...shard, collected }),
     ));
@@ -780,3 +832,5 @@ try {
   console.error(`[test:run] ${error.message}`);
   process.exitCode = 1;
 }
+
+if (stopSignal) process.kill(process.pid, stopSignal);

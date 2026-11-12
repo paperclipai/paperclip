@@ -25,13 +25,22 @@ import { classifyWorkspaceRestoreFailure } from "../workspace-restore-merge.js";
 // agent_bridge, managed_home, staging_lease. The host lane acquires only
 // acp_runtime; the sandbox lane acquires the staging and transport resources too.
 
+// A staged runtime owns disk-backed workspace snapshots until it restores or
+// calls cleanupWorkspaceSnapshot(). Not every engine path under test does
+// either, so release every staged runtime after each test (idempotent).
+const preparedRuntimes = vi.hoisted(() => [] as Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }>);
+
 // Wrap the staging seam and both sandbox bridges so a test can stub them without
 // changing behavior for the other tests.
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
   return {
     ...actual,
-    prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
+    prepareAdapterExecutionTargetRuntime: vi.fn(async (...args: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>) => {
+      const prepared = await actual.prepareAdapterExecutionTargetRuntime(...args);
+      preparedRuntimes.push(prepared);
+      return prepared;
+    }),
     startAdapterExecutionTargetPaperclipBridge: vi.fn(actual.startAdapterExecutionTargetPaperclipBridge),
     startAdapterExecutionTargetProcessSessionBridge: vi.fn(actual.startAdapterExecutionTargetProcessSessionBridge),
   };
@@ -63,6 +72,7 @@ async function makeTempRoot() {
 }
 
 afterEach(async () => {
+  for (const prepared of preparedRuntimes.splice(0)) await prepared.cleanupWorkspaceSnapshot?.();
   await Promise.all(
     tempRoots.splice(0).map((root) =>
       fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),

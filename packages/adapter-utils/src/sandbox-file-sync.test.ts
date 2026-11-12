@@ -7,10 +7,29 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   assertSyncOperationsConfined,
-  prepareSandboxManagedRuntime,
+  prepareSandboxManagedRuntime as prepareSandboxManagedRuntimeUntracked,
   type SandboxManagedRuntimeClient,
   type SandboxSyncOperation,
 } from "./sandbox-managed-runtime.js";
+
+// A prepared runtime owns disk-backed workspace snapshots until the caller
+// restores the workspace or calls cleanupWorkspaceSnapshot(). Some tests here
+// inspect only the staged side, so release every runtime after each test.
+// Cleanup is idempotent, so runtimes that already restored are unaffected.
+const preparedRuntimes: Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }> = [];
+function releaseAfterEach<Args extends unknown[], Prepared extends { cleanupWorkspaceSnapshot?(): Promise<void> }>(
+  prepare: (...args: Args) => Promise<Prepared>,
+): (...args: Args) => Promise<Prepared> {
+  return async (...args) => {
+    const prepared = await prepare(...args);
+    preparedRuntimes.push(prepared);
+    return prepared;
+  };
+}
+const prepareSandboxManagedRuntime = releaseAfterEach(prepareSandboxManagedRuntimeUntracked);
+afterEach(async () => {
+  for (const prepared of preparedRuntimes.splice(0)) await prepared.cleanupWorkspaceSnapshot?.();
+});
 
 const execFile = promisify(execFileCallback);
 
