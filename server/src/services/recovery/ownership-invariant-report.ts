@@ -15,7 +15,8 @@ import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { persistActivity } from "../activity-log.js";
-import { listUndispatchedQueuedRuns, QUEUED_RUN_NOT_DISPATCHED, readQueuedRunExecutionWindow } from "../queued-run-dispatch-liveness.js";
+import { QUEUED_RUN_NOT_DISPATCHED, readQueuedRunExecutionWindow, readUndispatchedQueuedRuns,
+  type UndispatchedQueuedRunCursor } from "../queued-run-dispatch-liveness.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 import { LEGACY_OWNER_REASONS, recordVersionAttestations } from "./owner-gone-attestation.js";
 import {
@@ -103,7 +104,8 @@ const COVERAGE_GAPS: Record<string, string> = {
   I8_fast_turns: "Measured per run by the speed-budget check in the run log, not by this pass.",
   I7_scope: "I7 measures agent-assigned in_progress issues. todo, in_review and blocked issues are not measured yet.",
   record_cap: "Each kind and the I7 check read at most 2,000 records per pass; a larger kind is reported as truncated. "
-    + "The I3 and I4 scans read ten pages per pass and continue from a cursor on the next pass.",
+    + "The I3 and I4 scans read ten pages per pass and continue from a cursor on the next pass. The I7 queued-run "
+    + "check reads at most 2,000 undispatched queued runs per pass and continues from a cursor on the next pass.",
   wake_coverage: "Writers of workspace runtime services, remote workspace operations, snapshots, restore points, "
     + "git cache intents, provider artifacts and harness backups publish no work signal. Those kinds are read at "
     + "startup and on any other report wake. Phase 2 adds a signal when each kind moves to the shared settle path.",
@@ -127,11 +129,16 @@ export type OwnershipReportState = {
   admissionRunCursor: { at: string; id: string } | null;
   /** True when an I3 scan stopped with more rows to read. */
   admissionBacklog: boolean;
+  /** Keyset cursor of the I7 queued-run check (created_at, id); null starts over. */
+  queuedRunCursor: UndispatchedQueuedRunCursor | null;
+  /** Earliest grace deadline seen in the earlier slices of the current queued-run scan. */
+  queuedRunDueAt: Date | null;
 };
 
 export function createOwnershipReportState(): OwnershipReportState {
   return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, unwritten: new Map(), intentBacklog: false,
-    admissionWakeCursor: null, admissionRunCursor: null, admissionBacklog: false };
+    admissionWakeCursor: null, admissionRunCursor: null, admissionBacklog: false, queuedRunCursor: null,
+    queuedRunDueAt: null };
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
@@ -644,10 +651,18 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
 /** A queued run counts as an issue's next action only while dispatch can still
  * start it. One that stays queued past the grace window while its ready agent
  * runs nothing has lost its dispatch signal (invariant 7). */
-async function checkQueuedRunsDispatched(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
+async function checkQueuedRunsDispatched(db: Db, state: OwnershipReportState, now: Date, limit: number):
+  Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
   const window = await readQueuedRunExecutionWindow(db);
-  if (!window.dispatches) return { violations: [], nextDueAt: null };
-  const runs = await listUndispatchedQueuedRuns(db, { pageSize: limit, createdAfter: window.createdAfter });
+  if (!window.dispatches) {
+    state.queuedRunCursor = null; state.queuedRunDueAt = null;
+    return { violations: [], nextDueAt: null };
+  }
+  if (state.queuedRunDueAt && state.queuedRunDueAt <= now) { state.queuedRunCursor = null; state.queuedRunDueAt = null; }
+  const { runs, next } = await readUndispatchedQueuedRuns(db, { pageSize: limit, createdAfter: window.createdAfter,
+    after: state.queuedRunCursor, maxRuns: MAX_RECORDS_PER_KIND });
+  state.queuedRunCursor = next;
+  const carried = state.queuedRunDueAt;
   const cutoff = now.getTime() - QUEUED_RUN_DISPATCH_GRACE_MS;
   const violations: InvariantViolation[] = [];
   let nextDueAt: Date | null = null;
@@ -659,6 +674,8 @@ async function checkQueuedRunsDispatched(db: Db, now: Date, limit: number): Prom
       nextDueAt ??= new Date(run.createdAt.getTime() + QUEUED_RUN_DISPATCH_GRACE_MS);
     }
   }
+  if (carried && (!nextDueAt || carried < nextDueAt)) nextDueAt = carried;
+  state.queuedRunDueAt = next ? nextDueAt : null;
   return { violations, nextDueAt };
 }
 
@@ -777,7 +794,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       return result.violations;
     },
     async () => {
-      const result = await checkQueuedRunsDispatched(db, now, limit);
+      const result = await checkQueuedRunsDispatched(db, state, now, limit);
       if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
       return result.violations;
     },
@@ -805,7 +822,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
 
   // Only a first proof needs a second pass; a record already reported for I2
   // is not a reason to keep scanning.
-  if (state.intentBacklog || state.admissionBacklog) retryNeeded = true;
+  if (state.intentBacklog || state.admissionBacklog || state.queuedRunCursor) retryNeeded = true;
   const awaitingSecondProof = [...goneThisPass].filter(key => !state.goneLastPass.has(key)).length;
   state.goneLastPass = goneThisPass;
   // Violations whose activity row failed last time are written again, even
