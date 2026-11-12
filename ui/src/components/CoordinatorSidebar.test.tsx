@@ -40,7 +40,7 @@ const pending = (id: string) => ({ id, sourceKind: "issue_thread_interaction", s
   createdAt: "2026-10-20T12:00:00Z", activityAt: "2026-10-20T12:00:00Z" }) as AttentionItem;
 function feed(items: AttentionItem[]): AttentionFeed {
   return { companyId: "company", generatedAt: "2026-10-27T12:00:00Z", totalCount: items.length, deskBadgeCount: 0,
-    nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
+    viewCounts: { mine: items.length, unassigned: 0, company: 0, archived: 0, all: items.length }, nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
 }
 
 function summary(items: AttentionItem[]) {
