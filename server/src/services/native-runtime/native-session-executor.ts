@@ -10796,6 +10796,7 @@ async function executePaperclipNativeSessionAttempt(
       portableSource = await readyPortableTaskSource(input.db, companyId, portableTarget.leaseId,
         readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution)), {
           attachedRunId: input.execution.binding.runId,
+          selectedSessionId: nativeSessionKey(input.execution),
           accountIdentity: input.managedAiAccountIdentity ?? input.managedAiCredentialIdentity,
         });
     }

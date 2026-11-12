@@ -7,7 +7,7 @@ import { environmentTaskOperationSchema, type PluginEnvironmentTaskResult } from
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunResults, nativeRunnerCheckpoints, plugins } from "@paperclipai/db";
-import { parseNativeExecutionInput, runnerProviderLaunchRequirements, DurablePrpControlPlane, type DurablePrpCheckpoint, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput, runnerProviderLaunchRequirements, DurablePrpControlPlane, type DurablePrpCheckpoint, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
@@ -19,7 +19,7 @@ import { NativeExecutionContext } from "./native-execution-context.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { createRunnerdBackend, nativeControllerMigrationDescriptor } from "./native-session-executor.js";
-import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { buildNativeExecutionWithCheckpoint, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { claimPluginTaskSourceRecovery } from "./plugin-task-source-recovery.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
@@ -129,7 +129,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
       harness: provider === "claude" ? "claude" as const : "codex" as const, authProvider: provider === "claude" ? "anthropic" : "openai" };
   }
 
-  it.each(["ordinary", "reclaim_if_needed"] as const)("reconciles the same %s ownership request after a lost response", async policy => {
+  it.each([
+    { policy: "ordinary", scenario: "ordinary handoff" },
+    { policy: "reclaim_if_needed", scenario: "idle source reclaim" },
+    { policy: "ordinary", scenario: "fresh conversation after instructions change", freshSession: true },
+  ] as const)("reconciles ownership after a lost response: $scenario", async scenario => {
+    const { policy } = scenario;
     const f = await fixture();
     await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId }).where(eq(heartbeatRuns.id, f.runId));
     await db.update(environmentLeases).set({ status: "retained", releasedAt: null,
@@ -186,6 +191,101 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     await expect(f.oldWriter(f.checkpoint)).rejects.toThrow("native_runner_checkpoint_owner_lost");
     await expect(targetWriter(f.checkpoint)).resolves.toBeUndefined();
 
+    async function recoverAttachedRunner(execution: NativeExecutionInput, identity: typeof f.identity) {
+      const { root: stateDirectory } = nativeControllerMigrationDescriptor(execution,
+        nativeToolContractFingerprintForTarget("remote", execution.provider.kind));
+      const durable = new DurablePrpControlPlane({ stateDirectory: join(stateDirectory, "control-plane"),
+        identity: identity, expectedRunnerVersion: description.runner.version, expectedRunnerDigest: description.runner.digest });
+      durable.persistRunAttachTemplate({ provider: { instructions: "Run using the admitted instructions.",
+        runtimeContext: "runtimeContext" in execution ? execution.runtimeContext : null } });
+      await durable.flushCheckpoint();
+      await durable.stop();
+      const recover = () => createRunnerdBackend({ db: restarted, execution,
+        runnerInstanceId: identity.runnerInstanceId, runnerIngressAuthorized: true,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: f.leaseId,
+          sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "replacement-task" },
+          runnerTask: (operation, options) => executeEnvironmentTask(restarted, f.workers as unknown as PluginWorkerManager, {
+            companyId: f.companyId, leaseId: f.leaseId, operation: environmentTaskOperationSchema.parse(operation),
+            expectedTaskId: options?.expectedTaskId,
+          }),
+        },
+        restartRecovery: { kind: "reattach_remote_runner", remote: { kind: "plugin_task", leaseId: f.leaseId },
+          runId: f.runId, leaseOwner: "successor", controllerGeneration: f.owner.generation + 1,
+          providerAttempt: 1, restartKind: "hard", recoveryRequestId: null },
+      });
+      f.workers.call.mockClear();
+      f.workers.call
+        .mockResolvedValueOnce({ kind: "status", taskId: "replacement-task", phase: "running", executionStopped: false })
+        .mockResolvedValueOnce({ kind: "state", taskId: "replacement-task",
+          state: { schema: "paperclip.runner.durable.state.v1", ...identity } })
+        .mockResolvedValueOnce({ ...description, launchPreparationVersion: 1, projectAuthCheckVersion: 1 });
+      const api = vi.spyOn(runtimeApi, "resolveLocalRuntimeApiUrl").mockReturnValue("http://127.0.0.1:3100");
+      try { await expect(recover()).resolves.toBeDefined(); }
+      finally { api.mockRestore(); }
+      expect(f.workers.call.mock.calls.map(([, , call]) => [call.taskId, call.operation.kind])).toEqual([
+        ["replacement-task", "status"], ["replacement-task", "read_state"], ["replacement-task", "describe"],
+      ]);
+      return recover;
+    }
+
+    if ("freshSession" in scenario) {
+      const previousExecution = f.sourceExecution;
+      const nativeToolContractFingerprint = nativeToolContractFingerprintForTarget("remote", f.execution.provider.kind);
+      const normalizedSessionId = f.identity.normalizedSessionId;
+      const previousRun = {
+        id: f.sourceRunId, companyId: f.companyId, agentId: f.execution.binding.agentId, nativeSessionId: normalizedSessionId,
+        runnerProfileJson: { nativeToolContractFingerprint, nativeExecutionInput: previousExecution,
+          sessionCheckpoint: { backendKind: "runner", driverKind: previousExecution.session.driverKind,
+            sessionId: "previous-provider-thread", providerSessionId: "previous-provider-thread",
+            identity: { ...previousExecution.binding, sessionId: normalizedSessionId }, pendingRuntimeRequests: [] } },
+      };
+      const select = (current: NativeExecutionInput) => buildNativeExecutionWithCheckpoint({
+        previousRun, normalizedSessionId, executionTargetKind: "remote", toolRefreshOnResume: true,
+        buildExecution: ({ normalizedSessionId }) => ({ ...current, session: { ...current.session, normalizedSessionId } } as NativeExecutionInput),
+      });
+      expect(select(f.execution).checkpoint?.providerSessionId).toBe("previous-provider-thread");
+      const changed = structuredClone(f.execution);
+      if (!("runtimeContext" in changed)) throw new Error("fixture requires runtime context");
+      changed.runtimeContext.instructions.bundle.digest = "1".repeat(64);
+      changed.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(changed.runtimeContext);
+      const selected = select(changed);
+      expect(selected.checkpoint).toBeNull();
+      expect(selected.normalizedSessionId).not.toBe(normalizedSessionId);
+      const scope = { attachedRunId: f.runId, accountIdentity: f.accountIdentity, selectedSessionId: selected.normalizedSessionId };
+      const sourceFor = (identity: unknown) => readyPortableTaskSource(restarted, f.companyId, f.leaseId, identity, scope);
+      await expect(sourceFor(null)).rejects.toThrow("ownership_unverified");
+      await db.update(heartbeatRuns).set({ nativeSessionId: selected.normalizedSessionId }).where(eq(heartbeatRuns.id, f.runId));
+      await expect(sourceFor(null)).rejects.toThrow("ownership_unverified");
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: selected.execution } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      await expect(sourceFor(null)).resolves.toBeUndefined();
+      await expect(sourceFor(f.identity)).rejects.toThrow("ownership_unverified");
+      const duplicate = randomUUID();
+      await db.insert(environmentLeases).values({ ...target, id: duplicate, providerLeaseId: "ambiguous-task" });
+      await expect(sourceFor(null)).rejects.toThrow("ownership_unverified");
+      await db.delete(environmentLeases).where(eq(environmentLeases.id, duplicate));
+
+      const fresh = { ...f.identity, runId: f.runId, environmentLeaseId: f.leaseId, runnerInstanceId: randomUUID(),
+        normalizedSessionId: selected.normalizedSessionId, turnId: "fresh-turn", itemId: "fresh-item" };
+      const prepare = { ...f.operation, resumeFrom: undefined, requirements: { ...f.operation.requirements, identity: fresh } };
+      const submit = { ...f.submit, resumeFrom: undefined, runner: { ...f.submit.runner,
+        runnerId: fresh.runnerInstanceId, leaseId: fresh.environmentLeaseId, runId: fresh.runId,
+        sessionId: fresh.normalizedSessionId, turnId: fresh.turnId, itemId: fresh.itemId } };
+      f.workers.call.mockClear();
+      await expect(f.task(prepare)).resolves.toMatchObject({ kind: "prepared" });
+      await expect(f.task({ kind: "check_project_auth", provider: "openai", projectIds: [],
+        configurationId: submit.preparedLaunchId })).resolves.toMatchObject({ kind: "project_auth", allowed: true });
+      await expect(f.task(submit)).resolves.toMatchObject({ kind: "accepted" });
+      expect(f.workers.call.mock.calls.map(([, , call]) => call.operation.kind)).toEqual(["prepare", "check_project_auth", "submit"]);
+      expect(f.workers.call.mock.calls.every(([, , call]) => call.taskId === "replacement-task" &&
+        call.operation.resumeFrom === undefined && call.operation.priorIdentity === undefined)).toBe(true);
+      await expect(sourceFor(null)).rejects.toThrow("ownership_unverified");
+      await expect(sourceFor({ ...fresh, turnId: "wrong-turn" })).rejects.toThrow("ownership_unverified");
+      await expect(sourceFor(fresh)).resolves.toBeUndefined();
+      await recoverAttachedRunner(selected.execution, fresh);
+      return;
+    }
+
     const resume = { kind: "resume", identity: f.identity, bootstrapTicket: "fixture-ticket" } as const;
     f.workers.call.mockResolvedValueOnce({ kind: "resume", taskId: "replacement-task", outcome: "resumed" });
     await expect(f.task(resume)).resolves.toMatchObject({ kind: "resume", outcome: "resumed" });
@@ -226,39 +326,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     ]) await expect(assertAttachedPortableTask(restarted, invalid)).rejects.toThrow("ownership_unverified");
 
     if (policy === "ordinary") {
-      const { root: stateDirectory } = nativeControllerMigrationDescriptor(f.execution,
-        nativeToolContractFingerprintForTarget("remote", f.execution.provider.kind));
-      const durable = new DurablePrpControlPlane({ stateDirectory: join(stateDirectory, "control-plane"),
-        identity: nextIdentity, expectedRunnerVersion: description.runner.version, expectedRunnerDigest: description.runner.digest });
-      durable.persistRunAttachTemplate({ provider: { instructions: "Run using the admitted instructions.",
-        runtimeContext: "runtimeContext" in f.execution ? f.execution.runtimeContext : null } });
-      await durable.flushCheckpoint();
-      await durable.stop();
-      const recover = () => createRunnerdBackend({ db: restarted, execution: f.execution,
-        runnerInstanceId: nextIdentity.runnerInstanceId, runnerIngressAuthorized: true,
-        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: f.leaseId,
-          sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "replacement-task" },
-          runnerTask: (operation, options) => executeEnvironmentTask(restarted, f.workers as unknown as PluginWorkerManager, {
-            companyId: f.companyId, leaseId: f.leaseId, operation: environmentTaskOperationSchema.parse(operation),
-            expectedTaskId: options?.expectedTaskId,
-          }),
-        },
-        restartRecovery: { kind: "reattach_remote_runner", remote: { kind: "plugin_task", leaseId: f.leaseId },
-          runId: f.runId, leaseOwner: "successor", controllerGeneration: f.owner.generation + 1,
-          providerAttempt: 1, restartKind: "hard", recoveryRequestId: null },
-      });
-      f.workers.call.mockClear();
-      f.workers.call
-        .mockResolvedValueOnce({ kind: "status", taskId: "replacement-task", phase: "running", executionStopped: false })
-        .mockResolvedValueOnce({ kind: "state", taskId: "replacement-task",
-          state: { schema: "paperclip.runner.durable.state.v1", ...nextIdentity } })
-        .mockResolvedValueOnce({ ...description, launchPreparationVersion: 1, projectAuthCheckVersion: 1 });
-      const api = vi.spyOn(runtimeApi, "resolveLocalRuntimeApiUrl").mockReturnValue("http://127.0.0.1:3100");
-      try { await expect(recover()).resolves.toBeDefined(); }
-      finally { api.mockRestore(); }
-      expect(f.workers.call.mock.calls.map(([, , call]) => [call.taskId, call.operation.kind])).toEqual([
-        ["replacement-task", "status"], ["replacement-task", "read_state"], ["replacement-task", "describe"],
-      ]);
+      const recover = await recoverAttachedRunner(f.execution, nextIdentity);
       await db.update(environmentLeases).set({
         metadata: sql`${environmentLeases.metadata} - 'portableTaskSuccessor'`,
       }).where(eq(environmentLeases.id, f.sourceLeaseId));

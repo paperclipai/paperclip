@@ -254,7 +254,7 @@ async function readReadyPortableTaskClaim(db: Db, companyId: string, targetLease
 }
 
 function matchesAttachedPortableTaskIdentity(
-  target: Lease, operation: OwnershipOperation, identity: Record<string, unknown>, runId: string,
+  target: Lease, identity: Record<string, unknown>, runId: string,
 ) {
   const saved = object(target.metadata?.runnerTaskIdentity);
   const attached = {
@@ -262,10 +262,12 @@ function matchesAttachedPortableTaskIdentity(
     runId: saved.runId, normalizedSessionId: saved.sessionId, turnId: saved.turnId, itemId: saved.itemId,
   };
   return target.heartbeatRunId === runId && identity.runId === runId &&
-    operation.identity.environmentLeaseId === identity.environmentLeaseId &&
-    operation.identity.runnerInstanceId === identity.runnerInstanceId &&
-    operation.identity.normalizedSessionId === identity.normalizedSessionId &&
     Object.entries(attached).every(([key, value]) => typeof value === "string" && value.length > 0 && identity[key] === value);
+}
+
+function matchesPortableLineage(source: OwnershipOperation["identity"], identity: Record<string, unknown>) {
+  return source.environmentLeaseId === identity.environmentLeaseId && source.runnerInstanceId === identity.runnerInstanceId &&
+    source.normalizedSessionId === identity.normalizedSessionId;
 }
 
 export async function assertAttachedPortableTask(db: Db, input: {
@@ -273,20 +275,43 @@ export async function assertAttachedPortableTask(db: Db, input: {
 }) {
   const claim = await readReadyPortableTaskClaim(db, input.companyId, input.leaseId);
   if (!claim || claim.target.providerLeaseId !== input.taskId ||
-      !matchesAttachedPortableTaskIdentity(claim.target, claim.operation, input.identity, input.runId)) return unavailable();
+      !matchesAttachedPortableTaskIdentity(claim.target, input.identity, input.runId) ||
+      !matchesPortableLineage(claim.operation.identity, input.identity)) return unavailable();
 }
 
 export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown,
-  scope: { attachedRunId?: string; accountIdentity?: string } = {}) {
+  scope: { attachedRunId?: string; selectedSessionId?: string; accountIdentity?: string } = {}) {
   const claim = await readReadyPortableTaskClaim(db, companyId, targetLeaseId);
   if (!claim) return undefined;
   const { source, target, operation } = claim;
   if ("accountIdentity" in scope && (!scope.accountIdentity || source.metadata?.runnerTaskAccountIdentity !== scope.accountIdentity))
     return unavailable();
   const candidate = object(identity);
-  const { attachedRunId } = scope;
+  const { attachedRunId, selectedSessionId } = scope;
+  if (selectedSessionId && selectedSessionId !== operation.identity.normalizedSessionId) {
+    if (!attachedRunId || target.heartbeatRunId !== attachedRunId) return unavailable();
+    const [admitted] = await db.select({ lease: environmentLeases, unlaunched: unlaunchedPortableTaskLease() })
+      .from(environmentLeases).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId),
+        eq(heartbeatRuns.companyId, environmentLeases.companyId)))
+      .innerJoin(issues, and(eq(issues.id, environmentLeases.issueId), eq(issues.companyId, environmentLeases.companyId)))
+      .where(and(eq(environmentLeases.id, targetLeaseId), eq(environmentLeases.companyId, companyId),
+        eq(environmentLeases.providerLeaseId, target.providerLeaseId!),
+        sql`${environmentLeases.metadata}->'portableTaskPredecessor' = ${JSON.stringify(target.metadata?.portableTaskPredecessor)}::jsonb`,
+        eq(heartbeatRuns.id, attachedRunId), eq(heartbeatRuns.status, "running"),
+        sql`${heartbeatRuns.resultJson}->'nativeCancellation' is null`, eq(heartbeatRuns.nativeSessionId, selectedSessionId),
+        sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'session'->>'normalizedSessionId' = ${selectedSessionId}`,
+        eq(heartbeatRuns.nativeIssueId, issues.id), eq(issues.executionRunId, heartbeatRuns.id),
+        eq(issues.assigneeAgentId, heartbeatRuns.agentId), eq(issues.status, "in_progress")));
+    if (!admitted) return unavailable();
+    if (identity == null && admitted.unlaunched) return undefined;
+    if (admitted.lease.metadata?.runnerTaskDispatched === true &&
+        candidate.normalizedSessionId === selectedSessionId && candidate.environmentLeaseId === target.id &&
+        matchesAttachedPortableTaskIdentity(admitted.lease, candidate, attachedRunId)) return undefined;
+    return unavailable();
+  }
   if (attachedRunId && target.heartbeatRunId === attachedRunId && candidate.runId === attachedRunId) {
-    if (matchesAttachedPortableTaskIdentity(target, operation, candidate, attachedRunId)) return undefined;
+    if (matchesAttachedPortableTaskIdentity(target, candidate, attachedRunId) &&
+        matchesPortableLineage(operation.identity, candidate)) return undefined;
     return unavailable();
   }
   if (Object.entries(operation.identity).some(([key, value]) => candidate[key] !== value)) return unavailable();
