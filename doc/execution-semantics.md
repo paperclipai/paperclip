@@ -3475,6 +3475,25 @@ reason uses only fixed lists of known names: command types, command statuses,
 owner phases, recovery states, lifecycle states, and fence reasons. Any other
 stored value appears as `other`. The reason never includes payloads or paths.
 
+Live adoption of a warm Runner on a resumed sandbox names its failed proof as
+`warm_recovery_refused=<reason>`, for example `journal_unsettled`,
+`owner_changed` or `current_lease_changed`. After the predecessor's run row
+proves `succeeded` and its coordinator proves `committed` with an accepted
+result and no lease, such a refusal does not fail the task. The new run did no
+provider work, so it fails with `native_predecessor_retirement_unproven` and
+its next attempt starts on a fresh sandbox restored from the saved workspace,
+under the same safety rules as any unretired predecessor. This covers a server
+that was killed after a run parked on a question: its warm Runner stays `ready`
+in the sandbox, and only the killed server could have adopted it. A refusal
+because the new run itself is no longer admitted (stopped, reassigned, paused
+or no longer owned by this controller) stays an ordinary failure.
+
+A follow-up on a warm session starts with its predecessor's Runner process
+identity. That inherited identity alone does not count as a process of the
+follow-up when it proves that it left the workspace unchanged. The identity
+must equal a settled predecessor's identity of the same session, and the
+follow-up must have no `native.process_identity_recorded` event of its own.
+
 Resume source selection skips a failed follow-up that never started provider
 work. Such a run holds only the provider checkpoint that it inherited. Without
 the skip, a retry selects it, and controller recovery fails with

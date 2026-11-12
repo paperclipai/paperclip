@@ -17,7 +17,8 @@ import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, deferNativeRunForBusyAgentDirectory, NATIVE_AGENT_DIRECTORY_BUSY_WAIT, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
-import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "../heartbeat/agent-directory-busy.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
@@ -469,6 +470,83 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline });
     expect(claims).toHaveLength(1);
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "duplicate", runIds: [runId], now: deadline })).toEqual([]);
+  });
+
+  it("sends a re-wake after a crash restart to a fresh sandbox when the parked predecessor's warm Runner cannot be adopted", async () => {
+    const fixture = await seed(), runId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
+    const previous = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId: fixture.scope.runId, executionWorkspaceId: randomUUID() },
+      task: { identifier: "NCD-1", title: "Answer the parked question", description: null,
+        prompt: "Continue after the answer.", workMode: "standard" },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue after the answer.", criteria: [{ id: "objective", requirement: "Save the result." }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    const current = { ...previous, binding: { ...previous.binding, runId } };
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, driverKind: "codex_app_server",
+      providerSessionId: "parked-provider-session", activeTurnId: null, pendingRuntimeRequests: [] };
+    const metadata = createNativeControllerRecovery(checkpoint, compatibility, { runId: fixture.scope.runId,
+      runnerInstanceId: fixture.native.runnerInstanceId, normalizedSessionId: fixture.scope.normalizedSessionId });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...fixture.profile, nativeExecutionInput: previous,
+      sessionCheckpoint: checkpoint, nativeControllerRecovery: metadata } }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+    await db.update(nativeRunFinalizations).set({ controllerPid: 2_147_483_000, controllerProcessStartedAt: new Date(Date.now() - 120_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    const controller = await currentNativeControllerIdentity();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: current } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed",
+      leaseOwner: "replacement-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerBootId: controller.bootId, controllerPid: controller.pid });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, fixture.scope.issueId));
+    await db.insert(environments).values({ id: environmentId, name: `Parked ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values([
+      { companyId, environmentId, issueId: fixture.scope.issueId, heartbeatRunId: fixture.scope.runId, provider: "daytona",
+        providerLeaseId: "warm-sandbox", status: "released", metadata: { remoteCwd: "/workspace" } },
+      { id: leaseId, companyId, environmentId, issueId: fixture.scope.issueId, heartbeatRunId: runId, provider: "daytona",
+        providerLeaseId: "warm-sandbox", status: "active", metadata: { remoteCwd: "/workspace" } },
+    ]);
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const parked = { identity, commands: [{ type: "turn.start", status: "completed" }], committedEvents: [
+      { eventType: "semantic_tool.input", sourceEventId: "question", envelope: identity },
+      { eventType: "run.terminal", envelope: identity }] };
+    const inspect = (readControlState: () => Record<string, unknown> = () => parked) => inspectRemoteWarmSessionRecovery({
+      db, execution: current, identity, readControlState,
+      target: { kind: "remote", transport: "sandbox", environmentId, leaseId, providerKey: "daytona", remoteCwd: "/workspace",
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "warm-sandbox" } } as never,
+      matchesExecution: saved => saved.binding.runId === fixture.scope.runId,
+      loadCheckpoint: () => checkpoint, canReuseProcess: () => true,
+    });
+    const fallback = (error: unknown, reason: string) => {
+      expect(error).toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+      expect(error).toMatchObject({ predecessorRunId: fixture.scope.runId, providerLeaseId: "warm-sandbox" });
+      expect((error as Error).message).toContain(`warm_recovery_refused=${reason}`);
+    };
+
+    fallback(await inspect(() => ({ ...parked, commands: [...parked.commands, { type: "runner.suspend", status: "pending" }] }))
+      .catch(error => error), "journal_unsettled");
+
+    const recovered = (await inspect())!;
+    await expect(recovered.revalidate("replacement-controller")).resolves.toBeUndefined();
+    await db.update(nativeRunFinalizations).set({ leaseOwner: "native-finalizer:replacement", leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    fallback(await recovered.revalidate("replacement-controller").catch(error => error), "owner_changed");
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    await db.update(environmentLeases).set({ status: "pending_cleanup" }).where(eq(environmentLeases.id, leaseId));
+    fallback(await recovered.revalidate("replacement-controller").catch(error => error), "current_lease_changed");
+    await db.update(environmentLeases).set({ status: "active" }).where(eq(environmentLeases.id, leaseId));
+
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+    const stopped = await recovered.revalidate("replacement-controller").catch(error => error);
+    expect(stopped).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    expect(stopped.message).toBe("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=current_run_not_admitted");
   });
 
   // The Nov 10 staging shape: a preparation-only run's epoch was abandoned, so
