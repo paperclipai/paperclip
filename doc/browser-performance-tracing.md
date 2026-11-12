@@ -69,9 +69,9 @@ request made after the SDK loads.
 
 Nothing loads on the critical path. The main bundle carries only the
 measurement code (route matching, readiness checks); on the `ui` build of this
-change the initial JavaScript grew by about 6.5 KB raw / 2.5 KB gzip (0.2%). The
-OpenTelemetry SDK, exporter, fetch instrumentation, and `web-vitals` are a
-separate chunk (about 94 KB raw / 30 KB gzip) fetched only when tracing is on
+change the initial JavaScript grew by about 6.8 KB raw / 2.6 KB gzip (0.2%). The
+OpenTelemetry SDK, a small OTLP JSON exporter, fetch instrumentation, and
+`web-vitals` are a separate chunk (about 84 KB raw / 27 KB gzip) fetched only when tracing is on
 and the session is sampled, and only after the page settles (painted, no query
 fetching, browser idle; `ui/src/lib/when-page-settles.ts`). If the page never
 settles (for example a request hangs), the chunk loads 35 seconds after tracing

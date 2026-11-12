@@ -23,14 +23,13 @@ import {
   type SpanExporter,
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-web";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { onCLS, onINP, onLCP, type Metric } from "web-vitals";
 import type { BrowserTracingConfig } from "@paperclipai/shared";
 import type { TracingSdkHandle } from "./controller";
 import type { PageLoadMeasurement, PageLoadRecorder } from "./page-load-recorder";
+import { OtlpFetchExporter } from "./otlp-fetch-exporter";
 import { SanitizingSpanExporter } from "./span-sanitizer";
 
 const TRACER_NAME = "paperclip.browser";
@@ -106,9 +105,12 @@ export function startTracingSdk(
   let openPageSpan: Span | null = null;
   let stopped = false;
 
-  const exporter = new SanitizingSpanExporter(options.exporter ?? new OTLPTraceExporter({
+  // Captured before fetch instrumentation patches `fetch`, so exports are never traced.
+  const uninstrumentedFetch = window.fetch.bind(window);
+  const exporter = new SanitizingSpanExporter(options.exporter ?? new OtlpFetchExporter({
     url: config.tracesUrl,
     headers: config.ingestKey ? { "x-honeycomb-team": config.ingestKey } : {},
+    fetch: uninstrumentedFetch,
   }));
 
   const sampleRateAttribute = honeycombSampleRate(config.sampleRate);
@@ -139,18 +141,16 @@ export function startTracingSdk(
   provider.register({ contextManager: new PageLoadContextManager(() => openPageSpan) });
   const tracer = provider.getTracer(TRACER_NAME);
 
-  const unregisterInstrumentations = registerInstrumentations({
-    tracerProvider: provider,
-    instrumentations: [
-      new FetchInstrumentation({
-        // Only this origin's API gets spans, and only it receives trace
-        // headers: no third-party origin is listed for propagation.
-        ignoreUrls: [nonApiUrlPattern(window.location.origin)],
-        propagateTraceHeaderCorsUrls: [],
-        clearTimingResources: false,
-      }),
-    ],
+  const fetchInstrumentation = new FetchInstrumentation({
+    // Only this origin's API gets spans, and only it receives trace
+    // headers: no third-party origin is listed for propagation.
+    ignoreUrls: [nonApiUrlPattern(window.location.origin)],
+    propagateTraceHeaderCorsUrls: [],
+    clearTimingResources: false,
+    enabled: false,
   });
+  fetchInstrumentation.setTracerProvider(provider);
+  fetchInstrumentation.enable();
 
   recorder.attachSink({
     begin(measurement) {
@@ -206,7 +206,7 @@ export function startTracingSdk(
       // Unfinished page loads are dropped, not exported half measured.
       pageSpans.clear();
       openPageSpan = null;
-      unregisterInstrumentations();
+      fetchInstrumentation.disable();
       await provider.shutdown().catch(() => undefined);
       trace.disable();
       context.disable();
