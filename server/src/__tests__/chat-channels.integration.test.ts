@@ -65892,7 +65892,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["person", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+  it.each(["person", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
     const f = await currentGitHubTaskRetryFixture(false);
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
@@ -65966,7 +65966,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       try {
         request = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
           observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry,
-          ...(initiator === "person" ? {} : { initiatedBy: "restart_recovery" as const }) });
+          ...(initiator.startsWith("person") ? {} : { initiatedBy: "restart_recovery" as const }) });
       } finally { await releaseIdentity(); }
       if (initiator === "restart_recovery_joined_by_person") {
         const joined = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
@@ -65977,8 +65977,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const chatAction = async () => (await db.select().from(chatActions).where(eq(chatActions.id, request.chatActionId!)))[0];
       expect((await chatAction()).payload.sourceAuthorizationPending).toBe(true);
 
-      const releaseAgent = await holdLock(tx => tx.select().from(agents)
-        .where(eq(agents.id, f.fixture.assignedAgentId)).for("update"));
+      const [{ status: agentStatus }] = await db.select({ status: agents.status }).from(agents)
+        .where(eq(agents.id, f.fixture.assignedAgentId));
+      if (initiator === "person_paused_after_accept") await db.update(agents).set({ status: "paused" })
+        .where(eq(agents.id, f.fixture.assignedAgentId));
+      const releaseAgent = initiator === "person_paused_after_accept" ? async () => {}
+        : await holdLock(tx => tx.select().from(agents).where(eq(agents.id, f.fixture.assignedAgentId)).for("update"));
       try {
         await vi.waitFor(async () => {
           await f.service.processFailedChatRunRetry(request.chatActionId!);
@@ -65997,6 +66001,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [continued] = await readAgentWakeupRequestsById(request.requestId!);
       expect(continued).toMatchObject({ status: "deferred_issue_execution", runId: null });
       expect(taskRetryModule.readTaskRetryIntent(continued.payload)?.chatActionId).toBeUndefined();
+      if (initiator === "person_paused_after_accept") {
+        await expect(heartbeatService(db).resumeTaskRetry(companyId, request.requestId!)).rejects.toThrow("not invokable");
+        expect((await readAgentWakeupRequestsById(request.requestId!))[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
+        expect((await readHeartbeatRunsByCompanyId(companyId))
+          .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId)).toHaveLength(0);
+        await db.update(agents).set({ status: agentStatus }).where(eq(agents.id, f.fixture.assignedAgentId));
+      }
       await heartbeatService(db).resumeTaskRetry(companyId, request.requestId!);
       const [admitted] = await readAgentWakeupRequestsById(request.requestId!);
       expect(admitted).toMatchObject({ status: "coalesced", runId: expect.any(String) });

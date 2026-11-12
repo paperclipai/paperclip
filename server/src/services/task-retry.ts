@@ -3,12 +3,11 @@ import { notifyExternalConversationSettlement } from "./external-conversation-se
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
-import { isAgentStatusInvokable } from "@paperclipai/shared";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { randomUUID } from "node:crypto";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agents, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
 import { createSystemRecovery, readSystemRecovery } from "./system-recovery-state.js";
@@ -536,9 +535,6 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
         sql`${agentWakeupRequests.payload}#>'{taskRetry,initiatedBy}' is null`)).limit(1);
       if (!joined) return false;
     }
-    const [agent] = await tx.select({ status: agents.status }).from(agents).where(and(eq(agents.companyId, wake.companyId),
-      eq(agents.id, wake.agentId)));
-    if (!agent || !isAgentStatusInvokable(agent.status)) return false;
     const recoveries = await tx.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, wake.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
       sql`${issueRecoveryActions.evidence}->>'runId' = ${intent.sourceRunId}`));
