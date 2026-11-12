@@ -1,0 +1,84 @@
+import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
+import { and, eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
+import { CHILD_TASK_READ_EVENT, hasPendingNativeChildCompletion } from "../services/native-runtime/native-child-completion-delivery.js";
+
+const support = await getEmbeddedPostgresTestSupport();
+const describePostgres = support.supported ? describe : describe.skip;
+
+describePostgres("a parent run reading a finished child through the issue routes", () => {
+  let db: ReturnType<typeof createDb>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  const companyId = randomUUID();
+  const agentId = randomUUID();
+
+  beforeAll(async () => {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-native-child-read-routes-");
+    db = createDb(database.connectionString);
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "CHR", defaultResponsibleUserId: "board-user",
+      requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Coder", role: "engineer", adapterType: "codex_local", status: "active" });
+  }, 30_000);
+  afterAll(async () => { await database?.cleanup(); });
+
+  function app(actor: Express.Request["actor"]) {
+    const instance = express();
+    instance.use(express.json());
+    instance.use((req, _res, next) => { req.actor = actor; next(); });
+    instance.use("/api", issueRoutes(db, {} as never));
+    instance.use(errorHandler);
+    return instance;
+  }
+  const agentActor = (runId: string) => ({ type: "agent", companyId, agentId, runId, source: "agent_jwt",
+    onBehalfOfUserId: null, onBehalfOfMemberships: [] }) as Express.Request["actor"];
+  const boardActor = { type: "board", userId: "board-user", source: "local_implicit", isInstanceAdmin: true } as Express.Request["actor"];
+
+  async function seed(childStatus: "done" | "in_progress", issueNumber: number) {
+    const runId = randomUUID();
+    const childId = randomUUID();
+    const parentId = randomUUID();
+    await db.insert(issues).values({ id: parentId, companyId, title: "Merge the ledgers", identifier: `CHR-${issueNumber + 100}`,
+      issueNumber: issueNumber + 100, status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: parentId, startedAt: new Date(Date.now() - 60_000), contextSnapshot: { issueId: parentId } });
+    await db.insert(issues).values({ id: childId, companyId, parentId, title: "Child ledger", identifier: `CHR-${issueNumber}`,
+      issueNumber, status: childStatus, assigneeAgentId: agentId });
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_execution_deferred", requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${randomUUID()}`,
+      status: "deferred_issue_execution", createdAt: new Date(Date.now() - 30_000),
+      payload: { issueId: parentId, _paperclipWakeContext: { issueId: parentId, wakeReason: "issue_children_completed",
+        nativeChildCompletionDecisionId: randomUUID(), completedChildIssueId: childId } } }).returning();
+    return { runId, childId, parentId, wakeId: wake!.id };
+  }
+  const reads = (runId: string) => db.select().from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, CHILD_TASK_READ_EVENT)));
+  const pending = (f: { runId: string; parentId: string }) =>
+    hasPendingNativeChildCompletion(db, { companyId, issueId: f.parentId, agentId, runId: f.runId, sourceIntentId: null });
+
+  it.each(["", "/documents", "/documents/ledger"])("records the parent run's read of a finished child (GET /issues/:id%s)", async (suffix) => {
+    const f = await seed("done", 10 + suffix.length);
+    expect(await pending(f)).toBe(true);
+    await request(app(agentActor(f.runId))).get(`/api/issues/${f.childId}${suffix}`);
+    expect(await reads(f.runId)).toEqual([expect.objectContaining({ payload: {
+      parentIssueId: f.parentId, children: { [f.childId]: { status: "done", updatedAt: expect.any(String) } } } })]);
+    expect(await pending(f)).toBe(false);
+  });
+
+  it("does not count a read of a child that is still open, or a board read", async () => {
+    const open = await seed("in_progress", 40);
+    expect((await request(app(agentActor(open.runId))).get(`/api/issues/${open.childId}`)).status).toBe(200);
+    expect(await reads(open.runId)).toEqual([]);
+    expect(await pending(open)).toBe(true);
+
+    const board = await seed("done", 41);
+    expect((await request(app(boardActor)).get(`/api/issues/${board.childId}`)).status).toBe(200);
+    expect(await reads(board.runId)).toEqual([]);
+    expect(await pending(board)).toBe(true);
+  });
+});
