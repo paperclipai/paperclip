@@ -97,11 +97,38 @@ it("carries Codex CLI search and fast mode through selection into the real comma
   const member = { id: "codex", runner: "legacy" as const, adapterConfig: { engine: "cli" as const, search: true, fastMode: true }, profile: { provider: "codex" as const, model: "gpt-6-sol" }, binding: { mode: "shared" as const, provider: "openai" as const, method: "subscription" as const, connectionId: "connection", grantId: "grant" } };
   const selected = poolMemberRuntimeConfig(member, "paperclip_runner");
   const selection = { poolId: "pool", memberId: member.id, binding: member.binding, adapterType: selected.adapterType, runtimeConfig: selected.config, notes: [] };
-  const effective = applyAiConnectionRouterTaskSettings({ cwd: "/workspace", search: false, fastMode: false }, selection, "paperclip_runner");
+  const effective = applyAiConnectionRouterTaskSettings({ cwd: "/workspace", fastMode: false }, selection, "paperclip_runner");
   expect(effective).toMatchObject({ engine: "cli", search: true, fastMode: true, cwd: "/workspace" });
   const command = buildCodexExecArgs(effective);
   expect(command.args).toContain("--search"); expect(command.fastModeApplied).toBe(true);
   const next = applyAiConnectionRouterTaskSettings(effective, { ...selection, runtimeConfig: { provider: "codex", model: "gpt-6-sol", engine: "cli" } }, "codex_local");
   expect(next).not.toHaveProperty("search");expect(next).not.toHaveProperty("fastMode");
   expect(buildCodexExecArgs(next).args).not.toContain("--search");
+});
+
+it("checks disabled search before allocation, including a same-harness candidate", () => {
+  expect(() => assertPoolAdapterPolicyCompatible({ search: false }, "codex_local", "codex_local", { search: true }))
+    .toThrow("cannot enable search");
+});
+
+it("does not freeze a previous member's search tuning as source policy", () => {
+  const selection = { poolId: "pool", memberId: "codex", binding: claude.binding, adapterType: "codex_local",
+    runtimeConfig: { search: true }, notes: [] };
+  expect(applyAiConnectionRouterTaskSettings({ search: false }, selection, "codex_local", {})).toHaveProperty("search", true);
+});
+
+it.each([
+  ["claude_local", { engine: "acp", permissionMode: "deny-all" }, { permissionMode: "approve-all" }],
+  ["claude_local", { engine: "cli", dangerouslySkipPermissions: false }, { dangerouslySkipPermissions: true }],
+  ["codex_local", { engine: "cli", dangerouslyBypassApprovalsAndSandbox: false }, { dangerouslyBypassApprovalsAndSandbox: true }],
+  ["opencode_local", { dangerouslySkipPermissions: false }, { dangerouslySkipPermissions: true }],
+  ["claude_local", { engine: "acp", nonInteractivePermissions: "deny" }, { nonInteractivePermissions: "allow" }],
+] as const)("preserves frozen %s restrictions across backups", (adapterType, frozen, widened) => {
+  const admitted = { poolId: "pool", memberId: "previous", binding: claude.binding, adapterType, runtimeConfig: frozen, notes: [] };
+  const check = (target: Record<string, unknown>, targetAdapter: string = adapterType) =>
+    assertPoolAdapterPolicyCompatible({}, "paperclip_runner", targetAdapter, target, admitted);
+  expect(() => check({ ...frozen, ...widened })).toThrow("frozen pool member execution policy");
+  expect(() => check({})).toThrow("frozen pool member execution policy");
+  expect(() => check(frozen, "paperclip_runner")).toThrow("frozen pool member execution policy");
+  expect(() => check(frozen)).not.toThrow();
 });

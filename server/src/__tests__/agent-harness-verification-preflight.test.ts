@@ -214,7 +214,7 @@ describePostgres("saved harness account preflight", () => {
       vi.spyOn(localRunnerPlatform, "localAgentRunnerTarget").mockReturnValue({ driver: "local", platform: "win32", architecture: "x64" });
       const envs = environmentService(db);
       const environment = driver === "local" ? await envs.ensureLocalEnvironment(agent.companyId)
-        : await envs.create(agent.companyId, { name: randomUUID(), driver: "ssh", config: { host: "verification-fixture.invalid", username: "fixture" } });
+        : await envs.create(agent.companyId, { name: randomUUID(), driver: "ssh", status: "active", envVars: {}, config: { host: "verification-fixture.invalid", username: "fixture" } });
       await instanceSettingsService(db).update({ defaultEnvironmentId: environment.id });
       const resolveEnvironment = vi.fn<ReturnType<typeof realEnvironmentTests>["resolveAdapterTestEnvironmentId"]>();
       vi.mocked(environmentTests.agentEnvironmentTestService).mockImplementation((database, manager) => {

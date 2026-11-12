@@ -218,7 +218,7 @@ describe("durable, authorized connection routing", () => {
       const { harnessPoolService } = await import("../services/harness-pools.js");
       const local = await environmentService(db).ensureLocalEnvironment(companyId);
       const environment = driver === "local" ? local : await environmentService(db).create(companyId, {
-        name: randomUUID(), driver: "ssh", config: { host: "pool-fixture.invalid", username: "fixture" },
+        name: randomUUID(), driver: "ssh", status: "active", envVars: {}, config: { host: "pool-fixture.invalid", username: "fixture" },
       });
       const claude = members[1]!, codex = members[0]!;
       const backupId = randomUUID();
@@ -473,8 +473,8 @@ describe("durable, authorized connection routing", () => {
     const { poolRunnerCooldownIdentity } = await import("../services/ai-connection-pool-cooldown.js");
     const envs = environmentService(db);
     const environmentA = (await envs.ensureLocalEnvironment(companyId)).id;
-    const environmentB = (await envs.create(companyId, { name: randomUUID(), driver: "ssh", config: { host: "pool-b.invalid", username: "fixture" } })).id;
-    const environmentC = (await envs.create(companyId, { name: randomUUID(), driver: "ssh", config: { host: "pool-c.invalid", username: "fixture" } })).id;
+    const environmentB = (await envs.create(companyId, { name: randomUUID(), driver: "ssh", status: "active", envVars: {}, config: { host: "pool-b.invalid", username: "fixture" } })).id;
+    const environmentC = (await envs.create(companyId, { name: randomUUID(), driver: "ssh", status: "active", envVars: {}, config: { host: "pool-c.invalid", username: "fixture" } })).id;
     const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Scoped pool fixture", apiKey: "scoped-pool-fixture", agentIds: [], allAgents: true }, randomUUID());
     const connection = { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account };
     const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Five models", enabled: true, mode: "failover", members: Array.from({ length: 5 }, (_, index) => ({ id: randomUUID(), harness: { type: "codex" as const }, connection, model: ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"][index]! })) } }, "alice");
@@ -583,6 +583,27 @@ describe("durable, authorized connection routing", () => {
     await expect(resolve(pool.id, randomUUID(), { adapterType: "codex_local", sourceAdapterConfig: { engine: "cli", extraArgs: ["--sandbox", "read-only"] } }))
       .rejects.toThrow("preserve");
     expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toHaveLength(0);
+  });
+  it("does not move a frozen Legacy pin to a backup with wider permissions", async () => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const backup = await aiConnectionService(db).save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "personal", name: "Restricted backup", apiKey: "fixture", agentIds: [], allAgents: true }, randomUUID());
+    const pool = await harnessPoolService(db).save(companyId, { config: {
+      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+        { id: randomUUID(), harness: { type: "claude_code" }, runner: "legacy", connection: members[1]!.binding, model: members[1]!.profile.model, adapterConfig: { engine: "acp", permissionMode: "deny-all" } },
+        { id: randomUUID(), harness: { type: "claude_code" }, runner: "legacy", connection: { mode: "delegated", provider: "anthropic", method: "api_key", ...backup }, model: members[1]!.profile.model, adapterConfig: { engine: "acp", permissionMode: "approve-all" } },
+      ],
+    } }, "alice");
+    const taskKey = randomUUID();
+    const selected = await resolve(pool.id, taskKey, { adapterType: "paperclip_runner", skipUsageProbe: true });
+    expect(selected.runtimeConfig.permissionMode).toBe("deny-all");
+    if (selected.binding.mode === "responsible_user") throw new Error("Expected explicit account");
+    await service().recordQuotaCooldown(companyId, selected.binding.connectionId, await identityFor(selected.binding.grantId), new Date(Date.now() + 60_000));
+    const result = await db.transaction(tx => aiConnectionRouterService(tx).transitionQuotaPin({ companyId, poolId: pool.id,
+      agentId, taskKey, expectedSelection: selected, userId: "alice", adapterType: "paperclip_runner", attemptedMemberIds: [], sourceAdapterConfig: {} }));
+    expect(result.kind).not.toBe("selected");
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
+    expect(pin?.selection).toEqual(selected);
   });
   it("does not move a failed pin to an account with an incompatible permission policy", async () => {
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));

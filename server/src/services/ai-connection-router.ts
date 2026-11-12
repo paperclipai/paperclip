@@ -31,7 +31,30 @@ function poolHarnessChanges(config: Record<string, unknown>, sourceAdapterType: 
     agentHarnessType(sourceAdapterType, config) !== agentHarnessType(targetAdapterType, { ...config, ...targetConfig }) ||
     (sourceAdapterType === "paperclip_runner" && targetAdapterType === "paperclip_runner" && config.provider !== targetConfig.provider);
 }
+function assertPoolSearchPolicyCompatible(source: Record<string, unknown>, target: Record<string, unknown>) {
+  if (source.search === false && target.search === true)
+    throw unprocessable("Pool member cannot enable search that the agent turned off.", { code: "pool_execution_policy_incompatible" });
+}
+function assertFrozenLegacyPoolPolicy(selection: AiConnectionRouterSelection, sourceConfig: Record<string, unknown>, targetAdapterType: string, targetConfig: Record<string, unknown>) {
+  if (!selection.adapterType || !LOCAL_POOL_ADAPTERS.includes(selection.adapterType)) return;
+  const frozen = selection.runtimeConfig;
+  const flags = ["dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "dangerouslySkipPermissions", "alwaysApprove"];
+  const permission = frozen.permissionMode ?? frozen.acpPermissionMode;
+  const nonInteractive = frozen.nonInteractivePermissions ?? frozen.acpNonInteractivePermissions;
+  const restrictedPermission = typeof permission === "string" && permission.trim() && permission !== "approve-all";
+  if (!flags.some(key => frozen[key] === false) && !restrictedPermission && nonInteractive == null) return;
+  const target = { ...sourceConfig, ...targetConfig };
+  const engine = (config: Record<string, unknown>) => config.engine === "cli" ? "cli" : "acp";
+  if (targetAdapterType !== selection.adapterType ||
+      (["claude_local", "codex_local"].includes(selection.adapterType) && engine(frozen) !== engine(target)) ||
+      flags.some(key => frozen[key] === false && target[key] !== false) ||
+      (restrictedPermission && (target.permissionMode ?? target.acpPermissionMode) !== permission) ||
+      (nonInteractive != null && (target.nonInteractivePermissions ?? target.acpNonInteractivePermissions) !== nonInteractive))
+    throw unprocessable("Cannot preserve the frozen pool member execution policy. Use a compatible Legacy backup with the same explicit restrictions.", { code: "pool_execution_policy_incompatible" });
+}
 export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown>, sourceAdapterType: string, targetAdapterType: string, targetRuntimeConfig: Record<string, unknown> = {}, sourceSelection?: AiConnectionRouterSelection): void {
+  assertPoolSearchPolicyCompatible(config, targetRuntimeConfig);
+  if (sourceSelection) assertFrozenLegacyPoolPolicy(sourceSelection, config, targetAdapterType, targetRuntimeConfig);
   for (const key of ["dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "dangerouslySkipPermissions", "alwaysApprove", "permissionMode", "acpPermissionMode", "nonInteractivePermissions", "acpNonInteractivePermissions", "codexPermissionMode", "acpxPermissionMode", "opencodePermissionMode"]) {
     if (config[key] !== undefined && targetRuntimeConfig[key] !== undefined && config[key] !== targetRuntimeConfig[key])
       throw unprocessable("Pool member cannot replace the configured execution policy.", { code: "pool_execution_policy_incompatible" });
@@ -104,9 +127,8 @@ export function applyAiConnectionRouterTaskSettings(config: Record<string, unkno
     ["claude_local", "codex_local"].includes(targetAdapter ?? "") && ["cli", "acp"].includes(sourceEngine) ? { engine: sourceEngine } : {};
   // Member search tuning replaces the agent's, but an agent that turned search
   // off keeps it off: native Codex disables hosted search only from this false.
-  const searchDisabled = config.search === false || sourcePolicyConfig.search === false;
-  if (searchDisabled && selection.runtimeConfig.search === true)
-    throw unprocessable("Pool member cannot enable search that the agent turned off.", { code: "pool_execution_policy_incompatible" });
+  const searchDisabled = sourcePolicyConfig.search === false;
+  assertPoolSearchPolicyCompatible(sourcePolicyConfig, selection.runtimeConfig);
   return { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key) && !(switchingHarness && harnessCommandKeys.has(key)))), ...retainedEngine, ...(searchDisabled ? { search: false } : {}), ...selection.runtimeConfig };
 }
 export class AiConnectionPoolExhausted extends Error {

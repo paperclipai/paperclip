@@ -232,11 +232,11 @@ describe("legacy quota prestart retry", () => {
     expect(successor?.sessionIdBefore).toBeNull();
     expect(successor!.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 10_000);
   }, 30_000);
-  it("continues a taskless Pool harness through its admitted direct member", async () => {
+  it.each(["portable", "confined"])("continues a taskless Pool harness with its %s source policy", async policy => {
     const f = await fixture(true, true, "openai");
     const { harnessPoolService } = await import("../harness-pools.js");
     await harnessPoolService(db).convertV1(f.companyId, f.pool.id, f.pool.revision, false, f.userId);
-    const [configured] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+    const [configured] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: policy === "confined" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "claude" },
       runtimeConfig: { harnessPool: { poolId: f.pool.id } } }).where(eq(agents.id, f.agent.id)).returning();
     Object.assign(f.agent, configured);
     const { instanceSettingsService } = await import("../instance-settings.js");
@@ -244,6 +244,11 @@ describe("legacy quota prestart retry", () => {
     expect((await f.schedule()).outcome).toBe("scheduled");
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
     expect(successor).toMatchObject({ scopeKind: "company", issueId: null });
+    if (policy === "confined") {
+      expect(successor.contextSnapshot?.aiRouterSelection).toMatchObject({ adapterType: "codex_local", memberId: f.members[0]!.id });
+      expect(successor.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);
+      return;
+    }
     expect(successor.contextSnapshot?.aiRouterSelection).toMatchObject({ adapterType: "claude_local", memberId: f.members[1]!.id });
     expect(successor.contextSnapshot?.aiRouterTaskKey).toBe(f.source.id);
     const admitted = await preparePoolAdapterClaim(db, successor, f.agent, f.userId);
