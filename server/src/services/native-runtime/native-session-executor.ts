@@ -220,6 +220,8 @@ import {
 import { adapterExecutionTargetEnablesSandboxDuplexBridge, type AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import { createRemoteAttachmentStager } from "./remote-attachment-staging.js";
+import { createRunnerAttachmentGrant, runnerAttachmentDownloadUrl } from "./runner-attachment-download.js";
+import type { NativeRunnerAttachmentDownload, NativeRunnerAttachmentStage } from "./native-runner-file-handoff.js";
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -10136,6 +10138,8 @@ export async function executePaperclipNativeSession(input: {
   adapterType?: string;
   /** Internal, run-owned file inspection lifetime; never supplied by tool arguments. */
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
+  bindAttachmentSession?: (session: NativeSession | null) => void;
+  prepareAttachmentPrompt?: () => Promise<string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onPersistedNativeLog?: (cursor: number, chunk: string) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -10320,43 +10324,74 @@ export async function executePaperclipNativeSession(input: {
       const stageRemoteAttachment = target?.kind === "remote" && remoteRunner
         ? createRemoteAttachmentStager(target.remoteCwd, remoteRunner)
         : undefined;
+      const downloadUrl = targetKind === "remote" ? runnerAttachmentDownloadUrl() : null;
+      let attachmentSession: NativeSession | null = null;
+      let useCommandFallback = false;
+      const downloadRemoteAttachment: NativeRunnerAttachmentDownload | undefined = downloadUrl
+        ? async source => {
+            if (!attachmentSession?.downloadAttachment || useCommandFallback) return null;
+            try {
+              const path = await attachmentSession.downloadAttachment(turnId =>
+                createRunnerAttachmentGrant(input.execution.binding, source, turnId, downloadUrl));
+              if (path) return path;
+            } catch {
+              // The bound command transport can still stage files without tenant egress.
+            }
+            useCommandFallback = stageRemoteAttachment !== undefined;
+            return null;
+          }
+        : undefined;
       const chatAttachmentReadScope = new NativeChatAttachmentReadScope({
         db: input.db,
         binding: input.execution.binding,
         workspaceRoot,
         executionTargetKind: targetKind,
         stageRemoteAttachment,
+        downloadRemoteAttachment,
       });
-      preparedInput = { ...input, chatAttachmentReadScope };
-      cleanupStagedAttachments = async () => {
-        try { await chatAttachmentReadScope.close(); }
-        finally { await stageRemoteAttachment?.close(); }
+      const wakeStages: Promise<NativeRunnerAttachmentStage>[] = [];
+      let closed = false;
+      const prepareAttachmentPrompt = async () => {
+        if (closed) throw new Error("paperclip_runner_attachment_staging_scope_closed");
+        const wakeStage = stageNativeRunnerWakeAttachments({
+          db: input.db,
+          stageRemoteAttachment,
+          downloadRemoteAttachment,
+          binding: {
+            companyId: input.execution.binding.companyId,
+            issueId: input.execution.binding.issueId,
+            runId: input.execution.binding.runId,
+            agentId: input.execution.binding.agentId,
+            workspaceRoot,
+            executionTargetKind: targetKind,
+          },
+        });
+        wakeStages.push(wakeStage);
+        return renderNativeRunnerStagedAttachmentPrompt((await wakeStage).attachments);
       };
-      const attachmentStage = await stageNativeRunnerWakeAttachments({
-        db: input.db,
-        stageRemoteAttachment,
-        binding: {
-          companyId: input.execution.binding.companyId,
-          issueId: input.execution.binding.issueId,
-          runId: input.execution.binding.runId,
-          agentId: input.execution.binding.agentId,
-          workspaceRoot,
-          executionTargetKind: targetKind,
-        },
-      });
       cleanupStagedAttachments = async () => {
+        closed = true;
         const cleanupResults = await Promise.allSettled([
           chatAttachmentReadScope.close(),
-          attachmentStage.cleanup(),
+          ...wakeStages.map(wake => wake.then(stage => stage.cleanup(), () => undefined)),
         ]);
         await stageRemoteAttachment?.close();
-        if (cleanupResults.some((result) => result.status === "rejected")) {
+        if (cleanupResults.some(result => result.status === "rejected")) {
           throw new Error("paperclip_runner_attachment_staging_cleanup_failed");
         }
       };
-      const stagedPrompt = renderNativeRunnerStagedAttachmentPrompt(
-        attachmentStage.attachments,
-      );
+      preparedInput = { ...input, chatAttachmentReadScope };
+      if (downloadRemoteAttachment) {
+        return {
+          ...preparedInput,
+          bindAttachmentSession: (session: NativeSession | null) => {
+            if (session !== attachmentSession) useCommandFallback = false;
+            attachmentSession = session;
+          },
+          prepareAttachmentPrompt,
+        };
+      }
+      const stagedPrompt = await prepareAttachmentPrompt();
       if (nativeSha256(input.execution) !== admissionSha256) throw new Error("native_attachment_admission_changed");
       if (stagedPrompt) {
         const preparedExecution = parseNativeExecutionInput({
@@ -12025,6 +12060,7 @@ async function executePaperclipNativeSessionAttempt(
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
+            prepareWakeAttachmentPrompt: input.prepareAttachmentPrompt,
             getFirstTurnQueuedInput: () => claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
               logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
               return null;
@@ -12198,6 +12234,7 @@ async function executePaperclipNativeSessionAttempt(
               );
             },
             onSession: async (session) => {
+              input.bindAttachmentSession?.(session);
               if (session) runnerdBackend?.bindDiagnosticSession?.(session);
               if (session && input.runnerExecutionTarget?.kind === "remote"
                 && input.runnerExecutionTarget.transport === "sandbox") {
@@ -15076,6 +15113,29 @@ async function cleanupRemoteRunnerAfterIdentityFailure(input: {
   return result?.exitCode === 0 && result.timedOut === false;
 }
 
+const injectedRunnerBindConflicts = new Set<string>();
+
+async function injectRunnerBindConflictForTest(runner: CommandManagedRuntimeRunner, runnerInstanceId: string,
+  args: readonly string[], onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>): Promise<void> {
+  if (process.env.NODE_ENV !== "test" || process.env.PAPERCLIP_TEST_RUNNER_BIND_FAULT !== "first_launch"
+    || injectedRunnerBindConflicts.has(runnerInstanceId)) return;
+  const option = (name: string) => args.includes(name) ? args[args.indexOf(name) + 1] ?? null : null;
+  const port = option("--listen-port");
+  const address = option("--listen-address") ?? "127.0.0.1";
+  if (!port || !/^\d+$/.test(port)) return;
+  injectedRunnerBindConflicts.add(runnerInstanceId);
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c",
+      'ready=$(mktemp); rm -f "$ready"; nohup node -e "const s = require(\'net\').createServer().listen(Number(process.argv[1]), process.argv[2], () => { require(\'fs\').writeFileSync(process.argv[3], \'\'); setTimeout(() => s.close(), 15000); })" "$1" "$2" "$ready" </dev/null >/dev/null 2>&1 & i=0; while [ ! -e "$ready" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; test -e "$ready" && rm -f "$ready"',
+      "paperclip-runner-test-bind-fault", port, address],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  }).catch(() => null);
+  const armed = result?.exitCode === 0 && !result.timedOut;
+  await onLog?.("stderr", `[paperclip-runner] test bind fault ${armed ? "armed" : "failed"} on port ${port}\n`).catch(() => undefined);
+}
+
 export function createRemoteRunnerProcessLauncher(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
@@ -15214,6 +15274,7 @@ export function createRemoteRunnerProcessLauncher(input: {
       // into its own session instead; its own bounded diagnostics directory and
       // durable PRP state remain the authorities, and the controller monitors
       // the exact persisted process identity below.
+      await injectRunnerBindConflictForTest(runner, input.runnerInstanceId, remoteArgs, input.onLog);
       launchDispatched = true;
       const launchResult = await runner.execute({
         command: "sh",
@@ -15961,6 +16022,7 @@ async function createRunnerdBackendWithinSessionClaim(
         }) : undefined,
       }),
       warmTaskVersion: description.warmTaskVersion,
+      githubCredentialBrokerVersion: description.githubCredentialBrokerVersion,
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
@@ -16488,6 +16550,18 @@ async function createRunnerdBackendWithinSessionClaim(
   const restartableBootstrapState = (state: { incompleteReason: string | null; notSuspendedRunId?: string | null }) =>
     (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
     && provenOwnBootstrapRestart(state.notSuspendedRunId);
+  const inspectOwnUnpreparedBootstrap = async (): Promise<string | null> => {
+    if (!remoteCommandRunner || !remoteStateDirectory || archivedRotationRunnerStatePath
+      || !provenOwnBootstrapRestart(input.execution.binding.runId)
+      || harnessBackupCandidates(root).some(candidate => existsSync(resolve(candidate, "manifest.json")))) return null;
+    const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory })
+      .then(record, () => null);
+    if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId
+      || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
+      || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended"
+      || !provenOwnBootstrapRestart(typeof runnerState.runId === "string" ? runnerState.runId : null)) return null;
+    return input.execution.binding.runId;
+  };
   const inspectRemoteHarnessState = async (
     source: "live" | "host_preparation" = "live",
   ): Promise<{
@@ -16532,6 +16606,16 @@ async function createRunnerdBackendWithinSessionClaim(
       timeoutMs: 10_000,
     });
     if (inspected.exitCode !== 0 || inspected.timedOut) {
+      const unpreparedBootstrapRunId = source === "host_preparation" ? await inspectOwnUnpreparedBootstrap() : null;
+      if (unpreparedBootstrapRunId) {
+        return {
+          complete: false,
+          runnerState: null,
+          providerSessionIdentity: null,
+          incompleteReason: "not_suspended",
+          notSuspendedRunId: unpreparedBootstrapRunId,
+        };
+      }
       return {
         complete: false,
         runnerState: null,

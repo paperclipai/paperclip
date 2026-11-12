@@ -2173,6 +2173,7 @@ export async function commitNativeStatusDecision(input: {
     const awaitingInteractionIds = await questionsAwaitedByAgentBlock(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, agentId: originRun?.agentId, reasonCode,
       toStatus: input.decision.toStatus, unblockOwner: input.decision.unblockDescriptor?.owner,
+      blockerOwnerKind: input.decision.blockerOwnerKind,
     });
     const decisionJson = {
       statusAction: input.decision.statusAction,
