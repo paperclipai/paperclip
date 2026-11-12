@@ -328,6 +328,19 @@ missing successor. The acknowledgement keeps its contiguous-prefix rule without
 returning every historical sequence number. All events stay stored. Counting the
 index entries still grows with the stream length.
 
+A native source event commits in one transaction of two statements. The first
+statement locks the run row. The second statement finds a replayed event, or
+reserves the next sequence and inserts the event, and reads the count and
+maximum for the acknowledgement. The lock stays a separate statement: a
+statement that waits for the lock keeps the snapshot it took before the wait,
+and would miss an event that the lock holder committed. An event that wakes a
+queue looks for its replay in a statement of its own first, because a wake is
+registered before its write and a replayed event registers none. An ordinary
+event without a source identity commits in one statement. Each event commits
+before its append returns; no event waits for another. Measure the cost of one
+event with
+`TSX_DISABLE_CACHE=1 pnpm --filter @paperclipai/server exec tsx scripts/benchmark-run-event-append.ts`.
+
 Conversation recovery reads only the saved run fields used to settle a turn.
 Settlement locks and reads current conversation state without loading the task
 description or comment bodies. It still checks the durable reply or pending

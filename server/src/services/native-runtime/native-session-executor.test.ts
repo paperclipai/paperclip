@@ -21304,9 +21304,13 @@ describe("runnerd provider runtime wiring", () => {
       "interrupted_bootstrap_unprepared_other_run", "interrupted_bootstrap_unprepared_suspended", "interrupted_bootstrap_unprepared_backup",
       "interrupted_bootstrap_unprepared_unrecorded", "interrupted_bootstrap_unprepared_connected"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
+    ...["interrupted_bootstrap_unlaunched", "interrupted_bootstrap_unlaunched_marker", "interrupted_bootstrap_unlaunched_backup",
+      "interrupted_bootstrap_unlaunched_archived", "interrupted_bootstrap_unlaunched_nested_state"]
+      .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
     { outcome: "created", scenario: "interrupted_bootstrap", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unprepared", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unprepared_unrecorded", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unlaunched", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_symlink_parent", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_active_turn", homeMode: "isolated" },
@@ -21324,6 +21328,24 @@ describe("runnerd provider runtime wiring", () => {
       await symlink(symlinkTarget, join(runtimeRoot, "sessions"));
     }
     if (scenario.startsWith("interrupted_bootstrap")) await mkdir(sessionRoot, { recursive: true });
+    if (scenario.startsWith("interrupted_bootstrap_unlaunched")) {
+      // The detached controller staged launch files but never launched a Runner.
+      await mkdir(join(sessionRoot, "codex-home"), { recursive: true });
+      await writeFile(join(sessionRoot, "codex-home", "config.toml"), "fixture-staged-config");
+      if (scenario.endsWith("_marker")) {
+        await mkdir(join(sessionRoot, "runner"), { recursive: true });
+        await writeFile(join(sessionRoot, "runner", "runner-process.identity"), "launchednonce\n4242\n");
+      }
+      if (scenario.endsWith("_archived")) {
+        // An authority rotation archived the live Runner state of a real session.
+        await mkdir(join(sessionRoot, "authority-epochs", "epoch-previous"), { recursive: true });
+        await writeFile(join(sessionRoot, "authority-epochs", "epoch-previous", "runner-state.json"), "{}");
+      }
+      if (scenario.endsWith("_nested_state")) {
+        await mkdir(join(sessionRoot, "filesystem", "elsewhere"), { recursive: true });
+        await writeFile(join(sessionRoot, "filesystem", "elsewhere", "runner-state.json"), "{}");
+      }
+    }
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
       if (command.args?.[2] === "paperclip-runner-claim-unstarted-session") {
@@ -21354,6 +21376,12 @@ describe("runnerd provider runtime wiring", () => {
         try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
         catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
       }
+      if (command.args?.[2] === "paperclip-runner-unlaunched-bootstrap") {
+        try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
+        catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
+      }
+      if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unlaunched")) return {
+        exitCode: 1, timedOut: false, stdout: "", stderr: "" };
       if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unprepared")
         && command.args[1].includes("codex-provider-state.json")) return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
       if (command.args?.[2] === "paperclip-runner-recovery-identity" && scenario === "interrupted_bootstrap_unprepared_unrecorded") return {
@@ -21460,6 +21488,29 @@ describe("runnerd provider runtime wiring", () => {
       commands: [{ type: "run.prepare", status: scenario === "committed_command" ? "committed" : "pending" },
         { type: scenario === "pending_turn" ? "turn.start" : "session.open", status: "pending" }],
       }));
+    }
+    if (scenario.startsWith("interrupted_bootstrap_unlaunched")) {
+      // A closing server detached this bootstrap after staging launch files and
+      // before launching its Runner; nothing else proves the Runner's absence.
+      if (scenario.endsWith("_backup")) {
+        await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
+        await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
+      }
+      const restartAsides = async () => (await readdir(dirname(sessionRoot)))
+        .filter(name => name.startsWith(`${basename(sessionRoot)}.bootstrap-restart-`));
+      if (scenario === "interrupted_bootstrap_unlaunched") {
+        await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+        expect(await restartAsides()).toHaveLength(1);
+        expect(await readdir(sessionRoot)).toEqual([]);
+        expect(remoteExecute.mock.calls.filter(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")).toHaveLength(1);
+      } else {
+        // A launch marker, any saved Runner state or a failover backup keeps the run fail-closed.
+        await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch: resumed_unavailable");
+        expect(await restartAsides()).toEqual([]);
+        expect(remoteExecute.mock.calls.some(([command]) => command.args?.[2] === "paperclip-runner-bootstrap-restart")).toBe(false);
+      }
+      takeRemoteBootstrapRestartProof(execution.binding.runId);
+      return;
     }
     if (scenario === "missing_control_plane") {
       await rm(join(options.stateDirectory!, "control-plane", "control-plane-state.json"));
