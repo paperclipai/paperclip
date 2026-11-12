@@ -1,5 +1,5 @@
 {
-  "id": "23d3da39-2a32-4d91-b40d-24ccc86a5b40",
+  "id": "f14430e8-1ebf-414a-8c89-93c32740c4e6",
   "prevId": "77704cfc-2cbe-41de-9d2c-5225b8466646",
   "version": "7",
   "dialect": "postgresql",
@@ -18937,12 +18937,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
-        },
-        "security_override": {
-          "name": "security_override",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "enabled": {
           "name": "enabled",
@@ -57541,6 +57535,12 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
+        "ui_meta": {
+          "name": "ui_meta",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "risk_level": {
           "name": "risk_level",
           "type": "text",
@@ -59649,6 +59649,253 @@
         "tool_invocations_catalog_entry_id_tool_catalog_entries_id_fk": {
           "name": "tool_invocations_catalog_entry_id_tool_catalog_entries_id_fk",
           "tableFrom": "tool_invocations",
+          "tableTo": "tool_catalog_entries",
+          "columnsFrom": [
+            "catalog_entry_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.tool_mcp_app_views": {
+      "name": "tool_mcp_app_views",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invocation_id": {
+          "name": "invocation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "responsible_user_id": {
+          "name": "responsible_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "catalog_entry_id": {
+          "name": "catalog_entry_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "application_name": {
+          "name": "application_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tool_name": {
+          "name": "tool_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "upstream_tool_name": {
+          "name": "upstream_tool_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_uri": {
+          "name": "resource_uri",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tool_input": {
+          "name": "tool_input",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "tool_result": {
+          "name": "tool_result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "tool_mcp_app_views_issue_idx": {
+          "name": "tool_mcp_app_views_issue_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tool_mcp_app_views_connection_idx": {
+          "name": "tool_mcp_app_views_connection_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "tool_mcp_app_views_company_id_companies_id_fk": {
+          "name": "tool_mcp_app_views_company_id_companies_id_fk",
+          "tableFrom": "tool_mcp_app_views",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tool_mcp_app_views_invocation_id_tool_invocations_id_fk": {
+          "name": "tool_mcp_app_views_invocation_id_tool_invocations_id_fk",
+          "tableFrom": "tool_mcp_app_views",
+          "tableTo": "tool_invocations",
+          "columnsFrom": [
+            "invocation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "tool_mcp_app_views_issue_id_issues_id_fk": {
+          "name": "tool_mcp_app_views_issue_id_issues_id_fk",
+          "tableFrom": "tool_mcp_app_views",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tool_mcp_app_views_run_id_heartbeat_runs_id_fk": {
+          "name": "tool_mcp_app_views_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "tool_mcp_app_views",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "tool_mcp_app_views_agent_id_agents_id_fk": {
+          "name": "tool_mcp_app_views_agent_id_agents_id_fk",
+          "tableFrom": "tool_mcp_app_views",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "tool_mcp_app_views_connection_id_tool_connections_id_fk": {
+          "name": "tool_mcp_app_views_connection_id_tool_connections_id_fk",
+          "tableFrom": "tool_mcp_app_views",
+          "tableTo": "tool_connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tool_mcp_app_views_catalog_entry_id_tool_catalog_entries_id_fk": {
+          "name": "tool_mcp_app_views_catalog_entry_id_tool_catalog_entries_id_fk",
+          "tableFrom": "tool_mcp_app_views",
           "tableTo": "tool_catalog_entries",
           "columnsFrom": [
             "catalog_entry_id"
