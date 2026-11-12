@@ -765,7 +765,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               )}
               </main>
             </div>
-            <PropertiesPanel taskDetailLayout={!isMobile && useStreamlinedTaskDetailShell} />
+            <PropertiesPanel taskDetailLayout={!isMobile && (useStreamlinedTaskDetailShell || (coordinatorWorkspaceEnabled && companyPathSegments[0]?.toLowerCase() === "decisions"))} />
           </div>
         </div>
       </div>

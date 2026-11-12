@@ -2,17 +2,25 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { useQuery } from "@tanstack/react-query";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorNeedsYou } from "../components/coordinator/CoordinatorNeedsYou";
-import { CheckCircle2, Inbox } from "lucide-react";
-import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
+import { CheckCircle2, History, Inbox } from "lucide-react";
+import type { Agent, AttentionItem, AttentionPersonalView, AttentionSubject } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
+import { accessApi } from "../api/access";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
-import { authApi } from "../api/auth";
 import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToastActions } from "../context/ToastContext";
-import { useInboxDismissals } from "../hooks/useInboxBadge";
+import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useClaimAttentionItem, useDismissAttentionReceipt } from "../hooks/useAttentionViews";
+import { ATTENTION_VIEW_PARAM, parseAttentionView } from "../lib/attention-views";
+import { buildCompanyUserLabelMap } from "../lib/company-members";
+import { AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "../components/AttentionViews";
+import { AttentionSnoozedGroup, AttentionStaleGroup } from "../components/AttentionCloseMenu";
+import { DecisionHistoryPanel } from "../components/DecisionHistoryPanel";
+import { Button } from "../components/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "../components/ui/sheet";
+import { splitArchivedAttentionItems } from "../lib/attention-close";
+import { attentionObligationEvidence, foldAttentionObligations } from "../lib/attention-obligations";
 import { queryKeys } from "../lib/queryKeys";
 import {
   ATTENTION_AGING_DAYS,
@@ -50,9 +58,6 @@ import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
 import { DecisionResolver } from "../components/DecisionResolver";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
-
-/** Curtain rows never expand; module-level so memoized rows see one identity. */
-const noopToggleExpand = () => {};
 
 // Incremental rendering (PAP-13784, same pattern as IssuesList): the feed is
 // uncapped, so mounting every row up front makes the page slow to paint and
@@ -94,6 +99,9 @@ export function WhatNeedsMe() {
 
 function ClassicWhatNeedsMe() {
   const { selectedCompanyId } = useCompany();
+  // The signed-in person; it keys every list so an account switch never shows
+  // the previous person's cards (PAP-749 plan §1).
+  const { userId: currentUserId } = useCoordinatorWorkspaceEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
@@ -113,9 +121,12 @@ function ClassicWhatNeedsMe() {
   const [sortOrder, setSortOrder] = useState<AttentionSortOrder>(() => loadAttentionSortOrder());
   const [filters, setFilters] = useState<AttentionFilterState>(() => defaultAttentionFilterState);
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
-  const [snoozedOpen, setSnoozedOpen] = useState(false);
-  const [dismissedOpen, setDismissedOpen] = useState(false);
+  // The Archived view's Snoozed group starts open (PAP-749 plan §3).
+  const [snoozedOpen, setSnoozedOpen] = useState(true);
   const [agingOpen, setAgingOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // The Stale (N) group starts collapsed (PAP-749 plan §3).
+  const [staleOpen, setStaleOpen] = useState(false);
   const [decidedOpen, setDecidedOpen] = useState(false);
   const [expiredOpen, setExpiredOpen] = useState(false);
 
@@ -127,13 +138,28 @@ function ClassicWhatNeedsMe() {
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
   const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
+  // For you is the default; the other views live in the URL (PAP-749 Rule 3).
+  // Everyone opens for a board member only (PAP-768).
+  const everyone = useAttentionEveryoneView(selectedCompanyId);
+  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM), { everyone });
+  const setView = useCallback((next: AttentionPersonalView) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (next === "mine") params.delete(ATTENTION_VIEW_PARAM);
+      else params.set(ATTENTION_VIEW_PARAM, next);
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+  // Archived: the cards you archived or snoozed for yourself (PAP-749 plan §3).
+  const archivedView = view === "archived";
+  const { viewCounts } = useAttentionBadge(selectedCompanyId);
+  const claim = useClaimAttentionItem(selectedCompanyId);
+  const claimingId = claim.isPending ? claim.variables?.id ?? null : null;
+  const handleClaim = useCallback((item: AttentionItem) => claim.mutate(item), [claim.mutate]);
 
-  // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
+  // Optimistic hide. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
-  const [pendingRestore, setPendingRestore] = useState<Set<string>>(() => new Set());
 
-  const { dismiss, snooze, restore } = useInboxDismissals(selectedCompanyId);
-  const { pushToast } = useToastActions();
   const navigate = useNavigate();
 
   // Date chips resolve to server-side activity bounds. Anchored to start-of-day,
@@ -160,16 +186,18 @@ function ClassicWhatNeedsMe() {
     // `["attention", companyId]` prefix still cascades to this query.
     queryKey: [
       ...queryKeys.attention(selectedCompanyId!),
-      "with-dismissed",
+      currentUserId,
+      view,
+      "classic",
       activityBounds.activitySince ?? null,
       activityBounds.activityUntil ?? null,
     ],
     queryFn: () => attentionApi.list(selectedCompanyId!, {
-      includeDismissed: true,
       all: true,
+      view,
       ...activityBounds,
     }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !!currentUserId,
     refetchOnWindowFocus: true,
   });
   const { data: feed, isLoading } = feedQuery;
@@ -194,11 +222,27 @@ function ClassicWhatNeedsMe() {
     enabled: decisionHistoryQueryEnabled(selectedCompanyId, expiredOpen),
   });
 
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
+  const { data: userDirectory } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const userLabelMap = useMemo(() => buildCompanyUserLabelMap(userDirectory?.users), [userDirectory?.users]);
+
+  // Every Close… verb goes through the one close API (PAP-749 plan §2). The row
+  // hides at once; it comes back if the server refuses.
+  const unhide = useCallback((item: AttentionItem) => {
+    setPendingHide((prev) => {
+      const next = new Set(prev);
+      next.delete(item.id);
+      return next;
+    });
+  }, []);
+  const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onCloseFailed: unhide });
+  const receiptActions = useDismissAttentionReceipt(selectedCompanyId);
+  const closeCard = closeActions.close;
+  const transferCard = closeActions.transfer;
+  const closingId = closeActions.closingItemId ?? closeActions.transferringItemId;
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -209,19 +253,16 @@ function ClassicWhatNeedsMe() {
   // Reset optimistic state once the server sends a fresh snapshot.
   useEffect(() => {
     setPendingHide(new Set());
-    setPendingRestore(new Set());
   }, [feed?.generatedAt]);
 
-  const allItems = useMemo(() => feed?.items ?? [], [feed]);
-
-  const isServerHidden = (item: AttentionItem) => item.dismissal != null && item.dismissal.isActive;
+  // One card for each obligation (PAP-749 Rule 11): evidence folds into its
+  // lead before any split, so a lead and its evidence always move together.
+  const obligations = useMemo(() => foldAttentionObligations(feed?.items ?? []), [feed]);
+  const allItems = obligations.cards;
 
   const activeItems = useMemo(
-    () =>
-      allItems.filter(
-        (item) => (!isServerHidden(item) || pendingRestore.has(item.id)) && !pendingHide.has(item.id),
-      ),
-    [allItems, pendingHide, pendingRestore],
+    () => allItems.filter((item) => !pendingHide.has(item.id)),
+    [allItems, pendingHide],
   );
 
   // The server's clock at feed time — used for the arrival/decide-by shelves and
@@ -232,26 +273,23 @@ function ClassicWhatNeedsMe() {
     [feed?.generatedAt],
   );
 
-  // Aging shelf (§4.4): items the server flags as idle past retention leave the
-  // live desk for their own curtain, so today's desk shows only fresh decisions.
-  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
-  const deskItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
-  const snoozedItems = useMemo(
-    () =>
-      allItems.filter(
-        (item) =>
-          item.dismissal?.kind === "snooze" && item.dismissal.isActive && !pendingRestore.has(item.id),
-      ),
-    [allItems, pendingRestore],
-  );
-  const dismissedItems = useMemo(
-    () =>
-      allItems.filter(
-        (item) =>
-          item.dismissal?.kind === "dismiss" && item.dismissal.isActive && !pendingRestore.has(item.id),
-      ),
-    [allItems, pendingRestore],
-  );
+  // Stale cards (PAP-749 Rule 10) go to the collapsed Stale group at the bottom.
+  // Aging shelf (§4.4): other items the server flags as idle past retention
+  // leave the live desk for their own curtain, so the desk shows fresh decisions.
+  // The Archived view (plan §3) keeps stale cards in place with their chip and
+  // puts snoozed cards in their own group.
+  const { staleItems, agingItems, deskItems, snoozedItems } = useMemo(() => {
+    if (archivedView) {
+      const { archived, snoozed } = splitArchivedAttentionItems(activeItems);
+      return { staleItems: [], agingItems: [], deskItems: archived, snoozedItems: snoozed };
+    }
+    return {
+      staleItems: activeItems.filter((item) => item.stale),
+      agingItems: activeItems.filter((item) => !item.stale && attentionIsAging(item)),
+      deskItems: activeItems.filter((item) => !item.stale && !attentionIsAging(item)),
+      snoozedItems: [] as AttentionItem[],
+    };
+  }, [activeItems, archivedView]);
 
   const filterOptions = useMemo(() => buildAttentionFilterOptions(deskItems), [deskItems]);
 
@@ -268,6 +306,11 @@ function ClassicWhatNeedsMe() {
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
   }, [deskItems, filters, searchQuery, sortOrder, groupBy, now]);
+
+  const visibleStaleItems = useMemo(
+    () => sortAttentionItems(filterAttentionItems(staleItems, filters, searchQuery), sortOrder),
+    [staleItems, filters, searchQuery, sortOrder],
+  );
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -295,14 +338,12 @@ function ClassicWhatNeedsMe() {
       collapsedGroupKeys,
       snoozedItems,
       snoozedOpen,
-      dismissedItems,
-      dismissedOpen,
+      dismissedItems: [],
+      dismissedOpen: false,
       limit: Math.max(renderedRowLimit, selectedIndex + 1),
     });
   }, [
     collapsedGroupKeys,
-    dismissedItems,
-    dismissedOpen,
     groups,
     keyboardItems,
     renderedRowLimit,
@@ -365,10 +406,14 @@ function ClassicWhatNeedsMe() {
   // card once the feed lands, then drop the param so a later manual collapse is
   // not re-forced on the next refetch. Wins over the generic auto-expand below.
   useEffect(() => {
-    if (deepLinkConsumed || !deepLinkDecisionId || allItems.length === 0) return;
+    if (deepLinkConsumed || !deepLinkDecisionId || isLoading) return;
     const target = allItems.find(
       (item) => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId,
     );
+    if (!target) {
+      if (everyone && view !== "all") setView("all");
+      return;
+    }
     setDeepLinkConsumed(true);
     setAutoExpandDone(true);
     if (target) {
@@ -384,7 +429,7 @@ function ClassicWhatNeedsMe() {
         { replace: true },
       );
     }
-  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams]);
+  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams, isLoading, everyone, view, setView]);
 
   // Auto-expand the topmost inline-capable decision, once.
   useEffect(() => {
@@ -418,51 +463,66 @@ function ClassicWhatNeedsMe() {
   };
 
   // All row callbacks are stable (deps are setState functions, stable hook
-  // callbacks, and the stable `pushToast`) so the memoized rows only re-render
+  // callbacks, and the stable mutation `mutate`s) so the memoized rows only re-render
   // when their own item/expanded/selected props change (PAP-13784).
-  const handleUndoDismiss = useCallback(
-    (item: AttentionItem) => {
-      setPendingHide((prev) => {
-        const next = new Set(prev);
-        next.delete(item.id);
-        return next;
-      });
-      restore(item.dismissalKey);
-    },
-    [restore],
-  );
   const handleDismiss = useCallback(
     (item: AttentionItem) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      dismiss(item.dismissalKey);
+      // "Archive for me": personal, with an Undo toast from the close hook.
+      closeCard({ item, mode: "archive" });
       setExpandedId((previous) => (previous === item.id ? null : previous));
-      // ~8s undo window; restores the row in place via T1's DELETE endpoint.
-      pushToast({
-        id: `attention-dismiss-${item.id}`,
-        dedupeKey: `attention-dismiss-${item.dismissalKey}`,
-        title: "Dismissed",
-        body: item.subject.title ?? undefined,
-        tone: "info",
-        ttlMs: 8000,
-        action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
-      });
     },
-    [dismiss, handleUndoDismiss, pushToast],
+    [closeCard],
   );
   const handleSnooze = useCallback(
     (item: AttentionItem, snoozedUntil: string) => {
+      // In the Archived view a new snooze time keeps the card; it only moves
+      // to (or within) the Snoozed group after the refetch.
+      if (!archivedView) {
+        setPendingHide((prev) => new Set(prev).add(item.id));
+        setExpandedId((previous) => (previous === item.id ? null : previous));
+      }
+      closeCard({ item, mode: "snooze", until: snoozedUntil });
+    },
+    [archivedView, closeCard],
+  );
+  const handleWithdraw = useCallback(
+    (item: AttentionItem, reason: string) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      snooze(item.dismissalKey, snoozedUntil);
+      closeCard({ item, mode: "withdraw", reason });
       setExpandedId((previous) => (previous === item.id ? null : previous));
     },
-    [snooze],
+    [closeCard],
   );
+  const handleTransfer = useCallback(
+    (item: AttentionItem, userId: string) => transferCard({ item, userId }),
+    [transferCard],
+  );
+  const handleWithdrawAll = useCallback(
+    (items: AttentionItem[], reason: string) => {
+      setPendingHide((prev) => {
+        const next = new Set(prev);
+        for (const item of items) next.add(item.id);
+        return next;
+      });
+      return closeActions.withdrawAll(items, reason).then((result) => {
+        for (const item of result.failed) unhide(item);
+        return result;
+      });
+    },
+    [closeActions.withdrawAll, unhide],
+  );
+  // Restore deletes your dismissal: the card leaves Archived at once and is
+  // back in its view after the refetch. It comes back here if the server refuses.
+  const restoreCard = closeActions.restore;
   const handleRestore = useCallback(
     (item: AttentionItem) => {
-      setPendingRestore((prev) => new Set(prev).add(item.id));
-      restore(item.dismissalKey);
+      setPendingHide((prev) => new Set(prev).add(item.id));
+      void restoreCard(item).then((restored) => {
+        if (!restored) unhide(item);
+      });
     },
-    [restore],
+    [restoreCard, unhide],
   );
   const handleToggleExpand = useCallback((item: AttentionItem) => {
     setSelectedAttentionId(item.id);
@@ -535,12 +595,33 @@ function ClassicWhatNeedsMe() {
     );
   }
 
-  const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
+  const receipts = view === "mine" ? feed?.receipts ?? [] : [];
+  const hasAnything = activeItems.length > 0 || receipts.length > 0;
 
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
+      {/* Closed cards — answered, withdrawn, expired, closed with their task,
+          approvals too — with outcome filters (PAP-749 plan §3). */}
+      <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+        <SheetContent side="right" className="w-full gap-0 overflow-y-auto sm:max-w-md" data-classic-decision-history>
+          <SheetHeader>
+            <SheetTitle>Decision history</SheetTitle>
+          </SheetHeader>
+          <div className="p-4">
+            {historyOpen && <DecisionHistoryPanel companyId={selectedCompanyId} agents={agents ?? []} userLabelMap={userLabelMap} />}
+          </div>
+        </SheetContent>
+      </Sheet>
       <div className="space-y-4">
-        <h1 className="text-xl font-bold">Decisions</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-xl font-bold">Decisions</h1>
+          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
+            <History className="h-4 w-4" />
+            Decision history
+          </Button>
+        </div>
+        <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} everyone={everyone} />
+        {view === "mine" ? <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} /> : null}
         <DecisionsToolbar
           query={searchQuery}
           onQueryChange={setSearchQuery}
@@ -554,6 +635,9 @@ function ClassicWhatNeedsMe() {
           onSortOrderChange={updateSortOrder}
         />
       </div>
+
+      <AttentionReceiptList receipts={receipts} userLabelMap={userLabelMap}
+        onDismiss={receiptActions.dismiss} dismissingId={receiptActions.dismissingId} onOpen={navigate} />
 
       {/* Queue quicklinks + date-range chips (§4.1–§4.2). The rail self-hides
           when the company has no queues; the chips filter the desk server-side. */}
@@ -570,11 +654,11 @@ function ClassicWhatNeedsMe() {
       </div>
 
       {!hasAnything ? (
-        <ZeroState />
+        <ZeroState view={view} />
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
-            <CaughtUpNote filtered={deskItems.length > 0} />
+            <CaughtUpNote filtered={deskItems.length > 0} view={view} snoozedBelow={snoozedItems.length > 0} />
           ) : (
             <>
               {groups.map((group) => {
@@ -632,11 +716,19 @@ function ClassicWhatNeedsMe() {
                                   onToggleExpand={handleToggleExpand}
                                   onDismiss={handleDismiss}
                                   onSnooze={handleSnooze}
+                                  onWithdraw={handleWithdraw}
+                                  onTransfer={handleTransfer}
+                                  onRestore={archivedView ? handleRestore : undefined}
+                                  closing={closingId === item.id}
                                   agentMap={agentMap}
                                   agents={agents}
                                   showTriage
                                   currentUserId={currentUserId}
+                                  userLabelMap={userLabelMap}
+                                  onClaim={handleClaim}
+                                  claiming={claimingId === item.id}
                                   selected={selectionFromKeyboard && selectedAttentionId === item.id}
+                                  evidence={attentionObligationEvidence(obligations, item)}
                                 />
                               </div>
                             </Fragment>
@@ -651,53 +743,68 @@ function ClassicWhatNeedsMe() {
             </>
           )}
 
-          {snoozedItems.length > 0 && (
-            <Curtain
-              label="Snoozed"
-              count={snoozedItems.length}
-              open={snoozedOpen}
-              onToggle={() => setSnoozedOpen((prev) => !prev)}
-            >
-              {renderPlan.snoozedRows.map((item) => (
-                <AttentionQueueRow
-                  key={item.id}
-                  item={item}
-                  companyId={selectedCompanyId}
-                  variant="hidden"
-                  expanded={false}
-                  onToggleExpand={noopToggleExpand}
-                  onDismiss={handleDismiss}
-                  onRestore={handleRestore}
-                  agentMap={agentMap}
-                  currentUserId={currentUserId}
-                />
-              ))}
-            </Curtain>
-          )}
+          <AttentionStaleGroup
+            items={visibleStaleItems}
+            open={staleOpen}
+            onToggle={() => setStaleOpen((prev) => !prev)}
+            onWithdrawAll={handleWithdrawAll}
+            busy={closeActions.bulkPending}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+          >
+            {visibleStaleItems.map((item) => (
+              <AttentionQueueRow
+                key={item.id}
+                item={item}
+                companyId={selectedCompanyId}
+                expanded={expandedId === item.id}
+                onToggleExpand={handleToggleExpand}
+                onDismiss={handleDismiss}
+                onSnooze={handleSnooze}
+                onWithdraw={handleWithdraw}
+                onTransfer={handleTransfer}
+                closing={closingId === item.id}
+                agentMap={agentMap}
+                agents={agents}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                onClaim={handleClaim}
+                claiming={claimingId === item.id}
+                evidence={attentionObligationEvidence(obligations, item)}
+              />
+            ))}
+          </AttentionStaleGroup>
 
-          {dismissedItems.length > 0 && (
-            <Curtain
-              label="Dismissed"
-              count={dismissedItems.length}
-              open={dismissedOpen}
-              onToggle={() => setDismissedOpen((prev) => !prev)}
-            >
-              {renderPlan.dismissedRows.map((item) => (
-                <AttentionQueueRow
-                  key={item.id}
-                  item={item}
-                  companyId={selectedCompanyId}
-                  variant="hidden"
-                  expanded={false}
-                  onToggleExpand={noopToggleExpand}
-                  onDismiss={handleDismiss}
-                  onRestore={handleRestore}
-                  agentMap={agentMap}
-                  currentUserId={currentUserId}
-                />
-              ))}
-            </Curtain>
-          )}
+          {/* Snoozed by you, in the Archived view: each card says when it
+              comes back; Restore now or change the time (PAP-749 plan §3). */}
+          <AttentionSnoozedGroup
+            count={snoozedItems.length}
+            open={snoozedOpen}
+            onToggle={() => setSnoozedOpen((prev) => !prev)}
+          >
+            {renderPlan.snoozedRows.map((item) => (
+              <AttentionQueueRow
+                key={item.id}
+                item={item}
+                companyId={selectedCompanyId}
+                expanded={expandedId === item.id}
+                onToggleExpand={handleToggleExpand}
+                onDismiss={handleDismiss}
+                onSnooze={handleSnooze}
+                onWithdraw={handleWithdraw}
+                onTransfer={handleTransfer}
+                onRestore={handleRestore}
+                closing={closingId === item.id}
+                agentMap={agentMap}
+                agents={agents}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                onClaim={handleClaim}
+                claiming={claimingId === item.id}
+                evidence={attentionObligationEvidence(obligations, item)}
+              />
+            ))}
+          </AttentionSnoozedGroup>
 
           {agingItems.length > 0 && (
             <Curtain
@@ -722,6 +829,7 @@ function ClassicWhatNeedsMe() {
                   onToggleExpand={handleToggleExpand}
                   onDismiss={handleDismiss}
                   onSnooze={handleSnooze}
+                  evidence={attentionObligationEvidence(obligations, item)}
                 />
               ))}
             </Curtain>
@@ -821,11 +929,21 @@ export function DecisionBundleHeader({
   );
 }
 
-function CaughtUpNote({ filtered }: { filtered: boolean }) {
+const CAUGHT_UP_TEXT: Record<AttentionPersonalView, string> = {
+  mine: "You're all caught up.",
+  unassigned: "No cards need an owner.",
+  company: "No company alerts right now.",
+  archived: "Nothing archived.",
+  all: "No open cards for anyone.",
+};
+
+function CaughtUpNote({ filtered, view, snoozedBelow = false }: { filtered: boolean; view: AttentionPersonalView; snoozedBelow?: boolean }) {
   return (
     <div className="rounded-xl border border-dashed border-border py-10 text-center">
       <p className="text-sm font-medium text-foreground">
-        {filtered ? "No decisions match your search or filters." : "You're all caught up."}
+        {filtered
+          ? "No decisions match your search or filters."
+          : snoozedBelow ? "No archived cards. Snoozed cards are below." : CAUGHT_UP_TEXT[view]}
       </p>
       {filtered && (
         <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
@@ -834,16 +952,24 @@ function CaughtUpNote({ filtered }: { filtered: boolean }) {
   );
 }
 
-function ZeroState() {
+const ZERO_STATE_DETAIL: Record<AttentionPersonalView, string> = {
+  mine: "Nothing needs a decision from you right now.",
+  unassigned: "Every open card has an owner.",
+  company: "No failed runs, agent errors, budget stops or join requests.",
+  archived: "Cards you archive or snooze for yourself show here. Restore one to see it again.",
+  all: "Nobody has a card waiting right now.",
+};
+
+function ZeroState({ view }: { view: AttentionPersonalView }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-20 text-center">
       <div className="mb-4 rounded-full bg-green-500/10 p-4">
         <CheckCircle2 className="h-10 w-10 text-green-500" />
       </div>
-      <p className="text-lg font-semibold text-foreground">You're all caught up</p>
+      <p className="text-lg font-semibold text-foreground">{view === "mine" ? "You're all caught up" : CAUGHT_UP_TEXT[view]}</p>
       <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
         <Inbox className="h-4 w-4" />
-        Nothing needs a decision from you right now.
+        {ZERO_STATE_DETAIL[view]}
       </p>
     </div>
   );

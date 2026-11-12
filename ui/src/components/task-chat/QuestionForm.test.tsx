@@ -22,8 +22,8 @@ describe("QuestionForm initial text", () => {
   beforeEach(() => { localStorage.clear(); submit.mockReset(); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); localStorage.clear(); });
   const input = () => container.querySelector("textarea")!;
-  async function render(set = questionSet, initialResponse?: PaperclipQuestionResponse) {
-    await act(async () => root.render(<QuestionForm id="edit" questionSet={set} initialResponse={initialResponse} draftKey="question-initial-text" onSubmit={submit} />));
+  async function render(set = questionSet, initialResponse?: PaperclipQuestionResponse, presentation: "default" | "decision" = "default") {
+    await act(async () => root.render(<QuestionForm id="edit" presentation={presentation} questionSet={set} initialResponse={initialResponse} draftKey="question-initial-text" onSubmit={submit} />));
   }
   async function edit(text: string) {
     await act(async () => {
@@ -32,6 +32,40 @@ describe("QuestionForm initial text", () => {
     });
   }
   async function remount(set = questionSet) { await act(async () => root.unmount()); root = createRoot(container); await render(set); }
+  it.each([
+    ["default", "single_select", "radio"],
+    ["decision", "single_select", "radio"],
+    ["default", "multi_select", "checkbox"],
+  ] as const)("keeps Other in the choice group with matching selection behavior (%s, %s)", async (presentation, answerMode, role) => {
+    await render({ schema: "paperclip.question_set.v1", questions: [{
+      id: "choice", prompt: "Pick an option", required: true, answerMode,
+      options: [{ id: "a", label: "Option A" }, { id: "b", label: "Option B" }],
+      customAnswer: { enabled: true },
+    }] }, undefined, presentation);
+    const choices = [...container.querySelectorAll<HTMLButtonElement>(`[role="${role}"]`)];
+    const other = choices.find(button => button.textContent === "Other")!;
+    expect(choices).toHaveLength(3);
+    expect(other.closest('[role="radiogroup"], [role="group"]')).toBe(choices[0]!.closest('[role="radiogroup"], [role="group"]'));
+    expect(input()).toBeNull();
+    await act(async () => choices[0]!.click());
+    await act(async () => other.click());
+    expect(other.getAttribute("aria-checked")).toBe("true");
+    expect(choices[0]!.getAttribute("aria-checked")).toBe(answerMode === "single_select" ? "false" : "true");
+    await edit("My alternative");
+    await act(async () => other.click());
+    if (answerMode === "single_select") {
+      expect(other.getAttribute("aria-checked")).toBe("true");
+      expect(input().value).toBe("My alternative");
+      await act(async () => choices[0]!.click());
+    }
+    expect(other.getAttribute("aria-checked")).toBe("false");
+    expect(input()).toBeNull();
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Submit answers")!.click());
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0]![0].answers.choice.selectedOptionIds).toEqual(["a"]);
+    expect(submit.mock.calls[0]![0].answers.choice.customText).toBeUndefined();
+  });
+
   it("shows exact editable text without sending until the operator submits", async () => {
     await render();
     expect(input().value).toBe("  Draft\n漢字\n");
