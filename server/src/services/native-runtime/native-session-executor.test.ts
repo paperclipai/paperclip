@@ -3044,6 +3044,35 @@ describe("remote provider pack manifest", () => {
             ? { opencodeCommand: `/opt/paperclip-runner/provider-pack/${admitted.payload.artifacts.opencodeExecutable.path}`,
               opencodeCommandSha256: admitted.payload.artifacts.opencodeExecutable.sha256 }
             : { acpxSidecarSha256: (admitted.payload.artifacts as Record<string, { sha256: string }>).acpxSidecar.sha256 }) });
+        if (opencode) {
+          // Staging failure after an upgrade: the run first launched OpenCode
+          // from its admitted artifact root. The relaunched Runner replays that
+          // launch, so it must get the same root, not the provider pack root.
+          const launchRoot = `/home/runtime-account/.paperclip-runtime/paperclip-runner/provider-artifacts/${admitted.digest.slice(7)}`;
+          const artifactReceipt = { schema: "paperclip.native-provider-artifacts.v1" as const, artifactId: randomUUID(),
+            closureDigest: "sha256:" + "9".repeat(64), providerPackDigest: admitted.digest, manifest: admitted, launchRoot, accountUid: 1000 };
+          const storageMode = vi.spyOn(harnessStorage, "durableNativeHarnessStorage").mockReturnValue({} as never);
+          const backupOwner = vi.spyOn(harnessStorage, "nativeHarnessBackupOwner").mockResolvedValue({} as never);
+          const restore = vi.spyOn(providerArtifactStorage, "restoreNativeProviderArtifacts").mockResolvedValue(undefined);
+          onTestFinished(() => { storageMode.mockRestore(); backupOwner.mockRestore(); restore.mockRestore(); });
+          const artifactExecute = vi.fn(async (request: { args: string[] }) => request.args?.[1]?.startsWith("const os=require")
+            ? { exitCode: 0, timedOut: false, stderr: "", stdout: JSON.stringify({ home: "/home/runtime-account", uid: 1000 }) }
+            : settledExecute(request));
+          await createRunnerdBackend({ ...recoveryInput,
+            runnerExecutionTarget: { ...settledTarget, runner: { execute: artifactExecute,
+              syncIn: vi.fn(async () => undefined), syncOut: vi.fn(async () => undefined) } } as never,
+            controllerPersistence: { bootId: "replacement-controller", runnerArtifact: artifact },
+            providerPackAdmissionSource: { runId: remoteExecution.binding.runId, receipt: null, state: null, artifacts: artifactReceipt } });
+          state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+          expect(restore).toHaveBeenCalledWith(expect.objectContaining({ receipt: artifactReceipt }));
+          expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ providerPackAuthorityDigest: admitted.digest,
+            providerNodeCommand: `${launchRoot}/${admitted.payload.artifacts.nodeCommand.path}`,
+            opencodeProxyPath: `${launchRoot}/${admitted.payload.artifacts.opencodeProxy.path}`,
+            opencodeCommand: `${launchRoot}/${admitted.payload.artifacts.opencodeExecutable.path}` });
+          storageMode.mockRestore();
+          backupOwner.mockRestore();
+          restore.mockRestore();
+        }
         const recoveredBackend = await createRunnerdBackend(recoveryInput);
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         const recovered = state.createTransport.mock.calls.at(-1)![0];

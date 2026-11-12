@@ -16576,9 +16576,17 @@ async function createRunnerdBackendWithinSessionClaim(
 
   const prepareRemoteRunner = async (mode: "dial_wss" | "listen_ws") => {
     await prepareRemoteRunnerAssets(mode);
+    // A settled Runner relaunched from its durable state replays the run's
+    // first launch, whose OpenCode command lives under the admitted artifact
+    // root. Rebuild that same root; the pack root would fail the Runner's
+    // qualified-profile check.
+    const relaunchAdmittedArtifacts = relaunchesSettledRemoteRunner && providerArtifacts !== undefined;
     if (!artifactStorage || openCodeLaunchArtifacts || !remoteCommandRunner || !remoteTarget
-      || !expectedProviderPackManifest || liveProviderRecovery || legacyProviderContinuity) return;
+      || !expectedProviderPackManifest || (liveProviderRecovery && !relaunchAdmittedArtifacts) || legacyProviderContinuity) return;
     if (!remoteCommandRunner.syncIn || !remoteCommandRunner.syncOut) throw new Error("native_provider_artifacts_bulk_transport_required");
+    if (relaunchAdmittedArtifacts && liveProviderRecovery) await restoreNativeProviderArtifacts({ db: input.db, storage: artifactStorage,
+      companyId: input.execution.binding.companyId, receipt: providerArtifacts!, targetRoot: restoredArtifactDirectory,
+      signal: providerArtifactsSignal() });
     const bootstrap = activeRemoteProviderPackRoot
       ? { root: activeRemoteProviderPackRoot, manifest: expectedProviderPackManifest }
       : remoteNativeArtifacts?.providerPackInventory().find(pack => pack.immutable);
