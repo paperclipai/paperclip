@@ -28,6 +28,7 @@ import {
   reconcileRetainedNativeSessionCleanups,
 } from "../services/native-runtime/native-finalization-reconciler.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
+import { endSupersededNativeFinalizationRuns } from "../services/native-runtime/native-run-finalizer.js";
 import { assertRetainedNativeSourceArchiveSettled, reconcileRetainedNativeSessionCleanup } from "../services/native-runtime/native-session-executor.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_FINALIZATION_TEST_DATABASE_URL");
@@ -350,7 +351,7 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
       .where(eq(nativeRunFinalizations.runId, staleRunId));
     expect(coordinatorBefore).toMatchObject({ phase: "terminal_failure", failureCode: "native_finalization_superseded" });
 
-    await reconcileNativeFinalizations(db, [staleRunId]);
+    await expect(endSupersededNativeFinalizationRuns(db, [staleRunId])).resolves.toEqual([staleRunId]);
 
     const [ended] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, staleRunId));
     expect(ended).toMatchObject({ status: "failed", errorCode: "native_finalization_superseded", finishedAt: expect.any(Date) });
@@ -365,7 +366,7 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
       .resolves.toEqual([expect.objectContaining({ phase: "terminal_failure", failureCode: "native_finalization_superseded",
         resultId: coordinatorBefore.resultId })]);
     // A second pass finds nothing left to end.
-    await reconcileNativeFinalizations(db, [staleRunId]);
+    await expect(endSupersededNativeFinalizationRuns(db, [staleRunId])).resolves.toEqual([]);
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, staleRunId))).resolves.toEqual([
       expect.objectContaining({ status: "failed" }),
     ]);

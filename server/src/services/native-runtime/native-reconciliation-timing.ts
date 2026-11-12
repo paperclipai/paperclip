@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks";
 import { ROOT_CONTEXT, SpanStatusCode, trace } from "@opentelemetry/api";
 
 export type NativeReconciliationPhase = "legacy_workspace_exports" | "obsolete_policy_reviews"
-  | "automatic_completion_reviews" | "superseded_finalizations" | "candidate_scan" | "candidates";
+  | "automatic_completion_reviews" | "candidate_scan" | "candidates";
 
 // A pass at least this slow records its phases. Startup recovery runs the pass
 // twice and readiness waits for both; the periodic pass runs on every
