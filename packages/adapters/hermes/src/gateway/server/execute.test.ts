@@ -1000,9 +1000,13 @@ describe("gateway connection failure reporting", () => {
     ctx.onDispatch = vi.fn();
     const result = await execute(ctx);
     expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
-      errorCode: `hermes_gateway_${code}`, errorFamily, retryNotBefore: "7",
+      errorCode: `hermes_gateway_${code}`, errorFamily, retryNotBefore: expect.any(String),
       errorMeta: { status, body: { detail: "remote failure" } },
       resultJson: { connectionFailure: marker("create_run", reason) } });
+    // normalizeRetryNotBeforeForTest converts the delta-seconds Retry-After
+    // ("7") into an absolute ISO timestamp for the platform scheduler.
+    expect(result.retryNotBefore).not.toBe("7");
+    expect(Number.isFinite(Date.parse(String(result.retryNotBefore)))).toBe(true);
     expect(result.errorMessage).toContain(`Hermes gateway HTTP ${status}`);
     expect(result.executionRecovery).toBeUndefined();
     expect(ctx.onDispatch).toHaveBeenCalledOnce();
