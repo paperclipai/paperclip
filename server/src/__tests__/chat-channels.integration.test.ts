@@ -65940,7 +65940,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         executionWorkspaceId: workspaceId, phase: "workspace_recovery", status: "succeeded", finishedAt: new Date(),
         metadata: { recoveryActionId, leaseId, providerLeaseId, snapshotId, generation: 1, sha256: "c".repeat(64),
           storage: "remote_workspace", epoch: 2 } });
-      let sourceRunId = f.runId;
+      let sourceRunId: string = f.runId;
       if (initiator === "person_after_held_admission") {
         const [failed] = await readHeartbeatRunsById(f.runId);
         const [held] = await db.insert(heartbeatRuns).values({ companyId, agentId: f.fixture.assignedAgentId,
