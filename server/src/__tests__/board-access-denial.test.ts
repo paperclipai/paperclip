@@ -35,6 +35,7 @@ describe("board-only denial", () => {
     ["post", `/api/companies/${COMPANY_ID}/secrets`, "[Open company secrets](/<prefix>/company/settings/secrets)"],
     ["post", `/api/secrets/${AGENT_ID}/rotate`, "[Open company secrets](/<prefix>/company/settings/secrets)"],
     ["post", `/api/companies/${COMPANY_ID}/budget-incidents/i-1/resolve?x=1`, "[Open budgets](/<prefix>/activity/budgets)"],
+    ["post", `/api/companies/${COMPANY_ID}/costs/retry-accounting`, "[Open costs](/<prefix>/activity/costs)"],
     ["put", `/api/companies/${COMPANY_ID}/prompt-injection-prevention`, "[Open connection settings](/<prefix>/company/settings/connections)"],
     ["patch", `/api/agents/${AGENT_ID}/permissions`, `[Open the agent's permissions](/<prefix>/agents/${AGENT_ID}/permissions)`],
     ["post", `/api/agents/${AGENT_ID}/keys`, `[Open the agent's API keys](/<prefix>/agents/${AGENT_ID}/api-keys)`],
@@ -48,6 +49,13 @@ describe("board-only denial", () => {
     ["get", "/api/plugins/ui-contributions", "[Open plugin settings](/<prefix>/company/settings/instance/plugins)"],
     ["post", `/api/projects/${AGENT_ID}/access-members`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
     ["delete", `/api/projects/${AGENT_ID}/access-members/m-1`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
+    ["get", `/api/companies/${COMPANY_ID}/environments`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
+    ["get", `/api/companies/${COMPANY_ID}/environments/capabilities`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
+    ["post", `/api/environments/${AGENT_ID}/probe`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
+    ["get", `/api/environment-leases/${AGENT_ID}`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
+    ["get", `/api/environment-custom-image-setup-sessions/${AGENT_ID}`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
+    ["get", "/api/instance/settings/experimental", "[Open Experimental settings](/<prefix>/company/settings/instance/experimental)"],
+    ["patch", "/api/instance/settings/experimental", "[Open Experimental settings](/<prefix>/company/settings/instance/experimental)"],
   ] as const)("tells an agent %s %s is final and names the board page", async (method, path, link) => {
     const res = await request(createApp(agentActor))[method](path).expect(403);
     expect(res.body.error).toBe("Board access required");
@@ -122,6 +130,41 @@ describe("board-only denial", () => {
     }
   });
 
+  it("tells an agent denied an environment route that testing and changing computers are board-only too", async () => {
+    const res = await request(createApp(agentActor, assertBoardOrgAccess)).get(`/api/companies/${COMPANY_ID}/environments/capabilities`).expect(403);
+    expect(res.body.remediation).toContain("Execution environments are board-only throughout");
+    expect(res.body.remediation).toContain("testing (probing) them");
+    const other = await request(createApp(agentActor)).get(`/api/companies/${COMPANY_ID}/project-environments`).expect(403);
+    expect(other.body.remediation).not.toContain("Execution environments");
+    expect(other.body.remediation).not.toContain("/instance/environments");
+  });
+
+  it("does not link environment settings while the operator hides them", async () => {
+    const previous = process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.environments";
+    try {
+      const res = await request(createApp(agentActor)).get(`/api/companies/${COMPANY_ID}/environments`).expect(403);
+      expect(res.body.remediation).toContain("this denial is final");
+      expect(res.body.remediation).not.toContain("/instance/environments");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+      else process.env.PAPERCLIP_HIDDEN_SETTINGS = previous;
+    }
+  });
+
+  it("does not link Experimental settings while the operator hides that page", async () => {
+    const previous = process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental";
+    try {
+      const res = await request(createApp(agentActor)).patch("/api/instance/settings/experimental").expect(403);
+      expect(res.body.remediation).toContain("this denial is final");
+      expect(res.body.remediation).not.toContain("/instance/experimental");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+      else process.env.PAPERCLIP_HIDDEN_SETTINGS = previous;
+    }
+  });
+
   it("applies through the org-access guard", async () => {
     const res = await request(createApp(agentActor, assertBoardOrgAccess)).delete(`/api/companies/${COMPANY_ID}`).expect(403);
     expect(res.body.code).toBe(BOARD_ACCESS_REQUIRED_CODE);
@@ -140,6 +183,15 @@ describe("board-only denial", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("so stop searching for one");
     expect(AGENT_CHAT_DIRECTIVE).toContain("tell the person which control in the Paperclip web app to use, link its page when you know the route");
     expect(AGENT_CHAT_DIRECTIVE).not.toContain("use permitted discovery to identify the supported operator path");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Reply now instead of making more calls");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("Complete other permitted work");
+  });
+
+  it("chat guidance sends a task whose automatic recovery stopped to the person's Retry", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("its supported next step is the person's Retry on that task");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Retry rechecks the task's current gates (budget, pause, holds) and keeps the failed attempt's evidence");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not reassign it, change its status, comment on it to resume it, or create a replacement task to re-run the work");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Take the work over only when the person explicitly asks you to take it over or reassign it.");
   });
 
   it("says in the API catalog who sets up a Claude Managed Agent profile", () => {

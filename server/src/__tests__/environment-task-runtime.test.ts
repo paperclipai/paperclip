@@ -61,6 +61,28 @@ describe("stopped Runner checkpoint settlement", () => {
 });
 
 describe("plugin-provided Runner execution", () => {
+  it("records a confirmed admission refusal so lease cleanup never looks for a Runner", async () => {
+    const value = row();
+    const fixture = database(value);
+    const refusal = { kind: "admission_rejected", taskId: "attempt-1", reason: "session_state_unavailable" };
+    const workers = worker(refusal);
+    await expect(executeEnvironmentTask(fixture.db, workers as never, {
+      companyId: "company", leaseId, operation: submit,
+    })).resolves.toEqual(refusal);
+    const update = new PgDialect().sqlToQuery(fixture.sets.at(-1)!.metadata as never);
+    expect(update.sql).toContain("- 'runnerTaskIdentity'");
+    const durable = JSON.parse(String(update.params[0]));
+    expect(durable).toEqual({
+      runnerTaskAdmissionRejection: { taskId: "attempt-1", reason: "session_state_unavailable" },
+      runnerTaskDispatched: false, runnerTaskExecutionStopped: true, runnerTaskSessionRetained: false,
+    });
+    Object.assign(value.lease.metadata, durable);
+    await expect(settleDispatchedEnvironmentTask(database(value).db, workers as never, {
+      companyId: "company", id: leaseId,
+    })).resolves.toBe("stopped");
+    expect(workers.call.mock.calls).toHaveLength(1);
+  });
+
   it.each([false, true])("retires an undispatched warm task only with required preparation proof (%s)", async preparationStopped => {
     const value = row();
     Object.assign(value.lease.metadata, { runnerTaskDispatched: false,
@@ -88,7 +110,7 @@ describe("plugin-provided Runner execution", () => {
     if (preparationStopped) { expect(result).toEqual({ value: "completed", error: null }); expect(operations).toEqual(["stop", "status", "complete"]); }
     else { expect(result.error?.message).toContain("termination is unconfirmed"); expect(fixture.sets).toContainEqual(expect.objectContaining({ status: "pending_cleanup", cleanupStatus: "failed" })); }
   });
-  it("still stops a startup task first when resume already observed the stop", async () => {
+  it.each([true, false])("checks startup preparation proof after resume observed the stop (%s)", async preparationStopped => {
     const value = row();
     Object.assign(value.lease.metadata, { runnerTaskDispatched: false,
       runnerTaskStartupCleanup: { contextId: "startup", requiresPreparationStop: true } });
@@ -96,13 +118,15 @@ describe("plugin-provided Runner execution", () => {
     fixture.db.select = ((...args: unknown[]) => (database(value).db.select as (...values: unknown[]) => unknown)(...args)) as Db["select"];
     Object.assign(workers, { drainStartup: vi.fn(async () => undefined) });
     const operations: string[] = [];
+    let stopped = false;
     workers.call.mockImplementation(async (...args: any[]) => {
       const operation = args[2].operation.kind; operations.push(operation);
-      return operation === "status" ? { kind: "status", taskId: "attempt-1", phase: "cancelled", executionStopped: true, preparationStopped: true }
+      if (operation === "stop") stopped = true;
+      return operation === "status" ? { kind: "status", taskId: "attempt-1", phase: "cancelled", executionStopped: true, preparationStopped: preparationStopped || stopped }
         : { kind: "accepted", taskId: "attempt-1" };
     });
     await expect(settleDispatchedEnvironmentTask(fixture.db, workers as never, { companyId: "company", id: leaseId }, { executionStopObserved: true })).resolves.toBe("completed");
-    expect(operations).toEqual(["stop", "status", "complete"]);
+    expect(operations).toEqual(preparationStopped ? ["status", "complete"] : ["status", "stop", "status", "complete"]);
   });
   it("negotiates the transient context without reading transport for an older plugin", async () => {
     const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
@@ -613,5 +637,10 @@ describe("plugin-provided Runner execution", () => {
     expect(environmentTaskOperationSchema.safeParse({ ...submit, runner: { ...submit.runner, unknownField: true } }).success).toBe(false);
     expect(() => parseEnvironmentTaskResult({ kind: "status" }, "attempt-1", { kind: "accepted", taskId: "attempt-1" })).toThrow();
     expect(parseEnvironmentTaskResult(submit, "attempt-1", { kind: "accepted", taskId: "attempt-1" }).kind).toBe("accepted");
+    const rejected = { kind: "admission_rejected", taskId: "attempt-1", reason: "account_binding_mismatch" };
+    expect(parseEnvironmentTaskResult(submit, "attempt-1", rejected)).toEqual(rejected);
+    expect(() => parseEnvironmentTaskResult(submit, "attempt-2", rejected)).toThrow();
+    expect(() => parseEnvironmentTaskResult(submit, "attempt-1", { ...rejected, reason: "unknown" })).toThrow();
+    expect(() => parseEnvironmentTaskResult({ kind: "stop" }, "attempt-1", rejected)).toThrow();
   });
 });

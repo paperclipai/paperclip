@@ -107,6 +107,15 @@ export interface ProjectDiscoveryPage {
   nextCursor: string | null;
 }
 
+export interface ProjectEnvironmentOptions {
+  groups: Array<{
+    storageProviderPluginId: string | null;
+    environments: Array<{ id: string; name: string }>;
+  }>;
+  defaultEnvironmentId: string | null;
+  error: string | null;
+}
+
 export interface ProjectWorkspaceProviderConfiguration {
   source: "project" | "core";
   pluginId: string | null;
@@ -134,6 +143,13 @@ export interface Project {
   privacyOwnerUserId?: string | null;
   status: ProjectStatus;
   leadAgentId: string | null;
+  /**
+   * PAP-749 task 1d: the project's decision owner. A Needs You card on this
+   * project's work that names no person goes to this user's "For you" list,
+   * before the company's default decision owner. Placement only — the resolver
+   * policy still gates who may act. Omitted by older servers/fixtures.
+   */
+  decisionOwnerUserId?: string | null;
   targetDate: string | null;
   color: string | null;
   icon: string | null;

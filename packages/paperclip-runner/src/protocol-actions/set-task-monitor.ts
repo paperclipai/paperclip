@@ -1,4 +1,5 @@
 /** Production monitor tool; timers and wake delivery belong to Paperclip. */
+const notesMaxLength = 500;
 const description = 'Schedule, replace, or clear a one-shot task monitor. Supply {"idempotencyKey":"check-ci","monitor":{"nextCheckAt":"<future UTC timestamp>","notes":"Check pending CI."}}. Put nextCheckAt, notes, and all optional scheduling fields inside monitor; use monitor: null to clear. Omit taskId for your current task; other tasks must also be assigned to you and in progress or review. A schema rejection changes nothing: correct the arguments and retry. A successful receipt reports the persisted monitor; a replay reports its current state without re-arming it. After scheduling your current task, end the turn with paperclip_finish: yielded and continuation.kind monitor. Paperclip will wake you with issue_monitor_due; do not sleep, poll, mark done, or use call_api for this wait.';
 
 export const setTaskMonitorInputSchema = {
@@ -14,7 +15,7 @@ export const setTaskMonitorInputSchema = {
       required: ["nextCheckAt", "notes"],
       properties: {
         nextCheckAt: { type: "string", description: "Future UTC timestamp for the next check. This is one shot, not a recurring interval." },
-        notes: { type: "string", minLength: 1, maxLength: 500, description: "What to check on the next run; do not include secrets." },
+        notes: { type: "string", minLength: 1, maxLength: notesMaxLength, description: `What to check on the next run. Maximum ${notesMaxLength} characters; do not include secrets.` },
         kind: { type: ["string", "null"], enum: ["external_service", null] },
         serviceName: { type: ["string", "null"], minLength: 1, maxLength: 120 },
         externalRef: { type: ["string", "null"], minLength: 1, maxLength: 500 },

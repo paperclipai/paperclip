@@ -17,6 +17,7 @@ import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.j
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
 
@@ -139,16 +140,15 @@ export function runtimeControlOperationOwnerStamp(metadata: unknown): LocalOwner
  */
 const liveRuntimeControlOperationIds = new Set<string>();
 
-/**
- * Workspace-finalize operations this process is driving. A finalize row stamped
- * by this process (`finalizeOwner`) but absent here was left by a request that
- * died without unwinding. The ownership settle never touches an id in this set.
- */
-const liveWorkspaceFinalizeOperationIds = new Set<string>();
+const liveOwnerStampedOperationIds = new Set<string>();
 
-export function isWorkspaceFinalizeOperationLive(operationId: string): boolean {
-  return liveWorkspaceFinalizeOperationIds.has(operationId);
+export function isOwnerStampedWorkspaceOperationLive(operationId: string): boolean {
+  return liveOwnerStampedOperationIds.has(operationId);
 }
+
+export const LOCAL_WORKSPACE_COMMAND_PHASES: readonly WorkspaceOperationPhase[] = ["worktree_prepare",
+  "workspace_config_freshness", "workspace_provision", "workspace_seed", "workspace_runtime_provision",
+  "workspace_repair", "workspace_teardown", "worktree_cleanup"];
 
 type NativeFinalizationActivityScope = {
   operationId: string;
@@ -185,7 +185,7 @@ function updatedAtUnchanged(updatedAt: Date) {
 
 export function resetWorkspaceRuntimeControlStateForTests() {
   liveRuntimeControlOperationIds.clear();
-  liveWorkspaceFinalizeOperationIds.clear();
+  liveOwnerStampedOperationIds.clear();
 }
 
 export function workspaceRuntimeControlOwnerIdForTests() {
@@ -584,7 +584,7 @@ export function workspaceOperationService(db: Db) {
         async recordOperation(recordInput) {
           async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
             if (recordInput.phase !== "workspace_finalize" || (!input.heartbeatRunId && !executionWorkspaceId && !input.issueId)) return write(db);
-            return db.transaction(async tx => {
+            return retryTransientLockContention(() => db.transaction(async tx => {
               if (executionWorkspaceId) await notifyTerminalWorkspaceWork(tx, `workspace:${executionWorkspaceId}`);
               else if (input.issueId) await notifyTerminalWorkspaceWork(tx, `issue:${input.issueId}`);
               if (!input.heartbeatRunId) {
@@ -600,7 +600,7 @@ export function workspaceOperationService(db: Db) {
               await notifyNativeStatusReassessment(tx, { companyId: input.companyId,
                 runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
               return write(tx as unknown as Db);
-            });
+            }));
           }
           const currentUserRedactionOptions = {
             enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -638,9 +638,13 @@ export function workspaceOperationService(db: Db) {
           // Finalize attempts record the process that runs them (no I/O), so
           // the shared ownership path can settle one whose owner died mid-copyback.
           const finalizeAttempt = recordInput.phase === "workspace_finalize";
+          const localCommand = !runtimeControlAction && LOCAL_WORKSPACE_COMMAND_PHASES.includes(recordInput.phase);
           if (finalizeAttempt) {
             currentMetadata = { ...(currentMetadata ?? {}), finalizeOwner: currentControllerProcessStamp() };
-            liveWorkspaceFinalizeOperationIds.add(id);
+            liveOwnerStampedOperationIds.add(id);
+          } else if (localCommand) {
+            currentMetadata = { ...(currentMetadata ?? {}), commandOwner: currentControllerProcessStamp() };
+            liveOwnerStampedOperationIds.add(id);
           }
 
           // Claim in-process before the row exists, so there is no ordering in which a recovery
@@ -670,7 +674,7 @@ export function workspaceOperationService(db: Db) {
               updatedAt: startedAt,
             });
             const publish = async () => {
-              if (runtimeControlAction) {
+              if (runtimeControlAction || localCommand) {
                 // Wake the ownership worker (on any server) before the row it
                 // announces, so a quiet worker starts watching this owner.
                 await db.transaction(async tx => {
@@ -688,7 +692,7 @@ export function workspaceOperationService(db: Db) {
             if (!published) throw new Error("Workspace operation admission did not publish its running row");
           } catch (insertError) {
             liveRuntimeControlOperationIds.delete(id);
-            liveWorkspaceFinalizeOperationIds.delete(id);
+            liveOwnerStampedOperationIds.delete(id);
             throw insertError;
           }
           createdIds.push(id);
@@ -842,7 +846,7 @@ export function workspaceOperationService(db: Db) {
             if (heartbeatTimer) clearInterval(heartbeatTimer);
             if (timeoutTimer) clearTimeout(timeoutTimer);
             liveRuntimeControlOperationIds.delete(id);
-            liveWorkspaceFinalizeOperationIds.delete(id);
+            liveOwnerStampedOperationIds.delete(id);
           }
         },
       };

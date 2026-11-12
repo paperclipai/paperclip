@@ -771,6 +771,15 @@ describeEmbeddedPostgres("attention service", () => {
       agentName: "Broken Agent",
       failureReasonExcerpt: "adapter config missing",
     });
+    // PAP-749 Rule 7: cards offer only actions they can complete; hiding a
+    // card is the Close… menu, and withdraw only where a request exists.
+    const verbIds = (kind: string) => feed.items.find((item) => item.sourceKind === kind)?.decisionVerbs.map((verb) => verb.id);
+    expect(verbIds("failed_run")).toEqual(["retry", "inspect"]);
+    expect(verbIds("recovery_action")).toEqual(["open_recovery"]);
+    expect(verbIds("agent_error_alert")).toEqual(["inspect"]);
+    expect(verbIds("budget_alert")).toEqual(["raise_budget_and_resume", "keep_paused"]);
+    expect(feed.items.find((item) => item.sourceKind === "budget_alert")?.closeModes).toEqual(["archive", "snooze"]);
+    expect(feed.items.find((item) => item.sourceKind === "issue_thread_interaction")?.closeModes).toEqual(["withdraw", "archive", "snooze"]);
   });
 
   it("returns addressed interactions to board attention after addressee pause or termination", async () => {
@@ -1038,6 +1047,86 @@ describeEmbeddedPostgres("attention service", () => {
     const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
     expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId].sort());
     expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
+  });
+
+  it("orders exhausted runs and reads receipts through the partial index", async () => {
+    const { companyId, workerId } = await seedCompany("IDX");
+    const [olderId, tiedLowId, tiedHighId] = Array.from({ length: 3 }, () => randomUUID());
+    const older = new Date("2026-07-09T11:00:00.000Z");
+    const tied = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values([
+      { id: olderId, companyId, agentId: workerId, status: "failed", createdAt: older, updatedAt: older },
+      { id: tiedLowId, companyId, agentId: workerId, status: "timed_out", createdAt: tied, updatedAt: tied },
+      { id: tiedHighId, companyId, agentId: workerId, status: "failed", createdAt: tied, updatedAt: tied },
+    ]);
+    // Insert order sets event ids: a tie on created_at falls back to the newest receipt.
+    const receipts = [
+      [tiedHighId, "Bounded retry exhausted first"],
+      [olderId, "Bounded retry exhausted older"],
+      [tiedLowId, "Bounded retry exhausted tied low"],
+      [tiedHighId, "Bounded retry exhausted tied high"],
+    ] as const;
+    for (const [index, [runId, message]] of receipts.entries()) {
+      await db.insert(heartbeatRunEvents).values({
+        companyId, agentId: workerId, runId, seq: index + 1, eventType: "lifecycle", message,
+      });
+    }
+
+    const rows = await listAttentionExhaustedRuns(db, companyId);
+    expect(rows.map((row) => [row.id, row.exhaustionMessage])).toEqual([
+      [tiedHighId, "Bounded retry exhausted tied high"],
+      [tiedLowId, "Bounded retry exhausted tied low"],
+      [olderId, "Bounded retry exhausted older"],
+    ]);
+
+    // The partial index predicate must stay implied by the query predicate;
+    // otherwise the scan silently falls back to reading all company events.
+    // Check a forced generic plan too: prepared statements reuse it, and only
+    // literal predicates (not bound parameters) let it use a partial index.
+    const query = listAttentionExhaustedRuns(db, companyId).toSQL();
+    // Shared disposable databases retain statistics from earlier fixtures after
+    // TRUNCATE. Plan this fixture's actual rows, including the generic plan.
+    await db.$client.unsafe("ANALYZE heartbeat_run_events");
+    await db.$client.unsafe("ANALYZE heartbeat_runs");
+    await db.$client.unsafe("ANALYZE agents");
+    const literal = (value: unknown) => `'${String(value).replaceAll("'", "''")}'`;
+    const plans = await db.$client.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL enable_seqscan = off");
+      const fresh = await tx.unsafe(`EXPLAIN (FORMAT JSON) ${query.sql}`, query.params as never[]);
+      await tx.unsafe("SET LOCAL plan_cache_mode = force_generic_plan");
+      await tx.unsafe(`PREPARE attention_exhausted_runs AS ${query.sql}`);
+      const generic = await tx.unsafe(
+        `EXPLAIN (FORMAT JSON) EXECUTE attention_exhausted_runs(${query.params.map(literal).join(", ")})`,
+      );
+      await tx.unsafe("DEALLOCATE attention_exhausted_runs");
+      return { fresh, generic };
+    });
+    expect(JSON.stringify(plans.fresh)).toContain("heartbeat_run_events_retry_exhausted_idx");
+    expect(JSON.stringify(plans.generic)).toContain("heartbeat_run_events_retry_exhausted_idx");
+  });
+
+  it("keeps SQL statement text saved by older failed runs out of the attention inbox", async () => {
+    const { companyId, workerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Failed with a query", status: "in_progress" });
+    const failedRunId = randomUUID();
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId, companyId, agentId: workerId, invocationSource: "automation", status: "failed",
+      errorCode: "adapter_failed",
+      error: 'Usage write failed: Failed query: update "heartbeat_runs" set "usage_json" = $1\nparams: {"apiKey":"sk-secret"}',
+      contextSnapshot: { issueId }, createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId, runId: failedRunId, agentId: workerId, seq: 1, eventType: "lifecycle",
+      message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+      createdAt: new Date("2026-07-09T12:00:01.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const item = feed.items.find((entry) => entry.sourceKind === "failed_run" && entry.subject.id === failedRunId);
+    expect(item?.detail).toMatchObject({ failureReasonExcerpt: "Usage write failed: Database query failed" });
+    expect(item?.subject.metadata?.error).toBe("Usage write failed: Database query failed");
+    expect(JSON.stringify(item)).not.toMatch(/heartbeat_runs|sk-secret|params/);
   });
 
   it("suppresses failed-run attention after a newer run for the same issue", async () => {
@@ -2015,6 +2104,7 @@ describeEmbeddedPostgres("attention service", () => {
       type: "request_board_approval",
       status: "pending",
       payload: { title: "Approve rollout" },
+      requestedByUserId: "dotta-user",
     });
     await db.insert(issueApprovals).values([
       { companyId, issueId: secondIssueId, approvalId },
@@ -2026,6 +2116,10 @@ describeEmbeddedPostgres("attention service", () => {
 
     expect(approvalItems).toHaveLength(1);
     expect(approvalItems[0]?.subject.metadata?.issueId).toBe(firstIssueId);
+    // A person who asked is the requester; their name comes from the directory (PAP-775, UI2).
+    expect(approvalItems[0]?.requester).toEqual({ kind: "user", id: "dotta-user", name: null });
+    // A board approval is approved on the card like any other approval (PAP-775).
+    expect(approvalItems[0]?.inlineResolvable).toBe(true);
   });
 
   it("hides snoozed attention rows until snoozedUntil passes, then returns them unconditionally", async () => {
@@ -2170,19 +2264,13 @@ describeEmbeddedPostgres("attention service", () => {
       sort: "decide",
       limit: 20,
     });
-    // Desk badge = distinct items surfaced today OR with a due decide-by
-    // Everything here was seeded ~now, so every visible row
-    // counts; the whole page fits under limit:20 so items == rankedItems.
-    const startOfUtcDay = Date.UTC(
-      new Date(now).getUTCFullYear(),
-      new Date(now).getUTCMonth(),
-      new Date(now).getUTCDate(),
-    );
+    // The badge is this person's "For you" count (PAP-749 Rule 5), with no day
+    // boundary; the whole page fits under limit:20 so items == rankedItems.
     const expectedBadge = feed.items.filter(
-      (item) => new Date(item.createdAt).getTime() >= startOfUtcDay || item.decideBy === "today",
+      (item) => item.audience.kind === "user" && item.audience.userId === "board-user",
     ).length;
-    expect(expectedBadge).toBeGreaterThanOrEqual(2);
     expect(feed.deskBadgeCount).toBe(expectedBadge);
+    expect(feed.viewCounts.mine).toBe(expectedBadge);
     expect(feed.items.some((item) => item.subject.id === snoozedId)).toBe(false);
     expect(feed.items.slice(0, 3).map((item) => item.subject.id)).toEqual([
       expiringSoonId,
@@ -2199,6 +2287,8 @@ describeEmbeddedPostgres("attention service", () => {
       expiresAt: decisionValues[0]!.expiresAt.toISOString(),
       ruleKey: "release.soon",
       originAgentName: "Worker",
+      // Who is asking (PAP-775, UI2).
+      requester: { kind: "agent", id: workerId, name: "Worker" },
       queues: [{ key: "urgent-releases", title: "Urgent releases" }],
       decideBy: "today",
       decideByAttribution: {
@@ -2215,7 +2305,8 @@ describeEmbeddedPostgres("attention service", () => {
       sort: "decide",
       limit: 1,
     });
-    expect(firstPage).toMatchObject({ totalCount: 2, deskBadgeCount: 2 });
+    // A queue filter narrows the page, never the shared badge.
+    expect(firstPage).toMatchObject({ totalCount: 2, deskBadgeCount: feed.deskBadgeCount, viewCounts: feed.viewCounts });
     expect(firstPage.items.map((item) => item.subject.id)).toEqual([expiringSoonId]);
     expect(firstPage.nextCursor).toBeTruthy();
     const secondPage = await attentionService(db).list(companyId, {
@@ -2314,6 +2405,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(summary).toEqual({
       companyId, generatedAt: expect.any(String), totalCount: internalSnapshot.totalCount,
       deskBadgeCount: internalSnapshot.deskBadgeCount, countsBySourceKind: internalSnapshot.countsBySourceKind,
+      viewCounts: internalSnapshot.viewCounts,
     });
     expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(internalSnapshot).length / 10);
 

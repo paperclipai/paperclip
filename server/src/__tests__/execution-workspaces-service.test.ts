@@ -2717,6 +2717,50 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]);
   });
 
+  it("limits summaries to the requested ids while keeping company scope and the read condition", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const requestedId = randomUUID();
+    const hiddenId = randomUUID();
+    const unrequestedId = randomUUID();
+    const otherCompanyWorkspaceId = randomUUID();
+
+    await db.insert(companies).values([
+      { id: companyId, name: "Paperclip", issuePrefix: `I${companyId.slice(0, 5).toUpperCase()}`, requireBoardApprovalForNewAgents: false },
+      { id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 5).toUpperCase()}`, requireBoardApprovalForNewAgents: false },
+    ]);
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Ids", status: "in_progress" },
+      { id: otherProjectId, companyId: otherCompanyId, name: "Other ids", status: "in_progress" },
+    ]);
+    const workspace = (id: string, owner: string, project: string, name: string) => ({
+      id,
+      companyId: owner,
+      projectId: project,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name,
+      status: "active",
+      providerType: "git_worktree",
+      cwd: `/tmp/${id}`,
+    });
+    await db.insert(executionWorkspaces).values([
+      workspace(requestedId, companyId, projectId, "Requested"),
+      workspace(hiddenId, companyId, projectId, "Hidden by read condition"),
+      workspace(unrequestedId, companyId, projectId, "Not requested"),
+      workspace(otherCompanyWorkspaceId, otherCompanyId, otherProjectId, "Other company"),
+    ]);
+
+    const summaries = await svc.listSummaries(companyId, {
+      ids: [requestedId, hiddenId, otherCompanyWorkspaceId],
+      readCondition: sql<boolean>`${executionWorkspaces.id} <> ${hiddenId}`,
+    });
+
+    expect(summaries.map((summary) => summary.id)).toEqual([requestedId]);
+  });
+
   it("reconciles a forward branch record, comments on the source issue, and resolves matching workspace recovery", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);

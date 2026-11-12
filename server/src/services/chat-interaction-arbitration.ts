@@ -51,6 +51,9 @@ export async function hasChatRunOwnedProviderInteraction(
           and(
             inArray(issueThreadInteractions.kind, ["ask_user_questions", "request_confirmation"]),
             eq(issueThreadInteractions.status, "pending"),
+            sql`NOT (${issueThreadInteractions.kind} = 'request_confirmation'
+              AND coalesce(${issueThreadInteractions.payload}->'target'->>'type', '') = 'custom'
+              AND coalesce(${issueThreadInteractions.payload}->'target'->>'key', '') = 'native_completion_review')`,
             exists(
               db
                 .select({ id: heartbeatRuns.id })

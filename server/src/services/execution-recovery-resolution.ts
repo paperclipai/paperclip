@@ -1,3 +1,4 @@
+import { settleOperatorContainedNativeOwner } from "./native-runtime/native-failed-run-owner-release.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -14,6 +15,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
 import { and, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   chatActions,
   environmentLeases,
   heartbeatRuns,
@@ -33,6 +35,7 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
 import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -43,8 +46,13 @@ import { alias } from "drizzle-orm/pg-core";
  */
 export function executionRecoverySettlementNote(input: {
   current: boolean; cause: string; workspaceRestoreFailed: boolean;
+  /** The hold's recorded trigger; a same-run retry is not a server restart. */
+  trigger?: unknown;
 }): string {
   if (!input.current) return "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+  if (input.cause === "native_restart_recovery_blocked" && input.trigger === "same_run_retry") {
+    return "Automatic retry of this run stopped. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
   if (input.cause === "native_restart_recovery_blocked") {
     return "Automatic recovery stopped after a server restart because the previous execution could not be verified. Saved work is preserved; actions with unverified outcomes will not be repeated.";
   }
@@ -53,7 +61,7 @@ export function executionRecoverySettlementNote(input: {
     : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated.";
 }
 
-export async function validateExecutionReconciliation(input: {
+type ExecutionReconciliationInput = {
   db: Db;
   companyId: string;
   issueId: string;
@@ -62,12 +70,36 @@ export async function validateExecutionReconciliation(input: {
   decision: ExecutionReconciliation | undefined;
   /** Board-only source repair: never authorize a continuation of this run. */
   workspaceRepairOnly?: boolean;
-}) {
+  controllerContainment?: { actionId: string; actorId: string };
+};
+
+export async function validateExecutionReconciliation(input: ExecutionReconciliationInput) {
+  if (input.controllerContainment) {
+    // Validation and contained-owner settlement must roll back together even
+    // when a caller is not already inside the board route's transaction.
+    return input.db.transaction(tx => validateExecutionReconciliationInScope({ ...input, db: tx as unknown as Db }));
+  }
+  return validateExecutionReconciliationInScope(input);
+}
+
+async function validateExecutionReconciliationInScope(input: ExecutionReconciliationInput) {
   const { db, companyId, issueId, agentId, decision } = input;
   if (!decision || decision.runId !== input.sourceRunId || (!agentId && !input.workspaceRepairOnly)) {
     throw conflict(
       "Reconcile the recorded execution and its action outcomes before continuing this task.",
     );
+  }
+  let operatorContained = false;
+  if (decision.controllerStopped !== undefined || decision.controllerAuthorityDigest !== undefined) {
+    if (!decision.controllerStopped || !decision.controllerAuthorityDigest || !input.controllerContainment
+      || input.workspaceRepairOnly) throw conflict("Original-host controller containment requires its exact board recovery action.");
+    operatorContained = await settleOperatorContainedNativeOwner(db, {
+      companyId, issueId, runId: decision.runId, actionId: input.controllerContainment.actionId,
+      actorId: input.controllerContainment.actorId, authorityDigest: decision.controllerAuthorityDigest,
+      actionOutcome: decision.actionOutcome, outcomeEvidence: decision.outcomeEvidence,
+    });
+    if (!operatorContained) throw conflict("The recorded controller authority changed, is still leased, or its cleanup is unsettled. Refresh before recording containment.",
+      { code: "native_controller_containment_stale" });
   }
   const [run] = await db
     .select()
@@ -110,7 +142,7 @@ export async function validateExecutionReconciliation(input: {
       (!decision.workspaceRepairEvidence || decision.workspaceRepairEvidence.trim().length < 20)) {
     throw conflict("Verify safe workspace staging or repair and record workspaceRepairEvidence before continuing this run.");
   }
-  let checkLocalProcesses = true;
+  let checkLocalProcesses = !operatorContained;
   if (retainedWorkspace) {
     const leases = await db.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -128,7 +160,7 @@ export async function validateExecutionReconciliation(input: {
           : !hasRemoteTerminationReceipt(lease))) {
       throw conflict("The retained workspace environment has not confirmed that it stopped. Wait for cleanup before recording workspace repair.");
     }
-    checkLocalProcesses = leases.some(lease => lease.provider === "local");
+    checkLocalProcesses = !operatorContained && leases.some(lease => lease.provider === "local");
   }
   // A retained remote source's PIDs belong to its sandbox, not this server.
   // Its exact lease receipts above replace host-local process probes.
@@ -199,8 +231,10 @@ export async function markExecutionReconciliation(
   decision: ExecutionReconciliation,
   actorId: string,
   deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
-  options?: { workspaceRepairOnly?: boolean },
+  options?: { workspaceRepairOnly?: boolean; controllerContainmentOnly?: boolean },
 ) {
+  if (options?.controllerContainmentOnly && (!decision.controllerStopped || !decision.controllerAuthorityDigest || deliveryOwner))
+    throw conflict("Controller containment records no automatic continuation.");
   if (options?.workspaceRepairOnly && (deliveryOwner || !hasRequiredWorkspaceRecovery(action.evidence))) {
     throw conflict("Workspace repair must target the retained source without a continuation owner.");
   }
@@ -252,7 +286,7 @@ export async function markExecutionReconciliation(
             actorId,
             recordedAt: new Date().toISOString(),
           },
-          continuationDelivery: options?.workspaceRepairOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
+          continuationDelivery: options?.workspaceRepairOnly || options?.controllerContainmentOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
           ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
         },
       })
@@ -267,6 +301,20 @@ export async function markExecutionReconciliation(
         kind: issueRecoveryActions.kind,
         evidence: issueRecoveryActions.evidence,
       });
+    if (options?.controllerContainmentOnly) {
+      // A Retry clicked before the operator reviewed the effects must not turn
+      // into an automatic replay after containment. Retain only that exact,
+      // unadmitted source receipt as skipped; newer/accepted intents are untouched.
+      await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: new Date(), updatedAt: new Date(),
+        error: "controller_containment_requires_new_retry" }).where(and(
+        eq(agentWakeupRequests.companyId, action.companyId), isNull(agentWakeupRequests.runId),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${action.sourceIssueId}`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'schema' = 'paperclip.task-retry.v1'`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'sourceRunId' = ${decision.runId}`,
+      ));
+      return;
+    }
     if (
       !source || options?.workspaceRepairOnly ||
       source.cause !== "legacy_execution_requires_reconciliation" ||
@@ -541,6 +589,7 @@ export async function settleUnrecoverableExecutions(
   for (const { action: candidate } of candidates) {
     const runId = candidate.evidence.runId;
     if (typeof runId !== "string") continue;
+    const goneControllerBootId = await provenGoneLegacyControllerBootId(db, candidate.companyId, runId).catch(() => null);
     try {
       await db.transaction(async (tx) => {
         await tx.execute(
@@ -618,8 +667,16 @@ export async function settleUnrecoverableExecutions(
           return;
         }
         // A legacy executor still holding its controller lease may be unwinding
-        // a Stop and can prove that no adapter started. Let it settle first.
-        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) return;
+        // a Stop and can prove that no adapter started. Let it settle first,
+        // unless its recorded process is proven gone (a drained server): then
+        // expire that exact lease so every later preparation check sees it.
+        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) {
+          if (goneControllerBootId === null || run.controllerBootId !== goneControllerBootId) return;
+          await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: now }).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.controllerBootId, goneControllerBootId)));
+          run.controllerLeaseExpiresAt = now;
+        }
         // Adoption transfers maintenance to the retained-workspace owner.
         // This compatibility resolver must not close its hold or relabel it
         // as a user repair merely because old return-owner metadata is absent.
@@ -644,7 +701,7 @@ export async function settleUnrecoverableExecutions(
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
         const note = executionRecoverySettlementNote({ current, cause: action.cause,
-          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson) });
+          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson), trigger: action.evidence.trigger });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
