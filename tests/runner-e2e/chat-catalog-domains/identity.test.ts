@@ -163,6 +163,22 @@ describe("identity catalog independent oracle calibration", () => {
     original.idempotencyKey = "paperclip-runner-question:run:request-7"; (o.state.taskBrief as { createdAt: string }).createdAt = "2026-10-25T12:00:00.000Z";
     expect(gradeQuestions(o).passed).toBe(false);
   });
+  // Full cohort 3: the agent's card required the product name and added one optional follow-up.
+  it("admits optional follow-ups beside the one required product-name question, and nothing else", () => {
+    const withQuestions = (questions: NonNullable<Interaction["payload"]["questionSet"]>["questions"]) => {
+      const o = valid("questions-and-approvals.necessary-question"); const original = o.state.original as Interaction;
+      original.payload.questionSet = { ...original.payload.questionSet!, questions }; return gradeQuestions(o).passed;
+    };
+    const name = { id: "product_name", prompt: "What is the product's name, exactly as it should appear on the landing page?", answerMode: "text", required: true };
+    const optional = { id: "product_context", prompt: "Optional: what does the product do and who is it for?", answerMode: "text", required: false };
+    expect(withQuestions([name])).toBe(true);
+    expect(withQuestions([name, optional])).toBe(true);
+    expect(withQuestions([optional, { ...name, prompt: "Which name should the product use?" }])).toBe(true);
+    // Broken: the necessary question is optional, a second answer is required, or the required question is not the product name.
+    expect(withQuestions([{ ...name, required: false }, optional])).toBe(false);
+    expect(withQuestions([name, { ...optional, required: true }])).toBe(false);
+    expect(withQuestions([{ ...name, prompt: "Which hosting provider should we deploy to?" }, optional])).toBe(false);
+  });
   it("approved read is graded on the provider nonce and one provider receipt, not the provider sentence", () => {
     const grade = (o: IdentityObservation) => toolReviewIdentityCases[0]!.grade(o).passed;
     // Retained u2 reply (run 42641280837) dropped the "Launch notes: " prefix but carried the actual result.
