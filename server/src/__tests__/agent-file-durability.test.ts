@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { beforeAll, beforeEach, afterEach, afterAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentFileRoots, agentInstructionWorkingCopies, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, createDb, closeFileStorageDb } from "@paperclipai/db";
+import { agents, agentConfigRevisions, agentFileRoots, agentInstructionWorkingCopies, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, createDb, closeFileStorageDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentFileStore, adoptAgentFiles, fileHash } from "../services/agent-file-store.js";
 import { invalidateAgentFileProjection, persistDurableAgentFiles } from "../services/agent-file-durability.js";
@@ -94,6 +94,9 @@ describe("durable agent file authority", () => {
     await store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Edited"), baseHash: fileHash(Buffer.from("Original")) }, actor());
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent.adapterConfig.instructionsEntryFile).toBe("ROOT.md");
+    const [revision] = await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agentId));
+    expect(revision).toMatchObject({ source: "instructions_rename", createdByUserId: userId,
+      afterConfig: { adapterConfig: { instructionsEntryFile: "ROOT.md" } } });
     await replaceFilesystem();
     expect(await store().read(companyId, agentId, "ROOT.md", actor())).toEqual(Buffer.from("Edited"));
     expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toBeNull();

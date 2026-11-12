@@ -1,3 +1,4 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { extractAgentMentionIds } from "@paperclipai/shared";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -265,9 +266,14 @@ export function agentFileStore(db: Db) {
         await materializeInstructionBytes(root, target, input.bytes);
         if (previous) await fs.unlink(sourcePath);
         if (isRoot) {
-          await tx.update(agents).set({ adapterConfig: { ...agent.adapterConfig, instructionsBundleMode: "managed",
-            instructionsRootPath: root, instructionsEntryFile: target, instructionsFilePath: path.join(root, target) }, updatedAt: new Date() })
-            .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));
+          await updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, {
+            adapterConfig: { ...agent.adapterConfig, instructionsBundleMode: "managed",
+              instructionsRootPath: root, instructionsEntryFile: target, instructionsFilePath: path.join(root, target) },
+          }, { allowPendingApprovalConfigUpdate: true, recordRevision: {
+            createdByAgentId: bound.type === "agent" ? bound.agentId : null,
+            createdByUserId: bound.type === "board" ? bound.userId : null,
+            source: "instructions_rename",
+          } });
         }
         await audit(tx, agent, bound, { path: source, contentHash: null, renamedTo: target });
         await audit(tx, agent, bound, { path: target, contentHash: fileHash(input.bytes), created: true, renamedFrom: source });
