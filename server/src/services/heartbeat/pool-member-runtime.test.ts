@@ -80,3 +80,14 @@ describe("pool member runtime settings", () => {
     }
   });
 });
+
+it("applies Claude profile policy from the selected member and clears it on Codex fallback", () => {
+  const settings = { engine: "cli" as const, profileImportMode: "cache" as const, profileSourceDir: "C:/trusted-claude", transcriptRetentionEnabled: true, transcriptRetentionDays: 14 };
+  const claudeMember = { id: "claude", runner: "legacy" as const, adapterConfig: settings, profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "sonnet" }, binding: { mode: "shared" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId: "connection", grantId: "grant" } };
+  const selected = poolMemberRuntimeConfig(claudeMember, "paperclip_runner");
+  const selection = { poolId: "pool", memberId: claudeMember.id, binding: claudeMember.binding, adapterType: selected.adapterType, runtimeConfig: selected.config, notes: [] };
+  const effective = applyAiConnectionRouterTaskSettings({ profileImportMode: "off", transcriptRetentionEnabled: false, cwd: "/workspace" }, selection, "paperclip_runner");
+  expect(effective).toMatchObject({ ...settings, cwd: "/workspace" });
+  const fallback = applyAiConnectionRouterTaskSettings(effective, { ...selection, adapterType: "codex_local", runtimeConfig: { provider: "codex", model: "sol", engine: "cli" } }, "claude_local");
+  for (const key of ["profileImportMode", "profileSourceDir", "transcriptRetentionEnabled", "transcriptRetentionDays"]) expect(fallback).not.toHaveProperty(key);
+});

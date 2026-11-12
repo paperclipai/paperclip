@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { getUIAdapter } from "../adapters";
 import type { AdapterConfigFieldsProps, AdapterConfigSection } from "../adapters/types";
+import { ClaudeRuntimePolicyFields } from "../adapters/claude-local/runtime-policy-fields";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { CollapsibleSection, DraftNumberInput, Field, help } from "./agent-config-primitives";
 
@@ -22,6 +23,7 @@ function RuntimeFields({ fieldProps, section }: Pick<Props, "fieldProps"> & { se
   const adapter = useMemo(() => getUIAdapter(fieldProps.adapterType), [fieldProps.adapterType]);
   return <>
     {fieldProps.adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...fieldProps} section={section} />}
+    {fieldProps.adapterType === "claude_local" && section === "runPolicy" && fieldProps.allowedConfigKeys?.has("profileImportMode") && <ClaudeRuntimePolicyFields {...fieldProps} />}
     <adapter.ConfigFields {...fieldProps} section={section} />
   </>;
 }

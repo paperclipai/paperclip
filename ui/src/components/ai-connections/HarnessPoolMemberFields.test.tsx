@@ -306,3 +306,18 @@ it.each([undefined, false])("matches actual Codex bypass policy for saved settin
   const toggle=host.querySelector('[aria-label="Bypass sandbox"]');
   expect(toggle?.getAttribute("aria-checked")).toBe(String(dangerouslyBypassApprovalsAndSandbox !== false));
 });
+
+
+it("edits the shared Claude profile and transcript policies per pool member", async () => {
+  await mount({ id: "claude", harness: { type: "claude_code" }, runner: "legacy", model: "sonnet", adapterConfig: { engine: "cli" } });
+  await expandPolicy();
+  const select=host.querySelector<HTMLSelectElement>('[aria-label="Local Claude skills and plugins"]')!;
+  expect(select).toBeTruthy();
+  flushSync(()=>{select.value="cache";select.dispatchEvent(new Event("change",{bubbles:true}));}); await settle();
+  const retention=host.querySelector<HTMLSelectElement>('[aria-label="Keep Claude session transcripts"]')!;
+  flushSync(()=>{retention.value="on";retention.dispatchEvent(new Event("change",{bubbles:true}));}); await settle();
+  expect(latest.adapterConfig).toMatchObject({engine:"cli",profileImportMode:"cache",transcriptRetentionEnabled:true});
+  const days=host.querySelector<HTMLInputElement>('[aria-label="Claude transcript retention days"]')!;
+  flushSync(()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(days,"14");days.dispatchEvent(new Event("input",{bubbles:true}));});await settle();
+  expect(latest.adapterConfig?.transcriptRetentionDays).toBe(14);
+});

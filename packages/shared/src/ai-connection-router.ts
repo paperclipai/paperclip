@@ -20,6 +20,10 @@ export const harnessPoolAdapterConfigSchema = z.object({
   timeoutSec: z.number().int().min(0).max(86_400).optional(),
   graceSec: z.number().int().min(0).max(86_400).optional(),
   maxTurnsPerRun: z.number().int().min(0).max(100_000).optional(),
+  profileImportMode: z.enum(["off", "copy", "cache"]).optional(),
+  profileSourceDir: z.string().trim().max(4096).optional(),
+  transcriptRetentionEnabled: z.boolean().optional(),
+  transcriptRetentionDays: z.number().int().positive().optional(),
   chrome: z.boolean().optional(), fastMode: z.boolean().optional(),
   dangerouslySkipPermissions: z.boolean().optional(),
   dangerouslyBypassApprovalsAndSandbox: z.boolean().optional(),
@@ -33,7 +37,7 @@ export const harnessPoolAdapterConfigSchema = z.object({
 export function harnessPoolRuntimeConfigKeys(harness: "claude_code" | "codex" | "grok" | "opencode", runner: "legacy" | "paperclip" = "paperclip"): readonly string[] {
   const common = ["timeoutSec", "graceSec"];
   const native = ["lifecycleMode", "idleTimeoutMs", harness === "codex" ? "codexPermissionMode" : harness === "opencode" ? "opencodePermissionMode" : "acpxPermissionMode"];
-  const legacy = harness === "claude_code" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "permissionMode", "chrome", "maxTurnsPerRun", "dangerouslySkipPermissions"]
+  const legacy = harness === "claude_code" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "permissionMode", "chrome", "maxTurnsPerRun", "dangerouslySkipPermissions", "profileImportMode", "profileSourceDir", "transcriptRetentionEnabled", "transcriptRetentionDays"]
     : harness === "codex" ? ["engine", "mode", "nonInteractivePermissions", "warmHandleIdleMs", "fastMode", "dangerouslyBypassApprovalsAndSandbox"]
     : harness === "opencode" ? ["dangerouslySkipPermissions"] : [];
   return [...common, ...(runner === "legacy" ? legacy : native)];

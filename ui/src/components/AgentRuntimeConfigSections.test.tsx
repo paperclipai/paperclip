@@ -45,7 +45,7 @@ it.each(cases)("reuses actual $adapter controls and Run Policy disclosure for $h
     for (const label of [...test.labels, "Timeout (sec)", "Interrupt grace period (sec)"]) expect(control(sides[1]!, label)).toEqual(control(sides[0]!, label));
     const pool = sides[1]!;
     expect(pool.textContent).not.toContain("ACP state directory");
-    expect(pool.textContent).not.toContain("Local Claude skills and plugins");
+    expect(pool.textContent?.includes("Local Claude skills and plugins")).toBe(test.harness === "claude_code" && test.runner === "legacy");
     expect(pool.textContent).not.toContain("ACP server command");
     expect(pool.querySelector('[aria-label="Harness"]')).toBeNull();
     expect(pool.querySelector('[aria-label="Model"]')).toBeNull();

@@ -12,6 +12,25 @@ vi.mock("@/api/harness-pools", () => ({ harnessPoolsApi: { list: mocks.pools, sa
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: mocks.accounts } }));
 vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: mocks.legacy } }));
 afterEach(() => vi.clearAllMocks());
+it("keeps archive in a bottom danger zone with confirmation", async () => {
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]}); mocks.legacy.mockResolvedValue([]);
+  mocks.pools.mockResolvedValue([{id:"archive-pool",name:"Archive me",revision:4,schemaVersion:2,kind:"harness_pool",enabled:true,mode:"failover",members:[]}]);
+  mocks.inspect.mockResolvedValue({members:{},usedBy:[]}); mocks.archive.mockResolvedValue(undefined);
+  const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  try {
+    flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();
+    flushSync(()=>host.querySelector<HTMLButtonElement>('[aria-label="Archive me · 0 members"]')!.click());await settle();
+    const danger=host.querySelector('section[aria-label="Danger zone"]')!;
+    expect(danger).toBeTruthy(); expect(danger.querySelector("h2")?.textContent).toBe("Danger zone");
+    const button=(label:string)=>[...danger.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent===label)!;
+    expect(button("Archive pool").className).toContain("bg-destructive"); expect(button("Archive pool").querySelector("svg")).toBeTruthy();
+    expect(danger.parentElement!.lastElementChild).toBe(danger);
+    flushSync(()=>button("Archive pool").click());expect(mocks.archive).not.toHaveBeenCalled();
+    flushSync(()=>button("Keep pool").click());expect(danger.textContent).not.toContain("Confirm archive");
+    flushSync(()=>button("Archive pool").click());flushSync(()=>button("Confirm archive").click());await settle();
+    expect(mocks.archive).toHaveBeenCalledWith("company","archive-pool",4);
+  }finally{flushSync(()=>root.unmount());client.clear();host.remove();}
+});
 async function settle() { for(let i=0;i<8;i++) { await new Promise(resolve=>setTimeout(resolve,0)); flushSync(()=>{}); } }
 
 it("places icon reorder actions beside the member name and removal in its footer", async () => {

@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Plus, Search, Trash2, X } from "lucide-react";
+import { Archive, ArrowDown, ArrowUp, Plus, Search, Trash2, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, harnessPoolConfigSchema, type HarnessPool, type HarnessPoolConfigV2 } from "@paperclipai/shared";
@@ -97,8 +97,19 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
         <Button variant="outline" disabled={busy || draft.members.length >= 100} onClick={() => setDraft({ ...draft, members: [...draft.members, { id: crypto.randomUUID(), harness: { type: "codex" }, runner: "paperclip", model: "" }] })}>Add member</Button>
         {editing && <><p className="text-sm text-muted-foreground">Used by: {inspection.data ? inspection.data.usedBy.map(agent => agent.name).join(", ") || "No agents" : inspection.error ? "Inspection unavailable" : "Loading affected agents…"}</p>{inspection.error && <p role="alert" className="text-sm text-destructive">{describeError(inspection.error).body} <Button variant="outline" onClick={() => void inspection.refetch()}>Retry inspection</Button></p>}</>}
         <div className="flex items-center justify-between gap-2"><Button variant="outline" disabled={busy} onClick={() => { setDraft(undefined); setEditing(undefined); }}>Cancel</Button><Button disabled={busy} onClick={() => void action(async () => { const config = harnessPoolConfigSchema.parse(draft); const saved = await harnessPoolsApi.save(companyId, { id: editing?.id, expectedRevision: editing?.revision, config }); setEditing(saved); setDraft(config); await refresh(); })}>{busy ? "Saving…" : "Save pool"}</Button></div>
-        {editing && <Button variant="outline" disabled={busy || !inspectionReady} onClick={() => setArchiveRequested(true)}>Archive pool</Button>}
-        {archiveRequested && editing && <div className="space-y-2"><p className="text-sm">Archive {editing.name}? Agents using it will need another pool for new work.</p><Button variant="outline" disabled={busy} onClick={() => setArchiveRequested(false)}>Keep pool</Button><Button disabled={busy || !inspectionReady} onClick={() => void action(async () => { if (!inspectionReady) return; await harnessPoolsApi.archive(companyId, editing.id, editing.revision); setDraft(undefined); setEditing(undefined); setArchiveRequested(false); await refresh(); })}>Confirm archive</Button></div>}
+        {editing && <section aria-label="Danger zone" className="space-y-4 border-t border-border pt-6">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-destructive">Danger zone</h2>
+          <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-4">
+            <p className="text-sm text-muted-foreground">Archive this pool to remove it from pool selectors. Agents using it will need another pool for new work.</p>
+            {archiveRequested ? <div className="space-y-2">
+              <p className="text-sm text-destructive">Archive {editing.name}?</p>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" disabled={busy} onClick={() => setArchiveRequested(false)}>Keep pool</Button>
+                <Button variant="destructive" disabled={busy || !inspectionReady} onClick={() => void action(async () => { if (!inspectionReady) return; await harnessPoolsApi.archive(companyId, editing.id, editing.revision); setDraft(undefined); setEditing(undefined); setArchiveRequested(false); await refresh(); })}>Confirm archive</Button>
+              </div>
+            </div> : <Button variant="destructive" disabled={busy || !inspectionReady} onClick={() => setArchiveRequested(true)}><Archive aria-hidden="true" className="size-4" />Archive pool</Button>}
+          </div>
+        </section>}
       </div>}
       </div>
       </div>

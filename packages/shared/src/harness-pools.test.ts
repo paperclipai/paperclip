@@ -77,3 +77,12 @@ it.each(["acceptEdits", "plan", "bypassPermissions"])("rejects unknown ACP permi
 it("rejects permissions that the CLI engine cannot enforce", () => {
   expect(harnessPoolConfigSchema.safeParse({ ...pool, members: [{ ...member, harness: { type: "claude_code" }, runner: "legacy", adapterConfig: { engine: "cli", permissionMode: "deny-all" } }] }).success).toBe(false);
 });
+
+
+it("round trips Claude Legacy profile and transcript settings without admitting them on other runners", () => {
+  const adapterConfig = { profileImportMode: "cache" as const, profileSourceDir: "C:/trusted-claude", transcriptRetentionEnabled: true, transcriptRetentionDays: 14 };
+  const configured = { ...pool, members: [{ ...member, harness: { type: "claude_code" as const }, runner: "legacy" as const, adapterConfig }] };
+  expect(decodeHarnessPoolConfig(harnessPoolToRuntimeConfig(configured))).toEqual({ kind: "harness_pool", config: configured });
+  for (const change of [{ runner: "paperclip" }, { harness: { type: "codex" } }]) expect(harnessPoolConfigSchema.safeParse({ ...pool, members: [{ ...configured.members[0], ...change }] }).success).toBe(false);
+  for (const days of [0, -1, 1.5]) expect(harnessPoolConfigSchema.safeParse({ ...configured, members: [{ ...configured.members[0], adapterConfig: { ...adapterConfig, transcriptRetentionEnabled: false, transcriptRetentionDays: days } }] }).success).toBe(false);
+});

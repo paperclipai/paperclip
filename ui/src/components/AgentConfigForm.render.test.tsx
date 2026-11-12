@@ -324,6 +324,8 @@ async function renderForm(
     showAdapterTestEnvironmentButton?: boolean;
     showAdapterTypeField?: boolean;
     compactTestFeedback?: boolean;
+    hiddenSections?: readonly string[];
+    sectionLayout?: "panels";
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
@@ -349,6 +351,8 @@ async function renderForm(
         onSave={onSave}
         hidePromptTemplate
         compactTestFeedback={options.compactTestFeedback}
+        hiddenSections={options.hiddenSections}
+        sectionLayout={options.sectionLayout}
         content={options.content}
         environmentVariablesPlacement={options.environmentVariablesPlacement}
         hideInlineSave={options.hideInlineSave}
@@ -645,6 +649,17 @@ async function flushUntil(check: () => boolean, timeoutMs = 4000) {
 
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
+
+  it("keeps Claude execution policies reachable in the runtime panel", async () => {
+    const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { engine: "cli", timeoutSec: 42 } }, { sectionLayout: "panels", hiddenSections: ["identity", "run-policy"] });
+    roots.push(result.root);
+    const panel = result.container.querySelector('[data-config-section="configuration"]')!;
+    const disclosure = [...panel.querySelectorAll("button")].find(button => button.textContent?.trim() === "Advanced Run Policy");
+    expect(disclosure).toBeTruthy();
+    await act(async () => disclosure!.click()); await flushReact();
+    expect(panel.querySelector<HTMLInputElement>('[aria-label="Timeout (sec)"]')?.value).toBe("42");
+    expect(result.container.querySelector('[data-config-section="run-policy"]')).toBeNull();
+  });
 
   it.each(["paperclip", "legacy"] as const)("uses the resolved %s Claude form to preserve the correct turn limit", async defaultRunner => {
     mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner }]);

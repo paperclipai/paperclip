@@ -98,5 +98,6 @@ export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange 
         onChange={effort => onChange({ effort: effort || undefined })} open={effortOpen} onOpenChange={setEffortOpen} />}
     </>}
     </>} />
+    {member.harness.type === "claude_code" && member.runner === "legacy" && <p className="mt-3 text-xs text-muted-foreground">Project settings and hooks require a separate trust grant in the workspace's Claude trust settings.</p>}
   </fieldset>;
 }
