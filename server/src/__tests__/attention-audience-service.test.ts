@@ -8,6 +8,7 @@ import {
   activityLog,
   agents,
   approvals,
+  authUsers,
   companies,
   companyMemberships,
   createDb,
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
 
   afterEach(async () => {
     await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -58,7 +60,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedCompany(prefix = "AUD") {
+  async function seedCompany(prefix = "AUD", seedWriters = false) {
     const companyId = randomUUID();
     const workerId = randomUUID();
     const errorAgentId = randomUUID();
@@ -79,6 +81,12 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
         adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
       },
     ]);
+    if (seedWriters) {
+      for (const userId of [SCOTT, DOTTA]) {
+        await db.insert(authUsers).values({ id: userId, name: userId, email: `${userId}@audience.example.test`, createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+        await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "operator" });
+      }
+    }
     return { companyId, workerId, errorAgentId, prefix };
   }
 
@@ -478,7 +486,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
   });
 
   it("claims a pool card for one person and removes it from every other person's pool", async () => {
-    const { companyId, workerId } = await seedCompany("CLM");
+    const { companyId, workerId } = await seedCompany("CLM", true);
     const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
     const poolCard = await insertConfirmation({ companyId, issueId: routineTask, workerId });
     const svc = attentionService(db);
@@ -510,7 +518,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
   });
 
   it("claims a stuck agent's request but leaves a runnable agent's request with the agent", async () => {
-    const { companyId, workerId, errorAgentId } = await seedCompany("CLA");
+    const { companyId, workerId, errorAgentId } = await seedCompany("CLA", true);
     const svc = attentionService(db);
     const board = { type: "board" as const, source: "session" as const, userId: SCOTT, companyIds: [companyId], isInstanceAdmin: false };
     // A paused agent cannot run, so its request reaches the pool; an agent in error still can.
@@ -528,7 +536,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
   });
 
   it("serves the claim route to board users only, validates input and writes one activity entry", async () => {
-    const { companyId, workerId } = await seedCompany("CLR");
+    const { companyId, workerId } = await seedCompany("CLR", true);
     const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
     const poolCard = await insertConfirmation({ companyId, issueId: routineTask, workerId });
     const approvalId = randomUUID();

@@ -867,6 +867,21 @@ export async function assertInteractionAddresseeUserAvailable(
   }
 }
 
+/** Routing changes the resolver addressee. Call under the task and interaction
+ * row locks, and validate the proposed recipient with the resolution owner's
+ * canonical audience and review-policy checks before changing that field. */
+export async function assertInteractionRoutingRecipientAllowed(
+  db: Db,
+  issue: IssueResolutionContext,
+  interaction: IssueThreadInteractionRow,
+  userId: string,
+) {
+  await assertInteractionAddresseeUserAvailable(db, issue, issue, userId);
+  await assertRequestConfirmationResolutionAllowedUnderLock(db, issue, {
+    ...interaction, addresseeUserId: userId, addresseeAgentId: null,
+  }, { userId });
+}
+
 function interactionNotFoundError() {
   return notFound("Interaction not found", { code: "interaction_not_found" });
 }
