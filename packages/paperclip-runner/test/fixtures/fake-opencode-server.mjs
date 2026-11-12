@@ -803,10 +803,41 @@ const server = createServer(async (request, response) => {
         const answerBeforeFinishThenRestatement = String(
           parsedPrompt.message ?? "",
         ).includes("answer-before-finish-then-restatement");
-        const answerBeforeFinishText = answerBeforeFinishThenRestatement
+        // Recorded in chat-eval cohort 5: a rewritten answer after the call
+        // (recovery.explain-stall) and a status note before it
+        // (status-cards.refresh-card).
+        const answerBeforeFinishThenRewrite = String(parsedPrompt.message ?? "").includes("answer-before-finish-then-rewrite");
+        const statusBeforeFinishThenAnswer = String(parsedPrompt.message ?? "").includes("status-before-finish-then-answer");
+        const shortAnswerBeforeFinishThenReference = String(parsedPrompt.message ?? "").includes("short-answer-before-finish-then-reference");
+        const shortStatusBeforeFinishThenShortAnswer = String(parsedPrompt.message ?? "").includes("short-status-before-finish-then-short-answer");
+        const shortAnswerRepeatedAfterFinish = String(parsedPrompt.message ?? "").includes("short-answer-repeated-after-finish");
+        const longAnswerBeforeFinishThenDone = String(parsedPrompt.message ?? "").includes("long-answer-before-finish-then-done");
+        const answerBeforeFinishText = longAnswerBeforeFinishThenDone
+          ? "Morgan's run on [COM-1](/COM/issues/COM-1) finished: the landing page is saved as `index.html` on the task, with the hero, features and signup sections from the brief."
+          : shortAnswerBeforeFinishThenReference || shortAnswerRepeatedAfterFinish
+          ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "STATUS: Status card summary written successfully (revision 2)."
+          : answerBeforeFinishThenRewrite
+          ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief document was saved.\n\nThe assignee, [Morgan the frontend engineer](/COM/agents/agent-morgan), is showing an error status. To resume, open COM-1 and use **Retry** on that task; it will recheck gates and preserve the failed attempt's evidence. Agents cannot retry it for you."
+          : statusBeforeFinishThenAnswer
+          ? "STATUS: Status card summary written successfully (revision 2)."
+          : answerBeforeFinishThenRestatement
           ? "I can't set this from chat — changing an agent's monthly budget is a board-only action (agent credentials get 403). There are also two matching agents, so pick the intended one in the web app and set its monthly limit to $50 on the budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets). Tell me which Morgan you meant and I'll track the right one."
           : "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.";
-        const answerAfterFinishText = answerBeforeFinishThenRestatement
+        const answerAfterFinishText = longAnswerBeforeFinishThenDone
+          ? "Done."
+          : shortAnswerBeforeFinishThenReference
+          ? "Answered above."
+          : shortAnswerRepeatedAfterFinish
+          ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "Updated the Launch blockers status card."
+          : answerBeforeFinishThenRewrite
+          ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief was saved.\n\n[The assigned agent, Morgan,](https://example.invalid) is in an error state. To resume, open COM-1 and use **Retry** on that task; it rechecks gates and preserves the failed attempt's evidence. Agents cannot retry it for you."
+          : statusBeforeFinishThenAnswer
+          ? "Updated the [Launch blockers status card](/COM/status/status-card-launch) with current Synthetic Launch Notes verification.\n\n- **COM-1 \u2014 Mobile Safari checkout regression blocks launch** \u2014 `blocked`\n- Payment approval is now recorded as received; the mobile Safari checkout regression remains the blocker.\n- Only COM-1 appears in the bounded changed-issue set; no other Launch blockers were added."
+          : answerBeforeFinishThenRestatement
           ? "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets)."
           : "Answered above: two inbox items need your attention.";
         const finalAfterToolCommentary = String(
@@ -1010,7 +1041,7 @@ const server = createServer(async (request, response) => {
               },
             },
           });
-        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement) {
+        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement || answerBeforeFinishThenRewrite || statusBeforeFinishThenAnswer || shortStatusBeforeFinishThenShortAnswer || shortAnswerRepeatedAfterFinish || longAnswerBeforeFinishThenDone) {
           emit({
             type: "message.part.updated",
             id: "event-answer-before-finish",

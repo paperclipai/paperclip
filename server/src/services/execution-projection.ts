@@ -18,7 +18,7 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
-import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import { getStartupRecoveryState, startupQueuedRunPassOutstanding } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
@@ -339,7 +339,7 @@ export function projectExecution(
     Object.assign(projection, { phase, label });
   if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
     projection.cause = recoveryAction.cause;
-    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id)?.message
+    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id, { status: run.status, retryOffered: false })?.message
       ?? recoveryAction.nextAction;
     const continuation = recoveryAction.evidence.explicitUserContinuation as
       { previousRunId?: unknown; runId?: unknown } | undefined;
@@ -532,7 +532,7 @@ export function projectExecution(
   // Process-local, like the drain: while this server starts, recovers, or
   // shuts down, its full queued-run pass has not run (or no longer runs).
   const serverPhase = getStartupRecoveryState().phase;
-  if (run.status === "queued" && serverPhase !== "ready") {
+  if (run.status === "queued" && startupQueuedRunPassOutstanding()) {
     projection.cause = "server_restarting";
     projection.nextAction = serverPhase === "draining"
       ? "The server is restarting for an update. This turn starts automatically on the replacement server."

@@ -54,13 +54,22 @@ export function completedWorkspaceRecoveryCondition(runId: string | AnyColumn | 
   );
 }
 
-export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runId: string | null): ExecutionBlocker["workspaceRecovery"] {
+export const RECOVERED_WORK_RETRY_MESSAGE = "Saved work recovered. Retry continues from it.";
+
+export function recoveredWorkMessage(runStatus: string | null | undefined, retryOffered: boolean) {
+  if (retryOffered) return RECOVERED_WORK_RETRY_MESSAGE;
+  return runStatus === "failed" || runStatus === "timed_out" ? "Saved work recovered."
+    : "Saved work recovered. Send a message to continue.";
+}
+
+export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runId: string | null,
+  run?: { status: string | null; retryOffered: boolean }): ExecutionBlocker["workspaceRecovery"] {
   const state = readWorkspaceRecovery(evidence);
   if (!state || state.runId !== runId) return undefined;
   return { status: state.status, stage: state.stage,
     canRetry: state.status === "blocked" && state.retryable === true,
     message: state.status === "queued" || state.status === "recovering" ? "Recovering saved work…"
-      : state.status === "recovered" ? "Saved work recovered. Send a message to continue."
+      : state.status === "recovered" ? recoveredWorkMessage(run?.status, run?.retryOffered ?? false)
         : blockedWorkspaceRecoveryMessage(evidence) ?? state.message ?? "Recovery of this task's saved work has not finished.",
   };
 }

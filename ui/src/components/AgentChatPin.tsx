@@ -13,7 +13,7 @@ export function useAgentChatPins() {
   const userId = session.data?.user?.id ?? session.data?.session?.userId;
   const navigation = usePinnedNavigation(userId);
   const keys = useMemo(() => new Set(navigation.pins), [navigation.pins]);
-  return { keys, toggle: navigation.toggle, canPin: navigation.canPin, error: navigation.error };
+  return { keys, orderedKeys: navigation.pins, toggle: navigation.toggle, reorder: navigation.reorder, canPin: navigation.canPin, error: navigation.error };
 }
 
 export function AgentChatPin({ agent, pins, className }: {

@@ -4789,6 +4789,23 @@ async function listIssueReviewAttentionMap(
   }
   if (reviewIssues.length === 0) return result;
 
+  const activeToolReviewContinuation = sql`lateral (
+    select continuation.id, continuation.run_id from ${agentWakeupRequests} continuation
+    where continuation.company_id = ${companyId}
+      and continuation.idempotency_key like 'tool-action-response:%'
+      and continuation.idempotency_key = 'tool-action-response:' || ${toolActionDeliveries.actionRequestId}::text
+      and continuation.status not in ('skipped', 'failed', 'cancelled')
+      and (
+        continuation.status in ('queued', 'deferred_issue_execution', 'claimed')
+        or exists (
+          select 1 from ${heartbeatRuns} continuation_run
+          where continuation_run.id = continuation.run_id
+            and continuation_run.company_id = ${companyId}
+            and continuation_run.status in ('queued', 'running')
+        )
+      )
+    limit 1
+  ) active_tool_review_continuation`;
   const [
     agentRows,
     activeRunRows,
@@ -4797,6 +4814,7 @@ async function listIssueReviewAttentionMap(
     approvalRows,
     recoveryActionRows,
     recoveryIssueRows,
+    toolReviewContinuationRows,
   ] = await Promise.all([
     dbOrTx
       .select({
@@ -4946,7 +4964,76 @@ async function listIssueReviewAttentionMap(
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       ),
+    dbOrTx
+      .select({
+        id: toolActionDeliveries.actionRequestId,
+        companyId: toolActionDeliveries.companyId,
+        issueId: toolActionDeliveries.issueId,
+        agentId: toolActionRequests.requestedByAgentId,
+        status: sql<string>`'queued'`,
+        reason: sql<string>`'tool_action_review'`,
+        createdAt: toolActionDeliveries.createdAt,
+        continuationWakeId: sql<string | null>`active_tool_review_continuation.id`,
+        continuationRunId: sql<string | null>`active_tool_review_continuation.run_id`,
+      })
+      .from(toolActionDeliveries)
+      .innerJoin(
+        toolActionRequests,
+        and(
+          eq(toolActionRequests.id, toolActionDeliveries.actionRequestId),
+          eq(toolActionRequests.companyId, companyId),
+        ),
+      )
+      .innerJoin(
+        issueThreadInteractions,
+        and(
+          eq(issueThreadInteractions.id, toolActionDeliveries.interactionId),
+          eq(issueThreadInteractions.companyId, companyId),
+        ),
+      )
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, toolActionDeliveries.issueId),
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, toolActionRequests.requestedByAgentId),
+        ),
+      )
+      .innerJoin(
+        agents,
+        and(
+          eq(agents.id, toolActionRequests.requestedByAgentId),
+          eq(agents.companyId, companyId),
+        ),
+      )
+      .leftJoin(activeToolReviewContinuation, sql`true`)
+      .where(
+        and(
+          eq(toolActionDeliveries.companyId, companyId),
+          inArray(toolActionRequests.issueId, reviewIds),
+          or(
+            and(
+              isNull(toolActionDeliveries.deliveredAt),
+              ne(issueThreadInteractions.status, "pending"),
+              notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
+            ),
+            sql`active_tool_review_continuation.id is not null`,
+          ),
+        ),
+      ),
   ]);
+
+  const listedExecutionIds = new Set([
+    ...(wakeRows as Array<{ id: string }>).map((row) => row.id),
+    ...(activeRunRows as Array<{ id: string }>).map((row) => row.id),
+  ]);
+  const toolReviewContinuationPaths = toolReviewContinuationRows.filter((row: {
+    continuationWakeId: string | null;
+    continuationRunId: string | null;
+  }) =>
+    !(row.continuationWakeId && listedExecutionIds.has(row.continuationWakeId)) &&
+    !(row.continuationRunId && listedExecutionIds.has(row.continuationRunId)),
+  );
 
   const recoveryPaths = [
     ...(recoveryActionRows as Array<{
@@ -5004,7 +5091,7 @@ async function listIssueReviewAttentionMap(
     relations: [],
     agents: agentRows,
     activeRuns: activeRunRows,
-    queuedWakeRequests: wakeRows,
+    queuedWakeRequests: [...wakeRows, ...toolReviewContinuationPaths],
     pendingInteractions: interactionRows,
     pendingApprovals: approvalRows,
     externalResponseWaits: await readExternalReviewWaits(reviewIds),
@@ -5068,7 +5155,7 @@ async function listIssueReviewAttentionMap(
     ).map((row) => [row.id, row]),
   );
   const wakeReasonById = new Map(
-    (wakeRows as Array<{ id: string; reason: string | null }>).map((row) => [
+    ([...wakeRows, ...toolReviewContinuationPaths] as Array<{ id: string; reason: string | null }>).map((row) => [
       row.id,
       row.reason,
     ]),

@@ -1242,6 +1242,33 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it("withholds a never-started assignment run once its task moves to backlog", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "todo" });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned", source: "assignment" } });
+      await db.update(issues).set({ status: "backlog" }).where(eq(issues.id, issueId));
+      const adapter = createPostgresRunDispatchAdapter(db);
+
+      expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() }))
+        .toMatchObject({ outcome: "cancelled", errorCode: "issue_in_backlog" });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_in_backlog", startedAt: null });
+      expect(run!.error).toContain("backlog");
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("backlog");
+    });
+
+    it("still starts a comment wake on a backlog task", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "backlog" });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentId: randomUUID() } });
+      const adapter = createPostgresRunDispatchAdapter(db);
+
+      expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() }))
+        .toMatchObject({ outcome: "not_stale" });
+    });
+
     it.each([
       { label: "chat source", source: "chat:slack", expected: "chat:slack" },
       {

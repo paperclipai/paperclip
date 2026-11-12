@@ -226,6 +226,7 @@ import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-w
 import { chatFailedRetryNoticeWork } from "./services/chat-failed-retry-notice-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import { heartbeatService } from "./services/heartbeat.js";
+import { registerInterruptedTurnChatRetry } from "./services/heartbeat/restart-interrupted-turn.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
@@ -603,6 +604,8 @@ export async function createApp(
     storage: opts.storageService,
   });
   if (opts.budgetResumeDelivery) opts.budgetResumeDelivery.prepareChatRetry = chatChannels.prepareFailedChatRunRetry;
+  // A restart's automatic Retry of a connected conversation needs the same callback.
+  registerInterruptedTurnChatRetry(chatChannels.prepareFailedChatRunRetry);
   // Voice capabilities are verified by the signed callback route, not by
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
@@ -1107,8 +1110,12 @@ export async function createApp(
       );
       if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
         const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
-        await publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
-          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"));
+        // Publish while the routes below are built; the outcome is awaited
+        // before the first background work starts. The promise settles to the
+        // failure instead of rejecting, so it is never an unhandled rejection.
+        app.locals.retainedUiAssetsPublication = trackIdleWork(publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
+          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"))
+          .then(() => null, (error: unknown) => ({ error })));
         staticUi.use("/assets", retained.serve);
       }
       // Serve root/index through the same runtime HTML transform as SPA routes.
@@ -1247,6 +1254,11 @@ export async function createApp(
 
   app.use(staticUi);
   app.use(errorHandler);
+
+  // A build whose asset names collide with different published bytes refuses
+  // to start, so the outcome is known before any job, queue, or run starts.
+  const retainedUiAssetsPublication = await (app.locals.retainedUiAssetsPublication as Promise<{ error: unknown } | null> | undefined);
+  if (retainedUiAssetsPublication) throw retainedUiAssetsPublication.error;
 
   jobCoordinator.start();
   const deliveryWork = createDeliveryWorkCoordinator({

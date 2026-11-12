@@ -1394,7 +1394,7 @@ describe("personal Muse control plane",()=>{
     await db.insert(principalPermissionGrants).values({companyId:f.company.id,principalType:"agent",principalId:f.agent.id,permissionKey:"tasks:assign_scope",scope:{projectIds:[randomUUID()]}});
     await expect(f.broker.act(f.subject,command)).rejects.toThrow();
     await db.update(principalPermissionGrants).set({scope:{projectIds:[project.id]}}).where(and(eq(principalPermissionGrants.companyId,f.company.id),eq(principalPermissionGrants.principalId,f.agent.id)));
-    await expect(f.broker.act(f.subject,command)).rejects.toThrow("Authorizing user");
+    await expect(f.broker.act(f.subject,command)).rejects.toThrow(/the person who authorized this agent/i);
     await db.insert(principalPermissionGrants).values({companyId:f.company.id,principalType:"user",principalId:f.operatorId,permissionKey:"tasks:assign_scope",scope:{projectIds:[randomUUID()]}});
     await expect(f.broker.act(f.subject,command)).rejects.toThrow();
     await db.update(principalPermissionGrants).set({scope:{projectIds:[project.id]}}).where(and(eq(principalPermissionGrants.companyId,f.company.id),eq(principalPermissionGrants.principalId,f.operatorId)));
