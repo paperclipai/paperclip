@@ -800,8 +800,6 @@ const server = createServer(async (request, response) => {
         const answerBeforeFinishThenReference = String(
           parsedPrompt.message ?? "",
         ).includes("answer-before-finish-then-reference");
-        // Recorded chat-eval shape: the model wrote its whole answer, called
-        // the completion tool, then wrote the same answer again in other words.
         const answerBeforeFinishThenRestatement = String(
           parsedPrompt.message ?? "",
         ).includes("answer-before-finish-then-restatement");

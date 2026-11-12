@@ -3094,8 +3094,6 @@ describe("OpenCodeServerDriver", () => {
         event.payload.channel === "final",
     );
     expect(finalMessages).toHaveLength(1);
-    // Recorded chat-eval shape: both messages carry the same answer and links,
-    // so the saved reply holds the later one alone instead of the answer twice.
     expect(finalMessages[0]?.payload.text).toBe(
       "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets).",
     );

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { restatesEarlierReply } from "./restated-reply.js";
 
-// Recorded in chat-eval cohort 4 (budgets-costs.set-budget): the answer before
-// the completion call, then the same answer written again after it.
 const recordedBefore =
   "I can't set this from chat — changing an agent's monthly budget is a board-only action (agent credentials get 403). There are also two matching agents, so pick the intended one in the web app and set its monthly limit to $50 on the budget tab: [Morgan budgets](/COM/agents/a1/budgets) or [Morgan Research budgets](/COM/agents/a2/budgets). Tell me which Morgan you meant and I'll track the right one.";
 const recordedAfter =

@@ -1,20 +1,3 @@
-/**
- * Whether `later` restates `earlier` closely enough that saving both would
- * show the person the same answer twice.
- *
- * OpenCode models sometimes write their whole answer, call the completion
- * tool, and then write the answer again in slightly different words. Other
- * turns write the answer first and then a short line that only refers back to
- * it ("Answered above"). The first shape must be saved once; the second must
- * keep the earlier answer. A restatement therefore has to:
- *
- * - keep every link target (inline, reference-style, autolink or bare URL)
- *   and every fenced code block of the earlier text, character for character,
- *   so no reference or code the person could use is lost;
- * - be at least half as long as the earlier text, so a short pointer line is
- *   never treated as the answer; and
- * - repeat at least half of the earlier text's distinct words.
- */
 export function restatesEarlierReply(earlier: string, later: string): boolean {
   const before = earlier.trim();
   const after = later.trim();
@@ -39,8 +22,6 @@ const AUTOLINK = /<([a-z][a-z\d+.-]*:[^\s<>]+)>/gi;
 const BARE_URL = /\b(?:https?|ftp|mailto):[^\s<>()[\]`"']+/gi;
 const FENCED_BLOCK = /```[^\n]*\n([\s\S]*?)```/g;
 
-// Every form a reader can follow: inline and reference-style link targets,
-// autolinks and bare URLs. Trailing sentence punctuation is not part of a URL.
 function linkTargets(text: string): Set<string> {
   const targets = new Set<string>();
   for (const pattern of [INLINE_LINK_TARGET, REFERENCE_DEFINITION, AUTOLINK]) {
@@ -52,7 +33,6 @@ function linkTargets(text: string): Set<string> {
   return targets;
 }
 
-// Code is compared exactly: whitespace inside strings and indentation matter.
 function fencedBlocks(text: string): string[] {
   return [...text.matchAll(FENCED_BLOCK)].map((match) => match[1]!.replace(/\n$/, ""));
 }

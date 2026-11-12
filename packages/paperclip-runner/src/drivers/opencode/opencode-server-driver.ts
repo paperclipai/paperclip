@@ -2302,8 +2302,6 @@ class OpenCodeHarnessSession implements HarnessSession {
     // before that call: the person saw both, and the later message often just
     // refers back ("Answered above"). Structure cannot tell an answer from
     // commentary, so keep every eligible part rather than drop the answer.
-    // When the later message restates that prose (same links, most of the same
-    // words), it is the answer written again; saving both shows it twice.
     const candidatePreface =
       this.#semanticResultProviderMessageId !== null &&
       correlatedAfterResult.length === 0 &&
