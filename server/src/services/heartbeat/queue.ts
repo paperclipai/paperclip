@@ -3,6 +3,7 @@ import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
+import { continueFreshInTransaction } from "../fresh-continuation-fallback.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
@@ -3704,7 +3705,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           const verifiedConversationReset = Boolean(resetComment && isConversationReset(resetComment.body));
           if (wakeCommentId && opts.requestedByActorType === "user")
             await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, issue.companyId, issue.id);
-          const executionBlocker = await getExecutionBlocker(
+          let executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null },
           );
@@ -3730,7 +3731,25 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             interactionPayload: payload,
             dryRun: true,
             onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
-          })) && (executionBlocker || (continuationBlocked && !verifiedConversationReset))) return deferBlockedExecution(continuationHold());
+          })) && (executionBlocker || (continuationBlocked && !verifiedConversationReset))) {
+            // A hold left by an unfinished run never refuses an ordinary
+            // continuation: unless its cause is the person's, the fallback
+            // settles it in this transaction and this wake becomes the fresh
+            // continuation from the task's saved work.
+            // Agent Chat conversations keep their own owner-bound continuation.
+            const freshSourceRunId = executionBlocker?.recoveryActionId && executionBlocker.runId && !executionReconciliationWake
+              && !issue.conversationAgentId ? executionBlocker.runId : null;
+            const fresh = freshSourceRunId ? await continueFreshInTransaction(tx as unknown as Db, {
+              companyId: issue.companyId, runId: freshSourceRunId, trigger: "continuation_wake", delivery: "caller_owns" }) : null;
+            if (fresh?.kind !== "continued") return deferBlockedExecution(continuationHold());
+            executionBlocker = await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id,
+              { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null });
+            if (executionBlocker) return deferBlockedExecution(continuationHold());
+            continuationBlocked = false;
+            continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
+            enrichedContextSnapshot.forceFreshSession = true;
+            enrichedContextSnapshot.freshContinuationOfRunId = freshSourceRunId;
+          }
 
 
           if (

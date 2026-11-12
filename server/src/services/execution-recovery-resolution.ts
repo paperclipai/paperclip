@@ -36,6 +36,7 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -499,6 +500,8 @@ export function unresolvedExecutionDispositions(db: Db, limit: number) {
         sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
+        // A fresh continuation that backed off is checked again when due.
+        freshContinuationCheckDue(new Date()),
         or(inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]), and(
           eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
           eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
@@ -700,6 +703,20 @@ export async function settleUnrecoverableExecutions(
           !["done", "cancelled"].includes(task.status) &&
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
+        // Exact recovery is ruled out. Unless the cause is the person's, the
+        // task continues in a fresh run from its last saved work instead of
+        // waiting for a person.
+        // A preparation that never started provider work keeps its own replay
+        // lane, which takes over the settled hold; the held sweep follows it.
+        if (current && !isInterruptedNativePreparationCandidate(run)) {
+          const fresh = await continueFreshInTransaction(tx as unknown as Db, { companyId: task.companyId, runId: run.id,
+            trigger: "recovery_refused", now });
+          if (["continued", "already_continued", "successor_exists"].includes(fresh.kind)) return;
+          if (fresh.kind === "backoff" || fresh.kind === "exact_recovery_pending") {
+            await recordFreshContinuationCheck(tx as unknown as Db, { companyId: task.companyId, actionId: action.id }, fresh, now);
+            return;
+          }
+        }
         const note = executionRecoverySettlementNote({ current, cause: action.cause,
           workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson), trigger: action.evidence.trigger });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
@@ -803,4 +820,7 @@ export async function settleUnrecoverableExecutions(
       );
     }
   }
+  // Tasks already held by settled records (including those older releases
+  // saved) continue from their saved work on this worker too.
+  await continueHeldExecutions(db, now);
 }

@@ -927,8 +927,9 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
       cause: "native_continuation_requires_reconciliation",
       fingerprint: `native-continuation:${run.id}`,
       evidence: { runId: run.id, originalFailureCode: run.errorCode, ...(nativeFailureBlock ? { nativeFailureBlock } : {}) },
-      nextAction:
-        "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.",
+      // The fresh-continuation fallback settles this hold unless its cause is
+      // the person's; the text never asks anyone to repair the run.
+      nextAction: "The run stopped before it finished. Paperclip continues the task from its last saved work.",
       maxAttempts: 3,
       wakePolicy: null,
       supersedeOnIdentityChange: true,
