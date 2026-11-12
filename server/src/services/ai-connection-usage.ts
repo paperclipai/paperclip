@@ -352,14 +352,21 @@ export async function probeAiConnectionUsage(
 export async function probeAiConnectionUsageDetailed(
   metadata: AiConnectionMetadata,
   credential: string,
-  options: { request?: typeof fetch } = {},
+  options: { request?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<{ usage: ProbeResult; retryAfterMs: number | null }> {
   const base = { ...metadata, checkedAt: new Date().toISOString(), source: null, planType: null, limits: [], overage: null };
   if (metadata.provider === "google" || metadata.provider === "github" || !supportsAiConnectionUsage(metadata.provider, metadata.method)) {
     return { usage: { ...base, status: "unsupported", errorCode: "unsupported", message: messages.unsupported }, retryAfterMs: null };
   }
+  const { signal } = options;
+  const baseRequest = options.request ?? fetch;
+  // An abandoned check (its caller's deadline passed) must never reach the provider.
+  const request: typeof fetch = signal
+    ? (input, init) => { signal.throwIfAborted(); return baseRequest(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal }); }
+    : baseRequest;
   try {
-    const observation = await probes[metadata.provider](credential, options.request ?? fetch);
+    signal?.throwIfAborted();
+    const observation = await probes[metadata.provider](credential, request);
     if (!observation.limits.some((entry) => entry.usedPercent != null || entry.used != null || entry.limit != null || entry.limitReached != null || entry.allowed != null)
       && !Object.values(observation.overage ?? {}).some((value) => typeof value === "number" || typeof value === "boolean")) throw new ProbeFailure("invalid_response");
     return { usage: { ...base, ...observation, status: "ok", checkedAt: new Date().toISOString() }, retryAfterMs: null };
@@ -467,18 +474,30 @@ export function createAiConnectionUsageCache(options: { maxEntries?: number; now
       return entry && entry.expires > now() ? entry.value : undefined;
     },
     /** Returns a cached result, joins an in-flight check, or runs one check. */
-    observe(key: string, probe: () => Promise<{ usage: AiConnectionUsage; retryAfterMs: number | null }>): Promise<AiConnectionUsage> {
+    /**
+     * The probe receives a signal that aborts at the deadline. It must check the
+     * signal after any wait (such as credential resolution) and pass it to the
+     * provider request, so an expired check never calls the provider later.
+     * An expired check never publishes its result either.
+     */
+    observe(key: string, probe: (signal: AbortSignal) => Promise<{ usage: AiConnectionUsage; retryAfterMs: number | null }>): Promise<AiConnectionUsage> {
       const cached = this.peek(key);
       if (cached) return Promise.resolve(cached);
       let pending = inFlight.get(key);
       if (!pending) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const started: Promise<AiConnectionUsage> = Promise.race([
-          probe(),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Usage check timed out")), probeTimeoutMs); }),
-        ])
-          .then(({ usage, retryAfterMs }) => settle(key, usage, retryAfterMs))
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(new Error("Usage check timed out")), probeTimeoutMs);
+        const expired = new Promise<never>((_, reject) => {
+          controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+        });
+        const started: Promise<AiConnectionUsage> = Promise.race([Promise.resolve().then(() => probe(controller.signal)), expired])
+          .then(({ usage, retryAfterMs }) => {
+            controller.signal.throwIfAborted();
+            return settle(key, usage, retryAfterMs);
+          })
           .finally(() => { clearTimeout(timer); if (inFlight.get(key) === started) inFlight.delete(key); });
+        // The abandoned probe may still settle later; its outcome is ignored.
+        expired.catch(() => {});
         pending = started;
         inFlight.set(key, started);
       }
