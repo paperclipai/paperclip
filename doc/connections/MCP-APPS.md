@@ -62,7 +62,7 @@ listing. See [CONNECTION-SEARCH.md](./CONNECTION-SEARCH.md).
 | Agent tool list | Tools whose visibility omits `"model"` are not listed to agents and cannot be called by them. | `isModelVisibleTool` in `server/src/services/tool-gateway.ts` |
 | Recording | Each successful call to a tool with a view stores one `tool_mcp_app_views` row: issue, run, agent, connection, the redacted arguments and the redacted `CallToolResult`. The tool result `_meta` is kept here and never sent to the agent. Recording is best effort and never fails the agent's call. | `server/src/services/mcp-app-views.ts` |
 | API | `GET /api/issues/:issueId/mcp-app-views` lists a task's views. `GET …/:viewId` returns the view, reading the `ui://` document live through the agent's connection. `POST …/:viewId/tool-calls` runs a view's `tools/call`. Reading follows task read access. Tool calls also need the `tools:use` or `tools:manage_connections` permission, and only reach tools of the same connection that allow `"app"`. They go through the same policy, Ask-first approval and audit path as a connection test call. | `server/src/routes/mcp-apps.ts` |
-| Chat | A completed MCP tool row finds its view by run, tool name and arguments, then renders it under the row. | `ui/src/components/mcp-app/` and `TaskChatToolCard.tsx` |
+| Chat | A run's views render with that run's reply, outside the folded tool history, under a "Widget from <app>" label. Views are keyed by the reply's run, so settled history needs no transcript. A task's views load in one request and are indexed by run once. | `ui/src/components/mcp-app/`, `TaskChatRunnerTurn.tsx` and `TaskChatThreadView.tsx` |
 
 ### Sandbox
 
@@ -97,10 +97,10 @@ The host answers view requests as follows:
 | Level | What it proves | Command or location |
 | --- | --- | --- |
 | Shared unit | `_meta.ui` parsing (current and legacy keys, visibility, non-`ui://` rejected), resource parsing (text and base64, mime check), CSP sanitizing | `pnpm exec vitest run packages/shared/src/mcp-apps.test.ts` |
-| UI unit | Host protocol: initialize result, nothing sent before `initialized`, tool input before tool result, `tools/call` proxy and errors, link and method refusals, teardown. CSP placed before the view's markup. Row-to-view matching. | `pnpm exec vitest run ui/src/components/mcp-app/` |
+| UI unit | Host protocol: initialize result, nothing sent before `initialized`, tool input before tool result, `tools/call` proxy and errors, link and method refusals, teardown. CSP placed before the view's markup. The run index at a realistic size. | `pnpm exec vitest run ui/src/components/mcp-app/` |
 | Server integration (embedded Postgres) | Circleback catalog OAuth (DCR) against a fake Circleback server. `ui_meta` stored. An app-only tool is hidden from the agent. An agent call records one view with input, structured content and `_meta`, and a call without a view records none. Routes list the view and serve its document and CSP. A view's tool call works, and a model-only tool is refused. Other tasks, other companies and agent actors are refused. | `pnpm exec vitest run server/src/__tests__/mcp-apps.test.ts` |
-| Storybook | The tool row with its view, the ready view (Refresh calls a tool), loading, view unavailable, and a tool call that needs approval. The fixture view follows the protocol by hand. | `Tasks/MCP App views` (`ui/storybook/stories/tasks/task-chat-mcp-app.stories.tsx`) |
-| Live end to end | Connect Circleback with a real account, ask an agent for a recap of a recent meeting, and check that the chat shows the meeting cards and that clicking a card opens Circleback. | Manual, local `pnpm dev`. Record the result in the PR. |
+| Storybook | The view with the agent's reply, the ready view (Refresh calls a tool), loading, view unavailable, and a tool call that needs approval. The fixture view follows the protocol by hand. | `Tasks/MCP App views` (`ui/storybook/stories/tasks/task-chat-mcp-app.stories.tsx`) |
+| Live end to end | Connect Circleback with a real account and ask an agent for a recap of a recent meeting. Check that the chat shows the meeting cards and that clicking a card opens Circleback. Done on 2026-11-12. The run found the view-size and placement bugs. | Manual, local `pnpm dev` |
 
 ## Limits and follow-ups
 
@@ -108,5 +108,6 @@ The host answers view requests as follows:
   picture-in-picture yet.
 - A view's `ui/message` and `ui/update-model-context` do not reach the agent yet.
 - Views are rendered in the task chat only, not in other transcript surfaces.
+- A view document can be at most 4 MB of HTML. Circleback's is about 3.5 MB.
 - Local stdio MCP servers are recorded the same way, but no stdio provider with
   views has been verified yet.
