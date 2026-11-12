@@ -18,6 +18,9 @@ const PAGE_LIMITS = Array.from({ length: 1001 }, (_, index) => index).flatMap(li
 const cache = new Map<string, ReadonlySet<string>>();
 const CASE_READ_OPERATION = "GET /api/cases/{id}";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CASE_FIRST_PAGES: ReadonlyArray<Record<string, unknown>> = [undefined, "case", "fields"].flatMap(section =>
+  [undefined, ...Array.from({ length: 8 * 1024 - 3 }, (_, index) => index + 4)].flatMap(limitBytes => [undefined, 0].map(offsetBytes => ({
+    ...(section ? { section } : {}), ...(limitBytes !== undefined ? { limitBytes } : {}), ...(offsetBytes !== undefined ? { offsetBytes } : {}) }))));
 const caseReadTool = (name: unknown) => typeof name === "string" && /^(?:[A-Za-z0-9_-]*__)?(?:paperclip_)?read_case$/.test(name);
 
 export interface ApiRead {
@@ -37,9 +40,10 @@ export function apiReadDigests(reads: readonly ApiRead[]): ReadonlySet<string> {
   const digests = new Set<string>();
   for (const read of reads) {
     const queries: Array<Record<string, unknown> | undefined> = [undefined, {}, ...(read.paged ? PAGE_LIMITS : []), ...(read.queries ?? [])];
-    // The dedicated read_case tool saves its own redacted input, `{ caseId }` (a uuid), and reports GET /api/cases/{id}.
+    // The dedicated read_case tool saves its own redacted input and reports GET /api/cases/{id}. Its first page of
+    // the case record or fields is `{ caseId, section?, limitBytes?, offsetBytes: 0? }` (caseReadPageShape).
     if (read.operationId === CASE_READ_OPERATION) for (const pathParams of read.pathParams)
-      if (pathParams?.id && UUID.test(pathParams.id)) digests.add(callApiInputDigest({ caseId: pathParams.id }));
+      if (pathParams?.id && UUID.test(pathParams.id)) for (const page of CASE_FIRST_PAGES) digests.add(callApiInputDigest({ caseId: pathParams.id, ...page }));
     for (const pathParams of read.pathParams) for (const query of queries) {
       digests.add(callApiInputDigest({ operationId: read.operationId, ...(pathParams ? { pathParams } : {}), ...(query ? { query } : {}) }));
       if (!pathParams) digests.add(callApiInputDigest({ operationId: read.operationId, pathParams: {}, ...(query ? { query } : {}) }));
