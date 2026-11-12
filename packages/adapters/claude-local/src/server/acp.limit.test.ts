@@ -16,7 +16,7 @@ function turnFailure(overrides: Partial<AdapterExecutionResult> = {}): AdapterEx
 
 describe("mapClaudeAcpLimitErrorCode", () => {
   it("classifies a session-limit turn failure as provider_quota with the parsed reset time", () => {
-    const now = new Date("2026-09-10T03:18:53.000Z"); // 10:18 in Asia/Bangkok (UTC+7)
+    const now = new Date("2026-09-10T03:18:53.000Z");
     const result = mapClaudeAcpLimitErrorCode(
       turnFailure({
         errorMessage: "Internal error: You've hit your session limit · resets 1:30pm (Asia/Bangkok)",
@@ -25,7 +25,6 @@ describe("mapClaudeAcpLimitErrorCode", () => {
     );
     expect(result.errorCode).toBe("provider_quota");
     expect(result.errorFamily).toBe("provider_quota");
-    // 1:30pm Asia/Bangkok = 06:30 UTC, same day (still ahead of `now`).
     expect(result.retryNotBefore).toBe("2026-09-10T06:30:00.000Z");
     expect(result.resultJson).toMatchObject({
       phase: "turn",
@@ -44,7 +43,7 @@ describe("mapClaudeAcpLimitErrorCode", () => {
       new Date("2026-09-10T03:00:00.000Z"),
     );
     expect(result.errorCode).toBe("provider_quota");
-    expect(result.retryNotBefore).toBe("2026-09-10T21:00:00.000Z"); // 4pm CDT = 21:00 UTC
+    expect(result.retryNotBefore).toBe("2026-09-10T21:00:00.000Z");
   });
 
   it("keeps the quota classification when the message states no reset time", () => {
@@ -65,6 +64,17 @@ describe("mapClaudeAcpLimitErrorCode", () => {
     const input = turnFailure({
       errorCode: "acpx_runtime_error",
       errorMessage: "You've hit your session limit · resets 2pm (Asia/Bangkok)",
+    });
+    expect(mapClaudeAcpLimitErrorCode(input)).toBe(input);
+  });
+
+  it("leaves a typed terminal session failure to the typed classifier", () => {
+    const input = turnFailure({
+      errorMessage: "You've hit your session limit · resets 1:30pm (Asia/Bangkok)",
+      resultJson: {
+        phase: "turn",
+        terminalSessionFailure: { category: "service", title: "You've hit your session limit" },
+      },
     });
     expect(mapClaudeAcpLimitErrorCode(input)).toBe(input);
   });
