@@ -44,7 +44,7 @@ import { withT1CrossingCheck } from "./workloads.js";
 import { parseRecoveryStepReceipts, withRecoveryStepCheck } from "./recovery-step-faults.js";
 import { captureWaveRunnerLogs, executeInWaveSandboxes } from "./daytona-runner-logs.js";
 import { isClassRFault, killedPidsFromOutput, providerKillCommand, watchLabels, withClassRCheck, type ProviderKillRecord } from "./class-r.js";
-import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
+import { TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { planStagingMixWave } from "./staging-mix.js";
@@ -54,6 +54,7 @@ import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
+import { ReleaseSwapWave, stormRunFor } from "./release-swap-setup.js";
 import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
 import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
@@ -462,6 +463,7 @@ async function main(): Promise<number> {
         };
       } });
     spendTarget = { api, companyId: lab.companyId };
+    const releaseSwap = plan.options.releaseSwap ? await ReleaseSwapWave.start({ plan, lab, api, timeline, supervisor, databaseUrl: waveDatabaseUrl(), cancelled: () => interrupted }) : null;
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
     if (plan.options.dbPressure) {
       pressure = new RunRowPressure(waveDatabaseUrl(), lab.companyId, plan.options.dbPressure).start();
@@ -479,8 +481,7 @@ async function main(): Promise<number> {
     const active: TaskObserver[] = [];
     const lastPoll = new Map<TaskObserver, number>();
     let lastDoneAt = Date.now();
-    // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
-    const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
+    const storm = stormRunFor(plan, Date.now());
     if (storageProxy && (plan.options.storageWindows?.length || plan.options.storageFaults?.length)) {
       const windows = plan.options.storageWindows ?? planStorageFaults({ kinds: plan.options.storageFaults!, seed: plan.seed,
         spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
@@ -651,12 +652,12 @@ async function main(): Promise<number> {
         }
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress && !storageTrigger?.busy && !nativeTrigger?.busy
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && (supervisor.serverReady && !supervisor.faultInProgress || releaseSwap?.driver.launchOpen === true) && !storageTrigger?.busy && !nativeTrigger?.busy
         && (!storm || storm.mayLaunch(Date.now())) && (!mix || mix.mayLaunch(Date.now(), pending[0]!.plan))
         // `--matrix`: no-fault baselines never share the server with a fault cell.
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
-        launched.push(next);
+        launched.push(next); releaseSwap?.noteLaunch(next);
         launching = next.launch().finally(() => { launching = null; });
         await launching;
         if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
@@ -768,6 +769,7 @@ async function main(): Promise<number> {
       for (const observer of launched) observer.markUnfinished();
     }
 
+    if (releaseSwap && !(await releaseSwap.finish({ board, observers, launched, waveDir }))) anyFailure = true;
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
@@ -985,7 +987,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [await readFile(path.join(waveDir, "release-swap-summary.md"), "utf8").catch(() => null), summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }
