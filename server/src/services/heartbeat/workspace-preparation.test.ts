@@ -1,3 +1,5 @@
+import { readIsolatedTaskPath } from "../isolated-task-paths.js";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile, access, rename, symlink } from "node:fs/promises";
