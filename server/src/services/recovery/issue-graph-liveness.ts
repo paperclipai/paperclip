@@ -159,21 +159,21 @@ interface IssueGraphLivenessIndex {
   agentsById: Map<string, IssueLivenessAgentInput>;
   eligibility(agent: IssueLivenessAgentInput): AgentWorkEligibility;
   isInvokable(agent: IssueLivenessAgentInput | null | undefined): boolean;
-  invokableAgents(companyId: string): IssueLivenessAgentInput[];
-  activeRuns(issue: IssueLivenessIssueInput): IssueLivenessExecutionPathInput[];
-  queuedWakeRequests(issue: IssueLivenessIssueInput): IssueLivenessExecutionPathInput[];
-  pendingInteractions(issue: IssueLivenessIssueInput): IssueLivenessWaitingPathInput[];
-  pendingApprovals(issue: IssueLivenessIssueInput): IssueLivenessWaitingPathInput[];
-  externalResponseWaits(issue: IssueLivenessIssueInput): IssueLivenessWaitingPathInput[];
-  openRecoveryIssues(issue: IssueLivenessIssueInput): IssueLivenessWaitingPathInput[];
+  invokableAgents(companyId: string): readonly IssueLivenessAgentInput[];
+  activeRuns(issue: IssueLivenessIssueInput): readonly IssueLivenessExecutionPathInput[];
+  queuedWakeRequests(issue: IssueLivenessIssueInput): readonly IssueLivenessExecutionPathInput[];
+  pendingInteractions(issue: IssueLivenessIssueInput): readonly IssueLivenessWaitingPathInput[];
+  pendingApprovals(issue: IssueLivenessIssueInput): readonly IssueLivenessWaitingPathInput[];
+  externalResponseWaits(issue: IssueLivenessIssueInput): readonly IssueLivenessWaitingPathInput[];
+  openRecoveryIssues(issue: IssueLivenessIssueInput): readonly IssueLivenessWaitingPathInput[];
 }
 
-const NO_PATHS: never[] = [];
+const NO_PATHS: readonly never[] = Object.freeze([]);
 
 /** The paths of one task, in the order the input lists them. */
 function pathsByIssue<Path extends { companyId: string; issueId: string | null }>(
   paths: Path[] | undefined,
-): (issue: IssueLivenessIssueInput) => Path[] {
+): (issue: IssueLivenessIssueInput) => readonly Path[] {
   let byIssueId: Map<string, Path[]> | null = null;
   return (issue) => {
     if (!paths || paths.length === 0) return NO_PATHS;
@@ -357,7 +357,7 @@ function reviewPaths(
   }
 
   const appendExecutionPaths = (
-    entries: IssueLivenessExecutionPathInput[],
+    entries: readonly IssueLivenessExecutionPathInput[],
     kind: "active_run" | "queued_wake",
   ) => {
     for (const entry of entries) {
@@ -374,7 +374,7 @@ function reviewPaths(
   appendExecutionPaths(index.queuedWakeRequests(issue), "queued_wake");
 
   const appendWaitingPaths = (
-    entries: IssueLivenessWaitingPathInput[],
+    entries: readonly IssueLivenessWaitingPathInput[],
     kind: "interaction" | "approval" | "recovery" | "external_response",
   ) => {
     for (const entry of entries) {
