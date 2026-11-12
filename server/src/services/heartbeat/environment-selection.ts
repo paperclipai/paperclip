@@ -1,5 +1,5 @@
 import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
-import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
+import { heartbeatExternalProvider, heartbeatRunIsControllerOnly, nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
 import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
@@ -109,7 +109,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   // This retained name covers both external bridges; neither adopts task files.
   const isDotRun = heartbeatExternalProvider({ run, agent }) !== null;
   const providerApiPlacement = resolveProviderApiPlacement({ run, agent });
-  const controllerOnly = isDotRun || providerApiPlacement !== null;
+  // Shared with assignment admission, which must skip the same file-access gate.
+  const controllerOnly = heartbeatRunIsControllerOnly({ run, agent });
   const persistedNativeExecutionWorkspaceId =
     providerApiPlacement ? null : persistedNativeExecutionInput?.binding.executionWorkspaceId ?? null;
   const fresh = input.task.freshWorkspace?.mode === "fresh_isolated_workspace";

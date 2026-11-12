@@ -11,6 +11,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ProjectAccessDeniedError } from "./project-access-denial.js";
 import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection } from "@paperclipai/shared";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
+import { heartbeatRunIsControllerOnly } from "./heartbeat/external-provider.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -134,7 +135,9 @@ export function projectSuppliesWorkspaceFiles(db: Db | DbTransaction, companyId:
  * Like run setup, a bound or selected workspace (or its source) requires
  * access to its project, and then the task project is checked as the task's
  * container. Without a binding, the task project is checked only when it
- * supplies workspace files and the run does not use a task directory. */
+ * supplies workspace files and the run does not use a task directory. An agent
+ * whose runs never adopt task files (an external controller or a provider API
+ * placement) skips the check, exactly as run setup does. */
 export async function assertAssigneeCanAccessTaskProject(
   db: Db | DbTransaction,
   task: { companyId: string; assigneeAgentId: string | null | undefined; projectId?: string | null;
@@ -146,6 +149,7 @@ export async function assertAssigneeCanAccessTaskProject(
   const { companyId, assigneeAgentId } = task;
   if (!assigneeAgentId) return;
   const projectId = task.projectId ?? null;
+  if (await assigneeRunsAreControllerOnly(db, companyId, assigneeAgentId)) return;
   const [requirement] = await resolveTaskWorkspaceProjects(db, companyId, [{
     projectId, executionWorkspaceId: task.executionWorkspaceId ?? null, projectWorkspaceId: task.projectWorkspaceId ?? null,
     workspaceSelection: task.workspaceSelection ?? null, workspacePendingSelection: task.workspacePendingSelection ?? null,
@@ -173,6 +177,19 @@ export async function assertAssigneeCanAccessTaskProject(
         + "as a project access member, or choose another assignee or project.",
       { code: "agent_not_assignable", reason: "assignee_lacks_project_access", companyId, assigneeAgentId },
     );
+  }
+}
+
+async function assigneeRunsAreControllerOnly(db: Db | DbTransaction, companyId: string, agentId: string) {
+  const [agent] = await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
+  if (!agent) return false;
+  // A new run has no persisted execution input yet; its placement follows the agent.
+  try {
+    return heartbeatRunIsControllerOnly({ run: { runtimeMode: null, runnerProfileJson: null }, agent });
+  } catch {
+    // An incomplete provider contract fails at run setup; keep the access check.
+    return false;
   }
 }
 
