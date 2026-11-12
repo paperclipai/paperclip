@@ -420,6 +420,19 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
   });
 
+  // Full chat cohort 5: the cancel summary named only withdraw for agents, so an agent asked to decline a card the person
+  // created left it pending. Withdraw is for the agent's own obsolete card; a person's decline goes to resolve-from-comment.
+  it("points agents to resolve-from-comment to record a person's decline and keeps withdraw for their own obsolete card", () => {
+    const spec = buildOpenApiSpec() as any;
+    const interaction = "/api/issues/{id}/interactions/{interactionId}";
+    for (const summary of [spec.paths[`${interaction}/cancel`].post.summary, spec.paths[`${interaction}/withdraw`].post.summary]) {
+      expect(summary).toContain("only for the agent's own obsolete card");
+      expect(summary).toContain(`POST ${interaction}/resolve-from-comment`);
+      expect(summary).toContain("when the card's resolver policy allows");
+    }
+    expect(spec.paths[`${interaction}/resolve-from-comment`].post.summary).toContain("including a decline of a card the person created");
+  });
+
   it("documents the owned pending-question read as canonical attention items without client scope overrides", () => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths["/api/issues/{id}/pending-questions"].get;
@@ -816,7 +829,7 @@ describe("openapi routes", () => {
     expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"]
         .post.summary,
-    ).toBe("Withdraw a pending issue thread interaction");
+    ).toMatch(/^Withdraw a pending issue thread interaction\. /);
     const createInteraction =
       res.body.paths["/api/issues/{id}/interactions"].post;
     expect(createInteraction.description).toContain(
