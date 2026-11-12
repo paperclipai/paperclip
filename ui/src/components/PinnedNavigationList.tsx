@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTx } from "@/i18n/tx";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -9,6 +10,7 @@ import { cn } from "@/lib/utils";
 export interface PinnedNavigationItem { key: string; to: string; label: string; icon: ReactNode }
 
 function PinnedItem({ item, rail, onUnpin }: { item: PinnedNavigationItem; rail: boolean; onUnpin: (key: string) => void }) {
+  const tx = useTx();
   const sortable = useSortable({ id: item.key, disabled: rail, transition: null });
   return <div ref={sortable.setNodeRef} style={{ transform: CSS.Transform.toString(sortable.transform) }}
     className={cn("group/coordinator-pin relative select-none", !sortable.isDragging && "motion-safe:transition-transform", sortable.isDragging && "z-10 opacity-80")}
@@ -18,7 +20,7 @@ function PinnedItem({ item, rail, onUnpin }: { item: PinnedNavigationItem; rail:
       onMouseDown={event => event.stopPropagation()} onClick={() => onUnpin(item.key)}
       className="absolute right-10 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100 pointer-coarse:opacity-100"><PinOff className="size-3.5" /></button>}
     {!rail && <button ref={sortable.setActivatorNodeRef} type="button" {...sortable.attributes} {...sortable.listeners}
-      aria-label={`Reorder pinned ${item.label}`} title={`Drag to reorder ${item.label}`}
+      aria-label={`${tx("Reorder pinned")} ${item.label}`} title={`${tx("Drag to reorder")} ${item.label}`}
       className="absolute right-3 top-1/2 flex size-7 -translate-y-1/2 touch-none cursor-grab items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity active:cursor-grabbing hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100 pointer-coarse:opacity-100"><GripVertical className="size-3.5" /></button>}
   </div>;
 }

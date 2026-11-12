@@ -35,6 +35,7 @@ import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
+import { useTx } from "@/i18n/tx";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 type ToolActivity = Extract<Activity, { kind: "tool" }>;
@@ -590,6 +591,7 @@ export function TaskChatRunnerActivityGroup({
   item: TaskChatActivityPhaseItem;
   defaultExpanded?: boolean;
 }) {
+  const tx = useTx();
   const [expanded, setExpanded] = useTaskChatExpansion(
     item.id,
     defaultExpanded,
@@ -646,8 +648,8 @@ export function TaskChatRunnerActivityGroup({
                 <span className="flex size-5 shrink-0 items-center justify-center">
                   <SummaryIcon className="size-3.5" aria-hidden="true" />
                 </span>
-                <span className="truncate" title={summary.fullLabel}>
-                  {summary.label}
+                <span className="truncate" title={tx(summary.fullLabel)}>
+                  {tx(summary.label)}
                 </span>
               </span>
             ) : expanded ? (

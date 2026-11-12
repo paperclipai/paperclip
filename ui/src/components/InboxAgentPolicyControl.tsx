@@ -11,6 +11,7 @@ import { isAgentTaskTarget } from "@/lib/company-members";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { Button } from "@/components/ui/button";
 import { RadioCardGroup, type RadioCardOption } from "@/components/ui/radio-card";
+import { useTx } from "@/i18n/tx";
 
 const MODE_OPTIONS: RadioCardOption[] = [
   {
@@ -47,6 +48,7 @@ interface Draft {
  * "Archived by …" attribution live elsewhere (inbox rows / properties pane).
  */
 export function InboxAgentPolicyControl({ companyId }: { companyId: string | null | undefined }) {
+  const tx = useTx();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<Draft | null>(null);
   const lastServerKeyRef = useRef<string | null>(null);
@@ -126,33 +128,38 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
   }
 
   if (policyQuery.isLoading || policyView.kind === "reconnecting" || !draft) {
-    return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
+    return <div className="text-sm text-muted-foreground">{tx("Loading inbox agent policy…")}</div>;
   }
 
+  const modeOptions = MODE_OPTIONS.map((option) => ({
+    ...option,
+    title: tx(option.title),
+    description: option.description ? tx(option.description) : undefined,
+  }));
+
   return (
-    <section className="space-y-4" aria-label="Let agents tidy my inbox">
+    <section className="space-y-4" aria-label={tx("Let agents tidy my inbox")}>
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Inbox className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Let agents tidy my inbox</h2>
+          <h2 className="text-base font-semibold">{tx("Let agents tidy my inbox")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Choose whether the agents you manage may archive tasks out of your inbox on your behalf. You can
-          undo any archive, and every agent archive is attributed in the task&apos;s properties.
+          {tx("Choose whether the agents you manage may archive tasks out of your inbox on your behalf. You can undo any archive, and every agent archive is attributed in the task's properties.")}
         </p>
       </div>
 
       <RadioCardGroup
-        ariaLabel="Inbox agent archiving policy"
+        ariaLabel={tx("Inbox agent archiving policy")}
         value={draft.mode}
         onValueChange={(value) => setDraft((current) => (current ? { ...current, mode: value as InboxAgentPolicyMode } : current))}
-        options={MODE_OPTIONS}
+        options={modeOptions}
         className="max-w-2xl"
       />
 
       {draft.mode === "allowlist" ? (
         <div className="max-w-2xl space-y-2">
-          <div className="text-sm font-medium">Agents allowed to tidy my inbox</div>
+          <div className="text-sm font-medium">{tx("Agents allowed to tidy my inbox")}</div>
           <AgentMultiSelect
             agents={agentOptions}
             selectedAgentIds={selectedAgentIds}
@@ -168,7 +175,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
             }
             triggerFullWidth={false}
             showSelectionPreview={false}
-            emptyMessage="You don’t manage any agents yet."
+            emptyMessage={tx("You don’t manage any agents yet.")}
           />
         </div>
       ) : null}
@@ -181,7 +188,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
 
       <div className="flex max-w-2xl items-center justify-end gap-3">
         {updateMutation.isSuccess && !isDirty ? (
-          <span className="text-xs text-muted-foreground" role="status">Saved</span>
+          <span className="text-xs text-muted-foreground" role="status">{tx("Saved")}</span>
         ) : null}
         <Button
           type="button"

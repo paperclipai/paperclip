@@ -29,6 +29,7 @@ import {
   type JsonSchemaNode,
 } from "@/components/JsonSchemaForm";
 import { describeError } from "@/api/errors";
+import { useTx } from "@/i18n/tx";
 import { QueryErrorState, QueryPlaceholder, useQueryView } from "@/components/QueryView";
 
 /**
@@ -67,6 +68,7 @@ export function PluginSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
   const { hideHostPaths } = useManagedSandboxOnly();
+  const tx = useTx();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
   const pluginQuery = useQuery({
@@ -139,7 +141,7 @@ export function PluginSettings() {
   }, [pluginId]);
 
   if (pluginView.kind === "loading" || pluginView.kind === "reconnecting") {
-    return <QueryPlaceholder size="page" label="Loading plugin details" className="p-4" />;
+    return <QueryPlaceholder size="page" label={tx("Loading plugin details")} className="p-4" />;
   }
 
   // A failed load must not bounce the operator back to the plugin list: a
@@ -286,7 +288,7 @@ export function PluginSettings() {
                 />
               ) : environmentDrivers.length > 0 ? (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">Configure this plugin from Settings → Environments.</p>
+                  <p className="font-medium text-foreground">{tx("Configure this plugin from Settings → Environments.")}</p>
                   <p className="mt-1 text-muted-foreground">
                     {driverLabel || "This plugin"} registers environment runtime settings there so the execution target
                     stays instance-scoped while secret bindings still resolve through the selected organization context.
@@ -299,7 +301,7 @@ export function PluginSettings() {
                 </div>
               ) : !hasLocalFolders ? (
                 <p className="text-sm text-muted-foreground">
-                  This plugin does not require any settings.
+                  {tx("This plugin does not require any settings.")}
                 </p>
               ) : null}
             </section>
@@ -313,10 +315,10 @@ export function PluginSettings() {
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-1.5">
                     <Cpu className="h-4 w-4" />
-                    Runtime Dashboard
+                    {tx("Runtime Dashboard")}
                   </CardTitle>
                   <CardDescription>
-                    Worker process, scheduled jobs, and webhook deliveries
+                    {tx("Worker process, scheduled jobs, and webhook deliveries")}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
@@ -325,7 +327,7 @@ export function PluginSettings() {
                       <div>
                         <h3 className="text-sm font-medium mb-3 flex items-center gap-1.5">
                           <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
-                          Worker Process
+                          {tx("Worker Process")}
                         </h3>
                         {dashboardData.worker ? (
                           <div className="grid grid-cols-2 gap-3 text-sm">
@@ -344,7 +346,7 @@ export function PluginSettings() {
                               <span className="text-xs">{formatUptime(dashboardData.worker.uptime)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Pending RPCs</span>
+                              <span className="text-muted-foreground">{tx("Pending RPCs")}</span>
                               <span className="text-xs">{dashboardData.worker.pendingRequests}</span>
                             </div>
                             {dashboardData.worker.totalCrashes > 0 && (
@@ -352,15 +354,15 @@ export function PluginSettings() {
                                 <div className="flex justify-between col-span-2">
                                   <span className="text-muted-foreground flex items-center gap-1">
                                     <AlertTriangle className="h-3 w-3 text-amber-500" />
-                                    Crashes
+                                    {tx("Crashes")}
                                   </span>
                                   <span className="text-xs">
-                                    {dashboardData.worker.consecutiveCrashes} consecutive / {dashboardData.worker.totalCrashes} total
+                                    {dashboardData.worker.consecutiveCrashes} {tx("consecutive /")} {dashboardData.worker.totalCrashes} {tx("total")}
                                   </span>
                                 </div>
                                 {dashboardData.worker.lastCrashAt && (
                                   <div className="flex justify-between col-span-2">
-                                    <span className="text-muted-foreground">Last Crash</span>
+                                    <span className="text-muted-foreground">{tx("Last Crash")}</span>
                                     <span className="text-xs">{formatTimestamp(dashboardData.worker.lastCrashAt)}</span>
                                   </div>
                                 )}
@@ -368,7 +370,7 @@ export function PluginSettings() {
                             )}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No worker process registered.</p>
+                          <p className="text-sm text-muted-foreground italic">{tx("No worker process registered.")}</p>
                         )}
                       </div>
 
@@ -377,7 +379,7 @@ export function PluginSettings() {
                       <div>
                         <h3 className="text-sm font-medium mb-3 flex items-center gap-1.5">
                           <CalendarClock className="h-3.5 w-3.5 text-muted-foreground" />
-                          Recent Job Runs
+                          {tx("Recent Job Runs")}
                         </h3>
                         {dashboardData.recentJobRuns.length > 0 ? (
                           <div className="space-y-2">
@@ -403,7 +405,7 @@ export function PluginSettings() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No job runs recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">{tx("No job runs recorded yet.")}</p>
                         )}
                       </div>
 
@@ -412,7 +414,7 @@ export function PluginSettings() {
                       <div>
                         <h3 className="text-sm font-medium mb-3 flex items-center gap-1.5">
                           <Webhook className="h-3.5 w-3.5 text-muted-foreground" />
-                          Recent Webhook Deliveries
+                          {tx("Recent Webhook Deliveries")}
                         </h3>
                         {dashboardData.recentWebhookDeliveries.length > 0 ? (
                           <div className="space-y-2">
@@ -435,18 +437,18 @@ export function PluginSettings() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No webhook deliveries recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">{tx("No webhook deliveries recorded yet.")}</p>
                         )}
                       </div>
 
                       <div className="flex items-center gap-1.5 border-t border-border/50 pt-2 text-xs text-muted-foreground">
                         <Clock className="h-3 w-3" />
-                        Last checked: {new Date(dashboardData.checkedAt).toLocaleTimeString()}
+                        {tx("Last checked:")} {new Date(dashboardData.checkedAt).toLocaleTimeString()}
                       </div>
                     </>
                   ) : (
                     <p className="text-sm text-muted-foreground">
-                      Runtime diagnostics are unavailable right now.
+                      {tx("Runtime diagnostics are unavailable right now.")}
                     </p>
                   )}
                 </CardContent>
@@ -457,9 +459,9 @@ export function PluginSettings() {
                   <CardHeader>
                     <CardTitle className="text-base flex items-center gap-1.5">
                       <ActivitySquare className="h-4 w-4" />
-                      Recent Logs
+                      {tx("Recent Logs")}
                     </CardTitle>
-                    <CardDescription>Last {recentLogs.length} log entries</CardDescription>
+                    <CardDescription>{tx("Last")} {recentLogs.length} {tx("log entries")}</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs">
@@ -492,16 +494,16 @@ export function PluginSettings() {
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-1.5">
                     <ActivitySquare className="h-4 w-4" />
-                    Health Status
+                    {tx("Health Status")}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   {healthLoading ? (
-                    <p className="text-sm text-muted-foreground">Checking health...</p>
+                    <p className="text-sm text-muted-foreground">{tx("Checking health...")}</p>
                   ) : healthData ? (
                     <div className="space-y-4 text-sm">
                       <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Overall</span>
+                        <span className="text-muted-foreground">{tx("Overall")}</span>
                         <Badge variant={healthData.healthy ? "default" : "destructive"}>
                           {healthData.status}
                         </Badge>
@@ -533,10 +535,10 @@ export function PluginSettings() {
                   ) : (
                     <div className="space-y-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
-                        <span>Lifecycle</span>
+                        <span>{tx("Lifecycle")}</span>
                         <Badge variant={statusVariant}>{displayStatus}</Badge>
                       </div>
-                      <p>Health checks run once the plugin is ready.</p>
+                      <p>{tx("Health checks run once the plugin is ready.")}</p>
                       {plugin.lastError ? (
                         <div className="break-words rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive">
                           {plugin.lastError}
@@ -553,15 +555,15 @@ export function PluginSettings() {
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
                   <div className="flex justify-between gap-3">
-                    <span>Plugin ID</span>
+                    <span>{tx("Plugin ID")}</span>
                     <span className="font-mono text-xs text-right">{plugin.id}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>Plugin Key</span>
+                    <span>{tx("Plugin Key")}</span>
                     <span className="font-mono text-xs text-right">{plugin.pluginKey}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>NPM Package</span>
+                    <span>{tx("NPM Package")}</span>
                     <span className="max-w-(--sz-170px) truncate text-right text-xs" title={plugin.packageName}>
                       {plugin.packageName}
                     </span>
@@ -590,7 +592,7 @@ export function PluginSettings() {
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
+                    <p className="text-sm text-muted-foreground italic">{tx("No special permissions requested.")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -613,6 +615,7 @@ interface PluginLocalFoldersSettingsProps {
 }
 
 function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: PluginLocalFoldersSettingsProps) {
+  const tx = useTx();
   const foldersQuery = useQuery({
     queryKey: companyId
       ? queryKeys.plugins.localFolders(pluginId, companyId)
@@ -628,7 +631,7 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
   if (!companyId) {
     return (
       <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-        Select an organization to configure this plugin's local folders.
+        {tx("Select an organization to configure this plugin's local folders.")}
       </div>
     );
   }
@@ -637,7 +640,7 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <FolderOpen className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Local folders</h3>
+        <h3 className="text-sm font-medium">{tx("Local folders")}</h3>
       </div>
       {foldersView.kind === "error" ? (
         <QueryErrorState
@@ -649,7 +652,7 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
         />
       ) : null}
       {foldersView.kind === "loading" || foldersView.kind === "reconnecting" ? (
-        <QueryPlaceholder size="panel" label="Loading local folders" className="py-3" />
+        <QueryPlaceholder size="panel" label={tx("Loading local folders")} className="py-3" />
       ) : (
         <div className="space-y-3">
           {declarations.map((declaration) => (
@@ -675,6 +678,7 @@ interface PluginLocalFolderRowProps {
 }
 
 function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: PluginLocalFolderRowProps) {
+  const tx = useTx();
   const queryClient = useQueryClient();
   const serverPath = status?.path ?? "";
   const [pathValue, setPathValue] = useState(serverPath);
@@ -760,7 +764,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 
       {status?.path ? (
         <div className="space-y-1 text-sm">
-          <div className="text-xs font-medium text-muted-foreground">Configured path</div>
+          <div className="text-xs font-medium text-muted-foreground">{tx("Configured path")}</div>
           <div className="break-all rounded-md bg-muted/60 px-2 py-1.5 font-mono text-xs text-foreground">
             {status.path}
           </div>
@@ -769,7 +773,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 
       <div className="space-y-1.5">
         <label className="text-xs font-medium text-muted-foreground" htmlFor={`local-folder-${declaration.folderKey}`}>
-          Local folder path
+          {tx("Local folder path")}
         </label>
         <div className="flex items-center gap-2">
           <input
@@ -802,7 +806,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 
       {status?.problems?.length ? (
         <div className="space-y-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <div className="font-medium">Validation problems</div>
+          <div className="font-medium">{tx("Validation problems")}</div>
           <ul className="space-y-1">
             {status.problems.map((problem, index) => (
               <li key={`${problem.code}:${problem.path ?? ""}:${index}`}>
@@ -822,7 +826,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
               : "border-destructive/20 bg-destructive/10 text-destructive"
           }`}
         >
-          {message.text}
+          {tx(message.text)}
         </div>
       ) : null}
     </div>
@@ -830,9 +834,10 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 }
 
 function FolderStatusMetric({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+  const tx = useTx();
   return (
     <div className="flex items-center justify-between rounded-md border border-border/60 px-2.5 py-2">
-      <span className="text-muted-foreground">{label}</span>
+      <span className="text-muted-foreground">{tx(label)}</span>
       <Badge variant={ok ? "default" : "secondary"}>{value}</Badge>
     </div>
   );
@@ -893,10 +898,11 @@ function RequirementList({
   missingLabel: string;
   inspectionUnavailable?: boolean;
 }) {
+  const tx = useTx();
   return (
     <div className="space-y-2 rounded-md border border-border/60 px-3 py-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">{title}</span>
+        <span className="text-xs font-medium text-muted-foreground">{tx(title)}</span>
         {inspectionUnavailable ? (
           <Badge variant="secondary" className="text-(length:--text-nano)">
             Not inspected
@@ -930,12 +936,12 @@ function RequirementList({
           })}
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">None declared.</p>
+        <p className="text-xs text-muted-foreground">{tx("None declared.")}</p>
       )}
       {inspectionUnavailable ? (
-        <p className="text-xs text-amber-700 dark:text-amber-300">Configured root was not inspected.</p>
+        <p className="text-xs text-amber-700 dark:text-amber-300">{tx("Configured root was not inspected.")}</p>
       ) : missingItems.length > 0 ? (
-        <p className="text-xs text-destructive">{missingLabel}: {missingItems.join(", ")}</p>
+        <p className="text-xs text-destructive">{tx(missingLabel)}: {missingItems.join(", ")}</p>
       ) : null}
     </div>
   );
@@ -973,6 +979,7 @@ interface PluginConfigFormProps {
  * re-renders on field changes, not the entire page.
  */
 function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+  const tx = useTx();
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -1082,7 +1089,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading configuration...
+        {tx("Loading configuration...")}
       </div>
     );
   }
@@ -1106,7 +1113,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
               : "text-destructive bg-destructive/10 border-destructive/20"
           }`}
         >
-          {saveMessage.text}
+          {tx(saveMessage.text)}
         </div>
       )}
 
@@ -1118,7 +1125,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
               : "text-destructive bg-destructive/10 border-destructive/20"
           }`}
         >
-          {testResult.text}
+          {tx(testResult.text)}
         </div>
       )}
 

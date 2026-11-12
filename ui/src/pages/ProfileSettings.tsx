@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { describeError } from "@/api/errors";
+import { useTx } from "@/i18n/tx";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -32,6 +33,7 @@ export function ProfileSettings() {
   const [name, setName] = useState("");
   const [image, setImage] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const tx = useTx();
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -128,7 +130,7 @@ export function ProfileSettings() {
   });
 
   if (sessionQuery.isLoading || sessionView.kind === "reconnecting") {
-    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
+    return <div className="text-sm text-muted-foreground">{tx("Loading profile...")}</div>;
   }
 
   if (sessionView.kind === "error") {
@@ -144,7 +146,7 @@ export function ProfileSettings() {
   }
 
   if (!sessionQuery.data) {
-    return <div className="text-sm text-destructive">Failed to load profile.</div>;
+    return <div className="text-sm text-destructive">{tx("Failed to load profile.")}</div>;
   }
 
   const currentName = name.trim() || sessionQuery.data.user.name || "Board";
@@ -152,24 +154,24 @@ export function ProfileSettings() {
   const initials = deriveInitials(currentName);
   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
   const uploadHint = selectedCompany
-    ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
-    : "Select an organization to upload an avatar into Paperclip storage.";
+    ? `${tx("Stored in Paperclip file storage for ")}${selectedCompany.name}.`
+    : tx("Select an organization to upload an avatar into Paperclip storage.");
 
   return (
     <div className="max-w-6xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Profile</h1>
+          <h1 className="text-lg font-semibold">{tx("Profile")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Control how your account appears in the sidebar and other board surfaces.
+          {tx("Control how your account appears in the sidebar and other board surfaces.")}
         </p>
       </div>
 
       {actionError ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {actionError}
+          {tx(actionError)}
         </div>
       ) : null}
 
@@ -237,7 +239,7 @@ export function ProfileSettings() {
                   <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? "No email"}</p>
                 </div>
                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Click the avatar to upload a new image. {uploadHint}
+                  {tx("Click the avatar to upload a new image.")} {uploadHint}
                 </p>
               </div>
             </div>
@@ -261,7 +263,7 @@ export function ProfileSettings() {
               placeholder="Board"
             />
             <p className="text-xs text-muted-foreground">
-              Shown in the sidebar account footer and comment author surfaces.
+              {tx("Shown in the sidebar account footer and comment author surfaces.")}
             </p>
           </div>
 
@@ -274,7 +276,7 @@ export function ProfileSettings() {
               disabled
             />
             <p className="text-xs text-muted-foreground">
-              Email is managed by your auth session and is read-only here.
+              {tx("Email is managed by your auth session and is read-only here.")}
             </p>
           </div>
 
