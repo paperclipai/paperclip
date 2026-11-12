@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, budgetPolicies, companies, createDb } from "@paperclipai/db";
-import { AccountingContentionError } from "../services/accounting-transaction.js";
+import { AccountingContentionError, accountingRetryDelayMs } from "../services/accounting-transaction.js";
 import { budgetService } from "../services/budgets.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -12,6 +12,18 @@ describe("accounting contention message", () => {
     expect(error.status).toBe(503);
     expect(error.message).not.toMatch(/\brun\b/i);
     expect(error.message).toMatch(/budget/i);
+  });
+});
+
+describe("accounting retry delay", () => {
+  it("doubles from 20 ms, randomizes between half and the full ceiling, and caps at 400 ms", () => {
+    const low = () => 0;
+    const high = () => 1;
+    expect([0, 1, 2, 3, 4, 5, 6].map((attempt) => accountingRetryDelayMs(attempt, high)))
+      .toEqual([20, 40, 80, 160, 320, 400, 400]);
+    expect([0, 1, 2, 3, 4, 5, 6].map((attempt) => accountingRetryDelayMs(attempt, low)))
+      .toEqual([10, 20, 40, 80, 160, 200, 200]);
+    expect(accountingRetryDelayMs(2, () => 0.5)).toBe(60);
   });
 });
 
