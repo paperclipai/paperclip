@@ -94,7 +94,7 @@ import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
-import { currentGitHubTokenBinding, loadGitHubTokenAccount, recordGitHubTokenAccount } from "./github-token-account.js";
+import { loadGitHubTokenAccount, recordGitHubTokenAccount } from "./github-token-account.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import {
   emitConnectionCreated,
@@ -2239,6 +2239,9 @@ export function toolAccessService(
       [];
     const credentialRefs: McpConnectionCredentialRef[] = [];
     const createdSecretIds: string[] = [];
+    // The exact version each credential was written as, so a token's account is
+    // bound to the token this setup submitted, not whatever version is current.
+    const writtenSecretVersions = new Map<string, number>();
     const createdDefinitionIds: string[] = [];
     // Personal consent belongs to the authenticated responsible user. A delegated
     // agent is recorded separately and never becomes the account owner.
@@ -2338,6 +2341,7 @@ export function toolAccessService(
         const { secret } = written;
         if (written.definitionId) createdDefinitionIds.push(written.definitionId);
         createdSecretIds.push(secret.id);
+        writtenSecretVersions.set(secret.id, secret.latestVersion);
         credentialSecretRefs.push({
           secretId: secret.id,
           versionSelector: "latest",
@@ -2977,19 +2981,21 @@ export function toolAccessService(
         galleryEntry?.slug,
         credentialSecretRefs,
         credentialValues,
+        writtenSecretVersions,
       );
-      // Setup is verified, so a credential the agent's grant no longer uses can
-      // go, unless something else (another grant, connection, or consumer)
-      // still resolves it.
+      const [application] = await db
+        .select()
+        .from(toolApplications)
+        .where(eq(toolApplications.id, applicationRow.id));
+      // Setup is verified and nothing below can roll it back, so a credential
+      // the agent's grant no longer uses can go, unless something else (another
+      // grant, connection, or consumer) still resolves it. Deleting it earlier
+      // would let a rollback restore a grant that points at a deleted secret.
       await removeReplacedGrantSecrets(
         connectionRow,
         replacedGrantSecretRefs,
         credentialSecretRefs,
       ).catch(() => undefined);
-      const [application] = await db
-        .select()
-        .from(toolApplications)
-        .where(eq(toolApplications.id, applicationRow.id));
       return {
         connectionId: refresh.connection.id,
         application: toApplication(application),
@@ -3691,6 +3697,7 @@ export function toolAccessService(
     sourceTemplateKey: unknown,
     credentialSecretRefs: CreateToolConnection["credentialSecretRefs"],
     credentialValues: Record<string, string | undefined>,
+    writtenSecretVersions: ReadonlyMap<string, number>,
   ) {
     if (sourceTemplateKey !== "github") return;
     const token = credentialValues["credentials.authorization"]?.trim();
@@ -3711,8 +3718,13 @@ export function toolAccessService(
       grant.credentialSecretRefs.some((ref) => ref.secretId === tokenRef.secretId),
     );
     if (holders.length === 0) return;
-    // The token was just written, so its current version is this token's.
-    const binding = await currentGitHubTokenBinding(db, connection.companyId, tokenRef.secretId);
+    // Bind the account to the version this token was written as. Reading the
+    // current version instead could label an older submitted token with a
+    // concurrent reconnect's version; the conditional write below then rejects
+    // the record whenever this version is no longer current.
+    const writtenVersion = writtenSecretVersions.get(tokenRef.secretId);
+    if (writtenVersion === undefined) return;
+    const binding = { secretId: tokenRef.secretId, secretVersion: writtenVersion };
     const account = await loadGitHubTokenAccount(token).catch(() => null);
     for (const grant of holders) {
       await recordGitHubTokenAccount(db, grant, account, binding).catch(() => null);
@@ -3880,6 +3892,7 @@ export function toolAccessService(
       ...(connection.credentialRefs ?? []),
     ];
 
+    const writtenSecretVersions = new Map<string, number>();
     const updated = await db.transaction(async (tx) => {
       await tx.select({ id: connectionGrants.id }).from(connectionGrants)
         .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connection.id)))
@@ -3905,6 +3918,7 @@ export function toolAccessService(
           label: field.label, value, ownerUserId: personalIdentity?.subjectUserId,
           existingRef: existing, actor: actorForSecret(actor),
         });
+        writtenSecretVersions.set(secret.id, secret.latestVersion);
         const nextRef = { secretId: secret.id, versionSelector: "latest" as const,
           configPath: field.configPath, required: field.required ?? true, label: field.label };
         const refIndex = credentialSecretRefs.findIndex((ref) => ref.configPath === field.configPath);
@@ -3991,6 +4005,7 @@ export function toolAccessService(
       sourceTemplateKey,
       credentialSecretRefs,
       input.credentialValues,
+      writtenSecretVersions,
     );
     const health = await checkConnectionHealth(updated.id, actor);
     const refresh = await refreshCatalog(updated.id, actor, {

@@ -422,6 +422,19 @@ const support = await getEmbeddedPostgresTestSupport();
         secretVersion: 2,
       });
     });
+    it("resolves the exact token version its recorded account is bound to", async () => {
+      const input = await seed();
+      await grant(input, "A", false, { pat: true });
+      // The recorded account is bound to version 1. Resolving "latest" could
+      // return a token a concurrent reconnect wrote after that binding was read.
+      vault.resolveUserSecretValue.mockClear();
+      const result = await resolveGitHubOperationCredentials(db, input);
+      expect(result).toMatchObject({ status: "available", login: "A" });
+      expect(vault.resolveUserSecretValue).toHaveBeenCalledTimes(1);
+      expect(vault.resolveUserSecretValue.mock.calls[0]![1]).toMatchObject({
+        version: 1,
+      });
+    });
     it("gives shared company GitHub only to people in its audience", async () => {
       const input = await seed();
       const shared = await sharedGrant(input, "company-bot");

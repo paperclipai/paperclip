@@ -710,9 +710,13 @@ export async function resolveManagedGitHubCredential(
       heartbeatRunId: context.heartbeatRunId ?? null,
       responsibleUserId: context.responsibleUserId ?? null,
     };
-    // Read a personal access token's version before its value, so the account
-    // recorded below is bound to a version no newer than the token it came from.
+    // Pin a personal access token to one version and resolve exactly that
+    // version, so the token and the account recorded for it cannot come from
+    // different versions when a reconnect rotates the secret in between.
     const tokenBinding = oauthRef ? null : await currentGitHubTokenBinding(db, companyId, accessRef.secretId);
+    const tokenVersion = (accessRef.versionSelector ?? "latest") === "latest" && tokenBinding
+      ? tokenBinding.secretVersion
+      : accessRef.versionSelector ?? "latest";
     let token: string;
     if (grant.kind === "user") {
       if (!grant.subjectUserId || !secrets.resolveUserSecretValue) {
@@ -729,13 +733,13 @@ export async function resolveManagedGitHubCredential(
       const resolved = await secrets.resolveUserSecretValue(companyId, {
         definitionId: secret.userSecretDefinitionId,
         responsibleUserId: grant.subjectUserId,
-        version: accessRef.versionSelector ?? "latest",
+        version: tokenVersion,
         required: true,
       }, accessContext);
       if (!resolved) return { configured: true, identitySource: selection.identitySource, error: "The personal GitHub credential is missing" };
       token = resolved.value;
     } else {
-      token = await secrets.resolveSecretValue(companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", { accessContext });
+      token = await secrets.resolveSecretValue(companyId, accessRef.secretId, tokenVersion, { accessContext });
     }
     // A personal access token connected before its account was recorded learns it
     // now, once, so managed commits are authored as that account. Best effort: a
