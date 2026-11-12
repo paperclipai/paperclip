@@ -94,6 +94,34 @@ describe("reference router worker", () => {
     expect(harness.getState(cooldownKey)).toBeUndefined();
   });
 
+  it("rotates a mixed OpenAI/Anthropic pool and skips the threshold and hard-limit member of either provider", async () => {
+    const { route } = await setup();
+    const mixed = [
+      { id: "member-openai", binding: { mode: "delegated" as const, provider: "openai" as const, method: "subscription" as const, connectionId: "conn-openai", grantId: "grant-openai" }, profile: { provider: "codex" as const, model: "gpt-5" } },
+      { id: "member-anthropic", binding: { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId: "conn-anthropic", grantId: "grant-anthropic" }, profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" } },
+    ];
+    const usage = (member: (typeof mixed)[number], usedPercent: number, limitReached: boolean | null = null) => ({
+      connectionId: member.binding.connectionId, grantId: member.binding.grantId, provider: member.binding.provider, method: member.binding.method, status: "ok" as const, checkedAt: NOW, source: null, planType: null, overage: null,
+      limits: [{ id: "window", label: "Window", scope: null, windowDurationSeconds: 18_000, resetsAt: hour(1), usedPercent, remainingPercent: null, used: null, limit: null, remaining: null, unit: "percent", limitReached, allowed: null }],
+    });
+    const mixedRequest = (taskKey: string, lastMemberId: string | null, used: [number, number], reached: [boolean | null, boolean | null] = [null, null]) => request(taskKey, {
+      lastMemberId, memberOrder: mixed.map(m => m.id),
+      pool: { id: "pool", companyId, pluginKey: manifest.id, revision: 1, name: "Mixed pool", enabled: true, mode: "usage_aware", thresholdPercent: 90, members: mixed },
+      candidates: mixed.map((member, index) => ({ member, runtimeConfig: {}, notes: [], usage: usage(member, used[index], reached[index]) })),
+    });
+    // Rotation across both providers.
+    expect(await route(mixedRequest("issue-1", null, [10, 10]))).toEqual({ kind: "selected", memberId: "member-openai" });
+    expect(await route(mixedRequest("issue-2", "member-openai", [10, 10]))).toEqual({ kind: "selected", memberId: "member-anthropic" });
+    expect(await route(mixedRequest("issue-3", "member-anthropic", [10, 10]))).toEqual({ kind: "selected", memberId: "member-openai" });
+    // Threshold skip, each provider in turn.
+    expect(await route(mixedRequest("issue-4", "member-anthropic", [95, 10]))).toEqual({ kind: "selected", memberId: "member-anthropic", skipped: { "member-openai": "Usage at or above 90%" } });
+    expect(await route(mixedRequest("issue-5", "member-openai", [10, 95]))).toEqual({ kind: "selected", memberId: "member-openai", skipped: { "member-anthropic": "Usage at or above 90%" } });
+    // Hard-limit skip, each provider in turn; both blocked waits for the earliest reset.
+    expect(await route(mixedRequest("issue-6", "member-anthropic", [40, 10], [true, null]))).toEqual({ kind: "selected", memberId: "member-anthropic", skipped: { "member-openai": "At a provider usage limit" } });
+    expect(await route(mixedRequest("issue-7", "member-openai", [10, 100]))).toEqual({ kind: "selected", memberId: "member-openai", skipped: { "member-anthropic": "At a provider usage limit" } });
+    expect(await route(mixedRequest("issue-8", null, [100, 100]))).toMatchObject({ kind: "exhausted", retryAt: hour(1) });
+  });
+
   it("routes without cool-downs when plugin state cannot be read", async () => {
     const { harness, route, run } = await setup();
     await route(request("issue-1"));

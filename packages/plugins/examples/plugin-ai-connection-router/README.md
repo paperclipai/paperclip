@@ -58,6 +58,30 @@ authorized and offered. It never sees credentials and cannot widen access.
 - **Fail open:** if plugin state cannot be read, the router routes without
   cool-downs instead of stalling the pool.
 
+## What affects selection
+
+- Only two signals affect selection: the host's authenticated usage read (the
+  candidate `usage`) and a learned cool-down from a run that failed with
+  `errorCode: "provider_quota"`.
+- Authentication, network and adapter errors (any other `errorCode`) do not
+  start a cool-down and do not cause learned failover.
+- Nothing moves while a run is in progress. Pinned and in-progress tasks wait
+  on their original account; only new tasks go to another account.
+- Session adoption is host behaviour, not a feature of this plugin. The router
+  only keeps the `pinnedMemberId` that the host gives it.
+
+## Test map
+
+| Behaviour | Tests |
+| --- | --- |
+| Quota/error failover | `learns a provider_quota cool-down, fails new tasks over, keeps the pin waiting and clears on success`; `ignores other failures and runs it did not route`; `keeps a learned cool-down to the reporting agent: …`; host: `fails new tasks over after a learned provider_quota cool-down and keeps the pinned task waiting on its account` |
+| Balancing offered (rotation, threshold, hard limit) | `round robin …`; `usage_aware …`; `applies hard limits in round_robin mode but not the threshold`; `legacy model windows: …`; `rotates a mixed OpenAI/Anthropic pool and skips the threshold and hard-limit member of either provider` |
+| Unavailable usage | `orders unknown usage after known headroom but never treats it as exhausted or as 0 %`; `names members the host did not offer and returns unavailable when none is offered`; `routes without cool-downs when plugin state cannot be read` |
+| Pinned/session behaviour | `pinned task … and never moves the pin`; `reports an unoffered pin as unavailable instead of moving it`; `assesses the effective model: a pin …`; host: `fails new tasks over … keeps the pinned task waiting on its account` |
+
+The mixed-provider test runs the real worker and policy on fake data: one
+OpenAI-style and one Anthropic-style binding in one pool.
+
 ## What this deliberately leaves out
 
 - Pinned and in-progress tasks wait on their original account. This is not
@@ -70,6 +94,13 @@ authorized and offered. It never sees credentials and cannot widen access.
 - No account-wide cool-down learned from run failures. A `provider_quota`
   failure cools the account only for the agent that reported it; another agent
   still uses that account until the host's usage read shows a limit.
+
+## Validation not performed
+
+- No proof on a live instance. The evidence is unit tests and a host
+  integration test with a fake adapter.
+- No live provider calls. All usage data and failures in the tests are fake.
+- No measured balancing.
 
 ## Limitations
 - Run lifecycle events carry the issue and run IDs, not the router task key. The
