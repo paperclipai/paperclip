@@ -1152,10 +1152,8 @@ describe("chat prompt policy", () => {
   });
 
   it("asks for a name only when the request, conversation and saved brief give none", () => {
-    // A project the person names in the request is the name; it needs no question.
     expect(AGENT_CHAT_DIRECTIVE).toContain("a project the person names in the request counts, so \"Start a Launch project and build its landing page\" carries the name Launch and needs no question");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Only when none of these gives a name, ask for it before starting");
-    // An unrelated existing project or the company name is not the product's name.
     expect(AGENT_CHAT_DIRECTIVE).toContain("Do not take the name from unrelated records such as other existing projects or the company name.");
     expect(AGENT_CHAT_DIRECTIVE).not.toContain("must carry a name they have not given");
   });
