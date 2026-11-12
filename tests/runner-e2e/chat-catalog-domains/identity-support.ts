@@ -66,7 +66,7 @@ export async function waitForReply(ctx: ChatCatalogContext, observationDeadlineA
 /** Before reading a finished turn's reply links: wait (bounded) for each finished source run's saved reply and its render. */
 export async function waitForTurnReplyLinks(ctx: ChatCatalogContext) {
   const { waitForSavedTurnReplyRender } = await import("../chat-rendered-links.js");
-  const source = ctx.issue(); if (!source) return "unsaved" as const;
+  const source = ctx.issue(); if (!source?.id) return "unsaved" as const;
   const runIds = (await ctx.allRuns()).filter(run => run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded"
     && ((run as ChatRun & { nativeIssueId?: string }).nativeIssueId ?? run.contextSnapshot?.issueId) === source.id).map(run => run.id);
   return waitForSavedTurnReplyRender(ctx.input.page, { leadId: ctx.input.fixtures.agent.id, runIds,
