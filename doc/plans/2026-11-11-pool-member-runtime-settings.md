@@ -2,6 +2,8 @@
 
 Goal: configure each pool member like the corresponding direct harness, run Claude via Legacy first with Codex as fallback, and manage pools on a dedicated settings page.
 
+Switching harnesses in the agent editor keeps the runner choice and retains each harness draft, including its model, execution settings and account binding. Returning to the original harness restores its previous dirty state. Discard and a refreshed saved agent invalidate these draft snapshots. The form identifies the active runner so native and Legacy controls can be compared with the corresponding pool member.
+
 Codex settings depend on the selected runner. Paperclip Runner exposes its supported lifecycle and permission settings; Legacy exposes CLI/ACP engine settings, sandbox bypass and fast mode. Both the agent and pool forms use the same Codex controls. Enable search belongs to Legacy CLI only and is removed when switching to ACP. Command overrides and host paths remain agent environment settings. Member search and fast-mode values are cleared before applying the next member so fallback cannot inherit the previous member's tuning.
 
 Architecture: the shared pool member contract owns explicit runner choice and validated harness tuning. The existing router owns candidate selection and immutable execution pins. Heartbeat admission and dispatch consume the selected adapter without reinterpreting it. Existing credential preparation, authority, settlement, and session isolation remain authoritative. UI reuses direct harness controls and owns only editing and navigation.

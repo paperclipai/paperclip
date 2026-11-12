@@ -1449,7 +1449,7 @@ describe("AgentConfigForm environment selector", () => {
   it.each([
     ["Codex", "codex_local"],
     ["Claude Code", "claude_local"],
-  ])("clears OpenCode model settings when choosing %s so the server can apply its default", async (_label, adapterType) => {
+  ])("clears OpenCode model settings when choosing %s while preserving the Paperclip runner", async (_label, adapterType) => {
     const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
       currentUserId: "you",
       canManageConnections: true,
@@ -1471,7 +1471,7 @@ describe("AgentConfigForm environment selector", () => {
       await clickByText(result.container, "Save");
       expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
         adapterType,
-        runner: "auto",
+        runner: "paperclip",
         replaceAdapterConfig: true,
         adapterConfig: expect.objectContaining({ model: "" }),
       }));
