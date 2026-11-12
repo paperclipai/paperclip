@@ -274,7 +274,11 @@ suite("held interrupted preparations on the shared ownership path", () => {
   // Staging upgrade shape: a replaced server's Runner preparation was reaped as
   // process_lost while it was the last automatic retry (failure budget spent).
   // An older release held it for reconciliation ("Automatic recovery stopped").
-  it("releases an older release's hold on a preparation a server replacement stopped with its failure budget spent", async () => {
+  it.each([
+    ["its lease still names the old controller", false],
+    // The real reaped shape: revocation swapped in a random boot id and kept the process stamp.
+    ["the orphan reaper revoked its lease", true],
+  ] as const)("releases an older release's hold on a preparation a server replacement stopped with its failure budget spent when %s", async (_label, revoked) => {
     heartbeatService(db);
     const finishedAt = new Date(Date.now() - 10_000);
     const f = await interruptedPreparation({ run: { status: "failed", errorCode: "process_lost",
@@ -284,7 +288,8 @@ suite("held interrupted preparations on the shared ownership path", () => {
           retryEligible: false, controllerReplaced: true } },
       contextSnapshot: undefined, finishedAt } });
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId,
-      executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } } })
+      executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } },
+      ...(revoked ? { controllerBootId: randomUUID() } : {}) })
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
 

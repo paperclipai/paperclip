@@ -227,6 +227,22 @@ export function legacyControllerOwnerStamp(
     processStartedAt: controller.processStartedAt, processGroupId: null };
 }
 
+/**
+ * The controller process that ran a run which is already terminal, also when
+ * the orphan reaper revoked its lease: revocation swaps in a random boot id
+ * but keeps the recorded process. Only for judging holds on finished runs,
+ * never a live lease (legacyControllerOwnerStamp owns those).
+ */
+export function finishedLegacyControllerOwnerStamp(
+  run: Pick<Run, "status" | "controllerBootId" | "controllerProcess">,
+): LocalOwnerStamp | null {
+  const current = legacyControllerOwnerStamp(run);
+  if (current || run.status === "running" || run.status === "queued") return current;
+  const controller = readControllerProcess(run.controllerProcess);
+  return controller ? legacyControllerOwnerStamp({ controllerBootId: controller.bootId, controllerProcess: run.controllerProcess })
+    : null;
+}
+
 /** The shared prover's verdict on the recorded legacy controller, or null when
  * the row names none (a native run, a revoked lease, or an older row). */
 export async function proveLegacyController(
