@@ -3637,6 +3637,25 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
             if (action.evidence.continuationDelivery !== "pending")
               return { kind: "skipped" as const };
+            // Under the task lock: a fresh continuation is the task's next run
+            // only while nothing else continued it. A run started since it was
+            // recorded (active or already finished, from a person's Retry or
+            // saved input) consumes it, and a task that moved to review gets none.
+            const freshRecordedAt = readNonEmptyString(parseObject(action.evidence.freshContinuation).recordedAt);
+            if (freshRecordedAt) {
+              const [intervening] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+                eq(heartbeatRuns.companyId, issue.companyId), sql`${heartbeatRuns.id}::text <> ${sourceRunId}`,
+                or(eq(heartbeatRuns.nativeIssueId, issue.id), eq(heartbeatRuns.issueId, issue.id),
+                  sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}::text`),
+                sql`${heartbeatRuns.createdAt} >= ${freshRecordedAt}::timestamptz`)).limit(1);
+              if (intervening || issue.status === "in_review") {
+                await tx.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+                  intervening ? { continuationDelivery: "delivered", continuationRunId: intervening.id, continuationSupersededByRun: true }
+                    : { continuationDelivery: "invalidated", continuationInvalidatedReason: "in_review" })}::jsonb` })
+                  .where(and(eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.id, action.id)));
+                return { kind: "skipped" as const };
+              }
+            }
             const [reconciledRun] = await tx.select().from(heartbeatRuns).where(and(
               eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, sourceRunId),
             ));

@@ -320,6 +320,38 @@ suite("fresh-continuation fallback", () => {
     expect((await pendingRecord(f.issueId))!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: retry!.id });
   }, 60_000);
 
+  /** The continuation's own wake, exactly as the delivery worker sends it, without its pre-check. */
+  async function deliveryWake(f: { issueId: string; runId: string }) {
+    const record = (await pendingRecord(f.issueId))!;
+    return heartbeatService(db).wakeup(agentId, { source: "automation", triggerDetail: "system",
+      reason: "issue_recovery_action_restored", idempotencyKey: `execution-reconciliation:${record.id}`,
+      payload: { issueId: f.issueId, recoveryActionId: record.id }, requestedByActorType: "system", requestedByActorId: "execution-recovery",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, recoveryActionId: record.id, previousRunId: f.runId,
+        retryOfRunId: f.runId, forceFreshSession: true, wakeReason: "issue_recovery_action_restored", source: "execution.reconciled" } });
+  }
+
+  it("lets a run that started and finished in the delivery window consume the continuation under the task lock", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    // Between the worker's pre-check and admission, saved input ran and finished.
+    const [intervening] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: f.issueId, nativeIssueId: f.issueId,
+      status: "succeeded", finishedAt: new Date(), contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented" } }).returning();
+    await occupySlot();
+    expect(await deliveryWake(f)).toBeNull();
+    expect(await successors(f.runId)).toHaveLength(0);
+    expect((await pendingRecord(f.issueId))!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: intervening!.id });
+  }, 60_000);
+
+  it("starts no run for a task that moved to review in the delivery window", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, f.issueId));
+    await occupySlot();
+    expect(await deliveryWake(f)).toBeNull();
+    expect(await successors(f.runId)).toHaveLength(0);
+    expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("invalidated");
+  }, 60_000);
+
   it("starts no run for a task that finished while its continuation was pending", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
