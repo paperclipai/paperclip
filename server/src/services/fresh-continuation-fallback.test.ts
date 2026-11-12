@@ -267,6 +267,27 @@ suite("fresh-continuation fallback", () => {
     }
   }, 60_000);
 
+  // The chaos repro: the agent's only slot is held. The delivered continuation
+  // waits queued (never lost) and starts as soon as the slot frees.
+  it("leaves the delivered continuation queued while the agent's slot is full and starts it when the slot frees", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    const [other] = await db.insert(issues).values({ companyId, title: "Holds the slot", status: "in_progress", assigneeAgentId: agentId }).returning();
+    const [holder] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: other!.id, status: "running",
+      contextSnapshot: { issueId: other!.id } }).returning();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(next).toMatchObject({ status: "queued" });
+    expect((await pendingRecord(f.issueId))!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: next!.id });
+    // The slot frees: the queued continuation is dispatched.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, holder!.id));
+    await heartbeatService(db).resumeQueuedRuns();
+    await vi.waitFor(async () => {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, next!.id));
+      expect(current!.status).not.toBe("queued");
+    }, { timeout: 20_000, interval: 100 });
+  }, 60_000);
+
   // Crash between writes: the decision committed, the process died before any
   // run was created. Nothing is lost: the next delivery pass starts it.
   it("delivers a committed continuation after a crash before its run was created", async () => {

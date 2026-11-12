@@ -30,8 +30,8 @@ export async function requestNativeControllerStopConfirmation(tx: Db, coordinato
       processStartedAt: coordinator.controllerProcessStartedAt?.toISOString() ?? null } },
     // Optional faster path: without a confirmation, the run ends after a
     // bounded wait and the task continues in a fresh, isolated run.
-    nextAction: "Paperclip cannot verify from this host that the previous server stopped. It continues the task in a fresh run shortly; "
-      + "confirming that the previous server stopped is optional and only makes that faster.",
+    nextAction: "The server running this task restarted. Paperclip continues the task in a fresh run shortly. "
+      + "Confirming that the previous server stopped is optional and only makes that faster.",
   }).onConflictDoNothing();
 }
 

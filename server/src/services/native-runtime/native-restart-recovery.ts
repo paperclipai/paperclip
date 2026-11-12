@@ -1037,7 +1037,7 @@ async function endNamespaceUnverifiedRun(tx: Db, row: {
       kind: "active_run_watchdog", ownerType: "system", returnOwnerAgentId: row.run.agentId,
       cause: "native_restart_recovery_blocked", fingerprint: `native-restart:${row.run.id}`,
       evidence: { runId: row.run.id, reason, executorStopEvidence: "unverified", providerAttempt: row.coordinator.attempt },
-      nextAction: "The previous server's controller could not be verified. Paperclip continues the task in a fresh run from its saved work.",
+      nextAction: "The server running this task restarted. Paperclip continues the task in a fresh run from its saved work.",
       maxAttempts: 3, wakePolicy: null, supersedeOnIdentityChange: true });
   }
   if (updatedRun) await preserveNativeFailedWorkspace(tx, updatedRun);
@@ -1079,8 +1079,8 @@ export async function surfaceNativeControllerNamespaceAttention(db: Db, input: {
       // continues in a fresh, isolated run. Recording the stops is optional
       // and only makes that faster.
       nextAction: input.remoteProcess
-        ? "The previous server's controller could not be verified. Paperclip ends this run and continues the task in a fresh run from its saved work; using the task's ordinary Stop action is optional and only makes that faster."
-        : "The previous server's controller could not be verified. Paperclip ends this run and continues the task in a fresh run from its saved work.",
+        ? "The server running this task restarted. Paperclip continues the task in a fresh run from its saved work shortly. Using the task's ordinary Stop action is optional and only makes that faster."
+        : "The server running this task restarted. Paperclip continues the task in a fresh run from its saved work shortly.",
       createOnly: !existing, supersedeOnIdentityChange: true,
       attemptCount: 0, maxAttempts: null, timeoutAt: null, lastAttemptAt: null,
       wakePolicy: null, monitorPolicy: null,
@@ -1807,9 +1807,9 @@ export async function claimNativeRestartRecoveries(input: {
         : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted" : classification.reason);
       // No person is asked to inspect or reconcile: unless the cause is the
       // person's, the fresh-continuation fallback continues the task.
-      const nextAction = hold
-        ? "Exact recovery stopped: the original executor stop and state remain unverified. Its checkpoint and task bindings are preserved."
-        : "Exact recovery of this run stopped. Paperclip continues the task in a fresh run from its saved work.";
+      // Shown to people: plain words only. A person's Stop or pause keeps the
+      // task as they asked; otherwise the fallback continues it.
+      const nextAction = "This run stopped before it finished. Your saved work is kept.";
 
       if (!claimKind) {
         const generation = row.coordinator.controllerGeneration;
