@@ -89,6 +89,7 @@ export interface WaveOptions {
   /** `--k15-fresh-home`: each deploy generation gets a new, empty instance home and no volume (redeploy.ts). */
   k15FreshHome?: boolean;
   ephemeralServer?: boolean;
+  releaseSwap?: import("./release-swap-schedule.js").ReleaseSwapOptions;
   runnerBindFault?: boolean;
   /** `--faults K0`: cells with no fault, for workloads whose shape is the fault (W2, W2Q, W2C). */
   baseline?: boolean;

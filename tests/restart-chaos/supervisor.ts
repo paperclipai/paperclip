@@ -42,6 +42,7 @@ import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type Mul
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 import { ephemeralServerEnvironment } from "./ephemeral-server.js";
+import type { SwapPhase, SwapPhaseInfo } from "./release-swap-driver.js";
 import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, withReplacementPluginStall, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
@@ -172,9 +173,9 @@ export class ChaosSupervisor {
    * before the next deploy starts, while the server is down. It must not throw.
    */
   redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
-  /** K15 deploy shape (redeploy.ts `parseK15DeployShape`); main.ts sets it before `start`. */
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
   ephemeralServer = false;
+  swapHook: ((info: SwapPhaseInfo) => Promise<string | void>) | null = null;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -518,7 +519,6 @@ export class ChaosSupervisor {
       }
       if (kind === "TM1" || kind === "TM2") await this.freeze(kind, previous, holdMs, receipt);
       else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
-      // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
       else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
       else if (kind === "CR3" || kind === "CR5") {
         const stall = await runPluginStall({ serverPid: previous.pid, holdMs, cancelled: () => this.shuttingDown,
@@ -798,20 +798,18 @@ export class ChaosSupervisor {
     return { home, configPath };
   }
 
-  /**
-   * `--k15-overlap-seconds`: the staging deploy shape. The next generation boots beside the old server on its own
-   * port; once it is ready, the edge sends new connections to it; the old server keeps running for the overlap and
-   * then gets SIGTERM. There is no outage.
-   */
   private async rollingRedeploy(previous: ChildProcess, overlapMs: number, receipt: FaultReceipt): Promise<void> {
     if (!this.edge) throw new Error("--k15-overlap-seconds needs the edge proxy started with the wave");
     const fromPort = this.backendPort;
+    const swap = async (phase: SwapPhase, next?: ChildProcess) => this.swapHook?.({ faultId: receipt.faultId, phase, at: Date.now(), overlapMs, fromUrl: `http://127.0.0.1:${fromPort}`,
+      toUrl: phase === "before_spawn" ? null : `http://127.0.0.1:${this.backendPort}`, fromPid: previous.pid ?? null, toPid: next?.pid ?? null });
+    const nextRoot = await swap("before_spawn"); if (typeof nextRoot === "string") this.serverRoot = nextRoot;
     receipt.redeploy = await this.advanceDeploy(receipt.faultId);
     receipt.restartedAt = Date.now();
     this.timeline.add("fault_restarting", { faultId: receipt.faultId, overlapMs });
     const next = await this.spawnServer();
-    // Bound to the next generation: the old server keeps serving during the overlap and must not count hits.
     this.armPendingRecoveryStep(receipt, next.pid);
+    await swap("spawned", next);
     const backendUrl = `http://127.0.0.1:${this.backendPort}`;
     receipt.healthyAt = await this.waitForHealth(next, receipt.phases, backendUrl);
     const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -823,10 +821,12 @@ export class ChaosSupervisor {
     }
     this.edge.target = this.backendPort;
     this.timeline.add("k15_traffic_switched", { faultId: receipt.faultId, fromPort, toPort: this.backendPort, overlapMs });
+    await swap("switched", next);
     for (const until = Date.now() + overlapMs; Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
-    await this.stopper(previous, "SIGTERM");
+    await swap("stopping", next); await this.stopper(previous, "SIGTERM");
     receipt.stoppedAt = Date.now();
     this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    await swap("stopped", next);
     await this.redeployEvidence?.(receipt.faultId, "stopped");
   }
 
