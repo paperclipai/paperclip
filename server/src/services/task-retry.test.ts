@@ -300,7 +300,7 @@ describe("durable task Retry admission", () => {
       expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]!.executionRunId)
         .toEqual(kind === "claimed_by_other_run" ? expect.any(String) : null);
     });
-  // Staging (PAP-4648, PAP-4857): a Retry that selected a fresh isolated
+  // Staging: a Retry that selected a fresh isolated
   // workspace (at admission, or when its preparation found the saved files
   // unrestorable) was stopped by an upgrade before provider work. The person
   // asked for that fresh attempt and it never ran, so it continues as the same
@@ -362,7 +362,7 @@ describe("durable task Retry admission", () => {
       expect(result.outcome).not.toBe("scheduled");
       expect(await successorsOf(f.parent.id)).toHaveLength(0);
     });
-  // Staging (PAP-4381, PAP-4799): the Retry replaced a native session that had
+  // Staging: the Retry replaced a native session that had
   // left session state behind. The sweep treated that state as the task's live
   // path and never offered the stopped Retry run its continuation.
   it.each(["unfinished_goal", "superseded_native_finalization"] as const)(
@@ -400,7 +400,7 @@ describe("durable task Retry admission", () => {
       sql`${heartbeatRunEvents.message} like 'The automatic retry could not revalidate%'`));
     expect(refusals).toHaveLength(1);
   });
-  // Staging (PAP-4505): a Retry run failed before provider work with a transient
+  // Staging: a Retry run failed before provider work with a transient
   // sandbox resume failure. The sweep escalated the task while the run's own
   // executor was still settling it, which cleared the claim its bounded retry
   // needed. The sweep now leaves the task to that executor.
