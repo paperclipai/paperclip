@@ -1,1 +1,1 @@
-{ "schemaVersion": 1, "capabilities": ["pluginEnvironments"] }
+{ "schemaVersion": 1, "capabilities": ["pluginEnvironments", "pluginEnvironmentRunnerLifecycleMode"] }

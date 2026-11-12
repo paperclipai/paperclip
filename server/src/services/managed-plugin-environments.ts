@@ -43,6 +43,7 @@ export interface ManagedPluginEnvironmentInput {
   pluginKey: string;
   driverKey: string;
   driverConfig?: Record<string, unknown>;
+  runnerLifecycleMode?: "warm" | "per_turn";
   /** Runs the plugin's own config validation (`environmentValidateConfig`). */
   workerManager: Pick<PluginWorkerManager, "call" | "isRunning">;
 }
@@ -79,7 +80,8 @@ function servesPair(row: EnvironmentRow, input: { pluginKey: string; driverKey: 
 async function validatedDriverConfig(db: Db, input: ManagedPluginEnvironmentInput): Promise<PluginEnvironmentConfig> {
   const normalized = normalizeEnvironmentConfig({
     driver: "plugin",
-    config: { pluginKey: input.pluginKey, driverKey: input.driverKey, driverConfig: input.driverConfig ?? {} },
+    config: { pluginKey: input.pluginKey, driverKey: input.driverKey, driverConfig: input.driverConfig ?? {},
+      ...(input.runnerLifecycleMode ? { runnerLifecycleMode: input.runnerLifecycleMode } : {}) },
   }) as unknown as PluginEnvironmentConfig;
   return await validatePluginEnvironmentDriverConfig({
     db,

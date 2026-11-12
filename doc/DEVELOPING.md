@@ -2183,7 +2183,9 @@ admin can change it in instance settings.
 capabilities a release supports, for the control plane to read at a release
 commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
 (`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
-entries only while that list includes `pluginEnvironments`.
+entries only while that list includes `pluginEnvironments`. When sending a plugin
+environment, include `runnerLifecycleMode` only if the target release also lists
+`pluginEnvironmentRunnerLifecycleMode`.
 
 
 ### Experimental native remote workspace storage
