@@ -28,7 +28,7 @@ import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "
 import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
-import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
+import { captureWakeEvidence, knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { checkPlanInvariants, readUniversalDbEvidence, summarizeViolations, type InvariantCheck } from "./invariants.js";
@@ -782,8 +782,8 @@ async function main(): Promise<number> {
     }
     const attributed = new Set<string>();
     const secrets = knownSecretValues();
-    // U3 and L1 read the wave database once, before the instance is removed.
     const evidenceDb = createDb(waveDatabaseUrl());
+    await captureWakeEvidence({ db: evidenceDb, companyId: lab.companyId, waveDir, observers: launched, windows: supervisor.serverWindows, redact: text => redactKnownSecrets(text, secrets) }).catch(error => timeline.add("wake_evidence_failed", { error: String(error) }));
     const universalByIssue = await readUniversalDbEvidence(evidenceDb, lab.companyId).catch(error => {
       timeline.add("universal_db_evidence_failed", { error: String(error) }); return null; });
     const allRunMessages = new Map([...(universalByIssue?.values() ?? [])].flatMap(entry => [...entry.runMessages]));
