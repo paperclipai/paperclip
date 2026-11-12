@@ -688,6 +688,16 @@ export async function continueHeldExecutions(db: Db, now = new Date(), limit = 2
   return { checked: seen.size, continued };
 }
 
+/** A fresh continuation of this task is recorded and its run does not exist yet. */
+export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string) {
+  const [row] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+    eq(issueRecoveryActions.status, "resolved"),
+    sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`)).limit(1);
+  return Boolean(row);
+}
+
 /** Newest-first list of fresh continuations of one task (diagnostics and tests). */
 export async function listFreshContinuations(db: Db, input: { companyId: string; issueId: string }) {
   return db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),

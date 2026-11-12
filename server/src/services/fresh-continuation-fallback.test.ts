@@ -209,21 +209,74 @@ suite("fresh-continuation fallback", () => {
     await expectOneFreshSuccessor(f);
   }, 60_000);
 
-  it("admits an ordinary continuation wake for a held task as the fresh continuation", async () => {
+  const sweepWake = (issueId: string) => heartbeatService(db).wakeup(agentId, { source: "automation", triggerDetail: "system",
+    reason: "issue_continuation_needed", payload: { issueId }, requestedByActorType: "system",
+    requestedByActorId: "idle-task-sweep", contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_continuation_needed" } });
+  const pendingRecord = async (issueId: string) => (await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.sourceIssueId, issueId), sql`${issueRecoveryActions.evidence}->'freshContinuation' is not null`)))[0];
+
+  // An ordinary system wake (the idle-task sweep's) reaches the fallback. The
+  // continuation is recorded pending and counts as delivered only once a run
+  // for it exists.
+  it("records a pending continuation for an ordinary continuation wake and delivers it once", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation",
       error: "runner_remote_process_identity_unavailable", hold: "settled_blocked" });
     await occupySlot();
-    const run = await heartbeatService(db).wakeup(agentId, { source: "automation", triggerDetail: "system",
-      reason: "issue_continuation_needed", payload: { issueId: f.issueId }, requestedByActorType: "system",
-      requestedByActorId: "idle-task-sweep", contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeReason: "issue_continuation_needed" } });
-    expect(run).toBeTruthy();
-    const [queued] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run!.id)));
-    expect(queued!.contextSnapshot).toMatchObject({ issueId: f.issueId, forceFreshSession: true, freshContinuationOfRunId: f.runId });
+    expect(await sweepWake(f.issueId)).toBeNull();
     expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
-    // The wake is the continuation: no second one is recorded for delivery.
+    expect((await pendingRecord(f.issueId))!.evidence).toMatchObject({ continuationDelivery: "pending",
+      freshContinuation: { sourceRunId: f.runId, trigger: "continuation_wake", delivery: "recorded" } });
+    // A second sweep wake adds nothing.
+    expect(await sweepWake(f.issueId)).toBeNull();
     await deliver();
+    expect(await successors(f.runId)).toHaveLength(1);
+    expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("delivered");
+  }, 60_000);
+
+  // A gate after the hook must never consume the recovery: it stays pending
+  // and is delivered once the gate clears.
+  it("keeps the continuation pending while the agent's daily run limit declines it, then delivers it", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted", hold: "settled_blocked" });
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, maxDailyRuns: 1 } } }).where(eq(agents.id, agentId));
+    try {
+      // The source run already used today's single run.
+      expect(await sweepWake(f.issueId)).toBeNull();
+      await deliver();
+      expect(await successors(f.runId)).toHaveLength(0);
+      expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("pending");
+      // The limit clears: the next pass delivers it.
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+      await occupySlot();
+      await deliver();
+      expect(await successors(f.runId)).toHaveLength(1);
+    } finally {
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+    }
+  }, 60_000);
+
+  it("leaves a paused agent's task waiting with that reason, not idle and not consumed", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted", hold: "settled_blocked" });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    try {
+      expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "continuation_wake" }))
+        .toEqual({ kind: "person_owned", reason: "agent_not_available" });
+      expect(await pendingRecord(f.issueId)).toBeUndefined();
+      expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    } finally {
+      await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    }
+  }, 60_000);
+
+  // Crash between writes: the decision committed, the process died before any
+  // run was created. Nothing is lost: the next delivery pass starts it.
+  it("delivers a committed continuation after a crash before its run was created", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
     expect(await successors(f.runId)).toHaveLength(0);
-    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`)).toHaveLength(2);
+    // A new process: a fresh service instance and worker pass.
+    await occupySlot();
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(1);
   }, 60_000);
 
   // The cut-off run's agent may still be alive in its old, unreachable sandbox.

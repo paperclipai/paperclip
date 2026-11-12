@@ -2378,6 +2378,46 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       .toMatchObject({ kind: "continued" });
   });
 
+  // Graceful-drain hand-off: the outgoing server handed the run off, the new
+  // server classified it awaiting evidence, and the evidence never arrived.
+  // Every awaiting-evidence wait is bounded: once the old lease has lapsed for
+  // the bound, the run ends (its slot and task lock are freed) and the task
+  // continues once, fresh and isolated.
+  it("ends a handed-off run whose restart evidence never arrives within the bound, then continues the task fresh", async () => {
+    const fixture = await seedRun(`EVIDENCE-TIMEOUT-${randomUUID()}`);
+    const foreignSpace = `foreign:${currentProcessSpaceHash()}`, startedAt = new Date(Date.now() - 600_000);
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_031,
+      controllerProcessStartedAt: startedAt, controllerHostHash: foreignSpace,
+      leaseOwner: `drained:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() - NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS - 5_000),
+      attempt: 1, controllerGeneration: 1, recoveryHistory: [],
+      failureDetail: { restartEvidenceWaitSince: new Date(Date.now() - NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS - 1_000).toISOString() },
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const dispositions = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(dispositions).toEqual([expect.objectContaining({ kind: "blocked", runId: fixture.runId })]);
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked" });
+    const [task] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(task!.executionRunId).toBeNull();
+    expect(await ensureFreshContinuation(fixture.db, { companyId, runId: fixture.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued" });
+  });
+
+  it("schedules a recheck for every awaiting-evidence wait and does not end it before the bound", async () => {
+    const fixture = await seedRun(`EVIDENCE-EARLY-${randomUUID()}`);
+    const foreignSpace = `foreign:${currentProcessSpaceHash()}`, startedAt = new Date(Date.now() - 600_000);
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_041,
+      controllerProcessStartedAt: startedAt, controllerHostHash: foreignSpace,
+      leaseOwner: `drained:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() - 1_000), attempt: 1, controllerGeneration: 1,
+      recoveryHistory: [], failureDetail: {},
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const dispositions = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(dispositions).toEqual([expect.objectContaining({ kind: "awaiting_evidence", runId: fixture.runId, retryAt: expect.any(Date) })]);
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run!.status).not.toBe("failed");
+  });
+
   it("leaves a run alone while its foreign controller still renews its lease during a server overlap", async () => {
     const fixture = await seedRun(`NAMESPACE-OVERLAP-${randomUUID()}`);
     const foreignSpace = `foreign:${currentProcessSpaceHash()}`, startedAt = new Date(Date.now() - 600_000);

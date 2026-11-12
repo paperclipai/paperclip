@@ -1808,7 +1808,7 @@ export async function claimNativeRestartRecoveries(input: {
       // No person is asked to inspect or reconcile: unless the cause is the
       // person's, the fresh-continuation fallback continues the task.
       const nextAction = hold
-        ? "Exact recovery of this run stopped. Its checkpoint and task bindings are preserved, and Paperclip continues the task in a fresh run from its saved work."
+        ? "Exact recovery stopped: the original executor stop and state remain unverified. Its checkpoint and task bindings are preserved."
         : "Exact recovery of this run stopped. Paperclip continues the task in a fresh run from its saved work.";
 
       if (!claimKind) {
@@ -2126,9 +2126,72 @@ export async function claimNativeRestartRecoveries(input: {
     if (terminalRunToReport)
       void reportRunFailure(input.db, terminalRunToReport);
     if (claimScope && "leaseOwner" in disposition) input.onClaim?.(disposition, claimScope);
-    dispositions.push(disposition);
+    dispositions.push(disposition.kind === "awaiting_evidence"
+      ? await boundAwaitingEvidence(input.db, candidate, disposition, now, input.restartKind)
+      : disposition);
   }
   return dispositions;
+}
+
+/** Waits this process resolves by itself (its own executor, a locked row). */
+const SELF_RESOLVING_WAITS = ["current_controller_preparing", "recovery_rows_busy"];
+/** Hard cap on any restart-recovery wait whose owner is not renewing a lease. */
+export const NATIVE_RESTART_EVIDENCE_HARD_CAP_MS = 10 * 60_000;
+
+/**
+ * Every restart-recovery wait has an owner and a bound. Each awaiting-evidence
+ * disposition is checked again (`retryAt`, at most two minutes out). Once the
+ * previous controller's lease has lapsed for `NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS`,
+ * or the wait has lasted `NATIVE_RESTART_EVIDENCE_HARD_CAP_MS`, and no live
+ * controller is renewing a lease, the run ends: it stops holding the task and
+ * the agent's slots, and the fresh-continuation fallback continues the task,
+ * isolated. A controller that is still renewing its lease is never ended early.
+ */
+async function boundAwaitingEvidence(db: Db, candidate: { runId: string; companyId: string; issueId: string },
+  disposition: { kind: "awaiting_evidence"; runId: string; reason: string; retryAt?: Date; transitionUnchanged?: boolean }, now: Date,
+  restartKind: NativeRestartKind): Promise<NativeRestartRecoveryDisposition> {
+  // A wait without its own recheck gets one; an owner's own schedule is kept.
+  const recheck = disposition.retryAt ?? new Date(now.getTime() + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS);
+  const waiting = { ...disposition, retryAt: recheck };
+  if (SELF_RESOLVING_WAITS.includes(disposition.reason)) return disposition;
+  try {
+    return await db.transaction(async tx => {
+      const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, candidate.issueId),
+        eq(issues.companyId, candidate.companyId))).for("update", { skipLocked: true });
+      if (!issue) return waiting;
+      const [row] = await tx.select({ run: heartbeatRuns, coordinator: nativeRunFinalizations,
+        issueAssigneeAgentId: issues.assigneeAgentId, issueStatus: issues.status })
+        .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+        .innerJoin(issues, eq(issues.id, nativeRunFinalizations.issueId))
+        .where(and(eq(heartbeatRuns.id, candidate.runId), eq(heartbeatRuns.companyId, candidate.companyId)))
+        .for("update", { of: [heartbeatRuns, nativeRunFinalizations], skipLocked: true });
+      if (!row || !["running", "queued"].includes(row.run.status) || row.coordinator.phase === "committed"
+        || row.coordinator.resultId) return waiting;
+      const leaseExpiresAt = row.coordinator.leaseExpiresAt?.getTime() ?? 0;
+      // A controller that still renews its lease is alive: never ended early.
+      if (leaseExpiresAt > now.getTime()) return waiting;
+      const detail = (row.coordinator.failureDetail ?? {}) as Record<string, unknown>;
+      const since = typeof detail.restartEvidenceWaitSince === "string" ? Date.parse(detail.restartEvidenceWaitSince) : NaN;
+      if (!Number.isFinite(since)) {
+        await tx.update(nativeRunFinalizations).set({ failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb)
+          || ${JSON.stringify({ restartEvidenceWaitSince: now.toISOString() })}::jsonb` })
+          .where(eq(nativeRunFinalizations.runId, row.run.id));
+        return waiting;
+      }
+      const lapsedFor = now.getTime() - Math.max(since, leaseExpiresAt);
+      if (lapsedFor < NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS && now.getTime() - since < NATIVE_RESTART_EVIDENCE_HARD_CAP_MS) return waiting;
+      const reason = `restart_evidence_timeout:${disposition.reason}`.slice(0, 120);
+      const controller = await currentNativeControllerIdentity();
+      await endNamespaceUnverifiedRun(tx as unknown as Db, row, now, reason, historyEntry({ now, restartKind, controller,
+        generation: row.coordinator.controllerGeneration, disposition: "blocked", reason, requestId: null,
+        providerAttempt: row.coordinator.attempt, processPid: row.run.processPid, processStartedAt: row.run.processStartedAt,
+        hasCheckpoint: false, hasProviderEvidence: false, stderrTail: row.run.stderrExcerpt }), null);
+      return { kind: "blocked" as const, runId: row.run.id, reason };
+    });
+  } catch (error) {
+    logger.warn({ err: error, runId: candidate.runId }, "bounded restart-recovery wait check deferred");
+    return waiting;
+  }
 }
 
 export async function nativeRestartRecoverySummary(db: Db) {

@@ -3,7 +3,7 @@ import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
-import { continueFreshInTransaction } from "../fresh-continuation-fallback.js";
+import { continueFreshInTransaction, hasPendingFreshContinuation } from "../fresh-continuation-fallback.js";
 import { refreshRunStartYieldIfStale } from "../run-start-handover.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
@@ -3718,7 +3718,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           const verifiedConversationReset = Boolean(resetComment && isConversationReset(resetComment.body));
           if (wakeCommentId && opts.requestedByActorType === "user")
             await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, issue.companyId, issue.id);
-          let executionBlocker = await getExecutionBlocker(
+          const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null },
           );
@@ -3732,6 +3732,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           const continuationHold = () => executionBlocker ?? {
             recoveryActionId: null, cause: "native_continuation_requires_reconciliation" as const, nextAction: continuationWait.message,
           };
+          // Only system continuation wakes (sweeps, monitors, timers) reach
+          // the fresh-continuation fallback. A person's Retry, message or
+          // queued send keeps its own exact admission; the disposition worker
+          // settles the hold through the same fallback, and the saved input
+          // then continues the task.
+          const systemWake = opts.requestedByActorType !== "user" && !taskRetryActorId && !wakeCommentId
+            && !durableRequest && !opts.queuedCommentInterruptId && !opts.queuedCommentRequestId && !opts.failedRunId
+            && !executionReconciliationWake;
+          // A recorded fresh continuation that has no run yet is this task's
+          // next run: another system wake is coalesced into it, never a second run.
+          if (systemWake && !executionBlocker && await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id))
+            return { kind: "skipped" as const };
           if ((executionBlocker || opts.queuedCommentInterruptId) && !ownsReconstructionContinuation && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
@@ -3749,26 +3761,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // continuation: unless its cause is the person's, the fallback
             // settles it in this transaction and this wake becomes the fresh
             // continuation from the task's saved work.
-            // Only system continuation wakes (sweeps, monitors, timers) take
-            // this path. A person's Retry, message or queued send keeps its own
-            // exact admission; the disposition worker settles the hold through
-            // the same fallback, and the saved input then continues the task.
             // Agent Chat conversations keep their own owner-bound continuation.
-            const systemWake = opts.requestedByActorType !== "user" && !taskRetryActorId && !wakeCommentId
-              && !durableRequest && !opts.queuedCommentInterruptId && !opts.queuedCommentRequestId && !opts.failedRunId;
             const freshSourceRunId = systemWake && executionBlocker?.recoveryActionId && executionBlocker.runId
-              && !executionReconciliationWake && !issue.conversationAgentId ? executionBlocker.runId : null;
+              && !issue.conversationAgentId ? executionBlocker.runId : null;
+            // The continuation is recorded as pending and owned by the
+            // execution-continuation worker until a run for it exists: a later
+            // gate (daily limit, slots, pause, budget), a skip or a crash can
+            // never consume it. This system wake is coalesced into it.
             const fresh = freshSourceRunId ? await continueFreshInTransaction(tx as unknown as Db, {
-              companyId: issue.companyId, runId: freshSourceRunId, trigger: "continuation_wake", delivery: "caller_owns" }) : null;
-            if (fresh?.kind !== "continued") return deferBlockedExecution(continuationHold());
-            executionBlocker = await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id,
-              { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null });
-            if (executionBlocker) return deferBlockedExecution(continuationHold());
-            continuationBlocked = false;
-            continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
-            enrichedContextSnapshot.forceFreshSession = true;
-            enrichedContextSnapshot.freshContinuationOfRunId = freshSourceRunId;
-            if (fresh.isolation === "fresh_isolated_workspace") enrichedContextSnapshot.freshContinuationIsolation = fresh.recoveryActionId;
+              companyId: issue.companyId, runId: freshSourceRunId, trigger: "continuation_wake", delivery: "record" }) : null;
+            if (fresh?.kind !== "continued" && fresh?.kind !== "already_continued") return deferBlockedExecution(continuationHold());
+            return { kind: "skipped" as const };
           }
 
 
