@@ -15,7 +15,7 @@ import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-acce
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
-import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
+import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode, isSpawnLikeFailureMessage } from "./retries.js";
 import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
@@ -1007,10 +1007,20 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         outcome === "failed" &&
         !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))
       ) {
-        await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+        const interactionRetry = await scheduleInteractionContinuationInfrastructureRetryIfEligible(
           livenessRun,
           agent,
         );
+        if (interactionRetry === null) {
+          // The adapter can return a failed result instead of throwing (the
+          // `process` adapter does this when its command cannot start), so
+          // this ordinary-completion path needs the same spawn-like fallback
+          // as the thrown-error paths in failRun/failRunSetup.
+          await scheduleTransientSpawnLikeFailureRetryIfEligible(
+            livenessRun,
+            agent,
+          );
+        }
       }
       const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
         livenessRun,
@@ -1331,7 +1341,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             {}),
           ...(stoppedDuringFailure ? controllerLeaseLossResultJson(signal) : {}),
           ...nativePreDispatchFailure,
-          ...(!legacyAdapterEntered && run.runtimeMode !== "native"
+          // A spawn-like thrown error (binary missing from PATH, ENOENT,
+          // "failed to start command") proves no provider work started even
+          // when legacyAdapterEntered is already true — entering the adapter
+          // call is not the same as a child process actually launching. This
+          // lets scheduleTransientSpawnLikeFailureRetryIfEligible's
+          // scheduleBoundedRetryForRun call clear the legacy-reconciliation
+          // gate (legacyExecutionNeedsReconciliationWithEvidence) instead of
+          // falling into terminal reconciliation on the very failure class
+          // this retry lane exists for.
+          ...(run.runtimeMode !== "native" &&
+            (!legacyAdapterEntered || isSpawnLikeFailureMessage(thrownMessage))
             ? {
                 executionRecovery: {
                   kind: "bootstrap",

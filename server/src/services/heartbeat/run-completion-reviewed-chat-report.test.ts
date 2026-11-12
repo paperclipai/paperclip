@@ -51,6 +51,7 @@ function callbacks(db: Db) {
     updateRuntimeState: vi.fn<Dependencies["updateRuntimeState"]>(),
     scheduleBoundedRetryForRun: vi.fn<Dependencies["scheduleBoundedRetryForRun"]>(),
     scheduleInteractionContinuationInfrastructureRetryIfEligible: vi.fn<Dependencies["scheduleInteractionContinuationInfrastructureRetryIfEligible"]>(async () => null),
+    scheduleTransientSpawnLikeFailureRetryIfEligible: vi.fn<Dependencies["scheduleTransientSpawnLikeFailureRetryIfEligible"]>(async () => null),
     timerClaimWasFirstHeartbeat: vi.fn<Dependencies["timerClaimWasFirstHeartbeat"]>(() => undefined),
     releaseIssueExecutionAndPromote: vi.fn<Dependencies["releaseIssueExecutionAndPromote"]>(async () => undefined),
     finalizeAgentStatus: vi.fn<Dependencies["finalizeAgentStatus"]>(async () => undefined),
