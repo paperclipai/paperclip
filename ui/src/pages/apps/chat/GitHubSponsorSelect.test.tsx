@@ -69,8 +69,24 @@ describe("GitHub sponsor picker", () => {
     await render(access("operator", { memberships: [{ companyId: "elsewhere", status: "active", membershipRole: "admin" }] }));
     await open(); expect(options()).toHaveLength(1);
   });
+  it("keeps sponsor filtering linear for a large company", async () => {
+    const count = 600;
+    let identityReads = 0;
+    const largeMembers = Array.from({ length: count }, (_, index) => ({
+      ...members[0],
+      get principalId() {
+        if (++identityReads > count * 4) throw new Error("Repeated member scans");
+        return index === 0 ? "self" : `member-${index}`;
+      },
+      user: { id: `member-${index}`, name: `Member ${index}`, email: null, image: null },
+    }));
+    await act(async () => root.render(<GitHubSponsorSelect companyId="company" members={largeMembers}
+      access={access("admin")} value="self" onChange={onChange} label="Sponsor" />));
+    await open();
+    expect(options()).toHaveLength(count);
+    expect(identityReads).toBeLessThanOrEqual(count * 4);
+  });
   it("disables the picker until access is known", async () => {
-    // Explicit render avoids the default access argument.
     await act(async () => root.render(<GitHubSponsorSelect companyId="company" members={members}
       access={undefined} value="self" onChange={onChange} label="Sponsor" />));
     expect(container.querySelector<HTMLButtonElement>('[aria-label="Sponsor"]')!.disabled).toBe(true);
