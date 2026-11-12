@@ -3972,7 +3972,9 @@ export function heartbeatService(
         // A bounded workspace source lock wait ran out while this run was
         // preparing: resource contention, not a failure. The finally block
         // below still releases leases, runtime services, and scratch.
-        await finalizeWorkspaceSourceLockWait(run, outerErr).catch(
+        await finalizeWorkspaceSourceLockWait(run, outerErr, {
+          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+        }).catch(
           (deferralErr) => {
             logger.error(
               { err: deferralErr, runId },
@@ -3980,6 +3982,10 @@ export function heartbeatService(
             );
           },
         );
+        if (runOptions.nativeRestartRecovery && !legacyAdapterEntered && !nativeDispatchStarted)
+          await settleFailedNativeRecoveryPreparation(db, { companyId: run.companyId, runId: run.id,
+            claim: runOptions.nativeRestartRecovery }).catch(error =>
+            logger.warn({ err: error, runId: run.id }, "Failed native recovery preparation could not be settled"));
       } else if (!(await leaveToNextController(outerErr))) {
         await preserveNativeWorkspaceOnFailure();
         if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {

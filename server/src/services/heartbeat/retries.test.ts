@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { HttpError } from "../../errors.js";
+import { IsolatedRepositorySourceBusy } from "../workspace-source-lock.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -239,6 +240,23 @@ describe("heartbeat retry module callbacks", () => {
       .scheduleInteractionContinuationInfrastructureRetryIfEligible(spawnFailure, { adapterType: "codex_local" } as Agent);
     expect(spawnDeps.appendRunEvent).toHaveBeenCalledWith(spawnFailure, exhaustion);
     expect(database.access).not.toHaveBeenCalled();  });
+
+  it.each([false, true])("records the admission assignee decision on a bounded source-lock wait (wasIssueAssignee: %s)", async (wasIssueAssignee) => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = unitRun();
+    await extracted.createHeartbeatRetries(database.db, deps).finalizeWorkspaceSourceLockWait(
+      run, new IsolatedRepositorySourceBusy("workspace_source_busy"), { wasIssueAssignee });
+    expect(deps.setRunStatusIfRunning).toHaveBeenCalledWith("run", "cancelled",
+      expect.objectContaining({
+        errorCode: extracted.WORKSPACE_BUSY_ERROR_CODE,
+        contextSnapshot: expect.objectContaining({
+          issueId: "issue",
+          workspaceBusyDeferredWhileAssignee: wasIssueAssignee,
+        }),
+      }));
+    expect(database.access).not.toHaveBeenCalled();
+  });
 });
 
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
