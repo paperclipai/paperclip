@@ -38,6 +38,7 @@ import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import type { AiConnectionLoginIntent } from "@paperclipai/shared";
 import { openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -2573,7 +2574,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   });
   it("pins the Antigravity login command to the isolated home even when the host env presets CLI homes", async () => {
     const login = localAiLoginService(db);
-    const intent = { provider: "antigravity", method: "subscription", ownership: "personal", name: "Agy login", agentIds: [], allAgents: true } as const;
+    const intent: AiConnectionLoginIntent = { provider: "antigravity", method: "subscription", ownership: "personal", name: "Agy login", agentIds: [], allAgents: true };
     const attempt = await login.start(companyId, "alice", intent);
     try {
       expect(attempt.command).toBeDefined();

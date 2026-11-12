@@ -29,6 +29,7 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { preserveAgyConversationState, resolveAgyConversationDir, restoreAgyConversationState } from "./antigravity-conversation-state.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -365,6 +366,13 @@ export async function prepareManagedAiRuntime(
     const agyCliHome = path.join(home, ".gemini", "antigravity-cli");
     if (input.binding.provider === "antigravity") {
       await mkdir(agyCliHome, { recursive: true, mode: 0o700 });
+      // The CLI home is fresh per run; restore this account's conversation
+      // state so a saved conversation id can actually resume instead of
+      // falling back to a fresh session.
+      await restoreAgyConversationState(
+        agyCliHome,
+        resolveAgyConversationDir(input.companyId, selection.grant.id),
+      );
     }
     const capability =
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
@@ -466,6 +474,14 @@ export async function prepareManagedAiRuntime(
     let removalOnly = false;
     let deferredWriteback: { cause: unknown } | undefined;
     const removeHome = async () => {
+      if (home && input.binding.provider === "antigravity") {
+        // Preserve conversation state before the temporary home is deleted;
+        // only brain/ moves, never the credential in this same CLI home.
+        await preserveAgyConversationState(
+          agyCliHome,
+          resolveAgyConversationDir(input.companyId, selection.grant.id),
+        );
+      }
       if (home) await rm(home, { recursive: true, force: true });
       homeRemoved = true;
       releaseCredentialHome?.();
