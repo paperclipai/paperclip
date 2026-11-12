@@ -255,6 +255,8 @@ export interface TaskChatToolItem {
   blockedReason?: string;
   /** Execution id of the delegation (subagent) that made this call. */
   parentToolUseId?: string;
+  /** Arguments of an MCP tool call, kept to find its MCP Apps view. */
+  input?: unknown;
 }
 
 /**

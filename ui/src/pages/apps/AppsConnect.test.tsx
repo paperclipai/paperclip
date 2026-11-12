@@ -72,6 +72,7 @@ const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog"
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
 const GAUGE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
+const CIRCLEBACK = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "circleback")!;
 const DITTO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
 const BRAINTRUST = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "braintrust")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
@@ -2436,6 +2437,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       connectionMethodKey: "mcp-api-key",
       credentialValues: { "credentials.authorization": "gauge-test-key" },
     }));
+  });
+
+  it("connects Circleback with direct browser sign-in and shows the share warning first", async () => {
+    mockParams.appKey = "circleback";
+    listGalleryMock.mockResolvedValueOnce({ apps: [CIRCLEBACK] });
+    await render();
+    // Share and delete advice must be visible before sign-in on the only path.
+    expect(container.textContent).toContain("anyone with the link");
+    expect(container.textContent).toContain("Set share and delete actions to Ask first");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).not.toContain("API key");
+    const primary = buttonByText("Continue to Circleback");
+    expect(primary?.disabled).toBe(false);
+    await act(async () => primary!.click());
+    await vi.waitFor(() => expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "circleback",
+      connectionMethodKey: "mcp-oauth",
+    })));
   });
 
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {

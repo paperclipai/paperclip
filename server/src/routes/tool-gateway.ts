@@ -100,8 +100,8 @@ async function handleMcpGatewayProtocol(
           capabilities: { tools: {}, resources: {}, prompts: {} },
           serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
           _meta: {
-            "paperclip/mcp-app-ui": "unsupported",
-            "paperclip/mcp-app-ui-detail": "Interactive ui:// iframe hosting is not available in Paperclip Runner.",
+            "paperclip/mcp-app-ui": "host_rendered",
+            "paperclip/mcp-app-ui-detail": "Paperclip renders MCP Apps ui:// views in the task chat. The gateway does not forward them to clients.",
           },
         },
       });

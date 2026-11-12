@@ -78,6 +78,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Reuse approved product copy and follow your style guide.",
     short: "Sign in with Ditto. API keys are optional.",
   },
+  circleback: {
+    tagline: "Search meeting notes, transcripts, and action items.",
+    short: "Sign in with Circleback. Meetings appear as cards in chat.",
+  },
   gauge: {
     tagline: "Track your brand in AI answers and run content workflows.",
     short: "Sign in with Gauge and pick an organization. API keys are optional.",

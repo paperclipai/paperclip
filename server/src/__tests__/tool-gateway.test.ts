@@ -1515,7 +1515,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .expect(200);
       expect(initialized.body.result).toMatchObject({
         capabilities: { tools: {}, resources: {}, prompts: {} },
-        _meta: { "paperclip/mcp-app-ui": "unsupported" },
+        _meta: { "paperclip/mcp-app-ui": "host_rendered" },
       });
       const setupLimited = await request(app)
         .post(endpoint)

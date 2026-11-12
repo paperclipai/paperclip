@@ -38,6 +38,8 @@ import { authorizationService, canActorReadIssuePrivacy, type AuthorizationActor
 import { claimSlackRateLimitRetry } from "./connectors/slack-retry.js";
 import { resolveSlackTaskAuthority } from "./connectors/slack-authority.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
+import { MCP_APPS_CLIENT_CAPABILITY, MCP_APP_MAX_HTML_BYTES, mcpAppToolCallableFromApp, mcpAppToolVisibleToModel, readMcpAppResource, type McpAppCallToolResult, type McpAppResource, type McpAppToolUi } from "@paperclipai/shared";
+import { mcpAppCallToolResult, recordMcpAppView } from "./mcp-app-views.js";
 import { slackToolsForSession } from "./connectors/slack-catalog.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { executeSlackTool } from "./connectors/slack.js";
@@ -333,6 +335,8 @@ export interface ConnectedMcpGatewayMetadata {
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown> | null;
   annotations: Record<string, unknown>;
+  /** MCP Apps view declaration, when the tool renders a `ui://` view. */
+  ui?: McpAppToolUi | null;
   risk: {
     level: string;
     isReadOnly: boolean;
@@ -340,6 +344,11 @@ export interface ConnectedMcpGatewayMetadata {
     isDestructive: boolean;
   };
   onDemandTools?: boolean;
+}
+
+/** MCP Apps: a tool whose `_meta.ui.visibility` omits "model" is callable only from its view. */
+export function isModelVisibleTool(tool: ToolGatewayDescriptor): boolean {
+  return mcpAppToolVisibleToModel(asRecord(tool.providerMetadata)?.ui as McpAppToolUi | null | undefined);
 }
 
 export interface ToolGatewayDescriptor extends AgentToolDescriptor {
@@ -1660,6 +1669,7 @@ export function createToolGatewayService(
           inputSchema,
           outputSchema,
           annotations,
+          ui: catalogEntry.uiMeta ?? null,
           risk: {
             level: catalogEntry.riskLevel,
             isReadOnly: catalogEntry.isReadOnly,
@@ -3036,7 +3046,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     toolName: string,
   ): Promise<ToolGatewayDescriptor> {
-    const connectedTools = await connectedMcpToolsForCompany(session.companyId);
+    const connectedTools = (await connectedMcpToolsForCompany(session.companyId)).filter(isModelVisibleTool);
     const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
     const githubBotTools = await githubBotToolsForSession(db, session);
@@ -3259,6 +3269,7 @@ export function createToolGatewayService(
   async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
     const guestBotConnection = await measureRunPhase("connectors.discovery.github", () => githubGuestBotConnectionForSession(db, session));
     let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
+      .filter(isModelVisibleTool)
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
     const connectionIds = [...new Set(connectedTools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []))];
     if (connectionIds.length) {
@@ -5520,7 +5531,7 @@ export function createToolGatewayService(
     try {
       await request("initialize", {
         protocolVersion: "2024-11-05",
-        capabilities: {},
+        capabilities: { extensions: MCP_APPS_CLIENT_CAPABILITY },
         clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
       });
       child.stdin.write(
@@ -5604,21 +5615,20 @@ export function createToolGatewayService(
       credentialHeaders,
       callerHeaders: input.callerHeaders,
     });
-    const response = await guardedRemoteHttpFetch(
-      endpoint,
-      {
-        method: "POST",
-        redirect: "manual",
-        headers: mcpHttpRequestHeaders(headers),
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: `paperclip-context-${randomUUID()}`,
-          method: input.method,
-          params: input.params,
-        }),
-      },
-      remoteHttpFetchOptions(),
-    );
+    const contextInit: RequestInit = {
+      method: "POST",
+      redirect: "manual",
+      headers: mcpHttpRequestHeaders(headers),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `paperclip-context-${randomUUID()}`,
+        method: input.method,
+        params: input.params,
+      }),
+    };
+    const response = options.remoteHttpRequest
+      ? await options.remoteHttpRequest(endpoint, contextInit)
+      : await guardedRemoteHttpFetch(endpoint, contextInit, remoteHttpFetchOptions());
     const body = await readBoundedRemoteResponse(response);
     if (!response.ok) {
       await markRemoteConnectionHealth(
@@ -6292,6 +6302,8 @@ export function createToolGatewayService(
         transport,
         spawnedLocalProcess,
       },
+      // Kept for MCP Apps views; never forwarded to the agent.
+      ...(asRecord(record._meta) ? { meta: record._meta } : {}),
       ...(record.isError === true
         ? { error: "MCP tool returned an error result", ...githubFailure }
         : {}),
@@ -10142,6 +10154,89 @@ export function createToolGatewayService(
     },
 
     /**
+     * MCP Apps: reads the `ui://` view document for a recorded call, through
+     * the same connection and credential the agent's call used.
+     */
+    async readMcpAppViewResource(input: {
+      companyId: string;
+      userId: string;
+      view: { connectionId: string; agentId: string | null; runId: string | null; issueId: string | null; responsibleUserId: string | null; resourceUri: string };
+    }): Promise<McpAppResource> {
+      const [connection] = await db.select().from(toolConnections)
+        .where(and(eq(toolConnections.id, input.view.connectionId), eq(toolConnections.companyId, input.companyId)))
+        .limit(1);
+      if (!connection) throw new ToolGatewayHttpError(404, "MCP connection not found", "connection_not_found");
+      const session: ToolGatewaySession = {
+        id: "mcp-app-view",
+        token: "mcp-app-view",
+        companyId: input.companyId,
+        agentId: input.view.agentId,
+        runId: input.view.runId,
+        issueId: input.view.issueId,
+        projectId: null,
+        actorType: "user",
+        actorId: input.userId,
+        responsibleUserId: input.view.responsibleUserId ?? input.userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      const result = await callAssignedConnectionProtocol({
+        session,
+        connection,
+        method: "resources/read",
+        params: { uri: input.view.resourceUri },
+      });
+      const resource = readMcpAppResource(result, input.view.resourceUri);
+      if (!resource) {
+        throw new ToolGatewayHttpError(502, "The app did not return a view for this tool", "mcp_app_resource_invalid");
+      }
+      if (Buffer.byteLength(resource.html, "utf8") > MCP_APP_MAX_HTML_BYTES) {
+        throw new ToolGatewayHttpError(502, "The app's view is too large to show", "mcp_app_resource_too_large");
+      }
+      return resource;
+    },
+
+    /**
+     * MCP Apps: a view's `tools/call`. Only tools of the view's own connection
+     * that are visible to apps can be called. The call runs with the viewer's
+     * authority and the agent's connection access, through the same policy,
+     * approval and audit path as a connection test call.
+     */
+    async callMcpAppViewTool(input: {
+      companyId: string;
+      userId: string;
+      view: { connectionId: string; agentId: string | null };
+      toolName: string;
+      arguments: Record<string, unknown>;
+      signal?: AbortSignal;
+    }): Promise<McpAppCallToolResult> {
+      if (!input.view.agentId) {
+        throw new ToolGatewayHttpError(409, "This view's agent no longer exists", "mcp_app_agent_missing");
+      }
+      const tool = (await connectedMcpToolsForConnection(input.companyId, input.view.connectionId))
+        .find((candidate) => candidate.upstreamToolName === input.toolName);
+      if (!tool || !mcpAppToolCallableFromApp((asRecord(tool.providerMetadata)?.ui ?? null) as McpAppToolUi | null)) {
+        throw new ToolGatewayHttpError(404, `Tool "${input.toolName}" is not available to this app`, "mcp_app_tool_not_found");
+      }
+      const outcome = await this.executeTestCall({
+        companyId: input.companyId,
+        connectionId: input.view.connectionId,
+        agentId: input.view.agentId,
+        userId: input.userId,
+        toolName: tool.name,
+        parameters: input.arguments,
+        signal: input.signal,
+      });
+      if (outcome.decision === "ask_first") {
+        return { content: [{ type: "text", text: "This action needs approval first. It was sent for review." }], isError: true };
+      }
+      if ("error" in outcome && outcome.error) {
+        return { content: [{ type: "text", text: outcome.error.message }], isError: true };
+      }
+      return mcpAppCallToolResult("result" in outcome ? outcome.result : null);
+    },
+
+    /**
      * Live status of an ask-first test call, polled by the Test tab panel.
      * Scoped to the connection the panel is bound to and to test-origin
      * requests only, so it can't be used to read arbitrary action requests.
@@ -11548,6 +11643,15 @@ export function createToolGatewayService(
         // the row to failed, and emits — an earlier success emit would make one
         // execution report both outcomes.
         void emitConnectionInvoked(db, invocationId);
+        if (connectedMcpExecution) {
+          await recordMcpAppView(db, {
+            session,
+            tool,
+            invocationId,
+            toolInput: argumentValidation.value,
+            result: resultValidation.value,
+          });
+        }
         return {
           invocationId,
           status: "completed" as const,

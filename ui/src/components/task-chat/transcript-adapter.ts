@@ -919,6 +919,7 @@ export function transcriptToTaskChatItems(
             ...(toolInputTaskRef(entry.input) ? { taskRefId: toolInputTaskRef(entry.input) } : {}),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
+            ...(entry.name && /mcp/i.test(entry.name) && entry.input !== undefined ? { input: entry.input } : {}),
           };
           if (entry.detail) applyToolDetail(tool, entry.detail);
           items.push(tool);

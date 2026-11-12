@@ -13,6 +13,8 @@ import { toolTaxonomy } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
+import { useMcpAppViewForTool } from "@/components/mcp-app/McpAppIssueContext";
+import { McpAppView } from "@/components/mcp-app/McpAppView";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -53,6 +55,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
   const [showDetail, setShowDetail] = useTaskChatExpansion(item.id, false);
   const expandable = Boolean(item.target || item.detail || item.diff);
+  const mcpApp = useMcpAppViewForTool(item);
 
   return (
     <div data-testid="task-chat-tool-card" className="flex min-w-0 max-w-full flex-col text-xs">
@@ -161,6 +164,9 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
             </div>
           </div>
         )
+      ) : null}
+      {mcpApp.issueId && mcpApp.view ? (
+        <McpAppView issueId={mcpApp.issueId} view={mcpApp.view} displayName={item.name} />
       ) : null}
     </div>
   );
