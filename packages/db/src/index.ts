@@ -5,6 +5,7 @@ export {
   type OwnedDatabaseListener,
   livenessDb,
   controllerLeaseDb,
+  controllerInstanceLeaseDb,
   closeLivenessDb,
   checkpointDb,
   closeCheckpointDb,

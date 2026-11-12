@@ -324,11 +324,27 @@ export function controllerLeaseDb(db: Db): Db {
   return created;
 }
 
+const controllerInstanceLeaseDbFactories = new WeakMap<object, () => Db>();
+const controllerInstanceLeaseDbs = new WeakMap<object, Db>();
+
+/** One private connection for the server's controller-instance lease, so its
+ * renewal never waits behind request or worker traffic on the main pool. */
+export function controllerInstanceLeaseDb(db: Db): Db {
+  const existing = controllerInstanceLeaseDbs.get(db);
+  if (existing) return existing;
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory();
+  controllerInstanceLeaseDbs.set(db, created);
+  return created;
+}
+
 /** Ends the liveness pool if one was created. The ended pool stays cached, so
  * a late renewal fails like a query on the ended primary pool. */
 export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<void> {
   await Promise.all([livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
-    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
+    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
+    controllerInstanceLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
 }
 
 // Control checkpoints must not occupy the request or lease-renewal pools
@@ -405,6 +421,9 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   }, db));
   controllerLeaseDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-legacy-controller-lease",
+  }, db));
+  controllerInstanceLeaseDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 1, applicationName: "paperclip-controller-instance-lease",
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",

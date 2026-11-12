@@ -224,6 +224,36 @@ suite("controller instance lease: a replaced container's records are provable", 
     } finally { vi.useRealTimers(); }
   });
 
+  it("renews on its own connection while the main pool is saturated (deploy overlap traffic switch)", async () => {
+    // One main-pool connection, held by a slow statement: before the fix the renewal
+    // waited behind it, timed out, and five such timeouts made a healthy server exit.
+    const busy = createDb(temporary!.connectionString, { maxConnections: 1 });
+    try {
+      registerControllerInstanceDb(busy);
+      const lost = vi.fn();
+      registerControllerInstanceLeaseWork(busy, coordinator, { onLost: lost });
+      currentControllerProcessStamp();
+      await tickControllerInstanceLease();
+      // Drizzle queries are lazy: attach a continuation so the statement starts now.
+      const hold = busy.execute(sql`select pg_sleep(12)`).then(() => undefined);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const [before] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      currentControllerProcessStamp();
+      const started = Date.now();
+      await tickControllerInstanceLease();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      const [after] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      expect(after.renewedAt!.getTime()).toBeGreaterThan(before.renewedAt!.getTime());
+      expect(lost).not.toHaveBeenCalled();
+      await hold;
+    } finally {
+      await stopControllerInstanceLease(busy);
+      await busy.$client.end({ timeout: 5 });
+    }
+  }, 30_000);
+
   it("proves a cleanly stopped boot gone at once", async () => {
     const stopped = await otherBoot({ liveForMs: 60_000 });
     await db.update(controllerInstances).set({ stoppedAt: sql`now()` }).where(eq(controllerInstances.bootId, stopped));
