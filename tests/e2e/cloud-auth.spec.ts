@@ -31,7 +31,7 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
       const healthResponse = await request.get("/api/health");
       expect(healthResponse.ok()).toBe(true);
       const cloudHealth = {
-        ...await healthResponse.json(), deploymentMode: "authenticated", bootstrapStatus: "ready",
+        ...await healthResponse.json(), status: "ok", deploymentMode: "authenticated", bootstrapStatus: "ready",
         cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: cloudOrigin, stackSlug: "test-workspace" },
       };
       await page.route("**/api/health", (route) => route.fulfill({ json: cloudHealth }));
