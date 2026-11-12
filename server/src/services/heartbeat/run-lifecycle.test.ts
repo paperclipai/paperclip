@@ -211,6 +211,21 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     expect(persisted?.processPid).toBe(process.pid);
   });
 
+  it.each([
+    { status: "cancelled", errorCode: "cancelled", resultJson: { cancelledByActorType: "user" }, wakes: 0 },
+    { status: "cancelled", errorCode: "cancelled", resultJson: { cancelledByActorType: "board" }, wakes: 0 },
+    { status: "cancelled", errorCode: "operator_interrupted", resultJson: {}, wakes: 0 },
+    { status: "failed", errorCode: "adapter_failed", resultJson: {}, wakes: 1 },
+  ])("sends $wakes review-path wakes at the end of a $status $errorCode review run", async ({ wakes, ...end }) => {
+    const { company, agent, run } = await fixture(end);
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Review", status: "in_review", assigneeAgentId: agent.id }).returning();
+    const deps = callbacks(db);
+    deps.issuesSvc.listReviewAttention.mockResolvedValue(new Map([[issue.id, { state: "stalled", paths: [], reason: "no maintained path" }]]));
+    deps.enqueueWakeup.mockResolvedValue(null);
+    await createHeartbeatLifecycle(db, deps).handleIssueReviewPathDisposition({ ...run, contextSnapshot: { issueId: issue.id } });
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(wakes);
+  });
+
   it("keeps one terminal outcome and reports only the winner of competing writes", async () => {
     const { run } = await fixture();
     const deps = callbacks(db);

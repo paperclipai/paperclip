@@ -1,5 +1,6 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { runTaskContextColumn } from "./run-task-binding.js";
+import { parseObject } from "../adapters/utils.js";
 import {
   agentWakeupRequests,
   chatActions,
@@ -20,6 +21,40 @@ export const CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE =
   "chat_control_recovery_proof_unresolved";
 export const CHAT_CONTROL_RECOVERY_ADMISSION_KEY =
   "chatControlRecoveryAdmission";
+type OperatorStopRun =
+  | (Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "status" | "errorCode"> & { resultJson?: unknown })
+  | null
+  | undefined;
+
+/**
+ * True when the issue's latest run was cancelled by a board operator (the
+ * board cancel route stamps the attribution; interrupt-by-comment uses the
+ * operator_interrupted error code). While such a run is the latest activity
+ * on an issue, recovery stands down entirely: the operator deliberately
+ * stopped the agent, and re-waking it — or escalating "stranding" — would
+ * fight the human. Any newer run or wake supersedes the exemption.
+ */
+export function isOperatorCancelledRun(
+  latestRun: OperatorStopRun,
+  currentAgentId: string,
+): boolean {
+  if (
+    latestRun?.agentId === currentAgentId &&
+    [
+      CHAT_CONTROL_RECOVERY_STOP_CODE,
+      CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
+    ].includes(latestRun.errorCode ?? "")
+  )
+    return true;
+  if (!latestRun || latestRun.status !== "cancelled") return false;
+  if (latestRun.errorCode === "operator_interrupted") return true;
+  const result = parseObject(latestRun.resultJson);
+  return (
+    result.cancelledByActorType === "user" ||
+    result.cancelledByActorType === "board"
+  );
+}
+
 type AdmissionRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   | "id"

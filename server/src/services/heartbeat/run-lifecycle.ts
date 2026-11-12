@@ -132,7 +132,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
 } from "../heartbeat-stop-metadata.js";
-import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
+import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE, isOperatorCancelledRun } from "../chat-control-recovery-stop.js";
 import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
@@ -2122,6 +2122,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.status !== "in_review" || !issue.assigneeAgentId)
       return;
+    if (isOperatorCancelledRun(run, issue.assigneeAgentId)) return;
 
     const reviewAttention = await issuesSvc
       .listReviewAttention(issue.companyId, [issue])
