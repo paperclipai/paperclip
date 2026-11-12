@@ -3337,6 +3337,29 @@ lease retains its recorded working directory, since optional provider metadata
 can describe the allocation root. A resume setup failure preserves the retained
 sandbox and saved work. Plugin task reattachment remains with its task owner.
 
+When restart recovery reconnects a run to its own retained remote Runner
+(`reattach_remote_runner`, matching run and lease owner), and the run has its
+admitted native input with a runtime context and its saved skill versions,
+preparation reuses those exact skill versions instead of downloading them again.
+The Runner already holds their files. The server still checks that each saved
+version exists and that the agent can still read the skill. It does not
+materialize the files or take the company skill cache lock, so a burst of
+reattachments after an upgrade does not queue behind other runs' skill downloads
+on a server whose cache is empty. The run log records the
+`heartbeat.prepare.configuration_skills_adopted` phase and a lifecycle event with
+payload `skillPreparation: "reused_admitted"`. Every other start, including a
+dead-Runner resume and a run saved by an older release without saved skill
+versions or a runtime context, prepares its skills as before. The Runner
+controller follows the same rule for the same reconnect: it describes the
+Runner's skills by their admitted digests and rehydrates the pinned skill files
+on this server only if it must launch a Runner process and stage them again.
+The digest checks then run as before. It defers only when every admitted skill
+is pinned to its exact version in the run's saved selection, which preparation
+has just checked for access. An older run without that selection rehydrates
+first, so revoked access still stops the reconnect. The session
+configuration fingerprint is unchanged, because it uses each skill's key,
+runtime name, and version, not its local path.
+
 After a remote sandbox session passes provider recovery and durable run admission,
 its local suspension receipt is removed. This applies to built-in sandbox runners
 and plugin tasks. The running session then owns authority;

@@ -91,7 +91,7 @@ function ambiguousTask(): ChatCatalogCase {
     await verifyDistinctTaskFixtures(ctx, [t, otherTask]);
     return { project: p, task: t, otherProject, otherTask };
   });
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v3", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v4", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       await pollUntil({ label: "Task ambiguity clarification", deadlineAt: Date.now() + 150_000,
         load: () => observeInternal(ctx, state), accept: o => o.runs.length === 1 && o.runs.every(row => row.status === "succeeded")
