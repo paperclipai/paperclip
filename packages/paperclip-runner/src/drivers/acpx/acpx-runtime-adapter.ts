@@ -1432,6 +1432,7 @@ function runtimePort(
             attempt.reconciliationGeneration,
           );
           runtimeClosed = !hasUnreconciledLateFailure();
+          if (runtimeClosed) void shutdownClosedRuntime();
         }
         scheduleLateFailureReconciliation();
         return;
@@ -1452,6 +1453,11 @@ function runtimePort(
     });
   };
 
+  const shutdownClosedRuntime = (): Promise<unknown | null> => {
+    runtimeShutdown ??= boundedCloseOutcome(ownedRuntimeShutdownOutcome(runtime), runtimeCloseTimeoutMs);
+    return runtimeShutdown;
+  };
+
   async function closeRuntime(input: {
     reason: string;
     reconciliation?: {
@@ -1461,7 +1467,10 @@ function runtimePort(
   }): Promise<void> {
     extensionBoundary.active?.controller.abort(new Error("ACPX runtime is closing"));
     if (runtimeClosed) {
-      await runtimeShutdown;
+      const shutdownError = await shutdownClosedRuntime();
+      if (shutdownError !== null) {
+        throw new AggregateError([shutdownError], "ACPX runtime and provider cleanup failed");
+      }
       return;
     }
     if (
@@ -1530,10 +1539,7 @@ function runtimePort(
     } else {
       runtimeClosed = false;
     }
-    if (runtimeClosed) {
-      runtimeShutdown ??= boundedCloseOutcome(ownedRuntimeShutdownOutcome(runtime), runtimeCloseTimeoutMs);
-    }
-    const shutdownError = runtimeClosed ? await runtimeShutdown : null;
+    const shutdownError = runtimeClosed ? await shutdownClosedRuntime() : null;
     scheduleLateFailureReconciliation();
     if (closeError !== null || processErrors.length > 0 || shutdownError !== null) {
       const errors = [closeError, ...processErrors, shutdownError].filter(

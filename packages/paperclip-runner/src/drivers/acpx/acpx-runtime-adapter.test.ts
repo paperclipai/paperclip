@@ -2048,6 +2048,9 @@ describe("Codex ACPX runtime adapter", () => {
         resolveRetainedClose = resolve;
       });
       vi.mocked(runtime.close).mockReturnValueOnce(retainedClose);
+      let finishPendingWork!: () => void;
+      const pendingWork = new Promise<void>((resolve) => { finishPendingWork = resolve; });
+      runtime.shutdown = vi.fn(() => pendingWork);
       const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
@@ -2063,12 +2066,17 @@ describe("Codex ACPX runtime adapter", () => {
       await close;
       expect(runtime.close).toHaveBeenCalledOnce();
 
+      expect(runtime.shutdown).not.toHaveBeenCalled();
+
       resolveRetainedClose();
       await vi.advanceTimersByTimeAsync(0);
+      expect(runtime.shutdown).toHaveBeenCalledOnce();
+      finishPendingWork();
       await expect(
         port.close({ reason: "observe late success" }),
       ).resolves.toBeUndefined();
       expect(runtime.close).toHaveBeenCalledOnce();
+      expect(runtime.shutdown).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -2111,7 +2119,9 @@ describe("Codex ACPX runtime adapter", () => {
     });
 
     await expect(port.close({ reason: "close" })).rejects.toThrow("ACPX runtime and provider cleanup failed");
+    await expect(port.close({ reason: "repeat" })).rejects.toThrow("ACPX runtime and provider cleanup failed");
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.shutdown).toHaveBeenCalledOnce();
   });
 
   it("retains cleanup after guardian exit until provider exit is proven", async () => {
