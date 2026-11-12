@@ -1249,6 +1249,22 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
 function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   const environmentsSvc = environmentService(db);
 
+  // Return a `stopped` termination receipt only when the SSH host proves that
+  // no process of the lease's run remains. The receipt is valid only for the
+  // host that ran the lease.
+  async function confirmSshRunTermination(environment: Environment, lease: EnvironmentLease) {
+    const remoteCwd = typeof lease.metadata?.remoteCwd === "string" ? lease.metadata.remoteCwd.trim() : "";
+    if (!lease.heartbeatRunId || !lease.providerLeaseId || !remoteCwd) return null;
+    const parsed = await resolveEnvironmentDriverConfigForRuntime(db, lease.companyId, environment, {
+      heartbeatRunId: lease.heartbeatRunId,
+    });
+    if (parsed.driver !== "ssh") return null;
+    const { host, port, username } = parsed.config;
+    if (lease.providerLeaseId !== `ssh://${username}@${host}:${port}${remoteCwd}`) return null;
+    const result = await stopSshRunProcesses(parsed.config, { runId: lease.heartbeatRunId, remoteCwd });
+    return result === "stopped" ? { providerLeaseId: lease.providerLeaseId, state: "stopped" } : null;
+  }
+
   return {
     driver: "ssh",
 
@@ -1294,17 +1310,18 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     // does not prove that the run's remote processes ended. The release above
     // records no receipt; this method supplies one after a remote check.
     async confirmRunTermination({ environment, lease }) {
-      const remoteCwd = typeof lease.metadata?.remoteCwd === "string" ? lease.metadata.remoteCwd.trim() : "";
-      if (!lease.heartbeatRunId || !lease.providerLeaseId || !remoteCwd) return null;
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, lease.companyId, environment, {
-        heartbeatRunId: lease.heartbeatRunId,
-      });
-      if (parsed.driver !== "ssh") return null;
-      // The receipt is valid only for the host that ran the lease.
-      const { host, port, username } = parsed.config;
-      if (lease.providerLeaseId !== `ssh://${username}@${host}:${port}${remoteCwd}`) return null;
-      const result = await stopSshRunProcesses(parsed.config, { runId: lease.heartbeatRunId, remoteCwd });
-      return result === "stopped" ? { providerLeaseId: lease.providerLeaseId, state: "stopped" } : null;
+      return await confirmSshRunTermination(environment, lease);
+    },
+
+    // An SSH lease has no provider resource to destroy: the host and its
+    // workspace stay. A pending cleanup only needs proof that the run's
+    // remote processes ended. Without that proof the method throws, so the
+    // cleanup sweep keeps the lease for a later retry.
+    async retryPendingSandboxTeardown({ environment, lease }) {
+      if (!environment) throw new Error("SSH lease cleanup requires its environment.");
+      const receipt = await confirmSshRunTermination(environment, lease);
+      if (!receipt) throw new Error("SSH lease cleanup could not prove that the run's remote processes ended.");
+      return receipt;
     },
 
     async realizeWorkspace(input) {

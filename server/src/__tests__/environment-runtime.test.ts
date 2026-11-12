@@ -2013,6 +2013,49 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .toBe("gone");
   });
 
+  it("settles a pending SSH lease cleanup once the run's remote processes are gone", async () => {
+    if (!sshFixtureSupport.supported || process.platform !== "linux") {
+      console.warn("Skipping SSH pending cleanup fixture test: needs the SSH fixture and Linux /proc");
+      return;
+    }
+
+    const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-environment-runtime-ssh-cleanup-"));
+    fixtureRoots.push(fixtureRoot);
+    const fixture = await startSshEnvLabFixture({ statePath: path.join(fixtureRoot, "state.json") });
+    const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "ssh",
+      name: "Fixture SSH",
+      config: { ...sshConfig },
+    });
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+    const runDir = path.posix.join(String(acquired.lease.metadata?.remoteCwd), ".paperclip-runtime", "runs", runId, "workspace");
+    const leftover = (await runSshCommand(sshConfig,
+      `mkdir -p ${JSON.stringify(runDir)} && (cd ${JSON.stringify(runDir)} && exec nohup sleep 300 >/dev/null 2>&1) & echo $!`,
+    )).stdout.trim();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    // A failed release left the SSH lease in pending cleanup.
+    await db.update(environmentLeases).set({
+      status: "pending_cleanup", cleanupStatus: "failed", failureReason: "pending_cleanup_retry", releasedAt: new Date(),
+    }).where(eq(environmentLeases.id, acquired.lease.id));
+
+    await heartbeatService(db, { environmentRuntime: runtime }).sweepPendingCleanupLeases({ backoffMs: 0 });
+
+    const [settled] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.lease.id));
+    expect(settled).toMatchObject({ status: "expired", cleanupStatus: "success" });
+    expect(settled?.metadata?.remoteExecutionTermination).toMatchObject({
+      schema: "paperclip.remote-termination.v1", runId, leaseId: acquired.lease.id, provider: "ssh", state: "stopped",
+    });
+    expect((await runSshCommand(sshConfig, `kill -0 ${leftover} 2>/dev/null && echo alive || echo gone`)).stdout.trim())
+      .toBe("gone");
+  });
+
   it("keeps an agent stop pending while a cancelled run's SSH host cannot be checked", async () => {
     const { companyId, agentId, environment, runId } = await seedEnvironment({
       driver: "ssh",
