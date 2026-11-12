@@ -42,8 +42,6 @@ test("written provider entrypoints satisfy qualified launch permissions", async 
 // Package-layout regression runs in the existing verified-entrypoint test lane.
 import "./provision-pi-package.test.mjs";
 
-// Kimi suites run standalone in the same test:typescript:prep command;
-// keep only import-only layout regressions here to avoid double execution.
 import "./antigravity-provisioner-layout.test.mjs";
 import "./materialize-antigravity-distribution.test.mjs";
 import "./probe-antigravity-metadata.test.mjs";
