@@ -86,7 +86,7 @@ import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-autho
 import { REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
-import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
+import { AgentDirectoryOperationBusyError, agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -418,6 +418,7 @@ import {
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
   claimWarmNativeInstructionCopy,
+  warmRetirementDirectoryWait,
   warmSessionReleaseWait,
   nativeSessionWorkspaceScope,
   reserveWarmNativeInstructionDirectory,
@@ -1443,6 +1444,25 @@ describe("remote runner process supervision", () => {
       onLog: blockedLog,
     })(spec).completion).rejects.toThrow("runner_remote_process_launch_failed");
     expect(blockedLog).toHaveBeenCalledWith("stderr", `[paperclip-runner] test bind fault failed on port ${port}\n`);
+  });
+
+  it("launches runnerd with a bootstrap ticket issued after remote staging", async () => {
+    const order: string[] = [];
+    const execute = vi.fn(async (request: { args: string[]; env?: Record<string, string> }) => {
+      order.push(`execute:${request.env?.PAPERCLIP_RUNNER_BOOTSTRAP_TICKET ?? "none"}`);
+      return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never,
+      remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+      ensureArtifact: async () => { order.push("stage"); },
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller",
+      environment: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "issued-before-staging" },
+      refreshBootstrapTicket: async () => { order.push("refresh"); return "issued-at-dispatch"; } });
+    await expect(handle.completion).rejects.toThrow("runner_remote_process_launch_failed");
+    expect(order).toEqual(["stage", "refresh", "execute:issued-at-dispatch"]);
   });
 
   it("confirms no replacement process exists when staging fails before the launch RPC", async () => {
@@ -3047,6 +3067,35 @@ describe("remote provider pack manifest", () => {
             ? { opencodeCommand: `/opt/paperclip-runner/provider-pack/${admitted.payload.artifacts.opencodeExecutable.path}`,
               opencodeCommandSha256: admitted.payload.artifacts.opencodeExecutable.sha256 }
             : { acpxSidecarSha256: (admitted.payload.artifacts as Record<string, { sha256: string }>).acpxSidecar.sha256 }) });
+        if (opencode) {
+          // Staging failure after an upgrade: the run first launched OpenCode
+          // from its admitted artifact root. The relaunched Runner replays that
+          // launch, so it must get the same root, not the provider pack root.
+          const launchRoot = `/home/runtime-account/.paperclip-runtime/paperclip-runner/provider-artifacts/${admitted.digest.slice(7)}`;
+          const artifactReceipt = { schema: "paperclip.native-provider-artifacts.v1" as const, artifactId: randomUUID(),
+            closureDigest: "sha256:" + "9".repeat(64), providerPackDigest: admitted.digest, manifest: admitted, launchRoot, accountUid: 1000 };
+          const storageMode = vi.spyOn(harnessStorage, "durableNativeHarnessStorage").mockReturnValue({} as never);
+          const backupOwner = vi.spyOn(harnessStorage, "nativeHarnessBackupOwner").mockResolvedValue({} as never);
+          const restore = vi.spyOn(providerArtifactStorage, "restoreNativeProviderArtifacts").mockResolvedValue(undefined);
+          onTestFinished(() => { storageMode.mockRestore(); backupOwner.mockRestore(); restore.mockRestore(); });
+          const artifactExecute = vi.fn(async (request: { args: string[] }) => request.args?.[1]?.startsWith("const os=require")
+            ? { exitCode: 0, timedOut: false, stderr: "", stdout: JSON.stringify({ home: "/home/runtime-account", uid: 1000 }) }
+            : settledExecute(request));
+          await createRunnerdBackend({ ...recoveryInput,
+            runnerExecutionTarget: { ...settledTarget, runner: { execute: artifactExecute,
+              syncIn: vi.fn(async () => undefined), syncOut: vi.fn(async () => undefined) } } as never,
+            controllerPersistence: { bootId: "replacement-controller", runnerArtifact: artifact },
+            providerPackAdmissionSource: { runId: remoteExecution.binding.runId, receipt: null, state: null, artifacts: artifactReceipt } });
+          state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+          expect(restore).toHaveBeenCalledWith(expect.objectContaining({ receipt: artifactReceipt }));
+          expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ providerPackAuthorityDigest: admitted.digest,
+            providerNodeCommand: `${launchRoot}/${admitted.payload.artifacts.nodeCommand.path}`,
+            opencodeProxyPath: `${launchRoot}/${admitted.payload.artifacts.opencodeProxy.path}`,
+            opencodeCommand: `${launchRoot}/${admitted.payload.artifacts.opencodeExecutable.path}` });
+          storageMode.mockRestore();
+          backupOwner.mockRestore();
+          restore.mockRestore();
+        }
         const recoveredBackend = await createRunnerdBackend(recoveryInput);
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         const recovered = state.createTransport.mock.calls.at(-1)![0];
@@ -11164,6 +11213,117 @@ describe("native warm session supervision", () => {
     }
   });
 
+  describe("predecessor retirement while another run of the agent holds its directory lock", () => {
+    function busyFixture(identity: string) {
+      const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+        session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+      } as NativeExecutionInputV1;
+      state.execute.mockReset().mockImplementationOnce(async (options) => {
+        await options.onSession?.({ close: async () => undefined });
+        return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+          turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+          driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+      });
+      const agentLock = { holder: null as string | null };
+      const collected: string[] = [];
+      const adopted: string[] = [];
+      const keptForCollection: string[] = [];
+      const copy = (runId: string, preparationKey = "before") => ({ runId, root: `/tmp/${identity}`, preparationKey, hasChanges: async () => false,
+        collectStopped: async () => {
+          if (agentLock.holder !== null) throw new AgentDirectoryOperationBusyError();
+          collected.push(runId);
+        },
+        retirementFailed: async () => { keptForCollection.push(runId); } });
+      const target = (providerLeaseId: string, outcome: "created" | "resumed" | "replacement") => ({ kind: "remote" as const,
+        transport: "sandbox" as const, environmentId: identity, remoteCwd: `/tmp/${identity}`, sandboxLeaseAcquisition: { outcome, providerLeaseId } });
+      const claim = (runId: string, claimTarget: ReturnType<typeof target>, adoptable = true) => claimWarmNativeInstructionCopy({
+        priorExecution: warmExecution, companyId: warmExecution.binding.companyId, agentId: warmExecution.binding.agentId,
+        executionWorkspaceId: warmExecution.binding.executionWorkspaceId, workspace: warmExecution.workspace,
+        environmentId: identity, target: claimTarget, runId, preparationKey: "changed",
+        adopt: async () => {
+          adopted.push(runId);
+          return adoptable ? copy(runId, "changed") : null;
+        } });
+      const start = () => executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: target("sandbox-a", "created"), instructionWorkingCopy: copy(identity) });
+      return { agentLock, collected, adopted, keptForCollection, target, claim, start };
+    }
+    const originalWait = { ...warmRetirementDirectoryWait };
+    afterEach(() => { Object.assign(warmRetirementDirectoryWait, originalWait); });
+
+    it("waits in place for a short-lived lock and retires on the same sandbox", async () => {
+      const identity = "warm-instruction-directory-wait";
+      const f = busyFixture(identity);
+      Object.assign(warmRetirementDirectoryWait, { timeoutMs: 5_000, pollMs: 20 });
+      try {
+        await f.start();
+        f.agentLock.holder = `${identity}-other-task`;
+        setTimeout(() => { f.agentLock.holder = null; }, 100);
+        expect(await f.claim(`${identity}-follow-up`, f.target("sandbox-a", "resumed"))).toBeNull();
+        expect(f.collected).toEqual([`${identity}-follow-up`]);
+        expect(readNativeSessionIdleWork()).toBe("none");
+      } finally {
+        f.agentLock.holder = null;
+        await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }).catch(() => undefined);
+      }
+    });
+
+    it("fails a run whose wait outlasts the budget without abandoning the owner, which a later run retires", async () => {
+      const identity = "warm-instruction-directory-busy";
+      const f = busyFixture(identity);
+      Object.assign(warmRetirementDirectoryWait, { timeoutMs: 0, pollMs: 20 });
+      try {
+        await f.start();
+        f.agentLock.holder = `${identity}-other-task`;
+        const contended = await f.claim(`${identity}-follow-up`, f.target("sandbox-a", "resumed")).catch(error => error);
+        expect(contended).toMatchObject({ code: "native_predecessor_retirement_directory_busy", predecessorRunId: identity });
+        expect(contended.cause).toBeInstanceOf(AgentDirectoryOperationBusyError);
+        expect(f.keptForCollection).toEqual([`${identity}-follow-up`]);
+        expect(await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "environment delete" }))
+          .toMatchObject({ closed: 0, busy: 1, failed: 0 });
+        expect(await f.claim(`${identity}-fresh-sandbox`, f.target("sandbox-b", "replacement")).catch(error => error))
+          .toMatchObject({ code: "native_predecessor_retirement_directory_busy" });
+        expect(f.collected).toEqual([]);
+        f.agentLock.holder = null;
+        expect(await f.claim(`${identity}-follow-up-retry`, f.target("sandbox-a", "resumed"))).toBeNull();
+        expect(f.collected).toEqual([`${identity}-follow-up-retry`]);
+        expect(readNativeSessionIdleWork()).toBe("none");
+      } finally {
+        f.agentLock.holder = null;
+        await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }).catch(() => undefined);
+      }
+    });
+  });
+
+  it("retries an idle close whose file collection met another run's directory lock", async () => {
+    const identity = "warm-idle-directory-busy";
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 10 } },
+    } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession?.({ close: async () => undefined });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let busyCollections = 0;
+    const collectStopped = vi.fn(async () => {
+      if (busyCollections++ === 0) throw new AgentDirectoryOperationBusyError();
+    });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        instructionWorkingCopy: { runId: identity, root: `/tmp/${identity}`, preparationKey: "same", hasChanges: async () => false, collectStopped } });
+      await vi.waitFor(() => expect(collectStopped).toHaveBeenCalledTimes(1));
+      expect(readNativeSessionIdleWork()).toBe("present");
+      await vi.waitFor(() => expect(collectStopped).toHaveBeenCalledTimes(2), { timeout: 8_000 });
+      await vi.waitFor(() => expect(readNativeSessionIdleWork()).toBe("none"));
+    } finally {
+      random.mockRestore();
+      await closeIdleWarmNativeSessionsForRestart();
+    }
+  }, 15_000);
+
   it.each(["idle", "edit", "add", "remove", "projectless"])("retains the actual agent_files copy across warm turns, then retires for %s", async ending => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "warm-agent-files-")));
     const localRoot = join(root, "run", "live");
@@ -14341,12 +14501,38 @@ describe("native session bounded recovery", () => {
     } finally { releaseCleanup(); endTurn(); await outcome; }
   });
 
-  it("still retries a missing result after a system Stop that is not a governance pause", async () => {
+  it.each([
+    "Agent lifecycle stop requested",
+    "Cancelled because the agent was terminated or became invalid-org-chain under a terminated manager",
+    "Cancelled because the company was archived",
+  ])("settles an acknowledged agent termination Stop (%s) with no turn result as a cancellation", async (reason) => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const stop: Record<string, unknown> = {};
     state.execute.mockReset().mockImplementationOnce(async () => {
       Object.assign(stop, {
-        cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane", expected: true,
+        cancellation: { reason, source: "control_plane", expected: true, initiator: { type: "system" },
+          recordedAt: new Date().toISOString() },
+        nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+          dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
+        } });
+      throw new Error("native_finalization_missing: session returned no semantic result");
+    });
+    state.upsertRecoveryAction.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "termination-stop",
+    })).rejects.toThrow("native_cancellation_pending_recovery");
+    expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+    expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
+    expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+  });
+
+  it("still retries a missing result after a system Stop that is neither a pause nor a termination", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const stop: Record<string, unknown> = {};
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      Object.assign(stop, {
+        cancellation: { reason: "Superseded by a newer execution", source: "control_plane", expected: true,
           initiator: { type: "system" }, recordedAt: new Date().toISOString() },
         nativeCancellation: {
           schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
@@ -14358,7 +14544,7 @@ describe("native session bounded recovery", () => {
     const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({ update: vi.fn(async () => null) } as unknown as ReturnType<typeof issueServiceModule.issueService>);
     try {
       await expect(executePaperclipNativeSession({
-        db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "termination-stop",
+        db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "other-system-stop",
       })).rejects.not.toThrow("native_cancellation_pending_recovery");
       expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(false);
     } finally { service.mockRestore(); }
@@ -22035,6 +22221,9 @@ it("classifies a startup session.open timeout as a bounded transient startup fai
   for (const startupCode of ["runner_local_connect_failed", "runner_direct_wss_failed", "runner_ingress_unavailable"]) {
     const code = nativeSessionFailureSourceCode(new Error(`${startupCode}: PRP command session.open timed out`));
     expect(code).toBe("provider_session_open_timeout");
+    // The timeout can end with the description of what the command waited behind.
+    expect(nativeSessionFailureSourceCode(new Error(`${startupCode}: PRP command session.open timed out `
+      + "(runner connected; pending ahead 0; last runner event none)"))).toBe("provider_session_open_timeout");
     expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({ phase: "retryable_failure" });
     expect(nativeSessionFailureDisposition(3, new Date(), code)).toMatchObject({
       phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,

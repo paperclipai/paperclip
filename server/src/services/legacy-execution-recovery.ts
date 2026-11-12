@@ -27,6 +27,7 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { isReplacedPreparation } from "./server-replacement-interruption.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
@@ -57,7 +58,8 @@ export const legacyReconciliationRunFields = {
 
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
-  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson">
+    & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot" | "controllerBootId" | "controllerProcess">>,
 ): boolean {
   if (
     run.runtimeMode === "native" ||
@@ -91,6 +93,10 @@ export function legacyExecutionNeedsReconciliation(
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if ((run.errorCode === "provider_quota" || run.resultJson?.errorFamily === "provider_quota") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // A server restart or replacement stopped this setup before dispatch: no
+  // provider action happened, so there is nothing to reconcile. Its
+  // continuation is bounded by the server-restart lane, not the failure count.
+  if (isReplacedPreparation({ ...run, controllerBootId: run.controllerBootId ?? null })) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
@@ -351,7 +357,10 @@ export async function settleInterruptedNativeBootstrap(
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
     if (!task || !run || !isInterruptedNativePreparationCandidate(run) ||
         run.contextSnapshot?.issueId !== task.id ||
-        executionFailureRetryCount(run) >= 2) return null;
+        // A spent failure budget keeps the hold, except for a preparation that
+        // a server replacement stopped: it never failed, and its continuation
+        // uses the bounded server-restart lane (holds saved by older releases).
+        executionFailureRetryCount(run) >= 2 && !isReplacedPreparation(run)) return null;
     if (hasWorkspaceRestoreFailure(run.resultJson) && !await hasVerifiedWorkspaceRepair(tx as unknown as Db, run)) return null;
     const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
     const [lease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(

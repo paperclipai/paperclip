@@ -1,6 +1,7 @@
 import type { heartbeatRuns } from "@paperclipai/db";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { SERVER_SHUTDOWN_INTERRUPTED_CODE } from "./legacy-shutdown-before-dispatch.js";
+import { readControllerProcess } from "./controller-process-identity.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "runtimeMode" | "status" | "errorCode" | "resultJson" | "controllerBootId">;
@@ -28,4 +29,20 @@ export function isServerReplacementInterruption(run: Run, currentBootId: string 
   if (run.controllerBootId) return run.controllerBootId !== currentBootId;
   return diagnostic !== null && typeof diagnostic === "object"
     && (diagnostic as Record<string, unknown>).runPredatesObserver === true;
+}
+
+/**
+ * A replacement stopped this legacy run's setup before adapter dispatch
+ * (bootstrap evidence `providerWorkStarted: false`), and the row names the
+ * server process that owned it. No provider action happened, so it continues
+ * in the server-restart lane even when its failure budget is spent. A row
+ * saved by an older release without a controller process stamp cannot show
+ * its owner and stays in the charged lane.
+ */
+export function isReplacedPreparation(run: Run & { controllerProcess?: unknown }, currentBootId: string = legacyControllerBootId): boolean {
+  const evidence = run.resultJson?.executionRecovery;
+  const record = evidence && typeof evidence === "object" && !Array.isArray(evidence)
+    ? evidence as Record<string, unknown> : null;
+  return record?.kind === "bootstrap" && record.providerWorkStarted === false
+    && readControllerProcess(run.controllerProcess) !== null && isServerReplacementInterruption(run, currentBootId);
 }

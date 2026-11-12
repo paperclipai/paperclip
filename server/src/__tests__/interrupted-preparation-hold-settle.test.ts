@@ -271,6 +271,38 @@ suite("held interrupted preparations on the shared ownership path", () => {
     expect(successors[0]).toMatchObject({ scheduledRetryReason: "interrupted_preparation" });
   });
 
+  // Staging upgrade shape: a replaced server's Runner preparation was reaped as
+  // process_lost while it was the last automatic retry (failure budget spent).
+  // An older release held it for reconciliation ("Automatic recovery stopped").
+  it.each([
+    ["its lease still names the old controller", false],
+    // The real reaped shape: revocation swapped in a random boot id and kept the process stamp.
+    ["the orphan reaper revoked its lease", true],
+  ] as const)("releases an older release's hold on a preparation a server replacement stopped with its failure budget spent when %s", async (_label, revoked) => {
+    heartbeatService(db);
+    const finishedAt = new Date(Date.now() - 10_000);
+    const f = await interruptedPreparation({ run: { status: "failed", errorCode: "process_lost",
+      error: "Process lost -- server may have restarted", scheduledRetryAttempt: 2,
+      resultJson: { stopReason: "process_lost", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
+          retryEligible: false, controllerReplaced: true } },
+      contextSnapshot: undefined, finishedAt } });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId,
+      executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } },
+      ...(revoked ? { controllerBootId: randomUUID() } : {}) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+
+    expect(await hold(f.holdId)).toMatchObject({ status: "resolved", outcome: "false_positive" });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toEqual([expect.objectContaining({ scheduledRetryReason: "server_restart", scheduledRetryAttempt: 1 })]);
+    expect(successors[0]!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 2, serverRestarts: 1 });
+  });
+
   it("clears the saved-files gate of a lost-lease preparation that an older release blocked, so one Retry continues it", async () => {
     const heartbeat = heartbeatService(db);
     const f = await leaseLostSavedFilesHold({ keepStatusReceipt: false });
@@ -336,6 +368,36 @@ suite("held interrupted preparations on the shared ownership path", () => {
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: latest });
     expect(receipt).toMatchObject({ accepted: true });
   }, 120_000);
+
+  // The scheduler gives a settled lost preparation the interrupted_preparation
+  // lane; the synchronous budget check reads the server-restart bound of the
+  // replaced owner. When only the preparation bound is spent, the sweep must
+  // still report the exhaustion instead of leaving the task in_progress.
+  it("blocks the task when a replaced preparation's lane is spent even though the restart bound is not", async () => {
+    const heartbeat = heartbeatService(db);
+    const controller = await deadController();
+    const issueId = randomUUID(), runId = randomUUID();
+    const finishedAt = new Date(Date.now() - 30 * 60_000);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Replaced preparation", status: "todo",
+      assigneeAgentId: agentId, statusVersion: 2 });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation",
+      responsibleUserId: "local-board", issueId, status: "failed", errorCode: "process_lost",
+      error: "Process lost -- server may have restarted", runtimeMode: "legacy", executionStage: "preparing",
+      startedAt: new Date(finishedAt.getTime() - 2_000), finishedAt, nextEventSeq: 1,
+      controllerBootId: controller.bootId, controllerProcess: controller.process,
+      scheduledRetryAttempt: 12, scheduledRetryReason: "interrupted_preparation",
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      contextSnapshot: { issueId, retryReason: "interrupted_preparation", executionRetryAccounting: { version: 1,
+        failureRetries: 0, maxTurnContinuations: 0, interruptedPreparations: 12 } },
+      resultJson: { stopReason: "process_lost", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
+          retryEligible: true, controllerReplaced: true } } });
+
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
+  });
 
   it.each([
     ["provider work started", { kind: "bootstrap", providerWorkStarted: true }],

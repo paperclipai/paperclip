@@ -8,7 +8,7 @@ import { submitTaskReply } from "../user-actions.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes, waitForTurnReplyLinks } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { runtimeQueueCases } from "./runtime-queue.js";
+import { keyboardMoveQueuedMessageUp, runtimeQueueCases } from "./runtime-queue.js";
 import { observeRuntime, runtimeDefinition, runtimeObservation } from "./runtime-support.js";
 
 const otherText = "Use a readable font with accessible labels.";
@@ -79,7 +79,7 @@ export function gradeQueueEdit(value: unknown) {
 export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued-message", ctx => humanQueuedRuntime(ctx), gradeQueueEdit, {
   sourceFiles: ["chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/steering.yaml"],
   // v3: guidance graded on the task link, refused agent writes and the unchanged queue at the reply, not keywords.
-  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v3",
+  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v4",
   authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 720_000,
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -123,7 +123,7 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
     await edit(ctx.input.page, targetId, `${blueText} ${state.concurrentMarker}`);
     await ctx.input.page.getByRole("button", { name: "Save queued message", exact: true }).click();
     const handle = ctx.input.page.getByRole("button", { name: `Reorder queued message: ${blueText} ${state.concurrentMarker}`, exact: true });
-    await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
+    state.reorderRequest = await keyboardMoveQueuedMessageUp(ctx.input.page, handle);
     state.queueAfter = await pollUntil({ label: "Actual full blue text and first queue position persisted", deadlineAt: Date.now() + 15_000,
       load: () => queue(ctx, state), accept: q => q.entries[0]?.comment.id === targetId && q.entries[0]?.comment.body === `${blueText} ${state.concurrentMarker}` });
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
