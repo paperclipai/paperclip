@@ -1134,6 +1134,31 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
   });
 
+  it.each([
+    ["paperclip_runner", "claude_local"], ["paperclip_runner", "pool"],
+    ["codex_local", "claude_local"], ["codex_local", "pool"],
+  ])("restores the saved %s Codex draft after switching through %s", async (adapterType, intermediate) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const pools = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([]);
+    const dirty = vi.fn();
+    const adapterConfig = adapterType === "paperclip_runner"
+      ? { provider:"codex", model:"gpt-6.1-sol", reasoningEffort:"high", timeoutSec:37 }
+      : { engine:"cli", model:"gpt-6.1-sol", search:true, fastMode:true, timeoutSec:37 };
+    try {
+      const result = await renderForm([], { adapterType, adapterConfig, runtimeConfig:{aiConnection:{mode:"responsible_user",provider:"openai",method:"subscription"}} }, {showAdapterTypeField:true,wrapRouter:true,onDirtyChange:dirty});roots.push(result.root);
+      const configuration = () => result.container.querySelector('[data-config-section="configuration"]')!.textContent;
+      const original = configuration();
+      for (const choice of [intermediate,"codex_local"]) {
+        await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+        await clickElement(document.querySelector(`[role="option"][data-value="${choice}"]`));await flushReact();
+      }
+      expect(configuration()).toBe(original);
+      expect(dirty).toHaveBeenLastCalledWith(false);
+      expect(result.onSave).not.toHaveBeenCalled();
+    }finally{pools.mockRestore();}
+  });
+
   it.each(["codex_local", "claude_local"])("selects a pool from a directly configured %s agent without losing policy or workspace", async adapterType => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
     const { harnessPoolsApi } = await import("../api/harness-pools");
