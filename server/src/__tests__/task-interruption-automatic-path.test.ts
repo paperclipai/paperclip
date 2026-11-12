@@ -90,6 +90,7 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
       status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 2 * 60_000),
       payload: { issueId: issue.id } });
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false });
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "in_review" })).toMatchObject({ state: "working", canRetry: false });
     expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "failed", canRetry: true });
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(heartbeatRuns.id, runId));
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true });
