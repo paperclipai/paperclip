@@ -1,5 +1,5 @@
 {
-  "id": "4e2b621a-ef68-4764-bc1a-78414d198a6f",
+  "id": "671a422a-0b93-4155-b097-9d35a4fd2b2b",
   "prevId": "f0e17e47-6217-4080-b6b6-9d83b33e9ced",
   "version": "7",
   "dialect": "postgresql",
@@ -22339,6 +22339,18 @@
         },
         "stopped_at": {
           "name": "stopped_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dispatching_at": {
+          "name": "dispatching_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dispatch_lease_expires_at": {
+          "name": "dispatch_lease_expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -53674,12 +53686,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "pending_delete_object_key": {
-          "name": "pending_delete_object_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -53694,21 +53700,6 @@
           "columns": [
             {
               "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "runner_api_response_reservations_asset_idx": {
-          "name": "runner_api_response_reservations_asset_idx",
-          "columns": [
-            {
-              "expression": "asset_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
