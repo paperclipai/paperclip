@@ -124,11 +124,14 @@ export interface StagingMixResult {
   started: number;
   completedHandsOff: number;
   duplicatedSideEffects: Array<{ taskId: string; checks: string[] }>;
+  evidenceIncomplete: Array<{ taskId: string; checks: string[] }>;
   bannerShown: Array<{ taskId: string; firstShownAt: string; shownMs: number; errorCode: string | null; completedAnyway: boolean }>;
   retryClicked: number;
   retryWorked: number;
   invariant: { violationCount: number | null; violations: Record<string, number> | null; agentsWithStalledSlots: number | null; openTasks: number | null; error?: string };
 }
+
+export const isUnreadable = (check: { ok: boolean; detail?: string }) => !check.ok && (check.detail ?? "").startsWith("unreadable");
 
 export function deliverableVerified(checks: OracleResult["checks"] | null): boolean {
   return Boolean(checks?.length) && checks!.every(check => check.ok || DUPLICATE_CHECKS.has(check.name));
@@ -142,8 +145,12 @@ export function summarizeStagingMix(tasks: readonly ResultTask[], extraClicks: R
     started: tasks.length,
     completedHandsOff: tasks.filter(task => completed(task) && !clicked(task)).length,
     duplicatedSideEffects: tasks.flatMap(task => {
-      const failing = (task.checks ?? []).filter(check => !check.ok && DUPLICATE_CHECKS.has(check.name)).map(check => check.name);
+      const failing = (task.checks ?? []).filter(check => !check.ok && DUPLICATE_CHECKS.has(check.name) && !isUnreadable(check)).map(check => check.name);
       return failing.length ? [{ taskId: task.taskId, checks: failing }] : [];
+    }),
+    evidenceIncomplete: tasks.flatMap(task => {
+      const unreadable = (task.checks ?? []).filter(check => !check.ok && isUnreadable(check)).map(check => check.name);
+      return unreadable.length ? [{ taskId: task.taskId, checks: unreadable }] : [];
     }),
     bannerShown: tasks.flatMap(task => task.record.stagingMix?.retryBanner ? [{ taskId: task.taskId, firstShownAt: new Date(task.record.stagingMix.retryBanner.firstShownAt).toISOString(),
       shownMs: bannerShownMs(task.record.stagingMix.retryBanner, now), errorCode: task.record.stagingMix.retryBanner.errorCode,
@@ -157,7 +164,7 @@ export function summarizeStagingMix(tasks: readonly ResultTask[], extraClicks: R
 export function stagingMixHeadline(result: StagingMixResult): string[] {
   return [
     `completed hands-off / started: ${result.completedHandsOff} / ${result.started}`,
-    `duplicated side effects: ${result.duplicatedSideEffects.length} tasks`,
+    `duplicated side effects: ${result.duplicatedSideEffects.length} tasks${result.evidenceIncomplete.length ? `; evidence incomplete: ${result.evidenceIncomplete.length} tasks` : ""}`,
     `Retry banner shown: ${result.bannerShown.length} tasks`,
     `Retry worked / Retry clicked: ${result.retryWorked} / ${result.retryClicked}`,
   ];
@@ -192,6 +199,7 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
     : `${result.invariant.violationCount} violations, ${result.invariant.agentsWithStalledSlots} agents with stalled slots, ${result.invariant.openTasks} open tasks`;
   await writeFile(path.join(input.waveDir, "staging-mix-summary.md"), [...stagingMixHeadline(result), `Assigned-work invariant: ${invariant}`, "",
     ...result.duplicatedSideEffects.map(entry => `- ${entry.taskId}: duplicated ${entry.checks.join(", ")}`),
+    ...result.evidenceIncomplete.map(entry => `- ${entry.taskId}: evidence incomplete for ${entry.checks.join(", ")}`),
     ...result.bannerShown.map(entry => `- ${entry.taskId}: Retry banner from ${entry.firstShownAt} for ${Math.round(entry.shownMs / 1000)} s`
       + `${entry.errorCode ? ` (${entry.errorCode})` : ""}${entry.completedAnyway ? ", completed without a click" : ""}`), ""].join("\n"), { mode: 0o600 });
   return result;

@@ -130,8 +130,22 @@ describe("staging-mix Retry policy", () => {
       "Retry worked / Retry clicked: 1 / 2",
     ]);
     expect(result.duplicatedSideEffects).toEqual([{ taskId: "t2", checks: ["completion_once"] }]);
+    expect(result.evidenceIncomplete).toEqual([]);
     expect(result.bannerShown.find(entry => entry.taskId === "t2")).toMatchObject({ completedAnyway: true, errorCode: "controller_lease_lost", shownMs: 30_000 });
     expect(result.invariant.violationCount).toBe(2);
+  });
+
+  it("keeps an unreadable completion check out of the confirmed duplicates and says the evidence is incomplete", () => {
+    const record = { issueId: null, retry: null } as TaskRecord;
+    const checks = [{ name: "issue_done", ok: true }, { name: "ledger_rounds_verified", ok: true }, { name: "done_comment_posted", ok: true },
+      { name: "completion_once", ok: false, detail: "unreadable: the task's comments could not be read" }];
+    const result = summarizeStagingMix([{ taskId: "t1", issueId: "i1", record, finalStatus: "done", checks },
+      { taskId: "t2", issueId: "i2", record, finalStatus: "done", checks: [...checks.slice(0, 3), { name: "completion_once", ok: false, detail: "duplicate completion: runs a, b each reported completion" }] }],
+    new Set(), { violationCount: 0, violations: {}, agentsWithStalledSlots: 0, openTasks: 0 });
+    expect(result.duplicatedSideEffects).toEqual([{ taskId: "t2", checks: ["completion_once"] }]);
+    expect(result.evidenceIncomplete).toEqual([{ taskId: "t1", checks: ["completion_once"] }]);
+    expect(result.completedHandsOff).toBe(2);
+    expect(stagingMixHeadline(result)[1]).toBe("duplicated side effects: 1 tasks; evidence incomplete: 1 tasks");
   });
 
   it("reads the assigned-work invariant once as counts, and records a failed read", async () => {

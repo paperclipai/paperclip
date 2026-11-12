@@ -1413,7 +1413,7 @@ clicked during the wave, held until an overlap window as follow-ups are (`stagin
 **Results.** `staging-mix-results.json` and the first lines of `SUMMARY.md` give four lines, in this order:
 
 1. `completed hands-off / started`.
-2. `duplicated side effects: N tasks`.
+2. `duplicated side effects: N tasks`, followed by `; evidence incomplete: M tasks` when a check could not read its evidence (such a check is never counted as a duplicate).
 3. `Retry banner shown: N tasks`.
 4. `Retry worked / Retry clicked`.
 
