@@ -25,9 +25,6 @@ import { classifyWorkspaceRestoreFailure } from "../workspace-restore-merge.js";
 // agent_bridge, managed_home, staging_lease. The host lane acquires only
 // acp_runtime; the sandbox lane acquires the staging and transport resources too.
 
-// A staged runtime owns disk-backed workspace snapshots until it restores or
-// calls cleanupWorkspaceSnapshot(). Not every engine path under test does
-// either, so release every staged runtime after each test (idempotent).
 const preparedRuntimes = vi.hoisted(() => [] as Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }>);
 
 // Wrap the staging seam and both sandbox bridges so a test can stub them without
