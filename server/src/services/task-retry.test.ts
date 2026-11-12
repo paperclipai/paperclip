@@ -970,6 +970,54 @@ describe("durable task Retry admission", () => {
         .toMatchObject({ status: "coalesced", runId: queued[0].id });
     });
 
+  it.each(["person", "automatic"] as const)(
+    "continues a person's saved board turn on a connected task from saved work without replaying it: %s", async initiator => {
+      const input = await seedChatTask();
+      const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "adapter_failed",
+        error: "Provider stopped", responsibleUserId: input.actorId, sessionIdAfter: "provider-session",
+        contextSnapshot: { issueId: input.issueId, source: "issue.comment.reopen", wakeCommentId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+      let calls = 0;
+      const request = { ...input, actorSource: "local_implicit" as const,
+        ...(initiator === "automatic" ? { initiatedBy: "restart_recovery" as const } : {}),
+        prepareChatRetry: async () => { calls += 1; return { actionId: randomUUID() }; } };
+      if (initiator === "automatic") {
+        await expect(requestTaskRetry(request)).rejects.toMatchObject({ status: 409,
+          details: { code: "chat_failed_run_retry_not_authorized", reason: "saved_board_message_not_replayable" } });
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+        expect(calls).toBe(0);
+        return;
+      }
+      const receipt = await requestTaskRetry(request);
+      expect(receipt).toMatchObject({ accepted: true, stale: false, observedRunId: source.id });
+      expect(receipt.chatActionId).toBeUndefined();
+      expect(calls).toBe(0);
+      const [intent] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      const taskRetry = intent.payload!.taskRetry as Record<string, unknown>;
+      expect(taskRetry).toMatchObject({ sourceRunId: source.id, actorId: input.actorId });
+      expect(taskRetry.chatActionId).toBeUndefined();
+      expect(taskRetry.boardMessageOrigin).toBeUndefined();
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")));
+      expect(queued).toHaveLength(1);
+      expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: source.id, taskRetryRequestId: receipt.requestId,
+        forceFreshSession: true, responsibleUserId: input.actorId });
+      expect(queued[0].contextSnapshot?.boardMessageRetry).toBeUndefined();
+      expect(queued[0].contextSnapshot?.wakeCommentId).toBeUndefined();
+    });
+
+  it("continues a person's Retry on a connected task when no chat retry owner is available", async () => {
+    const input = await seedChatTask();
+    const receipt = await requestTaskRetry({ ...input, actorSource: "local_implicit" });
+    expect(receipt).toMatchObject({ accepted: true, chatActionId: undefined });
+    const automatic = await seedChatTask();
+    await expect(requestTaskRetry({ ...automatic, initiatedBy: "provider_limit_reset" })).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, automatic.companyId))).toHaveLength(0);
+  });
+
   it("keeps an automatic Retry from continuing a connected task without the exact chat request", async () => {
     const input = await seedChatTask();
     await expect(requestTaskRetry({ ...input, initiatedBy: "restart_recovery", prepareChatRetry: refusedExactChatReplay() }))
