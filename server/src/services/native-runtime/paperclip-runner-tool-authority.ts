@@ -718,6 +718,11 @@ export class PaperclipRunnerToolAuthority {
         if (call.tool === "list_assigned_skills") return runtimeContext.skills.map(skill => ({ key: skill.key, name: skill.runtimeName, versionId: skill.versionId, digest: skill.bundle.digest }));
         return settleRunnerBridgeRead(() => readAssignedSkill(runtimeContext, input));
       }
+      if (call.tool === "save_api_response") {
+        // Saving is a separate read tool so call_api's write path carries no
+        // read-only options; the shared client still enforces GET-only export.
+        return apiToolResult(await this.#callApi(call.callId, { ...input, saveResponse: true } as RunnerApiCall));
+      }
       return apiToolResult(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input)));
     }
     if (this.binding.firstPartyOnly && (call.tool === READ_TOOL_RESULT || this.binding.assignedMcpTools?.has(call.tool) || isConnectorTool(call.tool)
