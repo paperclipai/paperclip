@@ -64896,11 +64896,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
       if (mode === "unknown_source" || mode === "actor_revoked_before") {
-        expect(response.status, JSON.stringify(response.body)).toBe(mode === "unknown_source" ? 409 : 404);
+        expect(response.status, JSON.stringify(response.body)).toBe(mode === "unknown_source" ? 202 : 404);
         expect(await db.select().from(chatActions).where(and(eq(chatActions.companyId, f.companyId),
           eq(chatActions.kind, "failed_run_retry")))).toEqual([]);
-        expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
-          eq(agentWakeupRequests.reason, "task_retry")))).toEqual([]);
+        const retries = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+          eq(agentWakeupRequests.reason, "task_retry")));
+        if (mode === "unknown_source") {
+          expect(response.body.chatActionId).toBeUndefined();
+          expect(retries).toHaveLength(1);
+          expect(retries[0]).toMatchObject({ id: response.body.requestId, requestedByActorId: "owner-user",
+            payload: { issueId: f.issueId, taskRetry: { sourceRunId: f.runId } } });
+          expect((retries[0].payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
+        } else expect(retries).toEqual([]);
         expect(f.wakeup).not.toHaveBeenCalled();
         expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
         expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, sourceIds))
@@ -66544,7 +66551,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("distinguishes an inherited GitHub requester from permission to replay a committed provider failure", async () => {
+  it("continues an inherited GitHub task from its recorded result instead of replaying the committed provider failure", async () => {
     const f = await failedChatRetryFixture("github", "42", true, false, true);
     try {
       const companyId = f.fixture.companyId, agentId = f.fixture.assignedAgentId, issueId = f.issue.id;
@@ -66593,19 +66600,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
       app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
       app.use(errorHandler);
-      const denied = await request(app).post(`/api/issues/${issueId}/retry`).send({
+      const continued = await request(app).post(`/api/issues/${issueId}/retry`).send({
         idempotencyKey: input.idempotencyKey, observedRunId: input.observedRunId,
-      }).expect(409);
-      expect(denied.body).toMatchObject({ error: "This attempt already recorded a result. Send a new message on the task to continue from the saved work.",
-        details: { code: "chat_failed_run_retry_not_authorized", reason: "accepted_result_without_new_input" } });
-      // Isolate the later accepted-result guard using only owned fixture data.
-      // Resolving inherited provenance cannot by itself authorize replay.
+      }).expect(202);
+      expect(continued.body).toMatchObject({ accepted: true, stale: false, observedRunId: resumed!.id });
+      expect(continued.body.chatActionId).toBeUndefined();
+      const assertBoardContinuation = async (requestId: string) => {
+        const [intent] = await readAgentWakeupRequestsById(requestId);
+        expect(intent).toMatchObject({ reason: "task_retry", requestedByActorType: "user", requestedByActorId: "owner-user",
+          payload: { issueId, taskRetry: { sourceRunId: resumed!.id, actorId: "owner-user" } } });
+        expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.companyId, companyId),
+          eq(chatActions.kind, "failed_run_retry")))).toHaveLength(0);
+        await db.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, requestId));
+      };
+      await assertBoardContinuation(continued.body.requestId);
+      // The later accepted-result guard also continues from the saved result
+      // instead of repeating the exact chat request.
       await db.update(heartbeatRuns).set({ contextSnapshot: { ...failedResume.contextSnapshot,
         source: "chat:github", wakeCommentId: f.action.payload.commentId, wakeCommentIds: [f.action.payload.commentId] } })
         .where(eq(heartbeatRuns.id, failedResume.id));
       try {
-        await expect(requestTaskRetry({ ...input, idempotencyKey: randomUUID() })).rejects.toMatchObject({ details: {
-          code: "chat_failed_run_retry_not_authorized", reason: "accepted_result_without_new_input" } });
+        const receipt = await requestTaskRetry({ ...input, idempotencyKey: randomUUID() });
+        expect(receipt).toMatchObject({ accepted: true, chatActionId: undefined });
+        await assertBoardContinuation(receipt.requestId!);
       } finally { await db.update(heartbeatRuns).set({ contextSnapshot: failedResume.contextSnapshot }).where(eq(heartbeatRuns.id, failedResume.id)); }
       expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === resumed!.id)).toHaveLength(0);
     } finally { await f.service.shutdown(); }

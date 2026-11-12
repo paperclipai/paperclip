@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -935,6 +935,47 @@ describe("durable task Retry admission", () => {
     expect(failure).toMatchObject({ status: 409, details: { code: "task_retry_busy", retryable: true } });
     expect(calls).toBe(10);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+  });
+
+  const refusedExactChatReplay = (reason?: string) => async (tx: Db, scope: { companyId: string; issueId: string; failedRunId: string }) => {
+    const [endpoint] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.companyId, scope.companyId));
+    await tx.insert(chatActions).values({ companyId: scope.companyId, endpointId: endpoint.id, kind: "failed_run_retry",
+      status: "issued", providerActionId: randomUUID(), payload: { issueId: scope.issueId, failedRunId: scope.failedRunId } });
+    throw new HttpError(409, "refused", { code: "chat_failed_run_retry_not_authorized", ...(reason ? { reason } : {}) });
+  };
+
+  it.each([undefined, "accepted_result_without_new_input", "prior_result_publication", "source_authorization"])(
+    "continues a connected task from saved work when its exact chat request cannot be repeated: %s", async reason => {
+      const input = await seedChatTask();
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: input.issueId, source: "issue.monitor",
+        wakeReason: "issue_monitor_due" } }).where(eq(heartbeatRuns.id, source.id));
+      const receipt = await requestTaskRetry({ ...input, actorSource: "local_implicit", prepareChatRetry: refusedExactChatReplay(reason) });
+      expect(receipt).toMatchObject({ accepted: true, stale: false, observedRunId: source.id });
+      expect(receipt.chatActionId).toBeUndefined();
+      expect(await db.select().from(chatActions).where(eq(chatActions.companyId, input.companyId))).toHaveLength(0);
+      const [intent] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(intent).toMatchObject({ status: "deferred_issue_execution", reason: "task_retry", requestedByActorId: input.actorId,
+        payload: { issueId: input.issueId, taskRetry: { sourceRunId: source.id, actorId: input.actorId } } });
+      expect((intent.payload!.taskRetry as Record<string, unknown>).chatActionId).toBeUndefined();
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")));
+      expect(queued).toHaveLength(1);
+      expect(queued[0].contextSnapshot).toMatchObject({ issueId: input.issueId, previousRunId: source.id,
+        taskRetryRequestId: receipt.requestId, forceFreshSession: true, responsibleUserId: input.actorId });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])
+        .toMatchObject({ status: "coalesced", runId: queued[0].id });
+    });
+
+  it("keeps an automatic Retry from continuing a connected task without the exact chat request", async () => {
+    const input = await seedChatTask();
+    await expect(requestTaskRetry({ ...input, initiatedBy: "restart_recovery", prepareChatRetry: refusedExactChatReplay() }))
+      .rejects.toMatchObject({ status: 409, details: { code: "chat_failed_run_retry_not_authorized" } });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+    expect(await db.select().from(chatActions).where(eq(chatActions.companyId, input.companyId))).toHaveLength(0);
   });
 
   it("does not retry an authorization denial", async () => {

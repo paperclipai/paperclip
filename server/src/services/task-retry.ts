@@ -241,6 +241,11 @@ function automaticRetryActor(input: Pick<TaskRetryRequest, "initiatedBy" | "acto
 const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
 const TASK_RETRY_CONTENTION_DELAY_MS = 100;
 
+function isExactChatReplayRefusal(error: unknown) {
+  return error instanceof HttpError && error.status === 409 &&
+    (error.details as Record<string, unknown> | undefined)?.code === "chat_failed_run_retry_not_authorized";
+}
+
 function isTaskRetryContention(error: unknown) {
   return error instanceof NativeChatReviewPresentationContentionError || isExternalChatWaitAuthorizationContention(error);
 }
@@ -431,10 +436,19 @@ function admitTaskRetry(input: TaskRetryRequest) {
       payload: { issueId: issue.id, taskRetry: intent }, finishedAt: active || busy ? new Date() : null });
     if (chat && !boardMessageOrigin && !intent.queuedChatRequestId && !active && !busy) {
       if (!input.prepareChatRetry) throw conflict("Retry is unavailable for this connected conversation.");
-      intent.chatActionId = (await input.prepareChatRetry(db, { companyId: issue.companyId, issueId: issue.id,
-        agentId: issue.assigneeAgentId, failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id })).actionId;
-      await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent } })
-        .where(eq(agentWakeupRequests.id, id));
+      const prepareChatRetry = input.prepareChatRetry;
+      const scope = { companyId: issue.companyId, issueId: issue.id, agentId: issue.assigneeAgentId,
+        failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id };
+      const prepared = await tx.transaction(savepoint => prepareChatRetry(savepoint as unknown as Db, scope))
+        .catch(error => {
+          if (input.initiatedBy || !isExactChatReplayRefusal(error)) throw error;
+          return null;
+        });
+      if (prepared) {
+        intent.chatActionId = prepared.actionId;
+        await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent } })
+          .where(eq(agentWakeupRequests.id, id));
+      }
     }
     if (!busy) {
       for (const action of records) {

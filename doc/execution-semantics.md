@@ -1611,6 +1611,10 @@ same preparation retains its directory and receipt check. A published workspace
 on the same allocation retains its recorded directory. Automatic bootstrap
 timeout retries still require a fresh allocation under the policy above.
 
+### Connected task Retry without an exact chat replay
+
+A person's task Retry on a connected task first asks the chat retry owner to repeat the exact failed chat request. When that owner refuses (`chat_failed_run_retry_not_authorized`), the refusal and any writes it made are rolled back and the same Retry receipt becomes an ordinary board continuation: the clicking person is the responsible user, the run starts a fresh session from saved work, and no chat action, chat authority, or output replay is created. This is the same authority as a new message from that person. Dispatch keeps every normal gate (current task access, executor containment, recovery holds, unadmitted chat input). Projection and the route therefore agree: a shown Retry on a connected task is accepted. Retry that Paperclip requests by itself on a person's behalf (restart recovery, provider limit reset) keeps the exact-replay requirement and still settles on the refusal. A budget resume continues the person's own Retry, so it takes the board continuation too. No migration is needed; tasks blocked by an earlier release become retryable at the next click.
+
 ### Saved chat Retry preparation
 
 Task Retry can meet a busy chat identity or endpoint lock before its source is authorized.
