@@ -5869,7 +5869,7 @@ export function recoveryService(
         // scheduler below (one successor, the same budget); only exhaustion
         // or a refused continuation escalates it, and any other refusal
         // escalates it as before.
-        preparationRetry = classification.kind === "non_retryable" && latestRun!.agentId === agentId
+        preparationRetry = latestRun!.agentId === agentId
           && await failedRunOwnsPreparationRetry(issue.companyId, latestRun!.id);
         if (classification.kind === "non_retryable" && !preparationRetry) {
           const updated = await escalateStrandedAssignedIssue({

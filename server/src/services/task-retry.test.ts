@@ -463,10 +463,11 @@ describe("durable task Retry admission", () => {
       }
       await expect(dispatchRun(f.input, successors[0])).resolves.toMatchObject({ interruptedRunId: f.parent.id });
     });
-  it("escalates a failed Retry run's transient preparation failure once when the scheduler declines it permanently", async () => {
+  it.each(["reusable_sandbox_resume_failed", "repository_catalog_unavailable"])(
+    "escalates a failed Retry run's transient preparation failure once when the scheduler declines it permanently: %s", async errorCode => {
     const f = await seedFailedRetryAdmittedRun();
     // An external Dot execution is never retried by the bounded scheduler.
-    await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed",
+    await db.update(heartbeatRuns).set({ errorCode,
       runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
         nativeExecutionInput: { provider: { kind: "openai_dot" } } },
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
