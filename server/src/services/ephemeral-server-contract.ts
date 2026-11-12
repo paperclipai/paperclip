@@ -44,11 +44,12 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
 
 /** Findings that describe work in progress when a server stopped, not data
  * waiting on a volume to be migrated. Every volume-free server that stops
- * during a run leaves some of them behind. */
+ * during a run leaves some of them behind. Runtime skill assets are not in
+ * this set: that finding also covers retained sessions whose skill bundles
+ * were never preserved, which the owner marker does not prove durable. */
 const interruptedRunBlockers: ReadonlySet<string> = new Set([
   "native_harness_backups_require_migration",
   "local_instruction_copies_require_settlement",
-  "runtime_skill_assets_require_migration",
 ]);
 
 /** A readiness gate, not a periodic scan or an implicit migration. Existing
