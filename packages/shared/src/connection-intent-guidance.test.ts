@@ -13,8 +13,6 @@ describe("connection result guidance", () => {
     expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("arbitrary MCP URLs");
   });
   it("binds a request card to the person it is addressed to", () => {
-    // Chat eval: another member said "I will finish Alex's connection request for them" and the
-    // agent, which had not read the card, replied "completing it there is the right move".
     expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("Only that person can complete or decline it");
   });
   it("describes exact questions and saved selection proof", () => {
