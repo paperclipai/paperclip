@@ -9,6 +9,7 @@ import {
   gradeReleaseSwapTask, overlappingRuns, releaseSwapMarkdown, summarizeGrades, swapMetrics,
   type DuplicateFacts, type GradeTaskInput, type RetryClick, type SwapRunFact, type TaskGrade,
 } from "./release-swap-grade.js";
+import { issueView, shouldClickRetryAfterSettle } from "./staging-mix-retry.js";
 import type { TimelineEntry } from "./timeline.js";
 import type { Db } from "../../packages/db/src/index.js";
 
@@ -30,6 +31,7 @@ export interface ReleaseSwapFinishInput {
   record: (kind: string, data: Record<string, unknown>) => void;
   pollMs?: number;
   drainCapMs?: number;
+  onView?: (issueId: string, issue: Json | null, at: number) => void;
 }
 
 type Client = Pick<Db, "$client">;
@@ -199,6 +201,7 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
         const left = deadline - Date.now();
         views.set(id, left <= 0 ? { status: "unreadable", error: "view deadline passed" }
           : await input.api.get<Json>(`/api/issues/${id}`, Math.min(10_000, left)).catch(error => ({ status: "unreadable", error: String(error) })));
+        input.onView?.(id, views.get(id)!, Date.now());
       }
     }));
   };
@@ -208,7 +211,7 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
   for (const issue of issues) {
     const id = String(issue.id);
     const current = views.get(id)!;
-    if (current.status === "done" || current.interruption?.canRetry !== true || current.interruption?.retryWait) continue;
+    if (!shouldClickRetryAfterSettle(issueView(current), clicks.get(id)?.length ?? 0)) continue;
     const click = await clickRetry(input, id, text(issue.identifier) ?? id, text(current.interruption?.observedRunId));
     clicks.set(id, [...(clicks.get(id) ?? []), click]);
     retried.push(id);

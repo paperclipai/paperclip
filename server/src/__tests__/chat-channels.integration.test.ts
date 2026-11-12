@@ -71254,11 +71254,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect.objectContaining({ idempotencyKey: `run:${run.runId}:working:${context.endpoint.id}:native:making_progress:1` }),
         ]);
         await settled();
-        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction"), statement = vi.spyOn(db.$client, "unsafe");
         try {
           await new Promise(resolve => setTimeout(resolve, 1200));
-          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
-        } finally { select.mockRestore(); transaction.mockRestore(); }
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled(); expect(statement).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); statement.mockRestore(); }
         expect(onError).not.toHaveBeenCalled();
       } finally { await coordinator.stop(); await retirePublicationFixture(context.service, context.endpoint.id); }
     },
@@ -71289,16 +71289,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         createdAt: sql`${eventAt.toISOString()}::timestamptz + interval '0.000123 seconds'`,
       })));
       await context.addEvent(valid, "item.completed", 1, new Date(eventAt.getTime() + 1));
-      const select = db.select.bind(db);
+      const send = db.$client.unsafe.bind(db.$client);
       let pages = 0;
-      const guard = vi.spyOn(db, "select").mockImplementation((...args) => {
-        if (args[0] && "eventCreatedAt" in args[0] && ++pages > 10) {
+      const guard = vi.spyOn(db.$client, "unsafe").mockImplementation((...args) => {
+        if (String(args[0]).includes("safe_native_progress_base_publication") && ++pages > 10) {
           throw new Error("Native progress pagination did not advance past suppressed candidates");
         }
-        return select(...args);
+        return send(...args);
       });
       try {
         await expect(enqueueSafeNativeChatProgress(db, { since: eventAt, limit: 1 })).resolves.toBe(1);
+        expect(pages).toBeGreaterThan(1);
       } finally { guard.mockRestore(); }
       const progress = await db.select().from(chatPublications).where(and(
         eq(chatPublications.conversationId, context.conversation.id),

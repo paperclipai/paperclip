@@ -38,6 +38,8 @@ import { authorizationService, canActorReadIssuePrivacy, type AuthorizationActor
 import { claimSlackRateLimitRetry } from "./connectors/slack-retry.js";
 import { resolveSlackTaskAuthority } from "./connectors/slack-authority.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
+import { MCP_APPS_CLIENT_CAPABILITY, MCP_APP_MAX_HTML_BYTES, mcpAppToolCallableFromApp, mcpAppToolVisibleToModel, readMcpAppResource, type McpAppCallToolResult, type McpAppResource, type McpAppToolUi } from "@paperclipai/shared";
+import { mcpAppCallToolResult, recordMcpAppView } from "./mcp-app-views.js";
 import { slackToolsForSession } from "./connectors/slack-catalog.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { executeSlackTool } from "./connectors/slack.js";
@@ -128,6 +130,7 @@ import type {
   UpdateToolMcpGateway,
 } from "@paperclipai/shared";
 import {
+  checkOAuthEndpointUrl,
   getConnectableAppDefinition,
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
@@ -143,14 +146,35 @@ import { secretService } from "./secrets.js";
 import { connectionGrantCredentialRef, resolveConnectionGrantSecret } from "./connection-credentials.js";
 import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
 import { RAILWAY_SSH_SECRET_PATH, runRailwaySshCommand } from "./railway-ssh.js";
+import { saveMcpNegotiation } from "./tool-access/mcp-protocol-config.js";
 import {
   initializeMcpHttpSession,
   getMcpHttpSession,
   forgetMcpHttpSession,
+  forgetMcpProtocolVersion,
+  isModernMcpProtocolVersion,
+  knownMcpProtocolVersion,
+  MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION,
+  mcpEraKey,
+  mcpHttpRequestInit,
+  mcpInputRequired,
+  mcpProtocolVersionOf,
+  McpResultCache,
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION,
+  mcpClientCapabilities,
+  mcpModernErrorOf,
+  mcpCacheHint,
+  mcpCredentialFingerprint,
+  negotiateMcpProtocolVersion,
   readMcpHttpResponse,
+  readMcpModernError,
+  rememberMcpProtocolVersion,
+  selectMcpProtocolVersion,
   McpHttpResponseError,
   McpHttpInitializationError,
   type McpHttpResponseProgress,
+  type McpInputRequired,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
@@ -333,6 +357,8 @@ export interface ConnectedMcpGatewayMetadata {
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown> | null;
   annotations: Record<string, unknown>;
+  /** MCP Apps view declaration, when the tool renders a `ui://` view. */
+  ui?: McpAppToolUi | null;
   risk: {
     level: string;
     isReadOnly: boolean;
@@ -340,6 +366,11 @@ export interface ConnectedMcpGatewayMetadata {
     isDestructive: boolean;
   };
   onDemandTools?: boolean;
+}
+
+/** MCP Apps: a tool whose `_meta.ui.visibility` omits "model" is callable only from its view. */
+export function isModelVisibleTool(tool: ToolGatewayDescriptor): boolean {
+  return mcpAppToolVisibleToModel(asRecord(tool.providerMetadata)?.ui as McpAppToolUi | null | undefined);
 }
 
 export interface ToolGatewayDescriptor extends AgentToolDescriptor {
@@ -437,6 +468,11 @@ interface ExecuteTestCallInput {
   toolName: string;
   parameters?: unknown;
   timeoutMs?: number;
+  /** MCP Apps view calls only: return the redacted provider `_meta`. Never set for agent-reachable callers. */
+  includeResultMeta?: boolean;
+  /** MCP Apps view calls only: the task (and its project) the view belongs to, so task- and project-scoped rules apply. */
+  issueId?: string | null;
+  projectId?: string | null;
 }
 
 interface ExecutePluginToolInput {
@@ -519,6 +555,8 @@ type RemoteHttpErrorEvidence = {
 const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
   "elicitation_required",
   "provider_interaction_required",
+  "provider_input_required",
+  "provider_retry_requested",
   "oauth_insufficient_scope",
   "oauth_refreshed_retry_required",
 ]);
@@ -600,6 +638,59 @@ function connectionRequiresMcpSession(connection: { config: unknown }): boolean 
   return getConnectableAppDefinition(sourceTemplateKey)?.methods.some((method) =>
     method.key === connectionMethodKey && method.defaults?.mcpSessionRequired === true
   ) ?? false;
+}
+
+const MCP_CONTINUATION_TTL_MS = 30 * 60_000;
+/** The most provider links one pending step shows (matches the legacy link flow). */
+const MCP_MAX_INPUT_LINKS = 8;
+/**
+ * JSON-RPC errors that show a server refused a call before running it: an
+ * unknown method, an invalid request, or a server that was never initialized.
+ * Anything else (an internal error, invalid params) may come after the tool
+ * ran, so such a call is never replayed.
+ */
+function callNeverRan(error: unknown): boolean {
+  const record = asRecord(error);
+  if (!record || typeof record.code !== "number") return false;
+  if (record.code === -32600 || record.code === -32601) return true;
+  return typeof record.message === "string" && /not\s+(?:been\s+)?initiali[sz]ed/i.test(record.message);
+}
+
+/** How long a stdio server may stay silent on `server/discover` before it is treated as legacy. */
+const STDIO_DISCOVER_PROBE_TIMEOUT_MS = 2_000;
+/** Context reads whose results carry the server's freshness hint. */
+const MCP_CACHEABLE_CONTEXT_METHODS = new Set(["resources/list", "resources/read", "resources/templates/list", "prompts/list"]);
+
+/**
+ * Turn a multi round-trip `input_required` result into what Paperclip can do
+ * with it today. URL requests become the provider link the person opens, as
+ * for older servers. Paperclip never answers them on the person's behalf: no
+ * person action is recorded, so claiming "accept" would assert consent nobody
+ * gave. The next call goes out fresh and the server, which tracks out-of-band
+ * steps itself, decides. A bare `requestState` (try again) is kept for the
+ * retry because it asserts nothing. Form, sampling, and roots are not collected yet.
+ */
+export function mcpInputRequiredPending(inputRequired: McpInputRequired): {
+  answerable: boolean;
+  /** State to send back on the next identical call; never a user answer. */
+  retryState?: string;
+  upstreamPending?: ToolUpstreamPending;
+} {
+  const links: ToolUpstreamPending["links"] = [];
+  let message: string | undefined;
+  for (const request of Object.values(inputRequired.inputRequests)) {
+    if (request.method !== "elicitation/create" || request.params.mode !== "url") return { answerable: false };
+    const checked = checkOAuthEndpointUrl(request.params.url);
+    if (!checked.ok) return { answerable: false };
+    if (!links.some((link) => link.url === checked.url)) links.push({ url: checked.url, host: checked.host });
+    if (!message && typeof request.params.message === "string") message = redactSensitiveText(request.params.message).slice(0, 4000);
+  }
+  if (!links.length) {
+    return inputRequired.requestState ? { answerable: true, retryState: inputRequired.requestState } : { answerable: false };
+  }
+  // The link flow shows up to eight; more is a clear stop, never a partial step.
+  if (links.length > MCP_MAX_INPUT_LINKS) return { answerable: false };
+  return { answerable: true, upstreamPending: { kind: "authorization", links, ...(message ? { message } : {}) } };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -1277,6 +1368,19 @@ export function createToolGatewayService(
   // Authorization links can contain one-time codes. Keep them briefly in memory;
   // persist only the redacted request and execution identifiers for recovery.
   const upstreamHandoffs = new Map<string, { pending: ToolUpstreamPending; expires: number }>();
+  // A server's "try again" state, returned on the next identical call. It is
+  // in memory: after a restart the server simply asks again.
+  // MCP Apps view documents can reach MCP_APP_MAX_HTML_BYTES; larger results are not cached.
+  const mcpContextCache = new McpResultCache<unknown>(500, Date.now, 32 * 1024 * 1024, MCP_APP_MAX_HTML_BYTES + 64 * 1024);
+  const mcpContinuations = new McpResultCache<{ requestState: string }>(512);
+  async function persistMcpProtocolVersion(connection: typeof toolConnections.$inferSelect, protocolVersion: string) {
+    if (asRecord(connection.config)?.mcpProtocolVersion === protocolVersion) return;
+    const saved = await saveMcpNegotiation(db, connection, { mcpProtocolVersion: protocolVersion });
+    if (saved) {
+      connection.config = saved.config;
+      connection.transportConfig = saved.transportConfig;
+    }
+  }
   async function retainUpstreamHandoff(invocationId: string, pending: ToolUpstreamPending) {
     for (const [id, value] of upstreamHandoffs) if (value.expires <= Date.now()) upstreamHandoffs.delete(id);
     while (upstreamHandoffs.size >= 256) upstreamHandoffs.delete(upstreamHandoffs.keys().next().value!);
@@ -1660,6 +1764,7 @@ export function createToolGatewayService(
           inputSchema,
           outputSchema,
           annotations,
+          ui: catalogEntry.uiMeta ?? null,
           risk: {
             level: catalogEntry.riskLevel,
             isReadOnly: catalogEntry.isReadOnly,
@@ -3036,7 +3141,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     toolName: string,
   ): Promise<ToolGatewayDescriptor> {
-    const connectedTools = await connectedMcpToolsForCompany(session.companyId);
+    const connectedTools = (await connectedMcpToolsForCompany(session.companyId)).filter(isModelVisibleTool);
     const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
     const githubBotTools = await githubBotToolsForSession(db, session);
@@ -3259,6 +3364,7 @@ export function createToolGatewayService(
   async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
     const guestBotConnection = await measureRunPhase("connectors.discovery.github", () => githubGuestBotConnectionForSession(db, session));
     let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
+      .filter(isModelVisibleTool)
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
     const connectionIds = [...new Set(connectedTools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []))];
     if (connectionIds.length) {
@@ -5347,7 +5453,10 @@ export function createToolGatewayService(
     protocolMethod?: string;
     protocolParams?: Record<string, unknown>;
     timeoutMs: number;
-  }): Promise<unknown> {
+  },
+  /** One restart and one deadline are shared by every protocol recovery in a call. */
+  recovery: { restarted: boolean; deadline: number } = { restarted: false, deadline: Date.now() + input.timeoutMs },
+  ): Promise<unknown> {
     if (input.template.templateId === "paperclip.cognee-cloud") {
       if (input.protocolMethod === "resources/list") return { resources: [] };
       if (input.protocolMethod === "prompts/list") return { prompts: [] };
@@ -5517,28 +5626,132 @@ export function createToolGatewayService(
       );
       return promise;
     };
-    try {
-      await request("initialize", {
-        protocolVersion: "2024-11-05",
-        capabilities: {},
-        clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
+    // stdio has no status codes to tell eras apart, so the spec's probe is
+    // `server/discover`: a modern server answers it (or with a modern error);
+    // anything else, or silence, means a legacy server that needs `initialize`.
+    // The answer is remembered, since processes are started for each call.
+    const eraKey = mcpEraKey(input.connection.id, `stdio:${input.template.templateId}`);
+    const clientInfo = { name: "paperclip-tool-gateway", version: "0.3.1" };
+    const withMeta = (protocolVersion: string, params: Record<string, unknown>) => isModernMcpProtocolVersion(protocolVersion)
+      ? { ...params, _meta: { ...asRecord(params._meta), "io.modelcontextprotocol/protocolVersion": protocolVersion,
+          "io.modelcontextprotocol/clientCapabilities": mcpClientCapabilities(protocolVersion), "io.modelcontextprotocol/clientInfo": clientInfo } }
+      : params;
+    const probe = async (): Promise<string> => {
+      const id = nextId;
+      const answer = request("server/discover", withMeta(MCP_MODERN_PROTOCOL_VERSION, {}));
+      let probeTimer: NodeJS.Timeout | undefined;
+      const silent = new Promise<"silent">((resolve) => {
+        probeTimer = setTimeout(() => resolve("silent"), STDIO_DISCOVER_PROBE_TIMEOUT_MS);
+        probeTimer.unref?.();
       });
-      child.stdin.write(
-        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
-      );
-      return await request(
-        input.protocolMethod ?? "tools/call",
-        input.protocolParams ?? {
-          name: input.entry?.toolName,
-          arguments: input.parameters ?? {},
-        },
-      );
+      try {
+        const outcome = await Promise.race([answer, silent]);
+        if (outcome === "silent") {
+          pending.delete(id);
+          answer.catch(() => undefined);
+          return MCP_PROTOCOL_VERSION;
+        }
+        const versions = asRecord(outcome)?.supportedVersions;
+        if (!Array.isArray(versions)) return MCP_PROTOCOL_VERSION;
+        const selected = selectMcpProtocolVersion(versions);
+        if (!selected) throw stdioProtocolError("This app uses an MCP version Paperclip does not support yet.", { connectionId: input.connection.id });
+        return selected;
+      } catch (error) {
+        if (!(error instanceof ToolGatewayHttpError) || error.reasonCode !== "local_stdio_protocol_error") throw error;
+        const modernError = mcpModernErrorOf({ error: error.details.error });
+        if (!modernError) return MCP_PROTOCOL_VERSION;
+        if (modernError.code !== MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION || !modernError.supported) return MCP_MODERN_PROTOCOL_VERSION;
+        const selected = selectMcpProtocolVersion(modernError.supported);
+        if (!selected) throw stdioProtocolError("This app uses an MCP version Paperclip does not support yet.", { connectionId: input.connection.id });
+        return selected;
+      } finally {
+        clearTimeout(probeTimer);
+      }
+    };
+    let probing = false;
+    let probeEndedProcess = false;
+    let rememberedHandshakeRefused = false;
+    let recoveryError: unknown;
+    let result: unknown;
+    try {
+      const remembered = knownMcpProtocolVersion(eraKey);
+      let protocolVersion = remembered;
+      if (!protocolVersion) {
+        probing = true;
+        protocolVersion = await probe();
+        probing = false;
+        rememberMcpProtocolVersion(eraKey, protocolVersion);
+      }
+      if (!isModernMcpProtocolVersion(protocolVersion)) {
+        try {
+          await request("initialize", {
+            protocolVersion,
+            capabilities: mcpClientCapabilities(protocolVersion),
+            clientInfo,
+          });
+        } catch (error) {
+          // A remembered handshake server that now refuses `initialize` may have
+          // moved to stateless MCP (same template, new executable). Probe again.
+          if (remembered && error instanceof ToolGatewayHttpError
+            && (error.reasonCode === "local_stdio_protocol_error" || error.reasonCode === "local_stdio_process_exited")) {
+            rememberedHandshakeRefused = true;
+          }
+          throw error;
+        }
+        child.stdin.write(
+          `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
+        );
+      }
+      try {
+        result = await request(
+          input.protocolMethod ?? "tools/call",
+          withMeta(protocolVersion, input.protocolParams ?? {
+            name: input.entry?.toolName,
+            arguments: input.parameters ?? {},
+          }),
+        );
+      } catch (error) {
+        // A remembered stateless server replaced by a handshake build answers
+        // a call without a handshake with a JSON-RPC error, before running it.
+        // Probe again. A process exit is not retried: the tool may have run.
+        if (isModernMcpProtocolVersion(remembered) && error instanceof ToolGatewayHttpError
+          && error.reasonCode === "local_stdio_protocol_error" && callNeverRan(error.details.error)) {
+          rememberedHandshakeRefused = true;
+        }
+        throw error;
+      }
+    } catch (error) {
+      // A legacy server may exit on a method it does not know. Start it again
+      // for the handshake rather than failing the call.
+      if (probing && error instanceof ToolGatewayHttpError && error.reasonCode === "local_stdio_process_exited") probeEndedProcess = true;
+      else if (!rememberedHandshakeRefused) throw error;
+      recoveryError = error;
     } finally {
       clearTimeout(timer);
       child.stdin.end();
       child.kill("SIGTERM");
       await exitPromise.catch(() => undefined);
     }
+    if (probeEndedProcess || rememberedHandshakeRefused) {
+      // A legacy server that exited on the probe is remembered as legacy; a
+      // remembered one that refused the handshake is probed again. Either way
+      // the call starts one more process at most, within its original deadline,
+      // so a server that keeps failing reports its error instead of looping.
+      if (probeEndedProcess) rememberMcpProtocolVersion(eraKey, MCP_PROTOCOL_VERSION);
+      else forgetMcpProtocolVersion(eraKey);
+      const remainingMs = recovery.deadline - Date.now();
+      if (recovery.restarted || remainingMs <= 0) throw recoveryError;
+      return callLocalStdioMcp({ ...input, timeoutMs: remainingMs }, { restarted: true, deadline: recovery.deadline });
+    }
+    if (mcpInputRequired(result)) {
+      throw new ToolGatewayHttpError(
+        409,
+        "This app needs information Paperclip can't collect yet. Complete the step in the app, then try again.",
+        "provider_input_required",
+        { connectionId: input.connection.id, catalogEntryId: input.entry?.id ?? null },
+      );
+    }
+    return result;
   }
 
   async function assertApplicationFeatureAvailable(applicationKey: unknown) {
@@ -5583,6 +5796,10 @@ export function createToolGatewayService(
     method: string;
     params: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
+    /** Larger limit for MCP Apps view documents, which go to the browser, never to an agent. */
+    maxResponseBytes?: number;
+    /** False for reads whose failure says nothing about the connection (an MCP Apps view document). */
+    markHealth?: boolean;
   }): Promise<unknown> {
     const grant = await resolveConnectionGrant(input.session, input.connection);
     const endpoint = await resolvedRemoteEndpoint(
@@ -5604,24 +5821,90 @@ export function createToolGatewayService(
       credentialHeaders,
       callerHeaders: input.callerHeaders,
     });
-    const response = await guardedRemoteHttpFetch(
-      endpoint,
-      {
-        method: "POST",
+    const requestId = `paperclip-context-${randomUUID()}`;
+    const dispatch = (init: RequestInit) => options.remoteHttpRequest
+      ? options.remoteHttpRequest(endpoint, init)
+      : guardedRemoteHttpFetch(endpoint, init, remoteHttpFetchOptions());
+    const eraKey = mcpEraKey(input.connection.id, endpoint);
+    const savedProtocolVersion = asRecord(input.connection.config)?.mcpProtocolVersion;
+    if (!knownMcpProtocolVersion(eraKey)) {
+      if (typeof savedProtocolVersion === "string") rememberMcpProtocolVersion(eraKey, savedProtocolVersion);
+      else if (connectionRequiresMcpSession(input.connection)) rememberMcpProtocolVersion(eraKey, MCP_PROTOCOL_VERSION);
+    }
+    let protocolVersion = knownMcpProtocolVersion(eraKey);
+    // Fresh cacheable results (ttlMs/cacheScope) are reused. Private results
+    // stay with the credential that read them; retries carrying multi
+    // round-trip answers are never cached.
+    const cacheable = MCP_CACHEABLE_CONTEXT_METHODS.has(input.method)
+      && input.params.inputResponses === undefined && input.params.requestState === undefined;
+    const cacheKey = (scope: string) => `${eraKey}:${input.method}:${JSON.stringify(input.params)}:${scope}`;
+    const privateScope = mcpCredentialFingerprint(headers);
+    if (cacheable && isModernMcpProtocolVersion(protocolVersion)) {
+      const cached = mcpContextCache.get(cacheKey(privateScope)) ?? mcpContextCache.get(cacheKey("public"));
+      if (cached !== undefined) return structuredClone(cached);
+    }
+    const sendForNegotiation = (init: RequestInit) => dispatch({ ...init, redirect: "manual" });
+    // Stateful (handshake) servers need the same MCP session setup as tool calls.
+    let sessionScope = connectionRequiresMcpSession(input.connection)
+      ? `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`
+      : null;
+    // The session this read used. On a 400/404 only that session is dropped:
+    // other identities' sessions and in-flight initializations are untouched.
+    let usedSession: { scope: string; headers: Record<string, string>; sessionId: string } | null = null;
+    const send = async (fresh: boolean) => {
+      let requestHeaders: Record<string, string> = isModernMcpProtocolVersion(protocolVersion)
+        ? { ...headers, "MCP-Protocol-Version": protocolVersion }
+        : headers;
+      if (sessionScope && !isModernMcpProtocolVersion(protocolVersion)) {
+        if (fresh && usedSession) forgetMcpHttpSession(usedSession);
+        requestHeaders = await getMcpHttpSession({ scope: sessionScope, send: sendForNegotiation, headers, requestId, eraKey });
+        const sessionId = new Headers(requestHeaders).get("mcp-session-id");
+        usedSession = sessionId ? { scope: sessionScope, headers, sessionId } : null;
+        // A handshake server that moved to stateless MCP comes back without a session.
+        const negotiated = mcpProtocolVersionOf(requestHeaders);
+        if (isModernMcpProtocolVersion(negotiated)) {
+          protocolVersion = negotiated;
+          await persistMcpProtocolVersion(input.connection, negotiated);
+        }
+      }
+      return dispatch({
+        ...mcpHttpRequestInit(requestHeaders, { id: requestId, method: input.method, params: input.params }),
         redirect: "manual",
-        headers: mcpHttpRequestHeaders(headers),
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: `paperclip-context-${randomUUID()}`,
-          method: input.method,
-          params: input.params,
-        }),
-      },
-      remoteHttpFetchOptions(),
-    );
-    const body = await readBoundedRemoteResponse(response);
+      });
+    };
+    let response = await send(false);
+    // Context reads are read-only, so a request a stateless server rejected for
+    // its version or shape is retried once with a negotiated version.
+    const modernRejection = await readMcpModernError(response);
+    const rolledBack = !modernRejection && response.status === 400 && isModernMcpProtocolVersion(protocolVersion);
+    if (modernRejection || rolledBack) {
+      const retryVersion = modernRejection?.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported
+        ? selectMcpProtocolVersion(modernRejection.supported)
+        : rolledBack || !isModernMcpProtocolVersion(protocolVersion)
+          ? (forgetMcpProtocolVersion(eraKey), await negotiateMcpProtocolVersion({ send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey }))
+          : null;
+      const usable = retryVersion !== null && retryVersion !== protocolVersion
+        && (isModernMcpProtocolVersion(retryVersion) || isModernMcpProtocolVersion(protocolVersion));
+      if (usable) {
+        rememberMcpProtocolVersion(eraKey, retryVersion!);
+        await persistMcpProtocolVersion(input.connection, retryVersion!);
+        // Back on the handshake, the read needs a session like a tool call.
+        if (!isModernMcpProtocolVersion(retryVersion)) {
+          sessionScope ??= `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`;
+        }
+        protocolVersion = retryVersion;
+        if (usedSession) forgetMcpHttpSession(usedSession);
+        await response.body?.cancel().catch(() => undefined);
+        response = await send(false);
+      }
+    } else if (sessionScope && !isModernMcpProtocolVersion(protocolVersion) && (response.status === 404 || response.status === 400)) {
+      // An expired or unknown session: start a new one once.
+      await response.body?.cancel().catch(() => undefined);
+      response = await send(true);
+    }
+    const body = await readBoundedRemoteResponse(response, undefined, input.maxResponseBytes);
     if (!response.ok) {
-      await markRemoteConnectionHealth(
+      if (input.markHealth !== false) await markRemoteConnectionHealth(
         input.connection,
         "error",
         `Remote MCP server failed ${input.method}.`,
@@ -5667,14 +5950,26 @@ export function createToolGatewayService(
         {
           connectionId: input.connection.id,
           method: input.method,
+          // Resource not found is -32602 from stateless servers, -32002 before.
+          code: typeof asRecord(record?.error)?.code === "number" ? asRecord(record?.error)!.code : null,
         },
       );
     }
-    await markRemoteConnectionHealth(
+    if (mcpInputRequired(record.result)) {
+      throw new ToolGatewayHttpError(
+        409,
+        "This app needs information Paperclip can't collect yet. Complete the step in the app, then try again.",
+        "provider_input_required",
+        { connectionId: input.connection.id, method: input.method },
+      );
+    }
+    if (input.markHealth !== false) await markRemoteConnectionHealth(
       input.connection,
       "ok",
       `Remote MCP server responded to ${input.method}.`,
     );
+    const hint = cacheable && isModernMcpProtocolVersion(protocolVersion) ? mcpCacheHint(record.result) : null;
+    if (hint) mcpContextCache.set(cacheKey(hint.scope === "public" ? "public" : privateScope), structuredClone(record.result), hint.ttlMs);
     return record.result;
   }
 
@@ -5684,6 +5979,8 @@ export function createToolGatewayService(
     method: string;
     params?: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
+    maxResponseBytes?: number;
+    markHealth?: boolean;
   }): Promise<unknown> {
     const [application] = await db.select({ applicationKey: toolApplications.applicationKey }).from(toolApplications)
       .where(and(eq(toolApplications.id, input.connection.applicationId), eq(toolApplications.companyId, input.session.companyId))).limit(1);
@@ -6002,11 +6299,12 @@ export function createToolGatewayService(
   async function readBoundedRemoteResponse(
     response: Response,
     onBytes?: (bytes: number) => void,
+    maxBytes = MAX_REMOTE_MCP_RESPONSE_BYTES,
   ): Promise<string> {
     const contentLength = response.headers.get("content-length");
     if (
       contentLength &&
-      Number(contentLength) > MAX_REMOTE_MCP_RESPONSE_BYTES
+      Number(contentLength) > maxBytes
     ) {
       throw responseTooLargeError();
     }
@@ -6016,7 +6314,7 @@ export function createToolGatewayService(
     if (!reader) {
       const body = await response.text();
       onBytes?.(Buffer.byteLength(body, "utf8"));
-      if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+      if (Buffer.byteLength(body, "utf8") > maxBytes) {
         throw responseTooLargeError();
       }
       return body;
@@ -6032,7 +6330,7 @@ export function createToolGatewayService(
         if (done) break;
         bytes += value.byteLength;
         onBytes?.(bytes);
-        if (bytes > MAX_REMOTE_MCP_RESPONSE_BYTES) throw responseTooLargeError();
+        if (bytes > maxBytes) throw responseTooLargeError();
         body += decoder.decode(value, { stream: true });
       }
       return body + decoder.decode();
@@ -6264,6 +6562,16 @@ export function createToolGatewayService(
       .join("\n");
   }
 
+  const mcpResultMetaByResult = new WeakMap<object, Record<string, unknown>>();
+
+  /** The provider `_meta` of a normalized MCP result, redacted, for MCP Apps views only. */
+  async function redactedMcpResultMeta(result: unknown): Promise<Record<string, unknown> | undefined> {
+    const meta = result && typeof result === "object" ? mcpResultMetaByResult.get(result) : undefined;
+    if (!meta) return undefined;
+    const validation = await validateToolContent({ value: meta, direction: "result", sensitiveMode: "redact", promptInjectionMode: "ignore" });
+    return asRecord(validation.value) ?? undefined;
+  }
+
   function normalizeMcpToolResult(
     result: unknown,
     transport: "mcp_http" | "local_stdio" | "cognee_cloud" = "mcp_http",
@@ -6283,7 +6591,7 @@ export function createToolGatewayService(
     const content = googleWorkspacePermissionDenied
       ? "Google rejected this call. Google Workspace MCP is a Developer Preview: enroll the signed-in Workspace account and this OAuth client's Google Cloud project in Google's Developer Preview Program, wait for Google's registration confirmation, then reconnect and try again."
       : providerContent;
-    return {
+    const normalized = {
       content,
       data: {
         content: record.content,
@@ -6296,6 +6604,11 @@ export function createToolGatewayService(
         ? { error: "MCP tool returned an error result", ...githubFailure }
         : {}),
     };
+    // `_meta` is for MCP Apps views only. It rides beside the result, never in
+    // it, so no agent-facing path can return it.
+    const meta = asRecord(record._meta);
+    if (meta) mcpResultMetaByResult.set(normalized, meta);
+    return normalized;
   }
 
   function toolResultErrorMessage(result: Record<string, unknown>, failureInstructions?: string) {
@@ -6473,45 +6786,105 @@ export function createToolGatewayService(
           execution,
         };
       }
+      // The version negotiated at catalog refresh is saved on the connection, so
+      // a stateless (2026-07-28) server is called directly: no handshake, no
+      // extra round trip before the tool runs.
+      const eraKey = mcpEraKey(connection.id, endpoint);
+      const savedProtocolVersion = asRecord(connection.config)?.mcpProtocolVersion;
+      if (!knownMcpProtocolVersion(eraKey)) {
+        // A connection saved as needing a session is a handshake server; it is
+        // probed again only if it ever refuses the handshake.
+        if (typeof savedProtocolVersion === "string") rememberMcpProtocolVersion(eraKey, savedProtocolVersion);
+        else if (connectionRequiresMcpSession(connection)) rememberMcpProtocolVersion(eraKey, MCP_PROTOCOL_VERSION);
+      }
+      const sendForNegotiation = (init: RequestInit) =>
+        dispatchRemote(endpoint, { ...init, redirect: "manual", signal: controller.signal });
       let requestHeaders = headers;
-      if (connectionRequiresMcpSession(connection)) {
+      const knownVersion = knownMcpProtocolVersion(eraKey);
+      if (isModernMcpProtocolVersion(knownVersion)) {
+        requestHeaders = { ...headers, "MCP-Protocol-Version": knownVersion };
+      } else if (connectionRequiresMcpSession(connection)) {
         const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
         requestHeaders = await getMcpHttpSession({
           scope,
-          send: (init) =>
-            dispatchRemote(endpoint, {
-              ...init,
-              redirect: "manual",
-              signal: controller.signal,
-            }),
+          send: sendForNegotiation,
           headers,
           requestId,
+          eraKey,
         });
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
+        const negotiated = mcpProtocolVersionOf(requestHeaders);
+        if (isModernMcpProtocolVersion(negotiated)) await persistMcpProtocolVersion(connection, negotiated);
       }
+      // The server's "try again" state from the previous identical call, if any.
+      // Tied to the server that issued the state: a changed URL starts fresh.
+      const continuationKey = `${connection.id}:${createHash("sha256").update(String(endpoint)).digest("hex")}:${grant.id}:${session.agentId}:${upstreamToolName}:${createHash("sha256").update(JSON.stringify(parameters ?? {})).digest("hex")}`;
+      const continuation = mcpContinuations.get(continuationKey);
+      let callRequestId = requestId;
+      let callParams: Record<string, unknown> = {
+        name: upstreamToolName,
+        arguments: parameters,
+        ...(continuation ? { requestState: continuation.requestState } : {}),
+      };
       // The guard runs inside this call and the connection is pinned to the
       // address it approved, so an operator-supplied hostname cannot be rebound
       // onto a loopback or metadata address between validation and dispatch
       // (PAP-17098).
-      const requestInit: RequestInit = {
-        method: "POST",
-        redirect: "manual",
-        // MCP Streamable HTTP requires the Accept header advertising both a JSON
-        // body and an SSE stream; spec-compliant servers 406 without it.
-        headers: mcpHttpRequestHeaders(requestHeaders),
-        signal: controller.signal,
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: requestId,
-          method: "tools/call",
-          params: {
-            name: upstreamToolName,
-            arguments: parameters,
-          },
+      const toolCallInit = (): RequestInit => ({
+        ...mcpHttpRequestInit(requestHeaders, { id: callRequestId, method: "tools/call", params: callParams }, {
+          toolInputSchema: entry.inputSchema ?? undefined,
         }),
-      };
-      let response = await dispatchRemote(endpoint, requestInit);
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      let response = await dispatchRemote(endpoint, toolCallInit());
+      // A stateless server rejects a request it cannot accept before running
+      // anything (wrong version, or legacy request shape), so one retry with a
+      // supported version is safe.
+      // A plain 400 to a stateless request means the server went back to the
+      // handshake (it rejected the request shape before running it).
+      const modernRejection = await readMcpModernError(response);
+      const sentVersion = mcpProtocolVersionOf(requestHeaders);
+      const rolledBack = !modernRejection && response.status === 400 && isModernMcpProtocolVersion(sentVersion);
+      if (modernRejection || rolledBack) {
+        let retryVersion: string | null = null;
+        if (modernRejection?.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION && modernRejection.supported) {
+          retryVersion = selectMcpProtocolVersion(modernRejection.supported);
+        } else if (rolledBack || !isModernMcpProtocolVersion(sentVersion)) {
+          forgetMcpProtocolVersion(eraKey);
+          retryVersion = await negotiateMcpProtocolVersion({ send: sendForNegotiation, headers, requestId, eraKey });
+        }
+        // A legacy version only helps when the stateless request was the problem.
+        const usable = retryVersion !== null && retryVersion !== sentVersion
+          && (isModernMcpProtocolVersion(retryVersion) || isModernMcpProtocolVersion(sentVersion));
+        if (usable && rolledBack) {
+          // A plain 400 does not prove the tool never ran, so the call is not
+          // sent again. Repair the saved version for the next explicit call:
+          // a server that refused a stateless request needs the handshake.
+          if (!isModernMcpProtocolVersion(retryVersion)) {
+            rememberMcpProtocolVersion(eraKey, retryVersion!);
+            const saved = await saveMcpNegotiation(db, connection, { mcpProtocolVersion: retryVersion!, mcpSessionRequired: true });
+            if (saved) { connection.config = saved.config; connection.transportConfig = saved.transportConfig; }
+          }
+        } else if (usable) {
+          rememberMcpProtocolVersion(eraKey, retryVersion!);
+          await persistMcpProtocolVersion(connection, retryVersion!);
+          if (mcpSession) forgetMcpHttpSession(mcpSession);
+          mcpSession = undefined;
+          await response.body?.cancel().catch(() => undefined);
+          if (isModernMcpProtocolVersion(retryVersion)) {
+            requestHeaders = { ...headers, "MCP-Protocol-Version": retryVersion };
+          } else {
+            const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
+            requestHeaders = await getMcpHttpSession({ scope, send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey });
+            const sessionId = new Headers(requestHeaders).get("mcp-session-id");
+            if (sessionId) mcpSession = { scope, headers, sessionId };
+          }
+          callRequestId = `${requestId}-version`;
+          response = await dispatchRemote(endpoint, toolCallInit());
+        }
+      }
       if (isInsufficientConnectionScope(response)) {
         await response.body?.cancel().catch(() => undefined);
         await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
@@ -6618,7 +6991,7 @@ export function createToolGatewayService(
           response.headers.get("traceparent"),
       };
       const body = response.ok
-        ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
+        ? JSON.stringify(await readMcpHttpResponse(response, callRequestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
             onProgress: (progress) => { execution.stream = progress; },
             onRequest: async (message) => {
@@ -6683,6 +7056,10 @@ export function createToolGatewayService(
       }
       const payloadRecord = asRecord(payload);
       if (!payloadRecord) throw malformedRemoteMcpResponse();
+      // The server has answered this attempt, so saved multi round-trip input is
+      // spent (a new input request saves its own below). A rejected attempt,
+      // such as a 401 before an OAuth refresh, keeps it for the explicit retry.
+      if (continuation) mcpContinuations.delete(continuationKey);
       const upstreamPending = extractRemoteMcpPending(payloadRecord, String(connection.config.sourceTemplateKey ?? ""), entry.toolName);
       if (upstreamPending) {
         await retainUpstreamHandoff(invocationId, upstreamPending);
@@ -6714,6 +7091,31 @@ export function createToolGatewayService(
       }
       if (!Object.prototype.hasOwnProperty.call(payloadRecord, "result")) {
         throw malformedRemoteMcpResponse();
+      }
+      const inputRequired = mcpInputRequired(payloadRecord.result);
+      if (inputRequired) {
+        // Stateless servers ask for input by returning it as a result. The call
+        // is retried later, with the answers and the server's opaque state.
+        const pending = mcpInputRequiredPending(inputRequired);
+        if (!pending.answerable) {
+          throw new ToolGatewayHttpError(
+            409,
+            "This app needs information Paperclip can't collect yet. Complete the step in the app, then try again.",
+            "provider_input_required",
+            { connectionId: connection.id, catalogEntryId: entry.id, execution },
+          );
+        }
+        if (pending.retryState) mcpContinuations.set(continuationKey, { requestState: pending.retryState }, MCP_CONTINUATION_TTL_MS);
+        if (pending.upstreamPending) {
+          await retainUpstreamHandoff(invocationId, pending.upstreamPending);
+          throw new ToolGatewayHttpError(409, "Complete the provider's authorization or approval before continuing. The original call has not been replayed.", "provider_interaction_required", { upstreamPending: pending.upstreamPending, invocationId });
+        }
+        throw new ToolGatewayHttpError(
+          409,
+          "The app asked for this action to be tried again. Retry it to continue.",
+          "provider_retry_requested",
+          { connectionId: connection.id, catalogEntryId: entry.id, execution },
+        );
       }
       const resultElicitation = extractMcpElicitationRequest(
         payloadRecord.result,
@@ -7740,6 +8142,11 @@ export function createToolGatewayService(
     invocation: typeof toolInvocations.$inferSelect,
   ): boolean {
     if (invocation.policyExplanation?.delegatedConnectionTest) return invocation.connectionId !== null && invocation.gatewayId === null;
+    // An MCP Apps view's tool call is a test-path call that carries its task,
+    // so its approval runs through the test path with that task's rules.
+    if (invocation.policyExplanation?.mcpAppViewCall) {
+      return invocation.actorType === "user" && invocation.runId === null && invocation.gatewayId === null && invocation.connectionId !== null;
+    }
     return (
       invocation.actorType === "user" &&
       invocation.runId === null &&
@@ -7810,7 +8217,7 @@ export function createToolGatewayService(
     approvedClaim?: ToolApprovalClaim;
     managementContext?: ConnectionManagementContext;
   }): Promise<
-    | { decision: "allowed"; invocationId: string; result: unknown }
+    | { decision: "allowed"; invocationId: string; result: unknown; resultMeta?: Record<string, unknown> }
     | {
         decision: "allowed";
         invocationId: string;
@@ -8016,10 +8423,13 @@ export function createToolGatewayService(
       },
     });
     void emitConnectionInvoked(db, args.invocationId);
+    const resultMeta = await redactedMcpResultMeta(connectedMcpExecution?.result);
     return {
       decision: "allowed" as const,
       invocationId: args.invocationId,
       result: resultValidation.value,
+      // Provider `_meta`, redacted, for MCP Apps views only.
+      ...(resultMeta ? { resultMeta } : {}),
     };
 
   }
@@ -8059,9 +8469,13 @@ export function createToolGatewayService(
         resource: ConnectionManagementContext["resource"];
       } | undefined;
       const userId = delegated?.responsibleUserId ?? invocation.actorId ?? "board";
+      const mcpAppViewCall = asRecord(invocation.policyExplanation?.mcpAppViewCall);
       const session: ToolGatewaySession = {
         id: "test-call", token: "test-call", companyId: invocation.companyId, agentId,
-        runId: null, issueId: null, projectId: null, actorType: delegated ? "agent" : "user", actorId: delegated?.agentId ?? userId,
+        runId: null,
+        issueId: mcpAppViewCall && typeof mcpAppViewCall.issueId === "string" ? mcpAppViewCall.issueId : null,
+        projectId: mcpAppViewCall && typeof mcpAppViewCall.projectId === "string" ? mcpAppViewCall.projectId : null,
+        actorType: delegated ? "agent" : "user", actorId: delegated?.agentId ?? userId,
         responsibleUserId: userId, createdAt: new Date(), expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
       };
       let managementContext: ConnectionManagementContext | undefined;
@@ -8077,6 +8491,10 @@ export function createToolGatewayService(
       const tool = (await connectedMcpToolsForConnection(invocation.companyId, invocation.connectionId))
         .find(candidate => candidate.name === invocation.toolName || candidate.upstreamToolName === invocation.toolName);
       if (!tool) throw new ToolGatewayHttpError(404, `Tool "${invocation.toolName}" is no longer connected`, "tool_not_found");
+      // A view's held call runs only while its tool is still callable from apps.
+      if (mcpAppViewCall && !mcpAppToolCallableFromApp((asRecord(tool.providerMetadata)?.ui ?? null) as McpAppToolUi | null)) {
+        throw new ToolGatewayHttpError(409, `Tool "${tool.upstreamToolName ?? tool.name}" is no longer available to this app`, "mcp_app_tool_not_callable");
+      }
       await prepareApprovedConnectionAuthorization(session, tool, signedPayload.approvalSnapshot);
       const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
       if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot)) {
@@ -9876,8 +10294,8 @@ export function createToolGatewayService(
         companyId: input.companyId,
         agentId: input.agentId,
         runId: input.managementContext?.workContext.runId ?? null,
-        issueId: input.managementContext?.workContext.issueId ?? null,
-        projectId: input.managementContext?.workContext.projectId ?? null,
+        issueId: input.issueId ?? input.managementContext?.workContext.issueId ?? null,
+        projectId: input.projectId ?? input.managementContext?.workContext.projectId ?? null,
         originatingAgentId: actingAgentId,
         actorType: actingAgentId ? "agent" : "user",
         actorId: actingAgentId ?? input.userId,
@@ -9948,6 +10366,14 @@ export function createToolGatewayService(
       );
       await policyService.writeAudit(decisionInput, accessDecision);
       const invocationId = recorded.invocation.id;
+      if (input.includeResultMeta) {
+        // MCP Apps view call: its approval must run through the test path
+        // (app-visible tools, viewer identity) with the view's task rules.
+        await db.update(toolInvocations).set({ policyExplanation: {
+          ...recorded.invocation.policyExplanation,
+          mcpAppViewCall: { issueId: input.issueId ?? null, projectId: input.projectId ?? null },
+        } }).where(eq(toolInvocations.id, invocationId));
+      }
       if (actingAgentId && input.managementContext) {
         await db.update(toolInvocations).set({ policyExplanation: {
           ...recorded.invocation.policyExplanation,
@@ -10124,7 +10550,7 @@ export function createToolGatewayService(
       }
 
       await input.managementContext?.reauthorize();
-      return runTestToolInvocation({
+      const outcome = await runTestToolInvocation({
         session,
         managementContext: input.managementContext,
         tool,
@@ -10139,6 +10565,117 @@ export function createToolGatewayService(
         timeoutMs: input.timeoutMs,
         signal: input.signal,
       });
+      if (!input.includeResultMeta && "resultMeta" in outcome) {
+        const { resultMeta: _viewOnly, ...rest } = outcome;
+        return rest;
+      }
+      return outcome;
+    },
+
+    /**
+     * MCP Apps: reads the `ui://` view document for a recorded call, through
+     * the same connection and credential the agent's call used.
+     */
+    async readMcpAppViewResource(input: {
+      companyId: string;
+      userId: string;
+      view: { connectionId: string; agentId: string | null; runId: string | null; issueId: string | null; responsibleUserId: string | null; resourceUri: string };
+    }): Promise<McpAppResource> {
+      const [connection] = await db.select().from(toolConnections)
+        .where(and(eq(toolConnections.id, input.view.connectionId), eq(toolConnections.companyId, input.companyId)))
+        .limit(1);
+      if (!connection) throw new ToolGatewayHttpError(404, "MCP connection not found", "connection_not_found");
+      // The document is read with the viewer's own access to the connection
+      // (the organization grant or the viewer's personal grant), never with the
+      // run's credential: no run on the session, the viewer as responsible user.
+      const session: ToolGatewaySession = {
+        id: "mcp-app-view",
+        token: "mcp-app-view",
+        companyId: input.companyId,
+        agentId: input.view.agentId,
+        runId: null,
+        issueId: input.view.issueId,
+        projectId: null,
+        actorType: "user",
+        actorId: input.userId,
+        responsibleUserId: input.userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      try {
+        await resolveConnectionGrant(session, connection, false);
+      } catch {
+        throw new ToolGatewayHttpError(404, "View not found", "mcp_app_view_not_accessible");
+      }
+      const result = await callAssignedConnectionProtocol({
+        session,
+        connection,
+        method: "resources/read",
+        params: { uri: input.view.resourceUri },
+        // JSON (or SSE) framing escapes the document, so allow headroom over the HTML limit.
+        maxResponseBytes: MCP_APP_MAX_HTML_BYTES * 2,
+        // A view document that fails to load says nothing about the connection's tools.
+        markHealth: false,
+      });
+      const resource = readMcpAppResource(result, input.view.resourceUri);
+      if (!resource) {
+        throw new ToolGatewayHttpError(502, "The app did not return a view for this tool", "mcp_app_resource_invalid");
+      }
+      if (Buffer.byteLength(resource.html, "utf8") > MCP_APP_MAX_HTML_BYTES) {
+        throw new ToolGatewayHttpError(502, "The app's view is too large to show", "mcp_app_resource_too_large");
+      }
+      return resource;
+    },
+
+    /**
+     * MCP Apps: a view's `tools/call`. Only tools of the view's own connection
+     * that are visible to apps can be called. The call runs with the viewer's
+     * authority and the agent's connection access, through the same policy,
+     * approval and audit path as a connection test call.
+     */
+    async callMcpAppViewTool(input: {
+      companyId: string;
+      userId: string;
+      view: { connectionId: string; agentId: string | null; issueId: string | null };
+      toolName: string;
+      arguments: Record<string, unknown>;
+      signal?: AbortSignal;
+    }): Promise<McpAppCallToolResult> {
+      if (!input.view.agentId) {
+        throw new ToolGatewayHttpError(409, "This view's agent no longer exists", "mcp_app_agent_missing");
+      }
+      const tool = (await connectedMcpToolsForConnection(input.companyId, input.view.connectionId))
+        .find((candidate) => candidate.upstreamToolName === input.toolName);
+      if (!tool || !mcpAppToolCallableFromApp((asRecord(tool.providerMetadata)?.ui ?? null) as McpAppToolUi | null)) {
+        throw new ToolGatewayHttpError(404, `Tool "${input.toolName}" is not available to this app`, "mcp_app_tool_not_found");
+      }
+      // Task- and project-scoped rules (block, Ask first) see the view's task.
+      const [issue] = input.view.issueId
+        ? await db.select({ id: issues.id, projectId: issues.projectId }).from(issues)
+          .where(and(eq(issues.id, input.view.issueId), eq(issues.companyId, input.companyId))).limit(1)
+        : [];
+      const outcome = await this.executeTestCall({
+        companyId: input.companyId,
+        issueId: issue?.id ?? null,
+        projectId: issue?.projectId ?? null,
+        connectionId: input.view.connectionId,
+        agentId: input.view.agentId,
+        userId: input.userId,
+        toolName: tool.name,
+        parameters: input.arguments,
+        signal: input.signal,
+        includeResultMeta: true,
+      });
+      if (outcome.decision === "ask_first") {
+        return { content: [{ type: "text", text: "This action needs approval first. It was sent for review." }], isError: true };
+      }
+      if ("error" in outcome && outcome.error) {
+        return { content: [{ type: "text", text: outcome.error.message }], isError: true };
+      }
+      return mcpAppCallToolResult(
+        "result" in outcome ? outcome.result : null,
+        "resultMeta" in outcome ? outcome.resultMeta : undefined,
+      );
     },
 
     /**
@@ -11548,6 +12085,16 @@ export function createToolGatewayService(
         // the row to failed, and emits — an earlier success emit would make one
         // execution report both outcomes.
         void emitConnectionInvoked(db, invocationId);
+        if (connectedMcpExecution) {
+          await recordMcpAppView(db, {
+            session,
+            tool,
+            invocationId,
+            toolInput: argumentValidation.value,
+            result: resultValidation.value,
+            resultMeta: await redactedMcpResultMeta(connectedMcpExecution.result),
+          });
+        }
         return {
           invocationId,
           status: "completed" as const,

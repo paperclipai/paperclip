@@ -294,7 +294,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(65);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(66);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -460,15 +460,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 69 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 70 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(69);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(70);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 69);
+    ).toHaveProperty("size", 70);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -905,7 +905,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(88);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(89);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1339,6 +1339,37 @@ describe("AppDefinition catalog", () => {
       expect.objectContaining({ key: "metro", type: "select", advanced: true, defaultValue: "fra" }),
     ]);
     expect(method!.tenantFields?.[0]?.options?.map((option) => option.value)).toEqual(["dal", "fra", "sfo", "sin", "was"]);
+  });
+  it("connects Circleback's hosted server with browser sign-in and its documented read/write scopes", () => {
+    const circleback = APP_DEFINITIONS.find((app) => app.slug === "circleback")!;
+    expect(circleback).toMatchObject({
+      name: "Circleback",
+      categories: ["productivity"],
+      urlPatterns: ["https://circleback.ai/*", "https://app.circleback.ai/*"],
+      docsUrl: "https://circleback.ai/docs/support/platform/circleback-mcp",
+      branding: { logoUrl: "/brands/apps/circleback.png" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "circleback")).toBe(true);
+    expect(CONNECTABLE_APP_DEFINITIONS.some((app) => app.slug === "circleback")).toBe(true);
+    // Circleback documents no API key for its MCP server.
+    expect(circleback.methods).toHaveLength(1);
+    expect(circleback.methods[0]).toMatchObject({
+      key: "mcp-oauth",
+      label: "Sign in with Circleback",
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S3",
+      // `user` alone is read-only; write tools then ask the user to reconnect.
+      defaults: { serverUrl: "https://circleback.ai/api/mcp", scopesHint: ["user", "user:write"] },
+      capabilityProfile: { key: "write", description: expect.stringContaining("Set share and delete actions to Ask first") },
+    });
+    expect(circleback.methods[0]!.tenantFields ?? []).toEqual([]);
+    expect(circleback.methods[0]!.warnings).toEqual([
+      expect.stringContaining("A Circleback account"),
+      expect.stringContaining("anyone with the link"),
+    ]);
   });
   it("connects Gauge's hosted server with browser sign-in or an organization API key", () => {
     const gauge = APP_DEFINITIONS.find((app) => app.slug === "gauge")!;

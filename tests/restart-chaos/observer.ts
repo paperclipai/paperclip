@@ -20,7 +20,7 @@ import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "
 import { isSessionFault, rotateAgentSession } from "./session-faults.js";
 import { awaitingRewake, collectRewakeArtifacts, isRewakeWorkload, rewakeStep } from "./rewake.js";
 import { withLongTurn } from "./long-turn.js";
-import { holdsRetry, stagingMixArtifacts, stagingMixDefinition, stagingMixStep } from "./staging-mix.js";
+import { collectStagingMixArtifacts, holdsRetry, stagingMixDefinition, stagingMixStep } from "./staging-mix.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -686,8 +686,9 @@ export class TaskObserver {
     }
     if (!await this.clearDiskFullAtRest(now)) { this.restCandidateSince = null; return; }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
-      if (this.plan.stagingMix && holdsRetry(this.record, this.plan.stagingMix.holdMs, now)) { this.restCandidateSince = null; return; }
-      await this.boardRetry(sample, now);
+      if (this.plan.stagingMix?.retryDuringWave && holdsRetry(this.record, this.plan.stagingMix.holdMs, now)) { this.restCandidateSince = null; return; }
+      if (!this.plan.stagingMix || this.plan.stagingMix.retryDuringWave) { await this.boardRetry(sample, now); return; }
+      this.restCandidateSince = null;
       return;
     }
     this.record.restAt = this.restCandidateSince ?? now;
@@ -695,6 +696,19 @@ export class TaskObserver {
     this.done = true;
     this.timeline.add("task_rested", { taskId: this.plan.taskId, status, interruption: sample.interruption?.state ?? null,
       canRetry: sample.interruption?.canRetry ?? false, retried: Boolean(this.record.retry) });
+  }
+
+  reopen(now: number): void {
+    this.done = false;
+    this.record.restAt = null;
+    this.record.timedOut = false;
+    this.record.deadlineAt = now + RETRY_BUDGET_MS;
+  }
+
+  async retryAfterSettle(sample: TaskSample, now: number): Promise<void> {
+    this.reopen(now);
+    await this.boardRetry(sample, now);
+    this.record.deadlineAt = now + RETRY_BUDGET_MS;
   }
 
   private async boardRetry(sample: TaskSample, now: number): Promise<void> {
@@ -1034,7 +1048,7 @@ export class TaskObserver {
       const document = await this.api.get<Json>(`/api/issues/${issueId}/documents/${key}`).catch(() => null);
       documents[key] = typeof document?.body === "string" ? document.body : null;
     }
-    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => []);
+    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => null);
     const workspacePath = await this.workspacePath();
     const snapshotPath = this.record.preFaultWorkspacePath ?? workspacePath;
     if (snapshotPath && this.record.preFaultFiles) {
@@ -1092,7 +1106,7 @@ export class TaskObserver {
         status: String(run.status), errorCode: run.errorCode ?? null, createdAt: run.createdAt ?? null, finishedAt: run.finishedAt ?? null }))).catch(() => []),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
       ...(this.plan.workload === "H2" ? { handoff: await this.collectHandoff(issueId, issue) } : {}),
-      ...(this.plan.stagingMix ? { stagingMix: stagingMixArtifacts(this.record) } : {}),
+      ...(this.plan.stagingMix ? { stagingMix: collectStagingMixArtifacts(this.record, comments) } : {}),
     };
   }
 

@@ -41,6 +41,26 @@ in operation. This detects packaging errors but does not authenticate an
 untrusted image builder. Image provenance and signatures remain deployment
 responsibilities.
 
+### Provider credentials
+
+An image author can set `workerCredentialEnv` on a distribution catalog
+entry to pass provider API keys from the host environment. For example,
+`"workerCredentialEnv": ["EXAMPLE_API_KEY"]` lets the worker receive
+`EXAMPLE_API_KEY` when the deployment sets it. List 1 to 16 distinct
+uppercase environment variable names ending in `_API_KEY`, each at most
+128 characters. Store the names in the catalog and set the values through
+the deployment.
+
+Core grants these variables to the selected, digest-verified worker when
+it declares `environment.drivers.register`. This grant is available through
+managed image activation. The ordinary `plugins.workerEnv` credential
+restriction applies independently.
+
+Before emitting this field, image builders can check for
+`workerCredentialEnv` in the capability list at
+`server/src/services/distribution-plugin-catalog-capabilities.json` in the
+target Core source revision. Older versions reject the unknown catalog field.
+
 ## Selection, upgrades and rollback
 
 Managed instances select a distribution key through the existing

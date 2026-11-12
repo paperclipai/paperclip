@@ -30,6 +30,8 @@ export interface StagingMixOptions {
   minFreeMb: number;
   arrivalCutoffMinutes: number;
   arrivalEndMs: number;
+  retryDuringWave: boolean;
+  settleMinutes: number;
   tasks?: number;
 }
 
@@ -42,6 +44,7 @@ export interface StagingMixTask {
   followUpAfterMs: number | null;
   arriveAtMs: number;
   holdMs: number;
+  retryDuringWave?: boolean;
 }
 
 export interface StagingMixRecord {
@@ -49,13 +52,21 @@ export interface StagingMixRecord {
   followUp?: { at: number; commentId: string | null; duringRun: boolean; inOverlap: boolean; error: string | null };
   retrySeenAt?: number | null;
   retries?: Array<{ at: number; inOverlap: boolean }>;
+  retryBanner?: RetryBanner;
+  retryAfterSettle?: { at: number; accepted: boolean | null; issueStatusAtClick: string | null };
 }
+
+export interface RetryBanner { firstShownAt: number; lastShownAt: number; shownMs: number; visibleSince: number | null; errorCode: string | null }
 
 export interface StagingMixArtifacts {
   followUp: StagingMixRecord["followUp"] | null;
   followUpErrors: string[];
   retries: NonNullable<StagingMixRecord["retries"]>;
+  comments?: Array<{ body: string; runId: string | null }>;
+  commentsUnreadable?: boolean;
 }
+
+export const DUPLICATE_CHECKS: ReadonlySet<string> = new Set(["rounds_once", "done_comment_once", "completion_once", "subtasks_once", "subtask_rounds_once"]);
 
 export const STAGING_MIX_ARG_OPTIONS = {
   workload: { type: "string" },
@@ -71,6 +82,8 @@ export const STAGING_MIX_ARG_OPTIONS = {
   "mix-run-cap": { type: "string" },
   "mix-tasks": { type: "string" },
   "mix-arrival-cutoff-minutes": { type: "string" },
+  "mix-retry-during-wave": { type: "boolean" },
+  "mix-settle-minutes": { type: "string" },
 } as const;
 
 type MixArgs = Partial<Record<keyof typeof STAGING_MIX_ARG_OPTIONS, string | boolean | undefined>> & Record<string, unknown>;
@@ -141,6 +154,8 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     minFreeMb: whole(environment.RESTART_CHAOS_MIX_MIN_FREE_MB, "RESTART_CHAOS_MIX_MIN_FREE_MB", DEFAULT_MIN_FREE_MB, 0, 1_048_576),
     arrivalCutoffMinutes,
     arrivalEndMs: arrivalEndMs({ minutes, faultSpacingMinutes, arrivalCutoffMinutes }, options),
+    retryDuringWave: values["mix-retry-during-wave"] === true,
+    settleMinutes: whole(values["mix-settle-minutes"], "mix-settle-minutes", 15, 0, 120),
     ...(values["mix-tasks"] !== undefined ? { tasks: whole(values["mix-tasks"], "mix-tasks", 1, 1, 2_000) } : {}),
   };
   if (mix.tasks === undefined && mix.arrivalEndMs < (mix.runs + mix.queue) * BURST_GAP_MS) {
@@ -269,7 +284,8 @@ export function planStagingMixTasks(options: WaveOptions, rng = createRng((optio
       holdMs: 0,
       followUpAfterMs: null,
       nonce: rng.hex(8),
-      stagingMix: { turnMinutes, rounds, subtasks, followUpAfterMs, arriveAtMs, holdMs: mix.holdMinutes * 60_000 },
+      stagingMix: { turnMinutes, rounds, subtasks, followUpAfterMs, arriveAtMs, holdMs: mix.holdMinutes * 60_000,
+        ...(mix.retryDuringWave ? { retryDuringWave: true } : {}) },
     };
   });
 }
@@ -313,8 +329,11 @@ export function roundCommand(nonce: string): string {
 function roundsSteps(nonce: string, rounds: number): string[] {
   return [
     `Run this shell command ${rounds} times, as separate tool calls in the foreground, replacing every <N> with the round number 1 to ${rounds}`,
-    `(each takes about ${ROUND_SECONDS} seconds; do not run rounds in the background or in parallel, and do not skip, repeat or shorten any):`,
+    `(each takes about ${ROUND_SECONDS} seconds; run them one at a time in the foreground, never in the background or in parallel):`,
     `\`${roundCommand(nonce)}\``,
+    `Every round from 1 to ${rounds} must end up in \`${ledgerFile(nonce)}\` exactly once, with the hash the command printed.`,
+    "Before each round, read the ledger file: if that round's ROUND line is already there, the round is finished, so never run it again.",
+    "If a round was interrupted (for example the tool call failed or your session restarted) before its ROUND line was written, you must run that round again from the start.",
   ];
 }
 
@@ -354,8 +373,12 @@ export function stagingMixDescription(nonce: string, task: StagingMixTask, agent
 
 export const followUpRequestId = (issueId: string, nonce: string) => stableRequestId(`followup-${issueId}-${nonce}`);
 
+export function isDoneComment(body: string, nonce: string): boolean {
+  return body.trim().replace(/\.$/, "").replace(/^`+|`+$/g, "").trim() === doneMarker(nonce);
+}
+
 export function followUpComment(nonce: string): string {
-  return `Additional requirement: include the line \`${followUpMarker(nonce)}\` on its own line in this task's \`ledger\` document. Keep going with your rounds; do not restart any.`;
+  return `Additional requirement: include the line \`${followUpMarker(nonce)}\` on its own line in this task's \`ledger\` document. Keep going with your rounds: a round whose ROUND line is already in the ledger file is finished, and a round without one must still be run.`;
 }
 
 export interface LedgerRound { round: number; start: number; end: number; hash: string }
@@ -387,14 +410,20 @@ export function verifyLedger(nonce: string, rounds: number, text: string | null 
 export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: OracleArtifacts): OracleResult {
   const ledger = artifacts.documents.ledger ?? null;
   const own = verifyLedger(nonce, task.rounds, ledger);
-  const doneComments = artifacts.agentComments.filter(body => body.includes(doneMarker(nonce))).length;
+  const comments = artifacts.stagingMix?.comments ?? artifacts.agentComments.map(body => ({ body, runId: null }));
+  const doneComments = comments.filter(comment => isDoneComment(comment.body, nonce)).length;
+  const completionRuns = [...new Set(comments.filter(comment => comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!))];
   const followUp = artifacts.stagingMix?.followUp ?? null;
   const children = (artifacts.children ?? []).filter(child => (child.title ?? "").includes(nonce));
   const checks: OracleResult["checks"] = [
     { name: "issue_done", ok: artifacts.issueStatus === "done", detail: `status=${artifacts.issueStatus ?? "unknown"}` },
     { name: "ledger_rounds_verified", ok: own.verified, detail: own.detail },
+    { name: "done_comment_posted", ok: doneComments >= 1, detail: `comments=${doneComments}` },
     { name: "rounds_once", ok: own.duplicates === 0, detail: `duplicates=${own.duplicates}` },
-    { name: "done_comment_once", ok: doneComments === 1, detail: `comments=${doneComments}` },
+    { name: "done_comment_once", ok: doneComments <= 1, detail: `comments=${doneComments}` },
+    artifacts.stagingMix?.commentsUnreadable ? { name: "completion_once", ok: false, detail: "unreadable: the task's comments could not be read" }
+      : { name: "completion_once", ok: completionRuns.length <= 1,
+        detail: completionRuns.length > 1 ? `duplicate completion: runs ${completionRuns.map(id => id.slice(0, 8)).join(", ")} each reported completion` : `runs=${completionRuns.length}` },
   ];
   if (task.followUpAfterMs !== null) {
     const errors = artifacts.stagingMix?.followUpErrors ?? [];
@@ -406,16 +435,20 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
       detail: `posted ${new Date(followUp.at).toISOString()}${followUp.inOverlap ? " in overlap" : ""}` });
   }
   if (task.subtasks > 0) {
-    checks.push({ name: "subtasks_once", ok: children.length === task.subtasks, detail: `subtasks=${children.length}/${task.subtasks}` });
+    checks.push({ name: "subtasks_once", ok: children.length <= task.subtasks, detail: `subtasks=${children.length}/${task.subtasks}` });
+    let childDuplicates = 0;
     for (let part = 1; part <= task.subtasks; part += 1) {
       const nonceOf = childNonce(nonce, part);
       const child = children.filter(candidate => (candidate.title ?? "").includes(nonceOf));
-      const result = verifyLedger(nonceOf, SUBTASK_ROUNDS, child[0]?.documents.ledger);
+      const results = child.map(candidate => ({ candidate, result: verifyLedger(nonceOf, SUBTASK_ROUNDS, candidate.documents.ledger) }));
+      const best = results.find(entry => entry.candidate.status === "done" && entry.result.verified) ?? results[0];
+      childDuplicates += results.reduce((sum, entry) => sum + entry.result.duplicates, 0);
       const lastHash = expectedRoundHash(nonceOf, SUBTASK_ROUNDS);
-      checks.push({ name: `subtask_${part}_done`, ok: child.length === 1 && child[0]!.status === "done" && result.verified && result.duplicates === 0,
-        detail: child.length ? `status=${child[0]!.status} ${result.detail}` : "missing" });
+      checks.push({ name: `subtask_${part}_done`, ok: Boolean(best && best.candidate.status === "done" && best.result.verified),
+        detail: best ? `status=${best.candidate.status} ${best.result.detail}` : "missing" });
       checks.push({ name: `parent_read_subtask_${part}`, ok: (ledger ?? "").includes(childLine(part, lastHash)), detail: childLine(part, lastHash) });
     }
+    checks.push({ name: "subtask_rounds_once", ok: childDuplicates === 0, detail: `duplicates=${childDuplicates}` });
   }
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }
@@ -502,17 +535,46 @@ export async function stagingMixStep(input: StagingMixStepInput): Promise<void> 
       input.note("staging_mix_follow_up", { ...followUp });
     }
   }
+  noteRetryBanner(state, retryShown(sample), now, latestFailureCode(sample));
   if (!retryOffered(sample) || !retryDue(record)) {
     if (!retryOffered(sample)) state.retrySeenAt = null;
     return;
   }
   state.retrySeenAt ??= now;
-  if (!overlap) return;
+  if (!overlap || !task.retryDuringWave) return;
   (state.retries ??= []).push({ at: now, inOverlap: true });
   input.note("staging_mix_retry_in_overlap", { waitedMs: now - state.retrySeenAt });
   await input.retry(sample, now);
 }
 
-export function stagingMixArtifacts(record: TaskRecord): StagingMixArtifacts {
-  return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [] };
+export function retryShown(sample: Pick<TaskSample, "reachable" | "issueStatus" | "interruption">): boolean {
+  return sample.reachable && sample.issueStatus !== "done" && Boolean(sample.interruption?.canRetry);
+}
+
+export function latestFailureCode(sample: Pick<TaskSample, "runs">): string | null {
+  const failed = (sample.runs ?? []).filter(run => run.status === "failed" || run.status === "timed_out" || run.errorCode)
+    .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""));
+  return failed[0]?.errorCode ?? failed[0]?.failureCause ?? null;
+}
+
+export function noteRetryBanner(state: StagingMixRecord, shown: boolean, now: number, errorCode: string | null): void {
+  const banner = state.retryBanner;
+  if (!shown) {
+    if (banner?.visibleSince != null) { banner.shownMs += now - banner.visibleSince; banner.visibleSince = null; }
+    return;
+  }
+  if (!banner) { state.retryBanner = { firstShownAt: now, lastShownAt: now, shownMs: 0, visibleSince: now, errorCode }; return; }
+  banner.lastShownAt = now;
+  banner.visibleSince ??= now;
+  banner.errorCode = errorCode ?? banner.errorCode;
+}
+
+export function bannerShownMs(banner: RetryBanner, now: number): number {
+  return banner.shownMs + (banner.visibleSince === null ? 0 : now - banner.visibleSince);
+}
+
+export function collectStagingMixArtifacts(record: TaskRecord, rows: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown }> | null): StagingMixArtifacts {
+  return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [],
+    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""), runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null })) }
+      : { commentsUnreadable: true }) };
 }

@@ -6822,6 +6822,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#core = core;
     this.#followCommittedEvents(core);
+    if (this.options.adoptExistingRunner) {
+      const withdrawn = core.withdrawUndeliveredTerminalCommands();
+      if (withdrawn.length > 0) {
+        this.#diagnostic(`withdrew ${withdrawn.join(", ")} queued by an earlier attempt before reattaching the live runner`);
+      }
+    }
     this.#carriedCommandCount = core.store.state.commands.length;
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
@@ -7914,7 +7920,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
     deadline = this.#waitNow() + 30_000,
   ): Promise<void> {
-    while (this.#waitNow() < deadline) {
+    for (;;) {
       this.#throwIfFailed();
       if (this.#closed) throw new Error("runnerd transport closed during provider startup");
       this.#pumpEvents();
@@ -7929,6 +7935,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         return;
       if (await this.#runnerHasExited())
         throw new Error("runnerd exited before provider startup");
+      if (this.#waitNow() >= deadline) break;
       await new Promise((resolveWait) => setTimeout(resolveWait, 10));
     }
     throw new Error("runnerd did not report its provider identity");
@@ -7962,6 +7969,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : this.#core?.getCommand(commandId),
       runnerHasExited: () => this.#runnerHasExited(),
       failureCode: () => this.#startupComplete ? "provider_transport_failed" : this.#startupFailureCode,
+      answeredProgressAt: () => {
+        const core = this.#core;
+        if (core === null) return null;
+        const commands = core.store.state.commands;
+        const target = commandId === undefined ? commands.find(candidate => candidate.type === type) : core.getCommand(commandId);
+        if (target === undefined) return null;
+        let progressAt: number | null = null;
+        for (const command of commands) {
+          if (command.controllerSeq > target.controllerSeq || command.status !== "pending") continue;
+          const at = core.queuedCommandResultProgressAt(command.commandId);
+          if (at !== null && (progressAt === null || at > progressAt)) progressAt = at;
+        }
+        return progressAt;
+      },
       describeStall: () => this.#core === null ? null : describeRunnerCommandStall({
         commands: this.#core.store.state.commands,
         commandId: commandId ?? this.#core.store.state.commands.find(candidate => candidate.type === type)?.commandId,
@@ -9583,6 +9604,11 @@ export class RunnerStallLedger {
     return this.#creditedMs;
   }
 
+  credit(ms: number): void {
+    this.now();
+    this.#creditedMs += Math.max(0, ms);
+  }
+
   now(): number {
     const at = this.wallNow();
     if (at - this.#last > RUNNER_STALL_THRESHOLD_MS) {
@@ -9602,6 +9628,8 @@ export class RunnerStallLedger {
 }
 
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
+const RUNNER_ANSWERED_RESULT_STALL_MS = 30_000;
+
 export async function waitForRunnerCommand(input: {
   type: string;
   deadline: number;
@@ -9615,15 +9643,17 @@ export async function waitForRunnerCommand(input: {
   failureCode: () => string;
   /** Bounded, content-free evidence of what the command waited behind. */
   describeStall?: () => string | null;
+  answeredProgressAt?: () => number | null;
 }): Promise<void> {
   const now = () => input.clock ? input.clock.now() : Date.now();
-  while (now() < input.deadline) {
-    input.throwIfFailed();
-    if (input.abortOnClose && input.isClosed()) {
-      throw new Error(`runnerd transport closed while waiting for ${input.type}`);
-    }
+  const answeredAndAdvancing = () => {
+    const progressAt = input.answeredProgressAt?.() ?? null;
+    return progressAt !== null && Date.now() - progressAt < RUNNER_ANSWERED_RESULT_STALL_MS;
+  };
+  let extended = false;
+  const settled = () => {
     const command = input.command();
-    if (command?.status === "completed") return;
+    if (command?.status === "completed") return true;
     if (command !== undefined && command.status !== "pending") {
       const detail = record(record(command.result).result);
       const reportedResult = readProviderFailure(detail.providerFailure)
@@ -9634,10 +9664,31 @@ export async function waitForRunnerCommand(input: {
       Object.defineProperty(error, "runnerCommandResult", { value: structuredClone(command.result), enumerable: false });
       throw error;
     }
+    return false;
+  };
+  const completeExtended = () => {
+    input.clock?.credit(Math.max(0, now() - input.deadline) + RUNNER_POST_STOP_GRACE_MS);
+  };
+  let observed = false;
+  while (now() < input.deadline || answeredAndAdvancing()) {
+    observed = true;
+    if (now() >= input.deadline) extended = true;
+    input.throwIfFailed();
+    if (input.abortOnClose && input.isClosed()) {
+      throw new Error(`runnerd transport closed while waiting for ${input.type}`);
+    }
+    if (settled()) {
+      if (extended) completeExtended();
+      return;
+    }
     if (await input.runnerHasExited()) {
       throw new Error(`runnerd exited while waiting for ${input.type}`);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  if (observed && settled()) {
+    if (extended) completeExtended();
+    return;
   }
   let stall: string | null = null;
   try { stall = input.describeStall?.() ?? null; } catch { stall = null; }

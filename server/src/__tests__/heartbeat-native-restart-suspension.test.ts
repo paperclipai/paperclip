@@ -934,7 +934,10 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       try {
         const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim });
         expect(probe.observed).toEqual([]);
-        expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified" }]);
+        // Only a lapsed lease starts the bounded wait that ends the run.
+        expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified",
+          // Every wait is rechecked; only a lapsed lease starts the bounded end.
+          retryAt: expect.any(Date) }]);
         expect(onClaim).not.toHaveBeenCalled();
         const [after] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
         expect(after).toMatchObject({ leaseOwner: before.leaseOwner, leaseExpiresAt: before.leaseExpiresAt,
@@ -959,7 +962,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       const probe = observeOwnerPid(), onClaim = vi.fn();
       try {
         expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim }))
-          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified" }]);
+          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified", retryAt: expect.any(Date) }]);
         expect(probe.observed).toEqual([]);
         expect(onClaim).not.toHaveBeenCalled();
         const [after] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
@@ -1018,7 +1021,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         controllerProcessStartedAt: current.processStartedAt }).where(eq(nativeRunFinalizations.runId, f.runId));
       const onClaim = vi.fn();
       const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim });
-      expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_still_alive" }]);
+      expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_still_alive", retryAt: expect.any(Date) }]);
       expect(onClaim).not.toHaveBeenCalled();
     }, 60_000);
 
@@ -1146,7 +1149,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       const probe = observeOwnerPid();
       try {
         expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId] }))
-          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "native_finalization_or_cleanup_owner" }]);
+          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "native_finalization_or_cleanup_owner", retryAt: expect.any(Date) }]);
         expect(probe.observed).toEqual([]);
         expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
       } finally { probe.restore(); }
@@ -1161,7 +1164,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       const probe = observeOwnerPid();
       try {
         expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId] }))
-          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "remote_controller_process_space_unverified" }]);
+          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "remote_controller_process_space_unverified", retryAt: expect.any(Date) }]);
         expect(probe.observed).toEqual([]);
         const [action] = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
         expect(action.evidence.controllerAuthority).toBeUndefined();
@@ -1545,7 +1548,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       const probe = observeOwnerPid();
       try {
         expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId] }))
-          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "remote_controller_process_space_unverified" }]);
+          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "remote_controller_process_space_unverified", retryAt: expect.any(Date) }]);
         expect(probe.observed).toEqual([]);
         const [action] = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
         expect(action.evidence.controllerAuthority).toBeUndefined();
@@ -1561,7 +1564,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       const unreadable = vi.spyOn(controllerProcess, "currentProcessSpaceHash").mockReturnValue("unknown");
       try {
         expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId] }))
-          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified" }]);
+          .toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "controller_process_space_unverified", retryAt: expect.any(Date) }]);
       } finally { unreadable.mockRestore(); }
       const [attention] = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
       const probe = observeOwnerPid();

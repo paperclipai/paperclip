@@ -320,11 +320,11 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(enqueueWakeup).toHaveBeenCalledTimes(3);
   }, 60_000);
 
-  it("with the real wake queue, a hold that defers the continuation leaves a violation that is retried no faster than the cap", async () => {
-    // Current master without a fresh-continuation fallback: the task's last
-    // run left a legacy reconciliation hold, so admission defers the ordinary
-    // continuation wake. Nothing pending is left behind, so it stays a
-    // violation, is retried with spacing, and never loops faster than the cap.
+  it("with the real wake queue, a hold reached by the sweep's wake becomes one pending fresh continuation", async () => {
+    // The task's last run left a legacy reconciliation hold. The sweep's
+    // ordinary continuation wake reaches the fresh-continuation fallback,
+    // which settles the hold and records one pending continuation (owned by
+    // the execution-continuation worker). The next sweep adds no attempt.
     const f = await seedCompany();
     const issueId = await f.issue();
     const run = await f.run(issueId, { status: "failed", errorCode: "process_lost", livenessState: "failed" });
@@ -344,9 +344,12 @@ describePostgres("assigned-work invariant sweep", () => {
       const [entry] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
         eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
       expect(entry.details).toMatchObject({ outcome: "not_started" });
-      // A second sweep right away is spaced, not another attempt.
+      const [record] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
+        sqlTag`${issueRecoveryActions.evidence}->'freshContinuation' is not null`));
+      expect(record!.evidence).toMatchObject({ continuationDelivery: "pending" });
+      // A second sweep right away adds no attempt.
       expect(await heartbeat.checkAssignedWorkInvariant({ companyId: f.companyId, issueId }))
-        .toMatchObject({ outcome: "deferred_rate_limit", verdict: { kind: "violation" } });
+        .not.toMatchObject({ outcome: "repaired" });
       expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
         eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)))).toHaveLength(1);
     } finally {

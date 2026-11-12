@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { ChaosApi } from "./api.js";
 import { agentRunCaps, type StagingMixOptions, type StagingMixSlot } from "./staging-mix.js";
+import { retryAfterSettleStage, type RetryStageObserver } from "./staging-mix-retry.js";
 import type { AdapterId, TaskPlan, WaveOptions } from "./types.js";
 
 export const RESOURCE_SAMPLE_MS = 30_000;
@@ -126,6 +128,24 @@ export class StagingMixRun {
     const unfired = this.unfiredSlots();
     if (unfired.length) problems.push(`fault slot(s) at ${unfired.map(entry => `${Math.round(entry.atMs / 60_000)} min`).join(", ")} never fired on a live task`);
     return problems;
+  }
+
+  report(started: number): Error | null {
+    const problems = this.shortfall(started);
+    if (problems.length) this.note("staging_mix_shortfall", { problems, unfired: this.unfiredSlots() });
+    console.info(`Staging mix: ${started} tasks started; ${this.unlaunched} planned tasks never launched (excluded from tasks started); `
+      + `fault slots fired ${this.slotCoverage.map(entry => `${Math.round(entry.atMs / 60_000)}m:${entry.kind}×${entry.exposed} tasks`).join(", ") || "none"} of ${this.slots.length}`);
+    return problems.length ? new Error(`Staging mix tested less than planned: ${problems.join("; ")}`) : null;
+  }
+
+  settleUntil(now = Date.now()): number {
+    const last = this.slots.at(-1);
+    return Math.max(now, last ? this.startedAt + last.atMs + last.holdMs : now) + this.mix.settleMinutes * 60_000;
+  }
+
+  async retryAfterSettle(observers: readonly RetryStageObserver[], api: Pick<ChaosApi, "get">, cancelled: () => boolean): Promise<void> {
+    if (this.mix.retryDuringWave) return;
+    await retryAfterSettleStage({ observers, api, settleUntil: this.settleUntil(), cancelled, note: this.note });
   }
 
   mayLaunch(now: number, next: TaskPlan): boolean {
