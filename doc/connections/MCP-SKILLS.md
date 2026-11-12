@@ -61,7 +61,8 @@ The spec's host requirements were treated as day-one requirements.
   skill. The board sees a note when names collide.
 - **Verification before use.** Every file read checks the byte size, then the
   SHA-256, against the approved manifest. `SKILL.md` frontmatter is parsed with
-  a full YAML parser and compared field by field with the listed frontmatter.
+  the skills system's own parser and compared field by field with the listed
+  frontmatter. A YAML form that parser cannot read faithfully fails closed.
   Content that fails is never used. Paperclip calls `skills/get`; if the
   manifest changed the skill goes back to review, and if the same manifest
   served different bytes the skill is taken out of use (`verification_failed`).

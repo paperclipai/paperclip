@@ -6,13 +6,12 @@
  * skill's other files as reads through Paperclip rather than copies on disk.
  */
 import { createHash } from "node:crypto";
-import { stringify as stringifyYaml } from "yaml";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
-import { mcpSkillRelativePath, mcpSkillRequestedTools } from "@paperclipai/shared";
+import { mcpSkillRelativePath, mcpSkillRequestedTools, stringifyFrontmatter } from "@paperclipai/shared";
 import type { McpSkillRow } from "./mcp-skills.js";
 import { materializeAsset } from "./native-runtime/runtime-context.js";
 
@@ -80,7 +79,7 @@ export function renderMcpSkillMarkdown(loaded: LoadedMcpSkill, runtimeName: stri
       ...files.map((relative) => `> - \`${relative}\``),
     );
   }
-  return `---\n${stringifyYaml(frontmatter, { lineWidth: 0 }).trimEnd()}\n---\n\n${lines.join("\n")}\n\n${skillBody(loaded.markdown)}`;
+  return `---\n${stringifyFrontmatter(frontmatter).trimEnd()}\n---\n\n${lines.join("\n")}\n\n${skillBody(loaded.markdown)}`;
 }
 
 /** Add approved MCP skills to a run's runtime skill set without persisting them as preferences. */

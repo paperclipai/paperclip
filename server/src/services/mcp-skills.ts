@@ -12,11 +12,11 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import { parse as parseYaml } from "yaml";
 import type { Db } from "@paperclipai/db";
 import { companySkills, toolApplications, toolConnections, toolMcpSkillFiles, toolMcpSkills } from "@paperclipai/db";
 import {
   checkMcpSkillEntry,
+  parseFrontmatterMarkdown,
   mcpSkillRequestedTools,
   mcpSkillRelativePath,
   type CompanyMcpSkill,
@@ -60,16 +60,19 @@ export function verifyMcpSkillFileBytes(bytes: Buffer, resource: McpSkillResourc
   if (digest !== resource.digest) throw new McpSkillVerificationError("The app served a file that does not match its listed digest.", resource.uri);
 }
 
-/** The SKILL.md frontmatter, parsed, must equal the entry's frontmatter field by field. */
+/**
+ * The SKILL.md frontmatter, parsed with the skills system's own parser, must
+ * equal the entry's frontmatter field by field. A YAML form that parser does
+ * not read faithfully fails closed: the skill is not loaded.
+ */
 export function verifyMcpSkillFrontmatter(markdown: string, frontmatter: Record<string, unknown>, skillUri: string) {
-  const match = markdown.replace(/^﻿/, "").replace(/\r\n/g, "\n").match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
-  let parsed: unknown = null;
+  let parsed: ReturnType<typeof parseFrontmatterMarkdown> | null = null;
   try {
-    parsed = match ? parseYaml(match[1]!, { schema: "core" }) : null;
+    parsed = parseFrontmatterMarkdown(markdown.replace(/^\uFEFF/, ""));
   } catch {
     parsed = null;
   }
-  if (!parsed || typeof parsed !== "object" || !isDeepStrictEqual(JSON.parse(JSON.stringify(parsed)), frontmatter)) {
+  if (!parsed?.hasFrontmatter || !isDeepStrictEqual(JSON.parse(JSON.stringify(parsed.frontmatter)), frontmatter)) {
     throw new McpSkillVerificationError("The skill's instructions do not match the description the app listed.", skillUri);
   }
 }

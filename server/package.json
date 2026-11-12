@@ -117,7 +117,6 @@
     "svix": "1.76.1",
     "tar-stream": "3.2.0",
     "ws": "^8.22.0",
-    "yaml": "^2.8.1",
     "zod": "^4.6.6",
     "@opentelemetry/resources": "2.10.0"
   },

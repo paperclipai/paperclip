@@ -17,6 +17,7 @@ import { createToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { mcpSkillManifestDigest, mcpSkillsService } from "../services/mcp-skills.js";
 import { applyMcpConnectionSkills, mcpSkillRuntimeName, renderMcpSkillMarkdown } from "../services/mcp-skill-runtime.js";
+import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const META_VERSION = "io.modelcontextprotocol/protocolVersion";
@@ -247,7 +248,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(f.gateway.readConnectionSkillFile({ ...f.binding, skillId: row!.id, path: "examples/credit-note.md" })).rejects.toMatchObject({ status: 404 });
     await expect(f.gateway.readConnectionSkillFile({ ...f.binding, skillId: row!.id, path: "../other/SKILL.md" })).rejects.toMatchObject({ status: 404 });
 
-    const config = await applyMcpConnectionSkills({ paperclipRuntimeSkills: [] }, first.loaded);
+    const config = await applyMcpConnectionSkills({ paperclipRuntimeSkills: [] as PaperclipSkillEntry[] }, first.loaded);
     const bundled = await readFile(join(config.paperclipRuntimeSkills[0]!.source, "SKILL.md"), "utf8");
     expect(config.paperclipRuntimeSkills[0]!.runtimeName).toBe("skills-fixture-refunds");
     expect(bundled).toContain("Skill from a connected app: Skills fixture.");
@@ -421,7 +422,7 @@ describe("MCP skill entries and bundles", () => {
     const markdown = skillMd("refunds", "Process refunds", "Body\n", "allowed-tools: Bash(git:*) Read\n");
     expect(renderMcpSkillMarkdown({ skill, appName: "Acme", markdown }, "acme-refunds")).not.toContain("allowed-tools");
     const approved = renderMcpSkillMarkdown({ skill: { ...(skill as object), allowedToolsApproved: true } as never, appName: "Acme", markdown }, "acme-refunds");
-    expect(approved).toContain("allowed-tools: Bash(git:*) Read");
+    expect(approved).toContain(`allowed-tools: "Bash(git:*) Read"`);
     expect(approved.startsWith("---\nname: acme-refunds\n")).toBe(true);
   });
 
