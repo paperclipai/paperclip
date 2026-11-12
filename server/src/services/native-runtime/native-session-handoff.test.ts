@@ -33,6 +33,21 @@ describe("bounded fresh-session handoff", () => {
     expect(decodeNativeHandoffExcerpt(null)).toEqual({ body: "", truncated: false });
   });
 
+  it("never splits an emoji at the character bounds", () => {
+    // Each emoji sits across a cut that counts UTF-16 units.
+    const head = `${"a".repeat(2_899)}😀${"b".repeat(50)}`;
+    const tail = `${"y".repeat(50)}😀${"z".repeat(899)}`;
+    const wellFormed = (text: string) => Buffer.from(text, "utf8").toString("utf8") === text;
+    const decoded = decodeNativeHandoffExcerpt(Buffer.concat([Buffer.from(head), Buffer.from([0xff]), Buffer.from(tail)]).toString("base64")).body;
+    expect(wellFormed(decoded)).toBe(true);
+    expect(decoded).toBe(`${"a".repeat(2_899)}😀\n[content omitted]\n😀${"z".repeat(899)}`);
+    const rendered = renderNativeSessionHandoff({ issueId: "issue", generation: null, omittedEntriesAtLeast: 0,
+      entries: [{ kind: "comment", id: "c", body: `${head}${"m".repeat(2_000)}${tail}` }] });
+    const entry = (JSON.parse(rendered.split("\n").at(-1)!).entries as { body: string; truncated: boolean }[])[0]!;
+    expect(entry).toMatchObject({ body: decoded, truncated: true });
+    expect(wellFormed(entry.body)).toBe(true);
+  });
+
   it("restores the handoff on fresh bootstrap and resume failure, without replaying it on resume", () => {
     const input = buildNativeExecutionInput({
       companyId: "company", runId: "run", agentId: "agent", normalizedSessionId: "session", conversationMode: true,
@@ -215,6 +230,8 @@ const support = await getEmbeddedPostgresTestSupport();
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   const dbs: Record<"UTF8" | "SQL_ASCII", ReturnType<typeof createDb>> = {} as never;
   const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+  // A unique name lets runs share one Postgres server.
+  const asciiDatabase = `legacy_ascii_${randomUUID().replaceAll("-", "")}`;
   // 22 prefix bytes plus 21-byte units put byte 2,900 inside an em dash, where
   // the old SQL cut split it. Over 16,000 bytes exercises the byte-bounded
   // SQL path; mostly ASCII keeps every clipped entry inside the packet budget.
@@ -223,9 +240,9 @@ const support = await getEmbeddedPostgresTestSupport();
     database = await startEmbeddedPostgresTestDatabase("paperclip-native-handoff-ascii-");
     dbs.UTF8 = createDb(database.connectionString);
     const { sql } = await import("drizzle-orm");
-    await dbs.UTF8.execute(sql.raw("CREATE DATABASE legacy_ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'"));
+    await dbs.UTF8.execute(sql.raw(`CREATE DATABASE ${asciiDatabase} TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`));
     const asciiUrl = new URL(database.connectionString);
-    asciiUrl.pathname = "/legacy_ascii";
+    asciiUrl.pathname = `/${asciiDatabase}`;
     await applyPendingMigrations(asciiUrl.toString());
     dbs.SQL_ASCII = createDb(asciiUrl.toString());
     for (const db of Object.values(dbs)) {
@@ -246,7 +263,17 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "linkedin-calendar", createdAt: new Date(5_000) });
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => database?.cleanup());
+  afterAll(async () => {
+    // The fixture drops only its own database, so this test drops the second one.
+    const { sql } = await import("drizzle-orm");
+    try {
+      await dbs.SQL_ASCII?.$client.end();
+      await dbs.UTF8?.execute(sql.raw(`DROP DATABASE IF EXISTS ${asciiDatabase} WITH (FORCE)`));
+      await dbs.UTF8?.$client.end();
+    } finally {
+      await database?.cleanup();
+    }
+  });
 
   it("builds the same character-bounded excerpts as a UTF8 database", async () => {
     const build = (encoding: keyof typeof dbs) =>

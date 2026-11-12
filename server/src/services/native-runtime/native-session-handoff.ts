@@ -16,6 +16,15 @@ const EXCERPT_SEPARATOR_BYTE = 0xff;
 const LIMIT = 10;
 
 /**
+ * Keeps the start and the latest direction of a long body. Bounds count code
+ * points, as Postgres does on a UTF8 database, so a cut never splits a
+ * surrogate pair such as an emoji.
+ */
+function excerptBody(head: string, tail = head): string {
+  return `${Array.from(head).slice(0, EXCERPT_HEAD_CHARS).join("")}${EXCERPT_MARKER}${Array.from(tail).slice(-EXCERPT_TAIL_CHARS).join("")}`;
+}
+
+/**
  * Decodes a byte-bounded SQL excerpt. Legacy SQL_ASCII databases slice text by
  * bytes, so SQL returns raw UTF-8 bytes and character bounds are applied here.
  */
@@ -27,7 +36,7 @@ export function decodeNativeHandoffExcerpt(encoded: string | null | undefined): 
   // A byte cut can leave one partial character at each inner edge.
   const head = bytes.subarray(0, separator).toString("utf8").replace(/\uFFFD+$/u, "");
   const tail = bytes.subarray(separator + 1).toString("utf8").replace(/^\uFFFD+/u, "");
-  return { body: `${head.slice(0, EXCERPT_HEAD_CHARS)}${EXCERPT_MARKER}${tail.slice(-EXCERPT_TAIL_CHARS)}`, truncated: true };
+  return { body: excerptBody(head, tail), truncated: true };
 }
 
 export type HandoffEntry = { kind: string; id: string; body: string; truncated?: boolean; [key: string]: unknown };
@@ -51,9 +60,9 @@ export function renderNativeSessionHandoff(input: {
     JSON.stringify({ schema: "paperclip.native-session-handoff.v1", issueId: input.issueId, generation: input.generation, truncated, omittedEntriesAtLeast: omitted, entries }),
   ].join("\n");
   for (const entry of input.entries) {
-    const clipped = entry.body.length > ENTRY_MAX_CHARS;
     // Preserve both the start and latest direction in exceptionally long messages.
-    const body = clipped ? `${entry.body.slice(0, EXCERPT_HEAD_CHARS)}${EXCERPT_MARKER}${entry.body.slice(-EXCERPT_TAIL_CHARS)}` : entry.body;
+    const clipped = entry.body.length > ENTRY_MAX_CHARS && Array.from(entry.body).length > ENTRY_MAX_CHARS;
+    const body = clipped ? excerptBody(entry.body) : entry.body;
     const bounded = { ...entry, body, truncated: entry.truncated === true || clipped };
     entries.push(bounded);
     truncated ||= bounded.truncated;
