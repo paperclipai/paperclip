@@ -288,22 +288,31 @@ test("export waits a bounded time for outside checks, never for other workflows"
   const head = { ...run, path: ".github/workflows/pr.yml" };
   const check = (completed) => ({ kind: "external_check", app: "greptile-apps", name: "Greptile Review", startedAt: at(1), completedAt: completed ? at(90) : null });
   const pauses = [];
-  const pause = async (ms) => { pauses.push(ms); };
+  let clock = 0;
+  const now = () => clock;
+  const pause = async (ms) => { pauses.push(ms); clock += ms; };
   let loads = 0;
-  const settled = await settledChecks(head, () => [check(++loads >= 3)], { pause });
+  const settled = await settledChecks(head, () => [check(++loads >= 3)], { pause, now });
   assert.equal(settled[0].completedAt, at(90));
   assert.deepEqual(pauses, [30_000, 30_000]);
 
   pauses.length = 0;
-  const stuck = await settledChecks(head, () => [check(false)], { pause, waitMs: 90_000 });
+  const stuck = await settledChecks(head, () => [check(false)], { pause, now, waitMs: 90_000 });
   assert.equal(stuck[0].completedAt, null);
   assert.deepEqual(pauses, [30_000, 30_000, 30_000]);
 
+  // Slow GitHub responses count against the same deadline as the pauses.
   pauses.length = 0;
-  await settledChecks(head, () => [{ ...check(false), kind: "workflow_check" }], { pause });
-  await settledChecks(head, () => [{ ...check(false), startedAt: at(-600) }], { pause });
-  await settledChecks({ ...head, run_attempt: 2, run_started_at: at(0) }, () => [check(false)], { pause });
-  await settledChecks(head, () => [check(false)], { pause, waitMs: 0 });
+  loads = 0;
+  await settledChecks(head, () => { clock += 20_000; loads += 1; return [check(false)]; }, { pause, now, waitMs: 90_000 });
+  assert.deepEqual(pauses, [30_000, 20_000]);
+  assert.equal(loads, 3);
+
+  pauses.length = 0;
+  await settledChecks(head, () => [{ ...check(false), kind: "workflow_check" }], { pause, now });
+  await settledChecks(head, () => [{ ...check(false), startedAt: at(-600) }], { pause, now });
+  await settledChecks({ ...head, run_attempt: 2, run_started_at: at(0) }, () => [check(false)], { pause, now });
+  await settledChecks(head, () => [check(false)], { pause, now, waitMs: 0 });
   assert.deepEqual(pauses, []);
 });
 

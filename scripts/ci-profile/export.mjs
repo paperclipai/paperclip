@@ -50,10 +50,12 @@ export async function sendEvents(events, apiKey, dataset, fetcher = fetch, pause
 // time so the trace records how long they took; whatever is still running
 // after that is reported as pending instead of holding the export open.
 export async function settledChecks(run, load, { waitMs = 15 * 60_000, intervalMs = 30_000,
-  pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+  pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now } = {}) {
+  // The deadline is on the wall clock, so slow GitHub responses count against it.
+  const deadline = now() + waitMs;
   let checks = load();
-  for (let waited = 0; waited < waitMs && pendingChecks(run, checks).length; waited += intervalMs) {
-    await pause(intervalMs);
+  while (now() < deadline && pendingChecks(run, checks).length) {
+    await pause(Math.min(intervalMs, deadline - now()));
     checks = load();
   }
   return checks;
