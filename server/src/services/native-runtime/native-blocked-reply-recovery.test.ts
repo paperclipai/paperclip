@@ -23,7 +23,7 @@ describe.skipIf(!support.supported)("blocked task reply after a retried workspac
   const summary = "Blocked: the deploy key for the staging bucket was revoked. Please re-issue it so I can finish the upload.";
   const finalReply = "I could not finish the upload because the staging deploy key was revoked. Please re-issue it.";
 
-  async function blockedRun(options: { finalReply?: boolean } = {}) {
+  async function blockedRun(options: { finalReply?: boolean; source?: string } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID(), runnerId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Blocked reply fixture", issuePrefix: companyId.slice(0, 8) });
@@ -35,7 +35,7 @@ describe.skipIf(!support.supported)("blocked task reply after a retried workspac
       canonicalSha256: `blocked-${runId}`, createdByActorType: "system", createdByActorId: "test" }).returning();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, nativeSessionId: sessionId,
       runnerInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
-      status: "running", runtimeMode: "native", contextSnapshot: { issueId, source: "assignment" } });
+      status: "running", runtimeMode: "native", contextSnapshot: { issueId, source: options.source ?? "assignment" } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const port = new NativeRunCoordinatorStore(db, { companyId, issueId, runId, agentId, normalizedSessionId: sessionId,
       runnerSourceInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
@@ -95,6 +95,24 @@ describe.skipIf(!support.supported)("blocked task reply after a retried workspac
     expect(await comments(f.issueId)).toEqual([expect.objectContaining({ body: finalReply, createdByRunId: f.runId })]);
     expect(await work.load({ companyId: f.companyId, issueId: f.issueId })).toEqual([]);
     await expect(work.check(entry)).resolves.toBeNull();
+    expect(await comments(f.issueId)).toHaveLength(1);
+  });
+
+  it("presents a channel task's blocker from the worker instead of recording a publication failure", async () => {
+    const f = await blockedRun({ source: "chat:slack" });
+    await retryCopyBack(f.runId, { skipNativeResponsePresentation: true });
+    expect((await issue(f.issueId)).status).toBe("blocked");
+
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: f.companyId, issueId: f.issueId });
+    expect(entry).toMatchObject({ id: f.runId });
+    await expect(work.check(entry)).resolves.toBeNull();
+    expect(await comments(f.issueId)).toEqual([expect.objectContaining({ body: summary, createdByRunId: f.runId })]);
+    const result = (await run(f.runId)).resultJson as Record<string, any>;
+    expect(result.presentationDecision).toMatchObject({ commentId: expect.any(String) });
+    expect(result.responsePublication?.state).not.toBe("failed");
+    expect(await work.load({ companyId: f.companyId, issueId: f.issueId })).toEqual([]);
+    await retryCopyBack(f.runId);
     expect(await comments(f.issueId)).toHaveLength(1);
   });
 

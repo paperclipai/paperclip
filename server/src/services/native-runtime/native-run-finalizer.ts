@@ -1199,21 +1199,22 @@ async function recoverCommittedNativeChatResponseInScope(
         && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
-      if (
-        (!conversation || currentConversation) &&
-        run.status === "succeeded" &&
-        record(run.contextSnapshot).skipIssueComment !== true &&
+      const ordinaryTaskReply = (!conversation || currentConversation) &&
         !isExternalChatPresentationContext(run.contextSnapshot) &&
-        terminal.runTerminalState === "succeeded" &&
-        terminal.turnTerminalState === "completed" &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
           // stage or a blocker holds its task; it still answered the person.
-          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded") ||
-          blockedTaskReply) &&
-        (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
-      ) {
+          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded"));
+      const taskReplyEligible = run.status === "succeeded" &&
+        record(run.contextSnapshot).skipIssueComment !== true &&
+        terminal.runTerminalState === "succeeded" &&
+        terminal.turnTerminalState === "completed" &&
+        (ordinaryTaskReply || blockedTaskReply);
+      const replyAuthorization = taskReplyEligible ? await resolveChatRunPresentationAuthorizationReason(tx, input) : null;
+      const externalChatReply = blockedTaskReply &&
+        isExternalChatPresentationContext(run.contextSnapshot, replyAuthorization === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
+      if (taskReplyEligible && replyAuthorization && (blockedTaskReply || replyAuthorization === "internal_agent_write")) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
             eq(heartbeatRunEvents.companyId, input.companyId),
@@ -1257,6 +1258,7 @@ async function recoverCommittedNativeChatResponseInScope(
           interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
+          preferFinalResponseOverExistingComment: externalChatReply,
         });
         if (resolved.decision.commentAction === "reuse" && typeof resolved.decision.commentId === "string") {
           // The reply is already on the task (for example, the live path wrote
@@ -1286,7 +1288,7 @@ async function recoverCommittedNativeChatResponseInScope(
         await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id },
-          { authorizationReason: "internal_agent_write", completionReply: true }, tx);
+          { authorizationReason: replyAuthorization, completionReply: true }, tx);
         await tx.update(heartbeatRuns).set({
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
             presentationDecision: { ...resolved.decision, commentId: comment.id,
