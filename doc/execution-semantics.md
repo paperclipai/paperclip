@@ -1697,7 +1697,7 @@ or the exact provenance inside its verified committed saved snapshot. The latter
 uses one temporary read-only archive verification per preparation when needed.
 Task relationships alone do not authorize importing or retaining files.
 
-When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. One-run Retry and Interrupt intents retain their separate admission contracts; they are not renewable user-message authority. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
+When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. Chat, queued-message and fresh-workspace Retries, failed-run retries, and Interrupt intents retain their separate one-run admission contracts; they are not renewable authority. A plain task Retry that continues in the saved workspace renews the same way: the successor's receipt names the same Retry request and actor, while the Retry request stays bound to the run it admitted. A graceful server shutdown (an upgrade or restart, `server_shutdown_interrupted`) that stops such a turn while it is still preparing, with bootstrap evidence that provider work did not start, is not a failure: the original user authorization still covers the work, so the turn continues automatically in the uncharged `interrupted_preparation` lane (or `server_restart` once its failure budget is spent) with its own receipt. When a release without this rule refused that continuation and released the task's claim, the stranded-task sweep restores the claim to the stopped run and admits the continuation once; it refuses when another run holds the claim. All other checks still apply: a changed assignee or Retry actor, a cancelled or completed task, newer or live work on the task, a revoked or missing receipt, a different interruption cause, and a turn whose provider work started keep refusing. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
 
 Explicit retry admission checks the local parent adapter controller and verified environment cleanup. The existing queue-first release policy may retain only its own terminal execution claim while that cleanup is pending; finalization and the periodic stale-lock sweep reconsider the same policy after cleanup. Generic terminal-lock cleanup and stale checkout adoption leave these claims for that settlement. New user input, reassignment, and a successor's claim take precedence. Exhausted retries and revoked or missing authorization release the terminal claim without requesting another retry. Pending or failed environment cleanup cannot mint a successor receipt.
 
@@ -1753,7 +1753,13 @@ The runtime's own cleanup after a failed turn start or a failed event stream
 (for example `runnerd did not report the provider turn identity` or the
 execution timeout) revokes the turn's output but is not a Stop, so it keeps the
 Runner for the same-run reattachment too. A protocol integrity fault, which
-needs an operator, still stops the Runner.
+needs an operator, still stops the Runner. A reattachment after a restart whose recovery read
+times out or loses its transport (for example
+`PRP command session.snapshot timed out`) detaches from the Runner the same way a server restart does: it sends no turn
+stop and no suspend and does not signal the process. The Runner and its
+in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
+recovery deadline), any identity or authority refusal, any other recovery
+failure, and a protocol integrity fault still stop it.
 
 A remote native run can lose its original runner or sandbox before reattachment.
 This happens after a server restart, and for a same-run retry after a turn ends
@@ -3366,6 +3372,29 @@ lease retains its recorded working directory, since optional provider metadata
 can describe the allocation root. A resume setup failure preserves the retained
 sandbox and saved work. Plugin task reattachment remains with its task owner.
 
+When restart recovery reconnects a run to its own retained remote Runner
+(`reattach_remote_runner`, matching run and lease owner), and the run has its
+admitted native input with a runtime context and its saved skill versions,
+preparation reuses those exact skill versions instead of downloading them again.
+The Runner already holds their files. The server still checks that each saved
+version exists and that the agent can still read the skill. It does not
+materialize the files or take the company skill cache lock, so a burst of
+reattachments after an upgrade does not queue behind other runs' skill downloads
+on a server whose cache is empty. The run log records the
+`heartbeat.prepare.configuration_skills_adopted` phase and a lifecycle event with
+payload `skillPreparation: "reused_admitted"`. Every other start, including a
+dead-Runner resume and a run saved by an older release without saved skill
+versions or a runtime context, prepares its skills as before. The Runner
+controller follows the same rule for the same reconnect: it describes the
+Runner's skills by their admitted digests and rehydrates the pinned skill files
+on this server only if it must launch a Runner process and stage them again.
+The digest checks then run as before. It defers only when every admitted skill
+is pinned to its exact version in the run's saved selection, which preparation
+has just checked for access. An older run without that selection rehydrates
+first, so revoked access still stops the reconnect. The session
+configuration fingerprint is unchanged, because it uses each skill's key,
+runtime name, and version, not its local path.
+
 After a remote sandbox session passes provider recovery and durable run admission,
 its local suspension receipt is removed. This applies to built-in sandbox runners
 and plugin tasks. The running session then owns authority;
@@ -3531,6 +3560,25 @@ proof that failed, for example
 reason uses only fixed lists of known names: command types, command statuses,
 owner phases, recovery states, lifecycle states, and fence reasons. Any other
 stored value appears as `other`. The reason never includes payloads or paths.
+
+Live adoption of a warm Runner on a resumed sandbox names its failed proof as
+`warm_recovery_refused=<reason>`, for example `journal_unsettled`,
+`owner_changed` or `current_lease_changed`. After the predecessor's run row
+proves `succeeded` and its coordinator proves `committed` with an accepted
+result and no lease, such a refusal does not fail the task. The new run did no
+provider work, so it fails with `native_predecessor_retirement_unproven` and
+its next attempt starts on a fresh sandbox restored from the saved workspace,
+under the same safety rules as any unretired predecessor. This covers a server
+that was killed after a run parked on a question: its warm Runner stays `ready`
+in the sandbox, and only the killed server could have adopted it. A refusal
+because the new run itself is no longer admitted (stopped, reassigned, paused
+or no longer owned by this controller) stays an ordinary failure.
+
+A follow-up on a warm session starts with its predecessor's Runner process
+identity. That inherited identity alone does not count as a process of the
+follow-up when it proves that it left the workspace unchanged. The identity
+must equal a settled predecessor's identity of the same session, and the
+follow-up must have no `native.process_identity_recorded` event of its own.
 
 Resume source selection skips a failed follow-up that never started provider
 work. Such a run holds only the provider checkpoint that it inherited. Without
