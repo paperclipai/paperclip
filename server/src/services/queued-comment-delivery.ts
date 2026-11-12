@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
 /** The wake reason an inbound chat message records (see chat inbound wakeups). */
 export const EXTERNAL_CHAT_MESSAGE_WAKE_REASON = "External chat message received";
@@ -41,9 +42,33 @@ export async function deliveredQueuedCommentIds(tx: Pick<Db, "select">, input: {
             jsonb_build_object('id', ${issueComments.id}::text))
           or jsonb_path_exists(delivered_run.context_snapshot, '$.paperclipWake.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text)))))
-    or ${firstTurnDeliveredSql(companyId, issueId, input.agentId)})`,
+    or ${firstTurnDeliveredSql(companyId, issueId, input.agentId)}
+    or ${historyReadDeliveredSql(companyId, issueId, input.agentId)})`,
   ));
   return new Set(rows.map(row => row.id));
+}
+
+export const TASK_HISTORY_READ_EVENT = "task_history.read";
+
+export async function recordTaskHistoryRead(db: Db, input: {
+  companyId: string; agentId: string; runId: string; comments: ReadonlyArray<{ id: string; updatedAt: Date }>;
+}): Promise<void> {
+  if (input.comments.length === 0) return;
+  await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
+    eventType: TASK_HISTORY_READ_EVENT, stream: "system", level: "info",
+    payload: { comments: Object.fromEntries(input.comments.map(comment => [comment.id, comment.updatedAt.toISOString()])) } });
+}
+
+function historyReadDeliveredSql(companyId: string, issueId: string, agentId: string) {
+  return sql`exists (select 1 from ${heartbeatRuns} reading_run
+      join ${heartbeatRunEvents} history_read on history_read.run_id = reading_run.id
+      where reading_run.company_id = ${companyId} and reading_run.agent_id = ${agentId}
+        and reading_run.status = 'succeeded'
+        and (reading_run.native_issue_id = ${issueId} or reading_run.context_snapshot->>'issueId' = ${issueId})
+        and history_read.company_id = ${companyId}
+        and history_read.event_type = ${TASK_HISTORY_READ_EVENT}
+        and (history_read.payload->'comments'->>${issueComments.id}::text)::timestamptz
+          >= date_trunc('milliseconds', ${issueComments.updatedAt}))`;
 }
 
 /**
