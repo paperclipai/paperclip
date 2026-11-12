@@ -55,7 +55,7 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
 import { syncPluginTaskCredentialHandoff, registerPluginTaskCredentialHandoff } from "../plugin-task-credential-writeback.js";
 import { resolvePluginTaskResume, type PluginTaskDescription } from "../environment-task-runtime.js";
-import { readyPortableTaskSource, unlaunchedPortableTaskLease } from "../plugin-task-ownership.js";
+import { assertAttachedPortableTask, readyPortableTaskSource, unlaunchedPortableTaskLease } from "../plugin-task-ownership.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
@@ -279,7 +279,7 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
-import { NATIVE_PROVIDER_SIDE_EFFECT_PENDING, NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { NATIVE_PROVIDER_SIDE_EFFECT_PENDING, NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContextsMatch, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { clearRunProviderStateUnsaved, markAcceptedRunProviderStateUnsaved } from "./native-provider-state-unsaved.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -6248,6 +6248,29 @@ async function recordPriorOwnerFenceRefusal(input: { db: Db; execution: NativeEx
   }).catch(() => undefined);
 }
 
+async function assertPluginTaskReattachmentBinding(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  restartRecovery?: NativeRestartRecoveryClaim;
+}, target: Extract<AdapterExecutionTarget, { kind: "remote" }>, identity: Record<string, unknown> | null | undefined) {
+  const claim = input.restartRecovery;
+  const leaseId = target.leaseId;
+  if (claim?.kind !== "reattach_remote_runner" || claim.remote.kind !== "plugin_task" ||
+      claim.runId !== input.execution.binding.runId || !leaseId || claim.remote.leaseId !== leaseId ||
+      !identity || !durableIdentityMatchesExecution(identity, input.execution) ||
+      typeof identity.turnId !== "string" || !identity.turnId || typeof identity.itemId !== "string" || !identity.itemId) {
+    throw new Error("native_plugin_recovery_lease_mismatch");
+  }
+  const taskId = target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined;
+  if (identity.environmentLeaseId !== leaseId) {
+    if (!taskId) throw new Error("native_plugin_recovery_lease_mismatch");
+    await assertAttachedPortableTask(input.db, {
+      companyId: input.execution.binding.companyId, leaseId, taskId, runId: claim.runId, identity,
+    });
+  }
+  return taskId;
+}
+
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -6370,12 +6393,12 @@ async function migrateRunnerdStateRootForExecution(input: {
     if (input.restartRecovery?.kind === "reattach_remote_runner") {
       if (input.restartRecovery.remote.kind === "plugin_task") {
         const target = input.runnerExecutionTarget;
-        if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask
-          || target.leaseId !== input.restartRecovery.remote.leaseId || identity.environmentLeaseId !== target.leaseId
-          || !durableIdentityMatchesExecution(identity, input.execution)) {
+        if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) {
           throw new Error("native_plugin_recovery_lease_mismatch");
         }
-        await verifyPluginRunnerTaskReattachment(target.runnerTask, identity);
+        const taskId = await assertPluginTaskReattachmentBinding(input, target, identity);
+        await verifyPluginRunnerTaskReattachment(operation => target.runnerTask!(operation,
+          taskId ? { expectedTaskId: taskId } : undefined), identity);
         return;
       }
       try {
@@ -7251,6 +7274,19 @@ function nativeSessionConfigDigest(
       }),
     )
     .digest("hex")}`;
+}
+
+function matchesRemoteWarmExecution(
+  previous: NativeExecutionInput,
+  current: NativeExecutionInput,
+  toolRefreshOnResume?: boolean,
+): boolean {
+  if (nativeSessionScopeKey(previous) !== nativeSessionScopeKey(current)) return false;
+  const currentDigest = nativeSessionConfigDigest(current, "remote");
+  if (nativeSessionConfigDigest(previous, "remote") === currentDigest) return true;
+  return toolRefreshOnResume === true && "runtimeContext" in previous && "runtimeContext" in current &&
+    nativeRuntimeContextsMatch(previous.runtimeContext, current.runtimeContext, toolRefreshOnResume) &&
+    nativeSessionConfigDigest({ ...previous, runtimeContext: current.runtimeContext }, "remote") === currentDigest;
 }
 
 export function nativeControllerMigrationDescriptor(execution: NativeExecutionInput, recordedToolContractFingerprint: unknown) {
@@ -10175,6 +10211,7 @@ export async function executePaperclipNativeSession(input: {
   getFreshSessionHandoff?: () => Promise<string | null>;
   /** Retire a retained transport so recovery can replace provider tool declarations. */
   refreshTools?: boolean;
+  toolRefreshOnResume?: boolean;
   db: Db;
   execution: NativeExecutionInput;
   /** Private server preparation proof; never persisted or accepted from a tool. */
@@ -10835,8 +10872,7 @@ async function executePaperclipNativeSessionAttempt(
         readControlState: () => record(JSON.parse(readBoundedNativeFile(
           resolve(root, "control-plane", "control-plane-state.json"), NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
           "runner_durable_identity_too_large").toString("utf8"))),
-        matchesExecution: previous => nativeSessionScopeKey(previous) === nativeSessionScopeKey(input.execution) &&
-          nativeSessionConfigDigest(previous, "remote") === nativeSessionConfigDigest(input.execution, "remote"),
+        matchesExecution: previous => matchesRemoteWarmExecution(previous, input.execution, input.toolRefreshOnResume),
         loadCheckpoint: previous => {
           if (!portableSource) {
             const proof = releasedWarmRunner(readWarmNativeEnvelope(previous));
@@ -10844,7 +10880,8 @@ async function executePaperclipNativeSessionAttempt(
           }
           return loadWarmNativeCheckpoint(previous, nativeSessionConfigDigest(previous, "remote"), "remote");
         },
-        canReuseProcess: previous => !portableSource && !needsCoreGitHubAccess(input) && canReuseNativeProcess(input,
+        canReuseProcess: previous => !portableSource && !needsCoreGitHubAccess(input) &&
+          nativeSessionConfigDigest(previous, "remote") === nativeSessionConfigDigest(input.execution, "remote") && canReuseNativeProcess(input,
           record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
             NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
       }) ?? undefined;
@@ -12120,9 +12157,9 @@ async function executePaperclipNativeSessionAttempt(
           remoteWarmRecovery.previousExecution.binding, scopedRunnerdStateRoot(input.execution),
           nativeSessionKey(input.execution));
         if (!suspendedController) throw new Error("native_runner_checkpoint_missing_after_suspension");
-        persistWarmNativeCheckpoint(remoteWarmRecovery.previousExecution,
-          nativeSessionConfigDigest(remoteWarmRecovery.previousExecution, "remote"), await recovered.session.snapshot());
-        persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest!, "remote");
+        const verifiedConfigDigest = nativeSessionConfigDigest(remoteWarmRecovery.previousExecution, "remote");
+        persistWarmNativeCheckpoint(remoteWarmRecovery.previousExecution, verifiedConfigDigest, await recovered.session.snapshot());
+        persistedWarmSession = loadWarmNativeCheckpoint(input.execution, verifiedConfigDigest, "remote");
         runnerdBackend = await createRunnerdBackend({
           ...input,
           pluginTaskDescription: undefined,
@@ -15641,6 +15678,7 @@ export function remoteCheckpointIncompleteFailure(
 export async function createRunnerdBackend(input: {
   executionContext?: NativeExecutionContext;
   casesEnabled?: boolean;
+  toolRefreshOnResume?: boolean;
   db: Db;
   providerPackAdmissionSource?: NativeProviderPackAdmissionSource;
   controllerPersistence?: { bootId: string; runnerArtifact?: { version: string; digest: string } };
@@ -16059,8 +16097,10 @@ async function createRunnerdBackendWithinSessionClaim(
   const recoveryUsage = input.onAccountingEvent && recoveryUsageIdentity
     ? createNativeRecoveryUsageDelivery({
         db: input.db, execution: input.execution, sourceIdentity: { ...recoveryUsageIdentity },
-        matchesExecution: previous => nativeSessionScopeKey(previous) === nativeSessionScopeKey(input.execution) &&
-          nativeSessionConfigDigest(previous, target.kind) === nativeSessionConfigDigest(input.execution, target.kind),
+        matchesExecution: previous => input.remoteWarmRecovery
+          ? matchesRemoteWarmExecution(previous, input.execution, input.toolRefreshOnResume)
+          : nativeSessionScopeKey(previous) === nativeSessionScopeKey(input.execution) &&
+            nativeSessionConfigDigest(previous, target.kind) === nativeSessionConfigDigest(input.execution, target.kind),
       })
     : undefined;
   const accountingTransportOptions = {
@@ -16116,6 +16156,9 @@ async function createRunnerdBackendWithinSessionClaim(
     const { root, durableIdentity, durableBinding } = durableState ??= readDurableState();
     const provider = input.execution.provider;
     if (provider.kind !== "codex" && provider.kind !== "opencode" && provider.kind !== "acpx") throw new Error("Plugin Runner tasks require a workspace harness");
+    if (input.restartRecovery?.kind === "reattach_remote_runner") {
+      await assertPluginTaskReattachmentBinding(input, remoteTarget, durableBinding ? durableIdentity : null);
+    }
     let priorDescription = input.pluginTaskDescription?.taskId === remoteTarget.sandboxLeaseAcquisition?.providerLeaseId
       ? input.pluginTaskDescription : undefined;
     if (remoteTarget.sandboxLeaseAcquisition?.outcome === "resumed" && !durableBinding && !input.retainedPluginTaskOwner && !input.remoteWarmRecovery) {
@@ -16144,9 +16187,7 @@ async function createRunnerdBackendWithinSessionClaim(
       normalizedSessionId: input.remoteWarmRecovery.identity.normalizedSessionId,
       turnId: input.remoteWarmRecovery.identity.turnId, itemId: input.remoteWarmRecovery.identity.itemId,
     } : undefined;
-    if (input.restartRecovery?.kind === "reattach_remote_runner" && (!prior || !prior.turnId || !prior.itemId || prior.environmentLeaseId !== remoteTarget.leaseId)) {
-      throw new Error("native_plugin_recovery_lease_mismatch");
-    }
+
     const resumeFrom = !retainedOwner && !adopting && prior && prior.environmentLeaseId !== remoteTarget.leaseId
       ? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: remoteTarget.leaseId!, priorIdentity: prior }) : undefined;

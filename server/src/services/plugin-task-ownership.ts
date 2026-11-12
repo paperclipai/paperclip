@@ -232,8 +232,7 @@ export async function readPortableTaskReseed(db: Db, input: {
   return { description, reseed: { previousSessionId: typeof sessionId === "string" && sessionId.trim() ? sessionId : null } };
 }
 
-export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown,
-  scope: { attachedRunId?: string; accountIdentity?: string } = {}) {
+async function readReadyPortableTaskClaim(db: Db, companyId: string, targetLeaseId: string) {
   const [target] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
     eq(environmentLeases.id, targetLeaseId)));
   if (!target?.metadata?.portableTaskPredecessor) return undefined;
@@ -251,20 +250,45 @@ export async function readyPortableTaskSource(db: Db, companyId: string, targetL
   if (!source || source.provider !== target.provider || source.providerLeaseId !== operation.data.sourceTaskId ||
       leaseGeneration(source) !== operation.data.sourceGeneration ||
       nativeSha256(source.metadata?.portableTaskSuccessor ?? null) !== nativeSha256(claim)) return unavailable();
+  return { source, target, operation: operation.data };
+}
+
+function matchesAttachedPortableTaskIdentity(
+  target: Lease, operation: OwnershipOperation, identity: Record<string, unknown>, runId: string,
+) {
+  const saved = object(target.metadata?.runnerTaskIdentity);
+  const attached = {
+    runnerInstanceId: saved.runnerId, environmentLeaseId: saved.leaseId,
+    runId: saved.runId, normalizedSessionId: saved.sessionId, turnId: saved.turnId, itemId: saved.itemId,
+  };
+  return target.heartbeatRunId === runId && identity.runId === runId &&
+    operation.identity.environmentLeaseId === identity.environmentLeaseId &&
+    operation.identity.runnerInstanceId === identity.runnerInstanceId &&
+    operation.identity.normalizedSessionId === identity.normalizedSessionId &&
+    Object.entries(attached).every(([key, value]) => typeof value === "string" && value.length > 0 && identity[key] === value);
+}
+
+export async function assertAttachedPortableTask(db: Db, input: {
+  companyId: string; leaseId: string; taskId: string; runId: string; identity: Record<string, unknown>;
+}) {
+  const claim = await readReadyPortableTaskClaim(db, input.companyId, input.leaseId);
+  if (!claim || claim.target.providerLeaseId !== input.taskId ||
+      !matchesAttachedPortableTaskIdentity(claim.target, claim.operation, input.identity, input.runId)) return unavailable();
+}
+
+export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown,
+  scope: { attachedRunId?: string; accountIdentity?: string } = {}) {
+  const claim = await readReadyPortableTaskClaim(db, companyId, targetLeaseId);
+  if (!claim) return undefined;
+  const { source, target, operation } = claim;
   if ("accountIdentity" in scope && (!scope.accountIdentity || source.metadata?.runnerTaskAccountIdentity !== scope.accountIdentity))
     return unavailable();
   const candidate = object(identity);
   const { attachedRunId } = scope;
   if (attachedRunId && target.heartbeatRunId === attachedRunId && candidate.runId === attachedRunId) {
-    const saved = object(target.metadata.runnerTaskIdentity);
-    const attachedIdentity = {
-      runnerInstanceId: saved.runnerId, environmentLeaseId: saved.leaseId,
-      runId: saved.runId, normalizedSessionId: saved.sessionId, turnId: saved.turnId, itemId: saved.itemId,
-    };
-    if (Object.entries(attachedIdentity).every(([key, value]) =>
-      typeof value === "string" && value.length > 0 && candidate[key] === value)) return undefined;
+    if (matchesAttachedPortableTaskIdentity(target, operation, candidate, attachedRunId)) return undefined;
     return unavailable();
   }
-  if (Object.entries(operation.data.identity).some(([key, value]) => candidate[key] !== value)) return unavailable();
-  return { taskId: operation.data.sourceTaskId, identity: operation.data.identity };
+  if (Object.entries(operation.identity).some(([key, value]) => candidate[key] !== value)) return unavailable();
+  return { taskId: operation.sourceTaskId, identity: operation.identity };
 }

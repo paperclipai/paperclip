@@ -25,6 +25,7 @@ import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-s
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
 import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
+import * as runner from "../../vendor/paperclip-runner/index.js";
 import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "../runner-environment-lifecycle.js";
 import { reserveRunBudget } from "../budget-reservations.js";
@@ -675,10 +676,14 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   });
 
   it("restores the immutable admitted input and saved checkpoint when newer context arrives", async () => {
+    using discovery = vi.spyOn(runner, "describeRunnerdNativeSessionBackend");
     const { input, run } = await fixture();
     const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect(selected.toolRefreshOnResume).toBe(true);
+    expect(discovery).toHaveBeenCalledTimes(1);
     const saved = await read(run.id);
+    expect(saved.runnerProfileJson?.nativeToolRefreshOnResume).toBe(true);
     const profile = { ...saved.runnerProfileJson, sessionCheckpoint: { retained: "checkpoint" } };
     await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, run.id));
     input.run = await read(run.id);
@@ -688,11 +693,13 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     input.task.safeWakeComments = [{ id: randomUUID(), body: "New direction belongs to a separate wake" }];
     vi.mocked(buildNativeRuntimeContext).mockClear();
     const resumed = await selectHeartbeatRuntime(db, input);
-    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId });
+    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId,
+      toolRefreshOnResume: true });
     expect((await read(run.id)).runnerProfileJson).toMatchObject(profile);
     expect(await db.select().from(completionContracts)).toHaveLength(1);
     expect(await coordinators(run.id)).toHaveLength(1);
     expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+    expect(discovery).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an admitted input bound to another run without replacing the saved runtime", async () => {

@@ -1291,7 +1291,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     let acquisitions = 0;
     const call = vi.fn(async (_plugin: string, method: string) => {
       if (method === "environmentAcquireLease") return { providerLeaseId: `sandbox-${++acquisitions}`,
-        metadata: mode === "legacy resume" ? {} : { ownershipGeneration: `generation-${acquisitions}` } };
+        metadata: { ownershipGeneration: `generation-${acquisitions}` } };
       if (method === "environmentResumeLease") return { providerLeaseId: "sandbox-1", metadata: {} };
       if (method === "environmentReleaseLease") return { providerLeaseId: "sandbox-1", state: "stopped" };
       throw new Error(`Unexpected plugin method: ${method}`);
@@ -1307,6 +1307,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const first = await orchestrator.acquireForRun({ ...acquisitionInput, heartbeatRunId: seeded.runId });
     await db.update(environmentLeases).set({ status: "retained", metadata: {
       ...first.lease.metadata, runnerTaskIdentity: { sessionId },
+      ...(mode === "legacy resume" ? {} : { runnerTaskAccountIdentity: "test-account" }),
     } }).where(eq(environmentLeases.id, first.lease.id));
     const nextInput = { ...acquisitionInput, heartbeatRunId: nextRunId, runnerTaskResumeSessionId: resumeSession ? sessionId : null };
     const next = await orchestrator.acquireForRun(nextInput);

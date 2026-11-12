@@ -14018,13 +14018,15 @@ describe("native warm session supervision", () => {
     { name: "rotated provider key", firstEnvironment: { OPENAI_API_KEY: "fixture-key" }, secondEnvironment: { OPENAI_API_KEY: "fixture-rotated-key" }, reuse: false },
     { name: "rotated Claude token", firstEnvironment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-token" }, secondEnvironment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-rotated-token" }, reuse: false },
     { name: "tool refresh", refreshTools: true, reuse: false },
+    { name: "unsupported tool refresh", refreshTools: true, unsupportedRefresh: true, reuse: false },
     { name: "network access change", firstEnvironment: { PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" }, secondEnvironment: { PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" }, reuse: false },
     { name: "run-scoped environment broker", firstEnvironment: { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" }, secondEnvironment: { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" }, reuse: false },
     { name: "Core-hosted GitHub access", managedGitHub: true, reuse: true, adoptionReuse: false },
   ] as Array<{ name: string; firstEnvironment?: Record<string, string>; secondEnvironment?: Record<string, string>;
-    refreshTools?: boolean; managedGitHub?: boolean; reuse: boolean; adoptionReuse?: boolean }>)(
+    refreshTools?: boolean; unsupportedRefresh?: boolean; managedGitHub?: boolean; reuse: boolean; adoptionReuse?: boolean }>)(
     "decides warm and adopted process reuse from one key: $name",
-    async ({ name, firstEnvironment = {}, secondEnvironment = {}, refreshTools, managedGitHub = false, reuse, adoptionReuse = reuse }) => {
+    async ({ name, firstEnvironment = {}, secondEnvironment = {}, refreshTools, unsupportedRefresh = false,
+      managedGitHub = false, reuse, adoptionReuse = reuse }) => {
       const decisions: Record<string, boolean> = {};
       for (const path of ["warm", "adoption", ...(refreshTools ? ["portable", "portable-bootstrap", "legacy-plugin"] as const : [])] as const) {
         const portable = path === "portable" || path === "portable-bootstrap";
@@ -14040,12 +14042,20 @@ describe("native warm session supervision", () => {
         const scope = `${path}-${name.replaceAll(" ", "-")}`;
         const first = {
           ...execution,
+          ...(pluginRecovery ? { schema: "paperclip.native-execution-input.v5", executionMode: "default",
+            provider: { ...execution.provider, approvalPolicy: "never" }, planningContext: null, runtimeContext: nativeRuntimeContextFixture() } as const : {}),
           binding: { ...execution.binding, runId: `run-reuse-key-first-${scope}`, executionWorkspaceId: "workspace-reuse-key" },
           workspace: { cwd: "/tmp/runnerd-reuse-key", repoUrl: null, repoRef: null, branchName: null },
           session: { normalizedSessionId: `session-reuse-key-${scope}`, driverKind: "codex_app_server" as const,
             protocolVersion: 1 as const, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
-        } as NativeExecutionInputV1;
-        const second = { ...first, binding: { ...first.binding, runId: `run-reuse-key-second-${scope}` } } as NativeExecutionInputV1;
+        } as NativeExecutionInput;
+        if (pluginRecovery) parseNativeExecutionInput(first);
+        const second = { ...first, binding: { ...first.binding, runId: `run-reuse-key-second-${scope}` } };
+        if ("runtimeContext" in second) {
+          second.runtimeContext = structuredClone(second.runtimeContext);
+          second.runtimeContext.mcp.digest = "1".repeat(64);
+          second.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(second.runtimeContext);
+        }
         const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: "environment-reuse-key",
           remoteCwd: "/home/daytona/paperclip-workspace", runner: { execute: vi.fn() } };
         const firstSession = { close: vi.fn(async () => undefined) };
@@ -14072,6 +14082,15 @@ describe("native warm session supervision", () => {
           const reuseProcess = request.canReuseProcess(first);
           if (pluginRecovery) {
             expect(reuseProcess).toBe(false);
+            expect(request.matchesExecution(first)).toBe(!unsupportedRefresh);
+            if (unsupportedRefresh) throw new Error("fixture unsupported tool refresh refused");
+            expect(request.matchesExecution({ ...first, provider: { ...first.provider, model: "another-model" } } as NativeExecutionInput)).toBe(false);
+            if ("runtimeContext" in first) {
+              const changed = structuredClone(first);
+              changed.runtimeContext.instructions.bundle.digest = "2".repeat(64);
+              changed.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(changed.runtimeContext);
+              expect(request.matchesExecution(changed)).toBe(false);
+            }
             const checkpoint = request.loadCheckpoint(first);
             expect(checkpoint?.identity.runId).toBe(first.binding.runId);
             recoveredSession.snapshot.mockResolvedValue(checkpoint);
@@ -14158,7 +14177,7 @@ describe("native warm session supervision", () => {
             return select(fields as never);
           }) as Db["select"];
           const continuation = executePaperclipNativeSession({
-            db, execution: second, runnerInstanceId: "runner-reuse-key", useRunnerd: true, managedGitHub, refreshTools,
+            db, execution: second, runnerInstanceId: "runner-reuse-key", useRunnerd: true, managedGitHub, refreshTools, toolRefreshOnResume: !unsupportedRefresh,
             runnerExecutionTarget: (pluginRecovery ? portableTarget : target) as never,
             ...(leaseOwner ? { leaseOwner, restartRecovery: { kind: "bootstrap_incomplete" as const, runId: second.binding.runId,
               leaseOwner, controllerGeneration: 1, providerAttempt: 0, restartKind: "hard" as const, recoveryRequestId: null,
@@ -14166,6 +14185,10 @@ describe("native warm session supervision", () => {
             ...(pluginRecovery ? { pluginTaskDescription, runnerIngressAuthorized: true, managedAiCredentialHome: stateBase,
               managedAiAccountIdentity: "fixture-account", managedAiCredentialIdentity: "current-revision" } : {}),
             runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...secondEnvironment } });
+          if (pluginRecovery && unsupportedRefresh) {
+            await expect(continuation).rejects.toThrow("fixture unsupported tool refresh refused");
+            continue;
+          }
           if (path === "legacy-plugin") {
             await expect(continuation).rejects.toThrow("fixture replacement inspection reached");
             expect(portableTarget.runnerTask).toHaveBeenCalledOnce();
@@ -14193,7 +14216,7 @@ describe("native warm session supervision", () => {
           await rm(stateBase, { recursive: true, force: true });
         }
       }
-      expect(decisions).toEqual({ warm: reuse, adoption: adoptionReuse, ...(refreshTools ? { portable: true, "portable-bootstrap": true } : {}) });
+      expect(decisions).toEqual({ warm: reuse, adoption: adoptionReuse, ...(refreshTools && !unsupportedRefresh ? { portable: true, "portable-bootstrap": true } : {}) });
     },
   );
 
@@ -17898,8 +17921,9 @@ describe("runnerd provider runtime wiring", () => {
     } finally { resume.mockRestore(); }
   });
 
-  it.each(["verified", "wrong-state", "wrong-lease"] as const)("reattaches a surviving plugin task through its owner: %s", async mode => {
+  it.each(["verified", "portable", "wrong-claim", "wrong-state", "wrong-lease"] as const)("reattaches a surviving plugin task through its owner: %s", async mode => {
     const current = scopedNativeExecution(`plugin-live-${mode}`);
+    const moved = mode === "portable" || mode === "wrong-claim";
     const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
       runnerInstanceId: "plugin-runner", environmentLeaseId: "same-task-lease", turnId: "admitted-turn", itemId: "admitted-item" };
     const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
@@ -17915,24 +17939,35 @@ describe("runnerd provider runtime wiring", () => {
         runner: { version: "new-artifact", digest: `sha256:${"b".repeat(64)}` } };
     });
     state.createBackend.mockClear(); state.createTransport.mockClear();
-    const backend = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
-      runnerIngressAuthorized: true, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".",
-        leaseId: mode === "wrong-lease" ? "replacement-task" : identity.environmentLeaseId, runnerTask: task },
-      controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-artifact", digest: `sha256:${"a".repeat(64)}` } },
-      restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId, leaseOwner: "controller", controllerGeneration: 2,
-        providerAttempt: 1, restartKind: "hard", recoveryRequestId: null, remote: { kind: "plugin_task", leaseId: identity.environmentLeaseId } } });
-    if (mode !== "verified") {
-      await expect(backend).rejects.toThrow(mode === "wrong-state" ? "adoption identity mismatch" : "recovery_lease_mismatch");
-      expect(state.createBackend).not.toHaveBeenCalled();
-      return;
-    }
-    await backend;
-    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
-    const options = state.createTransport.mock.calls.at(-1)![0];
-    expect(options).toMatchObject({ prpIdentity: identity, adoptExistingRunner: { pid: null, startedAt: null },
-      runnerArtifact: { version: "admitted-artifact" } });
-    expect(options).toMatchObject({ runnerReconnectGraceMs: 420_000 });
-    expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop"].includes(op.kind))).toBe(false);
+    const portable = moved ? vi.spyOn(pluginTaskOwnership, "assertAttachedPortableTask")
+      .mockImplementation(async () => {
+        if (mode === "wrong-claim") throw new Error("native_portable_task_ownership_unverified");
+      }) : undefined;
+    const leaseId = moved ? "moved-task-lease" : identity.environmentLeaseId;
+    try {
+      const backend = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
+        runnerIngressAuthorized: true, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".",
+          leaseId: mode === "wrong-lease" ? "replacement-task" : leaseId, runnerTask: task,
+          ...(moved ? { sandboxLeaseAcquisition: { outcome: "resumed" as const, providerLeaseId: "same-task" } } : {}) },
+        controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-artifact", digest: `sha256:${"a".repeat(64)}` } },
+        restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId, leaseOwner: "controller", controllerGeneration: 2,
+          providerAttempt: 1, restartKind: "hard", recoveryRequestId: null, remote: { kind: "plugin_task", leaseId } } });
+      if (mode !== "verified" && mode !== "portable") {
+        await expect(backend).rejects.toThrow(mode === "wrong-state" ? "adoption identity mismatch" : mode === "wrong-claim" ? "ownership_unverified" : "recovery_lease_mismatch");
+        expect(state.createBackend).not.toHaveBeenCalled();
+        return;
+      }
+      await backend;
+      if (moved) expect(portable).toHaveBeenCalledWith(expect.anything(), {
+        companyId: current.binding.companyId, leaseId, taskId: "same-task", runId: current.binding.runId, identity,
+      });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const options = state.createTransport.mock.calls.at(-1)![0];
+      expect(options).toMatchObject({ prpIdentity: identity, adoptExistingRunner: { pid: null, startedAt: null },
+        runnerArtifact: { version: "admitted-artifact" } });
+      expect(options).toMatchObject({ runnerReconnectGraceMs: 420_000 });
+      expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop"].includes(op.kind))).toBe(false);
+    } finally { portable?.mockRestore(); }
   });
 
   it.each(["codex", "acpx-codex", "grok"] as const)("writes managed %s events through the current warm exporter without per-turn reads", async provider => {

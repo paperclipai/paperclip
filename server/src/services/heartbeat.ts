@@ -3582,6 +3582,7 @@ export function heartbeatService(
             runtimeForAdapter,
             getNativeFreshSessionHandoff,
             pluginTaskDescription: runtimeSelection.pluginTaskDescription,
+            toolRefreshOnResume: runtimeSelection.toolRefreshOnResume,
             getFreshSessionHandoff,
             runOptions,
           },

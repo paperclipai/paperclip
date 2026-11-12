@@ -3545,10 +3545,12 @@ function createPluginEnvironmentDriver(
       if (candidates.length > 1) throw new Error("Ambiguous retained plugin task ownership");
       const previous = candidates[0];
       const previousSessionId = (previous?.metadata?.runnerTaskIdentity as { sessionId?: unknown } | undefined)?.sessionId;
+      const previousAccountIdentity = previous?.metadata?.runnerTaskAccountIdentity;
       const freshPortableSession = driver.sessionHandoffVersion === 1 && input.runnerTaskResumeSessionId !== undefined &&
         (input.runnerTaskResumeSessionId === null || input.runnerTaskResumeSessionId !== previousSessionId);
       const handoffPrevious = !freshPortableSession && driver.sessionHandoffVersion === 1 && previous?.providerLeaseId &&
         previous.metadata?.runnerTaskFingerprint === fingerprint &&
+        typeof previousAccountIdentity === "string" && previousAccountIdentity.trim().length > 0 &&
         typeof (previous.metadata?.providerMetadata as { ownershipGeneration?: unknown } | undefined)?.ownershipGeneration === "string"
         ? previous : undefined;
       let resumed: PluginEnvironmentLease | undefined;

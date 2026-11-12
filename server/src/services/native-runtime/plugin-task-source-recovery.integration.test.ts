@@ -12,11 +12,14 @@ import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
-import { readyPortableTaskSource, reconcilePluginTaskOwnership } from "../plugin-task-ownership.js";
+import { assertAttachedPortableTask, readyPortableTaskSource, reconcilePluginTaskOwnership } from "../plugin-task-ownership.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
+import * as runtimeApi from "../../runtime-api.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { createRunnerdBackend, nativeControllerMigrationDescriptor } from "./native-session-executor.js";
+import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { claimPluginTaskSourceRecovery } from "./plugin-task-source-recovery.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
@@ -212,6 +215,57 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
       .resolves.toEqual({ taskId: "source-task", identity: f.identity });
     await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, f.identity, { ...scope, accountIdentity: "another-account" }))
       .rejects.toThrow("ownership_unverified");
+
+    const binding = { companyId: f.companyId, leaseId: f.leaseId, taskId: "replacement-task", runId: f.runId, identity: nextIdentity };
+    await expect(assertAttachedPortableTask(restarted, binding)).resolves.toBeUndefined();
+    for (const invalid of [
+      { ...binding, leaseId: f.sourceLeaseId },
+      { ...binding, taskId: "source-task" },
+      { ...binding, identity: f.identity },
+      { ...binding, identity: { ...nextIdentity, environmentLeaseId: f.leaseId } },
+    ]) await expect(assertAttachedPortableTask(restarted, invalid)).rejects.toThrow("ownership_unverified");
+
+    if (policy === "ordinary") {
+      const { root: stateDirectory } = nativeControllerMigrationDescriptor(f.execution,
+        nativeToolContractFingerprintForTarget("remote", f.execution.provider.kind));
+      const durable = new DurablePrpControlPlane({ stateDirectory: join(stateDirectory, "control-plane"),
+        identity: nextIdentity, expectedRunnerVersion: description.runner.version, expectedRunnerDigest: description.runner.digest });
+      durable.persistRunAttachTemplate({ provider: { instructions: "Run using the admitted instructions.",
+        runtimeContext: "runtimeContext" in f.execution ? f.execution.runtimeContext : null } });
+      await durable.flushCheckpoint();
+      await durable.stop();
+      const recover = () => createRunnerdBackend({ db: restarted, execution: f.execution,
+        runnerInstanceId: nextIdentity.runnerInstanceId, runnerIngressAuthorized: true,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: f.leaseId,
+          sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "replacement-task" },
+          runnerTask: (operation, options) => executeEnvironmentTask(restarted, f.workers as unknown as PluginWorkerManager, {
+            companyId: f.companyId, leaseId: f.leaseId, operation: environmentTaskOperationSchema.parse(operation),
+            expectedTaskId: options?.expectedTaskId,
+          }),
+        },
+        restartRecovery: { kind: "reattach_remote_runner", remote: { kind: "plugin_task", leaseId: f.leaseId },
+          runId: f.runId, leaseOwner: "successor", controllerGeneration: f.owner.generation + 1,
+          providerAttempt: 1, restartKind: "hard", recoveryRequestId: null },
+      });
+      f.workers.call.mockClear();
+      f.workers.call
+        .mockResolvedValueOnce({ kind: "status", taskId: "replacement-task", phase: "running", executionStopped: false })
+        .mockResolvedValueOnce({ kind: "state", taskId: "replacement-task",
+          state: { schema: "paperclip.runner.durable.state.v1", ...nextIdentity } })
+        .mockResolvedValueOnce({ ...description, launchPreparationVersion: 1, projectAuthCheckVersion: 1 });
+      const api = vi.spyOn(runtimeApi, "resolveLocalRuntimeApiUrl").mockReturnValue("http://127.0.0.1:3100");
+      try { await expect(recover()).resolves.toBeDefined(); }
+      finally { api.mockRestore(); }
+      expect(f.workers.call.mock.calls.map(([, , call]) => [call.taskId, call.operation.kind])).toEqual([
+        ["replacement-task", "status"], ["replacement-task", "read_state"], ["replacement-task", "describe"],
+      ]);
+      await db.update(environmentLeases).set({
+        metadata: sql`${environmentLeases.metadata} - 'portableTaskSuccessor'`,
+      }).where(eq(environmentLeases.id, f.sourceLeaseId));
+      f.workers.call.mockClear();
+      await expect(recover()).rejects.toThrow("ownership_unverified");
+      expect(f.workers.call).not.toHaveBeenCalled();
+    }
   });
 
   it.each(["codex", "claude"] as const)("authorizes the claimed %s source while preserving A's accepted outcome", async provider => {
