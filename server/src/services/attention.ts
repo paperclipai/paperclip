@@ -2710,6 +2710,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0, all: 0 };
       for (const item of enrichedItems) {
         if (obligationLeadOf(item) !== item) continue;
+        if (options.actionableOnly && !isActionableAttention(item)) continue;
         if (item.archivedAt) continue;
         if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
         if (hiddenForViewer(item)) {

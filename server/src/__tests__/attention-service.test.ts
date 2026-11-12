@@ -2111,6 +2111,8 @@ describeEmbeddedPostgres("attention service", () => {
     const tasks = await svc.taskIndex(companyId, options);
     expect(summary.totalCount).toBe(3);
     expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+    expect(summary.viewCounts.all).toBe(3);
+    expect((await svc.summary(companyId, { userId: "board-user" })).viewCounts.all).toBeGreaterThan(3);
     expect(tasks.totalCount).toBe(3);
     expect(tasks.taskIds).toEqual([issueId]);
     expect((await svc.list(companyId, { userId: "board-user" })).items.some(item => item.subject.id === errorAgentId)).toBe(true);
