@@ -28,6 +28,7 @@ import {
   reconcileRetainedNativeSessionCleanups,
 } from "../services/native-runtime/native-finalization-reconciler.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
+import { endSupersededNativeFinalizationRuns } from "../services/native-runtime/native-run-finalizer.js";
 import { assertRetainedNativeSourceArchiveSettled, reconcileRetainedNativeSessionCleanup } from "../services/native-runtime/native-session-executor.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_FINALIZATION_TEST_DATABASE_URL");
@@ -331,6 +332,46 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
       .where(eq(issueRecoveryActions.sourceIssueId, staleIssueId))).resolves.toEqual([
         expect.objectContaining({ status: "resolved", outcome: "false_positive" }),
       ]);
+    // The retired run ends, so it no longer holds the task and its queue.
+    const [ended] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, staleRunId));
+    // Provider work succeeded; the result is kept for reference only.
+    expect(ended).toMatchObject({ status: "succeeded", nativePhase: "terminal_failure", finishedAt: expect.any(Date) });
+  });
+
+  it("ends a run an earlier release left running after retiring its finalizer as superseded", async () => {
+    // The row an earlier release wrote after a failed workspace export: a
+    // terminal superseded coordinator, and the run still running.
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null })
+      .where(eq(heartbeatRuns.id, staleRunId));
+    // Written here, so the case does not depend on the previous test's outcome.
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,
+      failureCode: "native_finalization_superseded", nextAttemptAt: null, failureDetail: { workspaceFinalizeAttempt: 1,
+      originalFailureCode: "native_workspace_sync_out_failed", recoveryOwner: { kind: "none", reason: "newer_native_decision" } } })
+      .where(eq(nativeRunFinalizations.runId, staleRunId));
+    const [issueBefore] = await db.select().from(issues).where(eq(issues.id, staleIssueId));
+    const [coordinatorBefore] = await db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, staleRunId));
+    expect(coordinatorBefore).toMatchObject({ phase: "terminal_failure", failureCode: "native_finalization_superseded" });
+
+    await expect(endSupersededNativeFinalizationRuns(db, [staleRunId])).resolves.toEqual([staleRunId]);
+
+    const [ended] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, staleRunId));
+    expect(ended).toMatchObject({ status: "failed", errorCode: "native_finalization_superseded", finishedAt: expect.any(Date) });
+    expect(ended.error).toBe("A newer run already decided this task, so this run's result was kept for reference and not applied.");
+    // The durable verdict stands: no issue change, no re-applied result.
+    await expect(db.select().from(issues).where(eq(issues.id, staleIssueId))).resolves.toEqual([
+      expect.objectContaining({ status: issueBefore.status, statusVersion: issueBefore.statusVersion,
+        lastStatusDecisionId: issueBefore.lastStatusDecisionId }),
+    ]);
+    await expect(db.select().from(statusDecisions).where(eq(statusDecisions.runId, staleRunId))).resolves.toHaveLength(0);
+    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, staleRunId)))
+      .resolves.toEqual([expect.objectContaining({ phase: "terminal_failure", failureCode: "native_finalization_superseded",
+        resultId: coordinatorBefore.resultId })]);
+    // A second pass finds nothing left to end.
+    await expect(endSupersededNativeFinalizationRuns(db, [staleRunId])).resolves.toEqual([]);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, staleRunId))).resolves.toEqual([
+      expect.objectContaining({ status: "failed" }),
+    ]);
   });
 });
 
