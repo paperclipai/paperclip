@@ -218,6 +218,14 @@ Charge an attempt only on a recorded outcome that proves provider work started. 
 
 The rules from #19720 and #19747 then become one rule over these outcome records, instead of watermark heuristics. The on-demand crash-point suite asserts this at the pre-spawn and pre-accept crash points.
 
+**Crash-loop bound past the generation limit (2026-11-10, approved by Dotta).** Uncharged restarts used to stop at controller generation 12: from then on every restart charged, before the work rule was checked. In a concurrency-3 restart chaos wave one long task saw 12–15 restarts, most caused by other tasks. A restart that hit before the provider accepted any turn was charged, the budget ran out, and a person had to click Retry (wave `w-20261110T183431-s9106`, t03). The rule is now:
+
+- Each restart claim records `noProgressRestarts` in its `recovery_history` entry: 0 when the interrupted attempt is proven to have made provider progress, otherwise one more than the previous claim's count. A clean-drain claim carries the previous count unchanged.
+- Before generation 12 nothing changes.
+- From generation 12 on, a restart is not charged only when a durable record proves the interrupted attempt never started provider work (the same `provider_not_started` proof as above, or a resume that never reached execution) and the count is still below `NATIVE_NO_PROGRESS_RESTART_LIMIT` (12). Provider work (progress, or an accepted turn without progress) and unprovable cases still charge, as before.
+- When the count reaches the limit, every further restart charges, so the attempt budget runs out and recovery stops with `execution_recovery_budget_exhausted`, which offers Retry. The limit equals the generation limit, so a run that never makes progress is bounded exactly as before; only proven progress resets the count.
+- Claims saved by earlier releases have no count and are read as zero. A mid-run deploy therefore gives at most 12 more proven-unstarted restarts before the bound applies, and never charges a restart that the old rule would have credited.
+
 ### G. Generation stamping
 
 The runner stamps `generation` and `turnId` on every event. Driver and session code treat an older generation as history. #19718, #19722, #19772 and #19783 each special-cased one variant of this.

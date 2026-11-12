@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { cloneWorkspaceRepository, createFixtureRepository, seedChaosLab, waitForAgentsReady } from "./seed.js";
+import { cloneWorkspaceRepository, createFixtureRepository, inheritingEnvironmentConfig, seedChaosLab, waitForAgentsReady } from "./seed.js";
 import { Timeline } from "./timeline.js";
 
 type Call = { method: string; route: string; body?: unknown };
@@ -58,6 +58,15 @@ describe("seedChaosLab workspace isolation", () => {
     const skipping = fakeApi(body => ({ ...body }));
     await seed(skipping.api);
     expect(skipping.calls.some(call => call.method === "GET" && call.route.startsWith("/api/agents/"))).toBe(false);
+  });
+
+  it("registers a remote git source, with no host folder, for a Daytona workspace repository", async () => {
+    const { api, calls } = fakeApi(body => ({ ...body }));
+    await seedChaosLab({ api, env: "local", adapters: ["codex"], concurrency: 2, budgetCents: 3_000, fixtureRoot: path.join(fixtureRoot, "remote"),
+      waveId: "w-test", timeline: new Timeline(null), workspaceGitUrl: "https://github.com/paperclipai/paperclip.git", workspaceCommit: "a".repeat(40) });
+    const project = calls.find(call => call.method === "POST" && call.route.endsWith("/projects"));
+    expect((project!.body as { workspace: unknown }).workspace).toEqual({ name: "Primary", sourceType: "git_repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git", repoRef: "a".repeat(40), isPrimary: true });
   });
 
   // RC-21: the project's git_worktree policy is gated behind the instance's
@@ -117,6 +126,14 @@ describe("seedChaosLab RC-06 mask", () => {
     await seed(api, timeline);
     expect(calls.some(isPolicyCall)).toBe(false);
     expect(timeline.entries.some(entry => entry.kind === "seed_mask_rc06")).toBe(false);
+  });
+});
+
+describe("inheritingEnvironmentConfig", () => {
+  it("drops the lifecycle and lease pins and keeps everything else", () => {
+    const fixture = { provider: "daytona", image: "img", runnerLifecycleMode: "per_turn", reuseLease: false };
+    expect(inheritingEnvironmentConfig(fixture)).toEqual({ provider: "daytona", image: "img" });
+    expect(fixture).toHaveProperty("runnerLifecycleMode", "per_turn");
   });
 });
 

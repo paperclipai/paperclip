@@ -7,7 +7,7 @@ import { distributionBundleDigest, readDistributionPluginCatalog } from "../../s
 import { derivePluginDatabaseNamespace } from "../../services/plugin-database.js";
 import { createBundledPluginPackageResolver } from "../../services/bundled-plugin-package.js";
 
-export function bundledImageFixture(manifestOverrides: Partial<PaperclipPluginManifestV1> = {}) {
+export function bundledImageFixture(manifestOverrides: Partial<PaperclipPluginManifestV1> = {}, options: { workerPrelude?: string } = {}) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "bundled-image-")));
   const packageRoot = path.join(root, "distribution", "fixture");
   const manifest: PaperclipPluginManifestV1 = {
@@ -22,6 +22,7 @@ export function bundledImageFixture(manifestOverrides: Partial<PaperclipPluginMa
   }));
   writeFileSync(path.join(packageRoot, "dist", "manifest.js"), `export default ${JSON.stringify(manifest)};`);
   writeFileSync(path.join(packageRoot, "dist", "worker.js"), `import readline from "node:readline";
+${options.workerPrelude ?? ""}
 if (process.argv.includes("--source")) process.stdout.write(import.meta.url);
 else {
   const configs = {};

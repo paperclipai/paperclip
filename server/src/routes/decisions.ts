@@ -14,6 +14,7 @@ import { validate } from "../middleware/validate.js";
 import { decisionService, type DecisionServiceOptions } from "../services/decisions.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { attentionService } from "../services/attention.js";
+import { attentionHandledDetails, attentionHandledFor } from "../services/attention-receipts.js";
 import { authorizationDeniedDetails, authorizationService } from "../services/authorization.js";
 import { canReadDecisionSource } from "../services/decision-queues.js";
 import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
@@ -182,7 +183,10 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
     const userId = boardUserId(req);
     const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
     if (!decision) return;
-    res.json(await svc.decide({ id: decision.id, decidedByUserId: userId, userActor: req.actor, ...req.body }));
+    // Who the card was for, read before the answer (PAP-749 plan §6).
+    const handledFor = await attentionHandledFor(db, decision.companyId, { sourceKind: "decision", sourceId: decision.id }, userId);
+    res.json(await svc.decide({ id: decision.id, decidedByUserId: userId, userActor: req.actor, ...req.body,
+      activityDetails: attentionHandledDetails(handledFor, "decided") }));
   });
   router.post("/decisions/:id/dismiss", validate(dismissSchema), async (req, res) => {
     const userId = boardUserId(req);
@@ -194,7 +198,12 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
     assertBoardOrAgent(req);
     const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
     if (!decision) return;
-    const actor = getActorInfo(req); res.json(await svc.cancel(decision.id, { actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId }));
+    const actor = getActorInfo(req);
+    const handledFor = actor.actorType === "user"
+      ? await attentionHandledFor(db, decision.companyId, { sourceKind: "decision", sourceId: decision.id }, actor.actorId)
+      : null;
+    res.json(await svc.cancel(decision.id, { actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId },
+      { activityDetails: attentionHandledDetails(handledFor, "withdrawn") }));
   });
   return router;
 }

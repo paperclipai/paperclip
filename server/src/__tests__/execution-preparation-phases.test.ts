@@ -54,6 +54,20 @@ describe("run preparation phases for the run log", () => {
     ]);
   });
 
+  it("records a step nested inside another step when an OTLP endpoint is set", async () => {
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9");
+    const runId = randomUUID();
+    await createRunPreparationTiming(runId)("workspace", () =>
+      measureRunPhase("workspace.snapshot.sandbox_restore", async () => {
+        await measureRunPhase("workspace.snapshot.sandbox_upload", () => delay(60));
+        await measureRunPhase("workspace.snapshot.sandbox_extract", () => delay(60));
+      }));
+    expect(drainRunPreparationPhases(runId).map(phase => phase.name)).toEqual([
+      "workspace.snapshot.sandbox_upload", "workspace.snapshot.sandbox_extract",
+      "workspace.snapshot.sandbox_restore", "heartbeat.prepare.workspace",
+    ]);
+  });
+
   it("keeps runs apart", async () => {
     const [first, second] = [randomUUID(), randomUUID()];
     await createRunPreparationTiming(first)("instructions", () => delay(60));

@@ -71,7 +71,10 @@ describe("durable system recovery budget", () => {
     const text = exhaustedSystemRecoveryAction(refused);
     expect(text).toContain("Paperclip refused to recover the saved files");
     expect(text).toContain("Paperclip cannot prove which runs used the sandbox that holds the saved files (allocation_ownership_ambiguous)");
-    expect(text).toContain("Retry runs the check again and succeeds only after Paperclip is updated");
+    expect(text).toContain("Retry runs the check again. The agent's result is saved");
+    // Recovery never waits on a person or a release, and never promises a
+    // fallback the hold may not get.
+    expect(text).not.toMatch(/succeeds only after|Paperclip is updated|last saved version/);
     expect(text).not.toMatch(/after automatic retries|stopped after|Retry to try again/);
 
     const once = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
@@ -80,6 +83,17 @@ describe("durable system recovery budget", () => {
     expect(exhaustedSystemRecoveryAction(once)).toBe("Automatic recovery of saved work failed (last failure: historical_source_missing). "
       + "Retry to try again; the agent will not repeat its work.");
     expect(exhaustedSystemRecoveryAction({ ...once, attempts: 6 })).toContain("stopped after 6 attempts");
+  });
+
+  it("promises an automatic retry for an unproven stop only while a re-arm remains", () => {
+    const stop = { ...failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+      new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence"), { now: 0 }), state: "exhausted" as const };
+    const marker = (rearms: number) => ({ stopProofRecovery: { schema: "paperclip.stop-proof-recovery.v1", rearms, nextRearmAt: null } });
+    expect(exhaustedSystemRecoveryAction(stop, {})).toMatch(/tries again automatically/);
+    expect(exhaustedSystemRecoveryAction(stop, marker(3))).toMatch(/tries again automatically/);
+    // Spent re-arms, or no evidence to judge them, keep the Retry text.
+    expect(exhaustedSystemRecoveryAction(stop, marker(4))).toContain("Retry to try again");
+    expect(exhaustedSystemRecoveryAction(stop)).toContain("Retry to try again");
   });
 
   it("names the last failure and its cause in the board handoff", () => {

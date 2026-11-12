@@ -44,7 +44,10 @@ async function versionedS3Fixture() {
       const versionId = parsed.searchParams.get("versionId");
       const keyMarker = parsed.searchParams.get("key-marker"), versionMarker = parsed.searchParams.get("version-id-marker");
       requests.push({ method: req.method!, key, versionId, keyMarker, versionMarker });
-      if (parsed.searchParams.has("versions")) {
+      if (parsed.searchParams.has("uploads")) {
+        res.setHeader("content-type", "application/xml");
+        res.end(`<?xml version="1.0"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>bucket</Bucket><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>`);
+      } else if (parsed.searchParams.has("versions")) {
         if (faults.listDenied) {
           res.writeHead(403, { "content-type": "application/xml" });
           res.end("<Error><Code>AccessDenied</Code><Message>Version listing permission is required</Message></Error>");
@@ -125,6 +128,36 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     return { row: row!, companyId, workspaceId, issueId: issue!.id, operationId, keys };
   }
   const service = () => remoteWorkspaceSnapshotRetentionService(db, { storage, now: () => now });
+  it("deletes the attempted uploads of an abandoned save once its ledger row is retired, and keeps a failed save's retry pin", async () => {
+    const retired = await seed("pending"), held = await seed("pending");
+    for (const f of [retired, held]) {
+      await db.insert(workspaceOperations).values({ id: f.operationId, companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+        phase: "remote_workspace_snapshot", status: "failed",
+        metadata: { epoch: 1, generation: 1, lastFailure: { code: "remote_workspace_save_abandoned" } } });
+    }
+    await db.update(executionWorkspaceSnapshots).set({ status: "delete_requested", objectKey: null,
+      metadata: { ...retired.row.metadata, abandonedUpload: { operationId: retired.operationId } } })
+      .where(eq(executionWorkspaceSnapshots.id, retired.row.id));
+    await db.update(executionWorkspaceSnapshots).set({ objectKey: null }).where(eq(executionWorkspaceSnapshots.id, held.row.id));
+    expect(await service().tick()).toMatchObject({ deleted: 1, pinned: 1, failed: 0 });
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, retired.row.id)))[0]!.status).toBe("deleted");
+    for (const key of retired.keys) expect((await storage.headObject(retired.companyId, key)).exists).toBe(false);
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, held.row.id)))[0]!.status).toBe("pending");
+    for (const key of held.keys) expect((await storage.headObject(held.companyId, key)).exists).toBe(true);
+  });
+  it("aborts each attempt's incomplete multipart upload before deleting a retired snapshot's objects", async () => {
+    const f = await seed(), order: string[] = [], deleteObject = storage.deleteObject.bind(storage);
+    storage.abortIncompleteUploads = vi.fn(async (_companyId: string, key: string) => { order.push(`abort:${key}`); return 1; });
+    storage.deleteObject = async (companyId, key, options) => { order.push(`delete:${key}`); return deleteObject(companyId, key, options); };
+    expect(await service().tick()).toMatchObject({ deleted: 1, failed: 0 });
+    expect(order).toEqual([...f.keys.map(key => `abort:${key}`), ...f.keys.map(key => `delete:${key}`)]);
+  });
+  it("still retires a snapshot when the store refuses to list its multipart uploads", async () => {
+    const f = await seed();
+    storage.abortIncompleteUploads = vi.fn(async () => { throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" }); });
+    expect(await service().tick()).toMatchObject({ deleted: 1, failed: 0 });
+    for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
+  });
   it("deletes every recorded attempt and winning object after grace", async () => {
     const f = await seed(); const owner = service();
     expect(await owner.tick()).toMatchObject({ deleted: 1, failed: 0 });

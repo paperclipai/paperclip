@@ -19,19 +19,20 @@ import { readFailedPreparationSettlement } from "./failed-preparation-settlement
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { nativeExecutionUsesTaskWorkspace } from "./heartbeat/external-provider.js";
+import { preparePluginWorkspace, type WorkspaceWorkers } from "./plugin-workspaces.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
   | { mode: "reuse_current_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
   | { mode: "resume_stopped_native_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
-  | { mode: "reuse_issue_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
+  | { mode: "reuse_issue_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string | null }
   | { mode: "fresh_isolated_workspace"; retryIntentId: string; sourceRunId: string; retainedSourceIds: string[] };
 const freshReadinessSchema = z.discriminatedUnion("mode", [z.object({
   mode: z.literal("fresh_isolated_workspace"), retryIntentId: z.string().uuid(),
   sourceRunId: z.string().uuid(), retainedSourceIds: z.array(z.string().uuid()),
 }), z.object({
   mode: z.literal("reuse_issue_workspace"), retryIntentId: z.string().uuid(),
-  sourceRunId: z.string().uuid(), workspaceId: z.string().uuid(), cwd: z.string().min(1),
+  sourceRunId: z.string().uuid(), workspaceId: z.string().uuid(), cwd: z.string().min(1).nullable(),
 })]);
 
 const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
@@ -126,7 +127,9 @@ export async function retainedIssueWorkspaceForRetry(db: Db, input: {
   companyId: string; issueId: string; agentId: string; successorRunId: string; cause: string | null;
   source: Pick<typeof heartbeatRuns.$inferSelect, "id" | "resultJson" | "status" | "finishedAt" | "controllerLeaseExpiresAt">;
   evidence: Record<string, unknown> | null; gitProbes?: Map<string, Promise<boolean>>;
-}): Promise<{ id: string; cwd: string } | null> {
+  verifyProviderWorkspace?: (workspace: typeof executionWorkspaces.$inferSelect) => Promise<boolean>;
+  sourceRetryIntentId?: unknown;
+}): Promise<{ id: string; cwd: string | null } | null> {
   const keepFresh = (reason: string) => {
     logger.info({ companyId: input.companyId, issueId: input.issueId, sourceRunId: input.source.id,
       successorRunId: input.successorRunId, reason }, "Retry keeps a fresh attempt; the task workspace is not reusable");
@@ -140,23 +143,38 @@ export async function retainedIssueWorkspaceForRetry(db: Db, input: {
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.source.id),
   ));
-  if (!leases.length || leases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
-      lease.cleanupStatus === "failed" || !lease.executionWorkspaceId)) return keepFresh("source_lease_not_local_released");
+  if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed" || !lease.executionWorkspaceId))
+    return keepFresh("source_lease_not_released");
   const sourceWorkspaceIds = new Set(leases.map(lease => lease.executionWorkspaceId));
   const [bound] = await db.select({ workspace: executionWorkspaces }).from(issues).innerJoin(executionWorkspaces, and(
     eq(executionWorkspaces.companyId, issues.companyId), eq(executionWorkspaces.id, issues.executionWorkspaceId),
   )).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId),
     eq(issues.assigneeAgentId, input.agentId))).limit(1);
   const workspace = bound?.workspace;
-  if (!workspace?.cwd || sourceWorkspaceIds.size !== 1 || !sourceWorkspaceIds.has(workspace.id))
+  if (!workspace || workspace.sourceIssueId !== input.issueId || workspace.mode === "shared_workspace" ||
+      !reusableWorkspaceStatuses.includes(workspace.status)) return keepFresh("workspace_not_task_owned");
+  const verifyProvider = workspace.providerType === "plugin" ? input.verifyProviderWorkspace : undefined;
+  const fresh = workspace.metadata?.workspaceProviderFresh as { attemptId?: unknown } | undefined;
+  const reservedBySource = verifyProvider && !leases.length &&
+    (workspace.metadata?.workspaceProviderReservationRunId === input.source.id ||
+      (typeof input.sourceRetryIntentId === "string" && fresh?.attemptId === input.sourceRetryIntentId));
+  if (!reservedBySource && (sourceWorkspaceIds.size !== 1 || !sourceWorkspaceIds.has(workspace.id)))
     return keepFresh("binding_not_source_workspace");
-  if (!isTaskOwnedLocalWorkspace(workspace, input.issueId)) return keepFresh("workspace_not_task_owned_local");
+  if (!verifyProvider && (leases.some(lease => lease.provider !== "local") ||
+      !isTaskOwnedLocalWorkspace(workspace, input.issueId) || !workspace.cwd))
+    return keepFresh("workspace_not_task_owned_local");
   const writer = await workspaceHasOtherWriter(db, { companyId: input.companyId, workspaceId: workspace.id,
     successorRunId: input.successorRunId, stoppedSource: input.source });
   if (writer) return keepFresh(writer);
+  if (verifyProvider) {
+    if (!await verifyProvider(workspace)) return keepFresh("provider_workspace_unverified");
+    return { id: workspace.id, cwd: workspace.cwd };
+  }
   // The directory must still be the recorded one, not a replacement link.
-  const stat = await lstat(workspace.cwd).catch(() => null);
-  const real = stat?.isDirectory() && !stat.isSymbolicLink() ? await realpath(workspace.cwd).catch(() => null) : null;
+  const cwd = workspace.cwd;
+  if (!cwd) return keepFresh("directory_missing");
+  const stat = await lstat(cwd).catch(() => null);
+  const real = stat?.isDirectory() && !stat.isSymbolicLink() ? await realpath(cwd).catch(() => null) : null;
   if (!real) return keepFresh("directory_missing");
   let probe = input.gitProbes?.get(real);
   if (!probe) {
@@ -223,7 +241,7 @@ async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof h
       source.lastOutputSeq !== 0 || source.logCompressed ||
       Object.keys(source.usageJson ?? {}).some(key => key !== "ledgerScope") ||
       Object.keys(source.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "chatControlRecoveryAdmission", "aiConnectionNonAssigneeCommentWake"].includes(key)) ||
-      Object.keys(source.resultJson ?? {}).some(key => !["effectiveTimeoutSec", "executionRecovery", "stopReason", "timeoutConfigured", "timeoutFired", "timeoutSource", "workspaceValidation"].includes(key))) return null;
+      Object.keys(source.resultJson ?? {}).some(key => !["effectiveTimeoutSec", "executionRecovery", "stopReason", "timeoutConfigured", "timeoutFired", "timeoutSource", "workspaceValidation", "failureCause"].includes(key))) return null;
   const settlement = await readFailedPreparationSettlement(db, source);
   const warning = settlement?.unsupportedHarnessWarning;
   if (!settlement || warning && (warning.message !== "Company observability was not applied: this harness is not supported."
@@ -407,7 +425,7 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
       const holds = await db.select({ cause: issueRecoveryActions.cause, evidence: issueRecoveryActions.evidence })
         .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, run.companyId),
           eq(issueRecoveryActions.sourceIssueId, issueId), sql`${issueRecoveryActions.evidence}->>'runId' = ${source.id}`));
-      let retained: { id: string; cwd: string } | null = null;
+      let retained: { id: string; cwd: string | null } | null = null;
       const gitProbes = new Map<string, Promise<boolean>>();
       for (const hold of holds.length ? holds : [{ cause: null, evidence: null }]) {
         const checked = await retainedIssueWorkspaceForRetry(db, { companyId: run.companyId, issueId,
@@ -460,4 +478,52 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
   )).limit(1);
   if (!wake) throw new Error("Fresh workspace admission lost its input receipt");
   return readiness;
+}
+
+/** A running retry can retain its previous checkout after verifying a committed fresh fallback. */
+export async function verifyRetryWorkspace(
+  db: Db,
+  workers: WorkspaceWorkers | undefined,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "contextSnapshot">,
+  issueId: string,
+  responsibleUserId: string | null,
+  readiness: ContinuationReadiness,
+): Promise<ContinuationReadiness> {
+  if (readiness.mode !== "fresh_isolated_workspace" ||
+      run.contextSnapshot?.taskRetryRequestId !== readiness.retryIntentId) return readiness;
+  const [source] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
+    eq(heartbeatRuns.id, readiness.sourceRunId),
+    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+  ));
+  if (!source) return readiness;
+  const holds = await db.select({ cause: issueRecoveryActions.cause, evidence: issueRecoveryActions.evidence })
+    .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, run.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issueId),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${source.id}`));
+  if (holds.some(hold => !recoveryGenerationSettled(hold.evidence, source.id) ||
+      sourceNeedsWorkspaceRepair(hold.cause, source.resultJson))) return readiness;
+  const retained = await retainedIssueWorkspaceForRetry(db, {
+    companyId: run.companyId, issueId, agentId: run.agentId, successorRunId: run.id,
+    source, cause: null, evidence: null,
+    sourceRetryIntentId: source.contextSnapshot?.taskRetryRequestId,
+    verifyProviderWorkspace: workers ? async workspace => {
+      try {
+        return Boolean(await preparePluginWorkspace(db, workers, {
+          companyId: run.companyId, issueId, agentId: run.agentId, runId: run.id, responsibleUserId,
+          projectId: workspace.projectId, projectWorkspaceId: workspace.projectWorkspaceId,
+          existingWorkspaceId: workspace.id, mode: workspace.mode, strategy: workspace.strategyType,
+          verifyExisting: true,
+        }));
+      } catch {
+        return false;
+      }
+    } : undefined,
+  });
+  if (!retained) return readiness;
+  const reuse: ContinuationReadiness = { mode: "reuse_issue_workspace", retryIntentId: readiness.retryIntentId,
+    sourceRunId: source.id, workspaceId: retained.id, cwd: retained.cwd };
+  await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "task-recovery",
+    action: "issue.retry_workspace_reused", entityType: "issue", entityId: issueId, runId: run.id, details: reuse });
+  return reuse;
 }
