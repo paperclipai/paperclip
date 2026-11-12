@@ -381,15 +381,11 @@ describeEmbeddedPostgres("attention summary: what one request reads", () => {
     const [plain, budgets] = [await summaryCost(companies.plain!), await summaryCost(companies.budgets!)];
     expect(counts(budgets.result)).toEqual(counts(plain.result));
     expect(budgets.statements).toBe(plain.statements);
-  }, 120_000);
-
-  it("opens no transaction to seed a queue or to store a retention state that is there", async () => {
-    const cost = await summaryCost(companies.budgets!);
-    expect(cost.result.countsBySourceKind.issue_thread_interaction).toBeGreaterThanOrEqual(30);
+    // Both companies have cards that seed the decision queues, so the request
+    // also made the writes of the feed: the queues hold those cards.
+    expect(budgets.result.countsBySourceKind.issue_thread_interaction).toBeGreaterThanOrEqual(30);
     const seeded = await db.select({ id: decisionQueueItems.id }).from(decisionQueueItems)
       .where(eq(decisionQueueItems.companyId, companies.budgets!.companyId));
     expect(seeded.length).toBeGreaterThanOrEqual(30);
-    // The one transaction is the read snapshot of the budget incidents.
-    expect(cost.transactions).toBe(1);
   }, 120_000);
 });

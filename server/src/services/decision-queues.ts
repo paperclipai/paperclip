@@ -420,42 +420,9 @@ export function decisionQueueService(db: Db) {
       }
     }
 
-    // Most calls find each match in its queue already. Two reads say which
-    // queues exist and which matches they hold, and only a seed with a queue
-    // or a member to add opens a transaction. The first read takes the share
-    // lock of each queue: a removal that holds the queue lock has deleted a
-    // member that a read still sees until the removal commits. The share lock
-    // waits for that commit, as the queue lock of the transaction below does,
-    // so the second read sees what the removal left.
-    const memberKey = (sourceKind: string, sourceId: string) => `${sourceKind}:${sourceId}`;
-    const seeded = new Map<string, { seedRulesEnabled: boolean; members: Set<string> }>();
-    const seededQueues = matches.size === 0 ? [] : await db
-      .select({ id: decisionQueues.id, key: decisionQueues.key, seedRulesEnabled: decisionQueues.seedRulesEnabled })
-      .from(decisionQueues)
-      .where(and(eq(decisionQueues.companyId, companyId), inArray(decisionQueues.key, [...matches.keys()])))
-      .for("share");
-    if (seededQueues.length > 0) {
-      const keyByQueueId = new Map(seededQueues.map(queue => [queue.id, queue.key]));
-      for (const queue of seededQueues) seeded.set(queue.key, { seedRulesEnabled: queue.seedRulesEnabled, members: new Set() });
-      const members = await db
-        .select({ queueId: decisionQueueItems.queueId, sourceKind: decisionQueueItems.sourceKind, sourceId: decisionQueueItems.sourceId })
-        .from(decisionQueueItems)
-        .where(and(
-          eq(decisionQueueItems.companyId, companyId),
-          inArray(decisionQueueItems.queueId, [...keyByQueueId.keys()]),
-          inArray(decisionQueueItems.sourceId, [...new Set([...matches.values()].flat().map(item => item.sourceId))]),
-        ));
-      for (const member of members) {
-        seeded.get(keyByQueueId.get(member.queueId)!)!.members.add(memberKey(member.sourceKind, member.sourceId));
-      }
-    }
-
     for (const seed of DECISION_QUEUE_SEEDS) {
       const matchingItems = matches.get(seed.key) ?? [];
       if (matchingItems.length === 0) continue;
-      const queue = seeded.get(seed.key);
-      if (queue && (!queue.seedRulesEnabled
-        || matchingItems.every(item => queue.members.has(memberKey(item.sourceKind, item.sourceId))))) continue;
       await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const insertedQueue = await txDb.insert(decisionQueues).values({

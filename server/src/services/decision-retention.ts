@@ -140,19 +140,11 @@ export function decisionRetentionService(
   async function syncItems(companyId: string, items: readonly RetentionSource[]) {
     if (items.length === 0) return new Map<string, DecisionRetentionState>();
     const unique = [...new Map(items.map(item => [itemSourceKey(item), item])).values()];
-    const read = (database: Pick<Db, "select">) => database.select().from(decisionRetention).where(and(
-      eq(decisionRetention.companyId, companyId),
-      inArray(decisionRetention.sourceId, unique.map(item => item.subject.id)),
-    ));
-    // Most calls find every state stored with the current activity time. They
-    // return what one read found; only a call with a state to write opens a
-    // transaction, and it reads again inside that transaction.
-    const stored = new Map((await read(db)).map(row => [sourceKey(row.sourceKind, row.sourceId), row]));
-    if (unique.every(item => stored.get(itemSourceKey(item))?.sourceActivityAt.getTime() === new Date(item.activityAt).getTime())) {
-      return stored;
-    }
     return db.transaction(async tx => {
-      const select = () => read(tx);
+      const select = () => tx.select().from(decisionRetention).where(and(
+        eq(decisionRetention.companyId, companyId),
+        inArray(decisionRetention.sourceId, unique.map(item => item.subject.id)),
+      ));
       let rows = await select();
       const existing = new Set(rows.map(row => sourceKey(row.sourceKind, row.sourceId)));
       const missing = unique.filter(item => !existing.has(itemSourceKey(item)));

@@ -2089,20 +2089,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
 
       const recoveryRows = await db
-        .select({
-          id: issueRecoveryActions.id,
-          sourceIssueId: issueRecoveryActions.sourceIssueId,
-          recoveryIssueId: issueRecoveryActions.recoveryIssueId,
-          kind: issueRecoveryActions.kind,
-          status: issueRecoveryActions.status,
-          ownerType: issueRecoveryActions.ownerType,
-          ownerUserId: issueRecoveryActions.ownerUserId,
-          cause: issueRecoveryActions.cause,
-          fingerprint: issueRecoveryActions.fingerprint,
-          nextAction: issueRecoveryActions.nextAction,
-          createdAt: issueRecoveryActions.createdAt,
-          updatedAt: issueRecoveryActions.updatedAt,
-        })
+        .select()
         .from(issueRecoveryActions)
         .where(and(
           eq(issueRecoveryActions.companyId, companyId),
@@ -2528,9 +2515,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }, issueId ? { key: `blocked:${issueId}`, anchor: false } : null);
       }
 
-      // The open incidents of the budget overview. The overview also sums
-      // the spend of every policy, which no card and no count reads.
-      for (const incident of await budgetService(db).openIncidents(companyId)) {
+      // A count reads the open incidents of the budget overview without the
+      // spend of every policy, which the overview also sums.
+      const openBudgetIncidents = summaryOnly
+        ? await budgetService(db).openIncidents(companyId)
+        : (await budgetService(db).overview(companyId)).activeIncidents;
+      for (const incident of openBudgetIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
         if (incident.thresholdType !== "hard" && observedPercent < ATTENTION_BUDGET_WARNING_PERCENT) continue;
         const dedupKey = `budget:${incident.policyId}:${toIso(incident.windowStart)}:${incident.thresholdType}`;

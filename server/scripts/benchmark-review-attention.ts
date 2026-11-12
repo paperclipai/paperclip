@@ -51,8 +51,7 @@ const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encodi
 // The modules of the fix. The baseline process loads their pre-fix source;
 // every other module is the current tree in both processes.
 const modules = ["server/src/services/issues.ts", "server/src/services/recovery/issue-graph-liveness.ts",
-  "server/src/services/attention.ts", "server/src/services/budgets.ts", "server/src/services/decision-queues.ts",
-  "server/src/services/decision-retention.ts"];
+  "server/src/services/attention.ts", "server/src/services/budgets.ts"];
 // Functions of the attention read path, reported from the CPU profile with the
 // time spent in them and everything they call.
 const profiledFunctions = ["listIssueReviewAttentionMap", "classifyIssueGraphLiveness", "classifyIssueReviewPaths",
