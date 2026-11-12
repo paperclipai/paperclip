@@ -358,7 +358,10 @@ runner diagnostic. Its evidence includes runner suspension, provider drain,
 final provider state, pending call/operation/source-event IDs and input digests,
 and incomplete result-delivery command IDs and statuses. If execution and
 cleanup both fail, execution retains its original error identity and cleanup is
-attached as `cleanupError`.
+attached as `cleanupError`. `runnerRetained: true` means a remote Runner that
+could not prove its suspension was left running for the same-run
+reattachment instead of being force-stopped; the diagnostic
+`remote runner left alive unsettled for same-run reattachment` records it.
 
 Semantic settlement also includes up to 20 content-free failure records, with
 the call ID, operation ID, stage (`dispatch` or `persist_result`), and cause.
@@ -783,6 +786,14 @@ after it lost the durable controller lease; the reason names a closed cause
 (`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
 retries a failed renewal until the lease deadline, so `renewal_error` means the
 attempts still failed with an error when the deadline passed.
+All legacy controllers in one server process renew through a single queue on
+the private lease connection pool. Renewals that arrive while one is in flight
+share the next statement, so a burst of runs costs one renewal statement per
+round instead of one transaction per run, and a renewal waits behind at most
+one other. A run whose row another transaction holds is skipped and retried
+shortly, without delaying the other runs. A renewal only moves the lease
+deadline later, so it does not wake live-run recovery; recovery rereads the
+moved deadline when the earlier one comes due.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
@@ -862,7 +873,11 @@ or its owner changed, the existing cancellation settlement records
 `continuation_task_ownership_changed`. The run and wake request become cancelled
 before adapter dispatch, with the run-log message
 `stale execution continuation cancelled before dispatch`. Immediate recovery is
-suppressed. Missing source context, authorization failures, and other setup
+suppressed. A comment the cancelled run carried that no run read is saved
+first when an agent run closed the task: a person's comment, or another agent's
+comment posted with `resume: true`. The release then reopens the task and
+delivers that comment once. Another agent's comment without `resume: true`
+stays communicative and does not reopen the task. Missing source context, authorization failures, and other setup
 errors retain their failure classification. An untyped error with the same
 message is also still a failure; cancellation requires the typed ownership guard.
 
@@ -949,6 +964,28 @@ The message distinguishes an automatic retry from work that is no longer eligibl
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
+
+## Agent directory waits
+
+A run whose instruction preparation finds another run of the same agent using
+its files writes one informational `lifecycle` event to the local run log, with
+`stream: "system"`. It records no file contents, paths or credentials, and
+creates no Telemetry or OpenTelemetry export.
+
+- A resumed native run that stays on its own run writes the message "Another
+  run of this agent is still using its files; this run continues when it
+  finishes". Its payload has exactly two fields: `retryReasonCode`, always
+  `agent_directory_operation_busy`, and `nextAttemptAt`, the ISO time when the
+  same run is scheduled to try again.
+- A run that has not yet started native execution is cancelled with error code
+  `agent_directory_busy` and writes "Another run of this agent is still using
+  its files. This task will continue automatically." when an
+  `agent_directory_busy` retry was scheduled, or "Another run of this agent is
+  still using its files, and this task could not be rescheduled." when it was
+  not. Its payload contains only `retryScheduled`, a boolean.
+
+Neither wait consumes the provider-failure retry allowance. Each stops after 30
+deferrals, after which the run follows the normal failure path.
 
 ## Managed Agent File Save Receipts
 

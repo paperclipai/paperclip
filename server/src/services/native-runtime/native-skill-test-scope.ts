@@ -6,7 +6,7 @@ const taskTools = new Set([
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_task_documents", "read_task_document", "write_task_document", "comment_on_task",
   "report_progress", "set_task_title", "request_human_input", "register_deliverable",
-  "list_assigned_skills", "read_assigned_skill", "search_api", "call_api",
+  "list_assigned_skills", "read_assigned_skill", "search_api", "call_api", "save_api_response",
   "read_current_wake_comments", "list_chat_attachments", "read_chat_attachment",
   "reuse_chat_attachment", "list_task_attachments", "read_task_attachment",
 ]);

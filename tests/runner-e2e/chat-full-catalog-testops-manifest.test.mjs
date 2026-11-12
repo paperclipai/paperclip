@@ -375,6 +375,11 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     "agents.restore-instructions",
     "expectedOutcome"
   ],
+  // The fake sandbox control can never be saved; the case now contrasts advertised support with health.
+  [
+    "execution-environments.choose-capable-target",
+    "originalContext"
+  ],
   // Retargeted to read-and-route: member permission edits are board-only.
   [
     "access.manage-membership",
@@ -417,6 +422,23 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   ],
   [
     "gateways-profiles.rotate-token",
+    "expectedOutcome"
+  ],
+  [
+    "tasks.share-private-task",
+    "originalQuery"
+  ],
+  // Retargeted removed-feature case: Agent Chat is always on (#19360), so the instance experiment is Cases.
+  [
+    "instance-operations.instance-settings",
+    "originalQuery"
+  ],
+  [
+    "instance-operations.instance-settings",
+    "originalContext"
+  ],
+  [
+    "instance-operations.instance-settings",
     "expectedOutcome"
   ]
 ]);

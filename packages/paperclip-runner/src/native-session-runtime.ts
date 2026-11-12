@@ -308,10 +308,10 @@ export interface ExecuteNativeSessionOptions {
   getFreshSessionHandoff?: () => Promise<string | null>;
   /**
    * Seals this run's first-turn input immediately before `turn.start` and
-   * returns user messages that arrived while the run was preparing. Repeated
-   * calls for the same run return the same messages.
+   * returns user messages that arrived while the run was preparing.
    */
   getFirstTurnQueuedInput?: () => Promise<string | null>;
+  prepareWakeAttachmentPrompt?: () => Promise<string>;
   /**
    * Steered messages the provider acknowledged but the model never read, read
    * when a restart continuation starts. The provider lost them with the
@@ -2587,9 +2587,13 @@ export async function executeNativeSession(
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
         }
-        throw new Error(
+        const failure = new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );
+        if (recovery.runnerExitConfirmed === true) {
+          Object.defineProperty(failure, "runnerExitConfirmed", { value: true, enumerable: false });
+        }
+        throw failure;
       }
       continuityBreak = {
         reason: governedWaitFollowUpLostState
@@ -2792,7 +2796,7 @@ export async function executeNativeSession(
       return snapshot;
     };
     const recoveredSnapshot = await session.snapshot();
-    const restartContinuation = (steeredMessages: Array<{ id: string; text: string }>) => ({
+    const restartContinuation = (steeredMessages: Array<{ id: string; text: string }>, attachmentPrompt?: string) => ({
       message: { role: "user" as const, text: JSON.stringify({
         schema: "paperclip.native-continuation.v1",
         events: [
@@ -2806,6 +2810,7 @@ export async function executeNativeSession(
           "Do not repeat completed work. Before you repeat an action with external effects, such as a push, a message or a deployment, check whether it already took effect. If you cannot determine that, report the specific blocker.",
           "Finish in this turn. Nothing resumes this conversation after the turn ends, so do not end it to wait for a background command or a notification; wait for or check that work first.",
           "Then invoke exactly one paperclip_finish or paperclip_block with the accurate disposition.",
+          ...(attachmentPrompt ? ["", attachmentPrompt] : []),
         ].join("\n"),
         ...(steeredMessages.length > 0 ? { steeredMessages: steeredMessages.map(message => message.text) } : {}),
         completion: {
@@ -2857,7 +2862,9 @@ export async function executeNativeSession(
         // later snapshot may already show the marker returned.
         const steeredMessages = await options.getUnreadSteeredMessages?.() ?? [];
         signal?.throwIfAborted();
-        const started = await session.startTurn(restartContinuation(steeredMessages));
+        const attachmentPrompt = await options.prepareWakeAttachmentPrompt?.();
+        signal?.throwIfAborted();
+        const started = await session.startTurn(restartContinuation(steeredMessages, attachmentPrompt));
         restartContinuationTurnId = started.turnId;
         if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
         await checkpoint(signal);
@@ -3188,12 +3195,14 @@ export async function executeNativeSession(
           if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
             modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
           }
-          if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && options.getFirstTurnQueuedInput) {
-            const queuedInput = await options.getFirstTurnQueuedInput();
-            if (queuedInput && "task" in modelEnvelope) {
-              modelEnvelope.task.prompt = `${modelEnvelope.task.prompt}\n\n${queuedInput}`;
-            } else if (queuedInput && "events" in modelEnvelope) {
-              modelEnvelope.events = `${modelEnvelope.events}\n\n${queuedInput}`;
+          if (!dispositionOnlyRecovery || effectFreeInitialAcpxTurn) {
+            const attachments = await options.prepareWakeAttachmentPrompt?.();
+            const queuedInput = await options.getFirstTurnQueuedInput?.();
+            const supplemental = [attachments, queuedInput].filter(Boolean).join("\n\n");
+            if (supplemental && "task" in modelEnvelope) {
+              modelEnvelope.task.prompt = `${modelEnvelope.task.prompt}\n\n${supplemental}`;
+            } else if (supplemental && "events" in modelEnvelope) {
+              modelEnvelope.events = `${modelEnvelope.events}\n\n${supplemental}`;
             }
           }
           await session.startTurn({

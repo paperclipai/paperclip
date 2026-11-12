@@ -121,6 +121,13 @@ export const CRASH_POINTS = {
     invariants: ["I2"],
     prerequisite: "A reuse_by_environment lease that expires or is replaced (destroyReusableSandboxLease). The chaos Daytona environment's leases are ephemeral by default.",
   },
+  "agent_directory.operation_lock.before_acquire": {
+    description: "A remote agent-directory operation (collect, checkpoint, release) is about to take its per-company-and-agent Postgres lock; no agent file has been read or written. In fail mode the call site throws the lock's own conflict (\"Agent directory operation is already active\"), staging class A's terminal step, so a recovery that collects a stopped run's agent files meets a held lock.",
+    environments: ["daytona"],
+    kinds: ["copyback_owner_hold"],
+    invariants: ["I2", "I7"],
+    prerequisite: "A remote (Daytona) agent directory copy: a task whose run materialized the agent's files in a sandbox.",
+  },
   "environment.stop_retain.after_claim_before_stop": {
     description: "A stop-and-retain intent and its claim are committed; the provider stop has not been retried.",
     environments: ["daytona"],

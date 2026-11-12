@@ -20,6 +20,7 @@ import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "./re
 import { cachedAgentFileManifest, captureAgentFileCheckpoint, checkpointBaseline, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 import { logger } from "../middleware/logger.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 type Copy = typeof copies.$inferSelect;
 function adoptionAuthority(row: Copy) {
@@ -28,6 +29,9 @@ function adoptionAuthority(row: Copy) {
 }
 
 export class AgentDirectoryReuseInvalidatedError extends Error {}
+export class AgentDirectoryOperationBusyError extends HttpError {
+  constructor() { super(409, "Agent directory operation is already active"); }
+}
 const completed = new Set(["saved", "unchanged", "resolved", "unavailable"]);
 const transports = new Map<string, PreparedAdapterExecutionTargetRuntime>();
 const key = (row: Pick<Copy, "companyId" | "runId">) => `${row.companyId}:${row.runId}`;
@@ -654,10 +658,12 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     if (!disposableRemoteCopy(row)) return run();
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
+    // Test instrumentation only (disarmed in production): restart chaos fails the Nth attempt with the lock's own conflict.
+    crashPoint("agent_directory.operation_lock.before_acquire", { fail: () => new AgentDirectoryOperationBusyError() });
     return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
       const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
         (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
-      if (lock?.acquired !== true) throw conflict("Agent directory operation is already active");
+      if (lock?.acquired !== true) throw new AgentDirectoryOperationBusyError();
       return withWorkspaceLockKeepalive(tx as unknown as Db, Number(lock.idle_timeout_ms), run);
     }));
   }

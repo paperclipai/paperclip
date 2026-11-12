@@ -55,6 +55,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
+const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -71,7 +72,8 @@ function didAutomaticRecoveryFail(
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
-  return latestRetryReason === expectedRetryReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
+  return (latestRetryReason === expectedRetryReason || latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
+    && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
 }
 
 function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | null {
@@ -372,6 +374,31 @@ async function promoteDeferredWake(
           workingCandidate.queuedCommentIds.length > 0));
   }
 
+  // A person's answer saved while the task was still open is owed input. The
+  // worker may have finished its turn without reading it; closing the task
+  // must not silently drop it. It reopens the task straight to in_progress,
+  // because an answer continues the assignee's own execution. While
+  // unresolved blockers forbid in_progress, an answer continuation cannot run
+  // (it requires in_progress), so the task stays done and the wake is
+  // cancelled with that reason; it never fails or stalls this drain.
+  let reopenForAnswer = false;
+  if (
+    !shouldReopen &&
+    currentIssue.status === "done" &&
+    workingCandidate.requestedByActorType === "user" &&
+    workingCandidate.agentId === currentIssue.assigneeAgentId
+  ) {
+    const owed = await ports.transaction.owedInteractionAnswer({ companyId: run.companyId, issueId: currentIssue.id, payload: workingCandidate.payload });
+    if (owed === "blocked") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId, wakeId: workingCandidate.id, agentId: workingCandidate.agentId,
+        reason: "Queued answer cannot continue a task with unresolved blockers", now: input.now,
+      });
+      return null;
+    }
+    if (owed === "deliver") shouldReopen = reopenForAnswer = true;
+  }
+
   // Agent continuations can outlive the work they addressed. Live,
   // non-self feedback with an explicit resume intent must still be read
   // after completion; it cannot revive a cancelled task. Other stale
@@ -410,6 +437,7 @@ async function promoteDeferredWake(
       companyId: run.companyId,
       issueId: currentIssue.id,
       runId: run.id,
+      ...(reopenForAnswer ? { status: "in_progress" as const } : {}),
     });
     if (reopened) {
       postCommitEffects.push({
@@ -626,6 +654,7 @@ async function runReleaseRecoveryTail(
         run,
         expectedRetryReason,
       ),
+      automaticRecoveryRetryableBeforeProviderWork: run.retryableBeforeProviderWork === true,
       sourceRequiresExplicitRecovery,
     },
     shared: {
@@ -720,6 +749,7 @@ async function runReleaseRecoveryTail(
     retryReason,
     source: recoverySource,
     retryOfRunId: run.id,
+    ...(run.executionRetryAccounting ? { executionRetryAccounting: run.executionRetryAccounting } : {}),
   };
 
   const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(
