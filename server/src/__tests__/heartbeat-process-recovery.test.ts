@@ -39,6 +39,7 @@ import { currentControllerProcessStamp } from "../services/controller-process-id
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -508,6 +509,47 @@ async function spawnOrphanedProcessGroup() {
   };
 }
 
+
+/**
+ * Starts a process the way an agent's Bash tool backgrounds a server: in a new
+ * session (setsid), from a shell that exits at once, carrying the run's
+ * PAPERCLIP_RUN_ID. The process is outside any recorded process group.
+ */
+async function spawnEscapedRunDescendant(runId: string) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "run-descendant-"));
+  const pidFile = path.join(dir, "pid");
+  const starter = spawn(
+    "bash",
+    ["-c", `setsid sh -c 'exec sleep 300' </dev/null >/dev/null 2>&1 & echo $! > '${pidFile}'`],
+    { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PAPERCLIP_RUN_ID: runId }, stdio: "ignore", detached: true },
+  );
+  await new Promise<void>((resolve, reject) => {
+    starter.once("error", reject);
+    starter.once("exit", () => resolve());
+  });
+  const pid = Number.parseInt((await fs.readFile(pidFile, "utf8")).trim(), 10);
+  await fs.rm(dir, { recursive: true, force: true });
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("Failed to start escaped run descendant");
+  return pid;
+}
+
+async function waitForDescendantExit(pid: number, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (isPidAlive(pid) && !isZombiePid(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
+
+function isZombiePid(pid: number) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 1).trim().startsWith("Z");
+  } catch {
+    return true;
+  }
+}
 
 /** Failure retry accounting with every automatic failure retry already used. */
 const spentFailureRetryAccounting = {
@@ -3378,6 +3420,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
     expect(runs.filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "stops a lost legacy run's setsid descendant during process-loss recovery",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "idle", processPid: 999_999_999 });
+      const descendantPid = await spawnEscapedRunDescendant(runId);
+      cleanupPids.add(descendantPid);
+      expect(isPidAlive(descendantPid)).toBe(true);
+
+      const result = await heartbeatService(db).reapOrphanedRuns();
+
+      expect(result.runIds).toEqual([runId]);
+      expect(await waitForDescendantExit(descendantPid)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "stops a legacy run's setsid descendant when the run is cancelled after a server restart",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "running", processPid: 999_999_999 });
+      const descendantPid = await spawnEscapedRunDescendant(runId);
+      cleanupPids.add(descendantPid);
+      const unrelatedPid = await spawnEscapedRunDescendant(randomUUID());
+      cleanupPids.add(unrelatedPid);
+
+      // A fresh service has no in-memory process handle for the run, as after a restart.
+      await heartbeatService(db).cancelRun(runId, "Operator Stop");
+
+      expect(await waitForDescendantExit(descendantPid)).toBe(true);
+      expect(isPidAlive(unrelatedPid)).toBe(true);
+    },
+  );
 
   it("schedules one conversation continuation after losing the provider", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({

@@ -79,6 +79,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
+import { reapRunDescendants } from "./run-descendant-reaper.js";
 import {
   claimNativeRestartRecoveries,
   closeIdleWarmNativeSessionsForRestart,
@@ -2760,6 +2761,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         },
       );
       if (!failureWrite.updated || !failureWrite.run) continue;
+      // The run's CLI is gone, but tools it moved out of its process group
+      // (setsid, nohup, double fork) can still run. Nothing owns them now.
+      if (tracksLegacyLocalChild) {
+        await reapRunDescendants({ runId: run.id, reason: "process_lost" });
+      }
       // Counted by the release that removes the pre-#19871 fallback. It never
       // holds the settle back.
       if (legacyProcessProof?.legacyHostFallback) {

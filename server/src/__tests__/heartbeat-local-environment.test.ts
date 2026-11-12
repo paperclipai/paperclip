@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -58,6 +59,52 @@ async function waitForRunLeasesToRelease(
     .select()
     .from(environmentLeases)
     .where(eq(environmentLeases.heartbeatRunId, runId));
+}
+
+
+function isLiveProcess(pid: number) {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return !stat.slice(stat.lastIndexOf(")") + 1).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
+}
+
+async function readPidFile(file: string, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const pid = Number.parseInt(await readFile(file, "utf8").catch(() => ""), 10);
+    if (Number.isInteger(pid) && pid > 0) return pid;
+    if (Date.now() >= deadline) throw new Error(`no pid in ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (isLiveProcess(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
+
+/**
+ * A process agent command that backgrounds a server the way a Claude Code
+ * Bash tool does (new session, stdio detached), records its PID, then runs
+ * `tail` as the rest of the agent turn.
+ */
+function escapedDescendantCommand(pidFile: string, tail: string) {
+  return {
+    command: "bash",
+    args: ["-c", `setsid sh -c 'exec sleep 300' </dev/null >/dev/null 2>&1 & echo $! > '${pidFile}'; ${tail}`],
+  };
 }
 
 describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
@@ -223,5 +270,95 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       apiKeyPresent: true,
     });
     expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
+  });
+  describe.skipIf(process.platform !== "linux")("run descendant teardown", () => {
+    const escapedPids = new Set<number>();
+    afterEach(() => {
+      for (const pid of escapedPids) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already stopped.
+        }
+      }
+      escapedPids.clear();
+    });
+
+    async function seedProcessAgent(adapterConfig: Record<string, unknown>) {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "ProcessAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig,
+        runtimeConfig: {},
+        permissions: {},
+      });
+      return agentId;
+    }
+
+    for (const scenario of [
+      { name: "succeeds", tail: "exit 0", config: {}, status: "succeeded" },
+      { name: "fails", tail: "exit 3", config: {}, status: "failed" },
+      { name: "times out", tail: "exec sleep 300", config: { timeoutSec: 1, graceSec: 1 }, status: "timed_out" },
+    ] as const) {
+      it(`stops a setsid descendant when the run ${scenario.name}`, async () => {
+        const tempDir = await mkdtemp(join(tmpdir(), "paperclip-run-descendant-"));
+        const pidFile = join(tempDir, "pid");
+        try {
+          const agentId = await seedProcessAgent({
+            ...escapedDescendantCommand(pidFile, scenario.tail),
+            cwd: tempDir,
+            ...scenario.config,
+          });
+          const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+          expect(queued).not.toBeNull();
+          const escapedPid = await readPidFile(pidFile);
+          escapedPids.add(escapedPid);
+
+          const finished = await waitForRunToFinish(heartbeat, queued!.id);
+          expect(finished?.status).toBe(scenario.status);
+          await heartbeat.drainActiveRunExecutions();
+
+          expect(await waitForProcessExit(escapedPid)).toBe(true);
+        } finally {
+          await rm(tempDir, { recursive: true, force: true });
+        }
+      }, 30_000);
+    }
+
+    it("stops a setsid descendant when a running run is cancelled", async () => {
+      const tempDir = await mkdtemp(join(tmpdir(), "paperclip-run-descendant-"));
+      const pidFile = join(tempDir, "pid");
+      try {
+        const agentId = await seedProcessAgent({
+          ...escapedDescendantCommand(pidFile, "exec sleep 300"),
+          cwd: tempDir,
+          graceSec: 1,
+        });
+        const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+        expect(queued).not.toBeNull();
+        const escapedPid = await readPidFile(pidFile);
+        escapedPids.add(escapedPid);
+
+        await heartbeat.cancelRun(queued!.id, "Operator Stop");
+        await heartbeat.drainActiveRunExecutions();
+
+        expect(await waitForProcessExit(escapedPid)).toBe(true);
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    }, 30_000);
   });
 });

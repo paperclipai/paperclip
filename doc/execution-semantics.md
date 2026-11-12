@@ -1855,6 +1855,24 @@ a crash stop with its durable record intact, and recovery continues within the
 normal attempt budget. Any other report keeps the cleanup quarantine below.
 Launcher-owned (remote) and adopted runners are not reaped this way.
 
+Legacy local adapter runs have no runnerd journal. Their CLI runs in its own
+process group, but a tool can move a process out of that group (for example
+Claude Code runs each Bash command with `setsid`, and `nohup` or a double fork
+reparent a server to init). Every local run exports `PAPERCLIP_RUN_ID` to its
+CLI, and descendants inherit it in their initial environment whatever group or
+session they join. On Linux, when a local legacy run settles (success, failure,
+timeout or in-process cancel), when it is cancelled without a live executor
+(for example after a server restart), and when process-loss recovery fails it,
+the server scans `/proc` for same-user processes whose initial environment has
+that exact run id. It sends SIGTERM, waits the grace period, then sends SIGKILL,
+including to a marked process that started during the grace period. A process
+is named by PID and start time, and the start time is read again before each
+signal, so a reused PID is never signalled. The server and its ancestors, and
+processes of registered local services, are excluded; server-managed runtime
+services also start without `PAPERCLIP_*` variables. A process that discards
+its environment (`env -i`) or changes user is not found. Other platforms keep
+the process-group stop only.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,

@@ -10,6 +10,7 @@ import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js"
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
+import { reapRunDescendants } from "./run-descendant-reaper.js";
 import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
@@ -1518,6 +1519,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                   running.graceSec,
                   options.terminationGraceMs,
                 ),
+              });
+            }
+            // A live in-process executor reaps the run's escaped descendants
+            // when it settles. Without one (for example a cancel after a
+            // server restart) nothing else will, so reap them here by run id.
+            if (run.runtimeMode === "legacy" && !control && !activeRunExecutions.has(run.id)) {
+              await reapRunDescendants({
+                runId: run.id,
+                reason: "run_cancelled",
+                ...(running
+                  ? { graceMs: cancellationTerminationGraceMs(running.graceSec, options.terminationGraceMs) }
+                  : {}),
               });
             }
             terminationSettled = true;
