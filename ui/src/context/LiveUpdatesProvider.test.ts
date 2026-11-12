@@ -250,6 +250,31 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
     client.clear();
   });
+  // Chat eval cohort 5 (cases.case-history, tasks.ambiguous-task): finalization saved the reply 70ms after the
+  // run's terminal status was published and logged no comment_added; the open chat never fetched it.
+  it("fetches the open chat's saved comments when a run's reply is committed after its terminal status", () => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    client.setQueryData(queryKeys.companies.list("user-1"), { companies: [{ id: "company-1", issuePrefix: "PAP" }], unauthorized: false });
+    client.setQueryData(queryKeys.agents.list("company-1"), [{ id: "agent-1", name: "Coder", urlKey: "coder" }]);
+    const chat = { id: "chat-1", companyId: "company-1", identifier: "PAP-1", assigneeAgentId: "agent-1" };
+    client.setQueryData(queryKeys.agentChats.detail("company-1", "user-1", "agent-1"), chat);
+    client.setQueryData(queryKeys.issues.detail("chat-1"), chat);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    vi.stubGlobal("document", { visibilityState: "visible", hasFocus: () => true });
+    const deliver = (payload: Record<string, unknown>) => __liveUpdatesTestUtils.handleLiveEvent(client, "company-1", "/PAP/chats/agent-1",
+      { id: 1, companyId: "company-1", type: "heartbeat.run.event", createdAt: "2026-11-12T06:57:46Z", payload } as never,
+      () => null, { cooldownHits: new Map<string, number[]>(), suppressUntil: 0, observedRunOutcomes: new Set<string>() }, { userId: "user-1", agentId: null });
+    const commentInvalidations = () => invalidate.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKeys.issues.comments("chat-1")));
+    deliver({ runId: "run-1", agentId: "agent-1", issueId: "chat-1", eventType: "item.delta" });
+    expect(commentInvalidations()).toHaveLength(0);
+    deliver({ runId: "run-2", agentId: "agent-2", issueId: "other-task", eventType: "run.presentation.resolved" });
+    expect(commentInvalidations()).toHaveLength(0);
+    deliver({ runId: "run-1", agentId: "agent-1", issueId: "chat-1", eventType: "run.presentation.resolved" });
+    expect(commentInvalidations()).toHaveLength(1);
+    vi.unstubAllGlobals();
+    client.clear();
+  });
   it.each(["ai_connection.default_changed", "ai_connection.reconnected", "connection_grant.revoked"])(
     "refreshes company AI account previews after %s", (action) => {
       const invalidateQueries = vi.fn();
