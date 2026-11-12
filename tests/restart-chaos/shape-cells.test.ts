@@ -51,7 +51,7 @@ describe("W2, W2Q, W2C: re-wake after success", () => {
     const calls: Array<{ method: string; route: string; body: unknown }> = [];
     const record = { plan: { taskId: "t01", index: 3, nonce: "0bcd1204", followUpAfterMs: 10_000, workload: "W2", ...plan } } as unknown as TaskRecord;
     const api = {
-      async get<T>(route: string) { return (route.endsWith("/interactions") ? interactions : []) as T; },
+      async get<T>(route: string) { return (route.endsWith("/interactions") ? interactions : route === "/api/agents/a1" ? { adapterConfig: { model: "m1" } } : []) as T; },
       async post<T>(route: string, body?: unknown) { calls.push({ method: "post", route, body }); return { id: "c1" } as T; },
       async patch<T>(route: string, body?: unknown) { calls.push({ method: "patch", route, body }); return {} as T; },
     };
@@ -94,7 +94,7 @@ describe("W2, W2Q, W2C: re-wake after success", () => {
   it("W2C: changes the agent configuration first, then wakes at least 5 s later", async () => {
     const { calls, record, step } = harness({ workload: "W2C", followUpAfterMs: 0 });
     await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 5_000);
-    expect(calls).toEqual([{ method: "patch", route: "/api/agents/a1", body: { adapterConfig: { idleTimeoutMs: 301_003 } } }]);
+    expect(calls).toEqual([{ method: "patch", route: "/api/agents/a1", body: { adapterConfig: { model: "m1", idleTimeoutMs: 301_003 }, replaceAdapterConfig: true } }]);
     await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 7_000);
     expect(calls).toHaveLength(1);
     await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 10_000);

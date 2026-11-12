@@ -1729,9 +1729,9 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   }) => void | Promise<void>;
 }
 
-/** One measured local startup sub-step, named for the run-log span it becomes. */
+/** One measured startup sub-step, named for the run-log span it becomes. */
 export interface RunnerdStartupStep {
-  name: "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
+  name: "runner.control_plane.open" | "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
   mode: "bootstrap" | "resume";
   startedAtMs: number;
   endedAtMs: number;
@@ -5504,6 +5504,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return operation;
   }
 
+  async #refreshBootstrapTicket(core: DurablePrpControlPlane): Promise<string> {
+    this.#assertStartupOpen();
+    const ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
+    await core.flushCheckpoint();
+    this.#assertStartupOpen();
+    return ticket;
+  }
+
   #assertStartupOpen(): void {
     if (this.#closed) throw new Error("runnerd transport closed during provider startup");
   }
@@ -6188,6 +6196,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#resume();
       return this.#openedThreadResponse(params);
     }
+    this.#startupSteps?.begin("runner.control_plane.open");
     const token = randomUUID().replaceAll("-", "");
     const identity = this.options.prpIdentity ?? {
       runnerInstanceId: `runner_lab_${token}`,
@@ -6305,6 +6314,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       diagnosticsDirectory: resolve(this.#root, "diagnostics"),
       processLauncher: this.options.runnerProcessLauncher,
       isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
+      refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core),
     });
     this.#handle = handle;
     this.#watchRunner(handle);
@@ -7180,6 +7190,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           diagnosticsDirectory: resolve(this.#root, "diagnostics"),
           processLauncher: this.options.runnerProcessLauncher,
           isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
+          ...(warmRecovery ? {} : { refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core) }),
         });
     if (handle) {
       this.#handle = handle;
@@ -7951,6 +7962,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : this.#core?.getCommand(commandId),
       runnerHasExited: () => this.#runnerHasExited(),
       failureCode: () => this.#startupComplete ? "provider_transport_failed" : this.#startupFailureCode,
+      describeStall: () => this.#core === null ? null : describeRunnerCommandStall({
+        commands: this.#core.store.state.commands,
+        commandId: commandId ?? this.#core.store.state.commands.find(candidate => candidate.type === type)?.commandId,
+        connectedRunners: this.#core.activeRunnerConnectionCount(),
+        disconnectedForMs: this.#core.runnerDisconnectedForMs(),
+        committedEvents: this.#core.store.state.committedEvents,
+        now: Date.now(),
+      }),
     });
 
     }
@@ -9594,6 +9613,8 @@ export async function waitForRunnerCommand(input: {
   command: () => { status: string; result?: unknown } | undefined;
   runnerHasExited: () => Promise<boolean>;
   failureCode: () => string;
+  /** Bounded, content-free evidence of what the command waited behind. */
+  describeStall?: () => string | null;
 }): Promise<void> {
   const now = () => input.clock ? input.clock.now() : Date.now();
   while (now() < input.deadline) {
@@ -9618,5 +9639,42 @@ export async function waitForRunnerCommand(input: {
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
   }
-  throw new Error(`${input.failureCode()}: PRP command ${input.type} timed out`);
+  let stall: string | null = null;
+  try { stall = input.describeStall?.() ?? null; } catch { stall = null; }
+  throw new Error(`${input.failureCode()}: PRP command ${input.type} timed out${stall ? ` (${stall})` : ""}`);
+}
+
+/**
+ * What a command that got no answer was waiting behind: whether a Runner was
+ * connected, the older commands still pending ahead of it (types only), and
+ * how long ago the last Runner event arrived. Types, counts and durations
+ * only, never payloads, so it is safe in run logs.
+ */
+export function describeRunnerCommandStall(input: {
+  commands: ReadonlyArray<{ commandId: string; controllerSeq: number; type: string; status: string; issuedAt: string }>;
+  commandId: string | undefined;
+  connectedRunners: number;
+  disconnectedForMs: number | null;
+  committedEvents: ReadonlyArray<{ sourceSeq: number; envelope?: Record<string, unknown> }>;
+  now: number;
+}): string {
+  const target = input.commands.find(command => command.commandId === input.commandId);
+  const ahead = target === undefined ? [] : input.commands.filter(command =>
+    command.status === "pending" && command.controllerSeq < target.controllerSeq);
+  const types = [...new Set(ahead.map(command => command.type))].slice(0, 6);
+  const oldestAhead = ahead.reduce<number | null>((oldest, command) => {
+    const issued = Date.parse(command.issuedAt);
+    return Number.isFinite(issued) && (oldest === null || issued < oldest) ? issued : oldest;
+  }, null);
+  const last = input.committedEvents.at(-1);
+  // A committed event keeps the Runner's emission time inside its PRP payload.
+  const emittedAt = (last?.envelope?.payload as Record<string, unknown> | undefined)?.emittedAt
+    ?? last?.envelope?.emittedAt;
+  const lastEmitted = typeof emittedAt === "string" ? Date.parse(emittedAt) : NaN;
+  const seconds = (ms: number) => `${Math.max(0, Math.round(ms / 1000))}s`;
+  return [
+    `runner ${input.connectedRunners > 0 ? "connected" : input.disconnectedForMs === null ? "never connected" : `disconnected ${seconds(input.disconnectedForMs)}`}`,
+    `pending ahead ${ahead.length}${types.length ? ` [${types.join(",")}]` : ""}${oldestAhead === null ? "" : ` oldest ${seconds(input.now - oldestAhead)}`}`,
+    `last runner event ${last === undefined ? "none" : `seq ${last.sourceSeq}${Number.isFinite(lastEmitted) ? ` ${seconds(input.now - lastEmitted)} ago` : ""}`}`,
+  ].join("; ");
 }

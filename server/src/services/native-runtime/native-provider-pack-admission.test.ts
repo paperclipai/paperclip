@@ -105,6 +105,31 @@ describe("provider pack admission identity", () => {
       { identity: initial, sourceRunId: initial.runId, ...binding })).resolves.toBe(false);
     expect(admittedNativeProviderPack(recovered.session, initial)).toBeNull();
   });
+  it.each([
+    ["source_state_pending", {}, { ...verified, state: "pending" }],
+    ["source_state_unknown", {}, { ...verified, state: "unknown" }],
+    ["source_state_missing", {}, null],
+    ["runner_instance_differs", { runnerInstanceId: "other-runner" }, verified],
+    ["environment_lease_differs", { runnerEnvironmentLeaseId: "other-lease" }, verified],
+    ["receipt_invalid", { sessionId: "foreign" }, verified],
+  ] as const)("names the refused check %s without admitting", async (reason, change, state) => {
+    const source = sessionFixture(); remember(source.session);
+    const saved = { ...admittedNativeProviderPack(source.session, initial)!, ...change };
+    const recovered = sessionFixture();
+    const onRefused = vi.fn();
+    await expect(rememberRecoveredNativeProviderPack(receiptDb(saved, state), recovered.session,
+      { identity: initial, sourceRunId: initial.runId, ...binding, onRefused })).resolves.toBe(false);
+    expect(onRefused).toHaveBeenCalledExactlyOnceWith(reason);
+    expect(admittedNativeProviderPack(recovered.session, initial)).toBeNull();
+  });
+  it("reports nothing when the saved admission is reused", async () => {
+    const source = sessionFixture(); remember(source.session);
+    const recovered = sessionFixture();
+    const onRefused = vi.fn();
+    await expect(rememberRecoveredNativeProviderPack(receiptDb(admittedNativeProviderPack(source.session, initial)), recovered.session,
+      { identity: initial, sourceRunId: initial.runId, ...binding, onRefused })).resolves.toBe(true);
+    expect(onRefused).not.toHaveBeenCalled();
+  });
   it("uses only the exact same-run locked pre-invalidation source snapshot", async () => {
     const source = sessionFixture(); remember(source.session);
     const saved = admittedNativeProviderPack(source.session, initial)!;
