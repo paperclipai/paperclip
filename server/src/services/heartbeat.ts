@@ -2947,7 +2947,7 @@ export function heartbeatService(
       if (managedAiRuntime && aiBinding) {
         try {
           await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget, {
-            deferNewRunnerTaskCapabilityCheck: agent.adapterType === "paperclip_runner" && !runOptions.nativeRestartRecovery,
+            deferRunnerTaskCapabilityCheck: agent.adapterType === "paperclip_runner" && !runOptions.nativeRestartRecovery,
           });
         } catch (error) {
           throw classifyManagedProjectAuthFailure(error, agent.id);
