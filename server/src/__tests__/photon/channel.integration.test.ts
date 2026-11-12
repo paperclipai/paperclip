@@ -5,10 +5,13 @@ import { nativeResponsePresentationWork } from "../../services/native-runtime/na
 import { DELIVERY_QUEUES } from "../../services/delivery-work-notifications.js";
 import { idleWorkSnapshot } from "../../services/task-admission.js";
 import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
+import { githubConnectionEventService } from "../../services/github-connection-events.js";
+import { registerGitHubConnectionEventWork } from "../../services/github-connection-work.js";
+import { joinConnectionEventWakeEnrollment } from "../../services/connection-event-wake.js";
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { Readable } from "node:stream";
 import type { StorageService } from "../../storage/types.js";
-import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync, verify } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -100,6 +103,7 @@ describe("iMessage Photon channel control plane", () => {
   const oldKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   const services: ChatChannelService[] = [];
   const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
+  const connectionEventWorkers: ReturnType<typeof registerGitHubConnectionEventWork>[] = [];
   const companyIds: string[] = [];
   beforeAll(async () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PHOTON_TEST_DATABASE_URL");
@@ -113,6 +117,7 @@ describe("iMessage Photon channel control plane", () => {
     );
   }, 30_000);
   afterEach(async () => {
+    await Promise.all(connectionEventWorkers.splice(0).map(worker => worker.stop()));
     await Promise.all(coordinators.splice(0).map(coordinator => coordinator.stop()));
     await Promise.all(services.splice(0).map((service) => service.shutdown()));
     for (const id of companyIds.splice(0))
@@ -690,8 +695,28 @@ describe("iMessage Photon channel control plane", () => {
     const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
       signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
       sealPrivateKey: sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+    const eventEnrollments: { subject: string; companyId: string }[] = [];
     const connector = cloudConnectors.createPaperclipCloudConnector({ config: connectorConfig,
-      request: async () => Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } }) });
+      request: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        expect(url.origin).toBe(connectorConfig.baseUrl);
+        if (url.pathname === "/v1/connector/events/lease") {
+          if (typeof init?.body !== "string") throw new Error("Missing normal signed event enrollment");
+          const body = JSON.parse(init.body);
+          const [header, payload, signature] = body.request.split(".");
+          expect(verify(null, Buffer.from(`${header}.${payload}`), signing.publicKey,
+            Buffer.from(signature, "base64url"))).toBe(true);
+          const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+          expect(claims).toMatchObject({ iss: connectorConfig.instanceId, env: connectorConfig.environment, aud: url.toString(), ewv: 1 });
+          expect(claims.sub).toEqual(expect.any(String));
+          expect(claims.cid).toEqual(expect.any(String));
+          eventEnrollments.push({ subject: claims.sub, companyId: claims.cid });
+          // Normal connector.leaseEvents parses this controlled protocol reply;
+          // no fixture writes the connector's negotiated state or join promise.
+          return Response.json({ events: [], eventWakeVersion: 1 });
+        }
+        return Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } });
+      } });
     vi.spyOn(cloudConnectors, "paperclipCloudConnectorConfigFromEnv").mockReturnValue(connectorConfig);
     vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockReturnValue(connector);
     const createOwner = photonExternalRuntime.createPhotonExternalRuntimeOwner;
@@ -711,6 +736,19 @@ describe("iMessage Photon channel control plane", () => {
     });
     const t = await setup(); endpointId = t.endpoint.id; companyId = t.companyId;
     await t.start(); await t.qualify();
+    const enrollmentErrors: unknown[] = [];
+    const eventCoordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => enrollmentErrors.push(error) });
+    coordinators.push(eventCoordinator);
+    const eventService = githubConnectionEventService(db, { connector });
+    const eventWorker = registerGitHubConnectionEventWork(db, eventCoordinator, eventService, () => true);
+    connectionEventWorkers.push(eventWorker);
+    // Match normal startup registration and join its actual first signed lease
+    // negotiation. No event drain, handwritten version or successful join stub.
+    await Promise.all([eventWorker.ready, joinConnectionEventWakeEnrollment(db)]);
+    expect(eventEnrollments.length).toBeGreaterThan(0);
+    expect(connector.eventWakeVersion()).toBe(1);
+    expect(enrollmentErrors).toEqual([]);
     const owner = observedOwner;
     if (!owner) throw new Error("Normal external Runtime owner absent");
     const state = photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id });
