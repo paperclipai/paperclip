@@ -538,6 +538,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     mode: requestedExecutionWorkspaceMode,
     hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
     projectWorkspaceId: issueRef.projectWorkspaceId,
+    hasSelectedExecutionWorkspace: Boolean(issueRef.executionWorkspaceId || boundSourceWorkspace) ||
+      requestedShouldReuseExisting || taskWorkspaceIntent?.selection.kind === "existing",
     workspaceStrategies: [
       config.workspaceStrategy,
       issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,

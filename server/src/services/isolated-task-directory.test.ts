@@ -34,6 +34,7 @@ describe("repository-free low-trust workspace selection", () => {
     { mode: "shared_workspace" },
     { hasProjectWorkspace: true },
     { projectWorkspaceId: "workspace-1" },
+    { hasSelectedExecutionWorkspace: true },
     { workspaceStrategies: [{ type: "git_worktree" }] },
     { workspaceStrategies: [{ existingBranch: "main" }] },
     { workspaceStrategies: [{ provisionCommand: "setup" }] },
