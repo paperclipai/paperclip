@@ -44,6 +44,8 @@ export const ruLabels: Record<string, string> = {
   "More actions": "Ещё действия",
   "New Task": "Новая задача",
   "Organization": "Компания",
+  "Organizations": "Компании",
+  "Switch organization": "Сменить компанию",
   "Role": "Роль",
   "Title": "Название",
   "Type": "Тип",
