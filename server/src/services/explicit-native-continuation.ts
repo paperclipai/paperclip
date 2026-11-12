@@ -2,7 +2,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-n
 import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
-import { canSelectFreshWorkspace, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
+import { canSelectFreshWorkspace, freshReadinessSchema, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
@@ -721,7 +721,11 @@ export async function admitExplicitNativeContinuation(input: {
 type ContinuationRetryAuthority = {
   continuation: { commentId: string } | { commentId: null; taskRetryRequestId: string };
   actorId: string; sourceAuthorizationId: string; evidence: Record<string, unknown>;
+  /** The workspace a fresh-workspace Retry selected, carried to the successor. */
+  readiness?: CarriedRetryReadiness;
 };
+
+type CarriedRetryReadiness = z.infer<typeof freshReadinessSchema>;
 
 async function readCommentRetryAuthority(db: Db, input: {
   companyId: string; issueId: string; parentRunId: string; explicit: Record<string, unknown>;
@@ -753,13 +757,24 @@ async function readCommentRetryAuthority(db: Db, input: {
 
 /** A task Retry admits one plain continuation in the saved workspace. When that
  * run fails transiently, its bounded retry keeps the same actor and receipt;
- * chat, queued-message and fresh-workspace Retries keep their own contracts. */
+ * chat and queued-message Retries keep their own contracts.
+ *
+ * A fresh-workspace Retry (selected at admission, or when its preparation found
+ * the saved files unrestorable) is renewable only for a run that a graceful
+ * shutdown stopped before provider work: the person asked for that fresh
+ * attempt and it never ran. The successor carries the same workspace selection,
+ * so it prepares the same attempt rather than the workspace the Retry left. */
 async function readTaskRetryRetryAuthority(db: Db, input: {
   companyId: string; issueId: string; agentId: string; parentRunId: string; explicit: Record<string, unknown>;
+  workspaceSelectionRenewable: boolean;
 }): Promise<ContinuationRetryAuthority | null> {
   const { companyId, issueId, explicit } = input;
   const requestId = z.string().guid().safeParse(explicit.taskRetryRequestId);
-  if (explicit.commentId !== null || !requestId.success || explicit.queuedCommentInterruptId || explicit.readiness) return null;
+  if (explicit.commentId !== null || !requestId.success || explicit.queuedCommentInterruptId) return null;
+  const admittedReadiness = explicit.readiness === undefined ? null : freshReadinessSchema.safeParse(explicit.readiness);
+  if (admittedReadiness && (!input.workspaceSelectionRenewable || !admittedReadiness.success
+      || admittedReadiness.data.retryIntentId !== requestId.data
+      || admittedReadiness.data.sourceRunId !== explicit.previousRunId)) return null;
   const [wake] = await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, requestId.data),
     eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.reason, "task_retry"),
@@ -767,20 +782,44 @@ async function readTaskRetryRetryAuthority(db: Db, input: {
     sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
   ));
   const intent = readTaskRetryIntent(wake?.payload);
+  const freshAttempt = intent?.strategy === "fresh_isolated_workspace";
   if (!wake?.requestedByActorId || !wake.runId || !intent || intent.generationId !== wake.id ||
-      intent.actorId !== wake.requestedByActorId || intent.strategy !== "continue" ||
+      intent.actorId !== wake.requestedByActorId ||
+      !(intent.strategy === "continue" || (freshAttempt && input.workspaceSelectionRenewable)) ||
       intent.chatActionId || intent.queuedChatRequestId || intent.canonicalIntentId) return null;
   // The admitted run's authority may be its action ledger, an earlier
   // automatic-retry receipt, or the Retry receipt itself. Dispatch validation
   // of the parent below proves which one applies.
-  const [receipt] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-    eq(issueRecoveryActions.status, "resolved"),
-    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId' = ${input.parentRunId}`,
-    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'taskRetryRequestId' = ${wake.id}`,
-  )).limit(1);
+  const receipts = await db.select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence })
+    .from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId' = ${input.parentRunId}`,
+      sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'taskRetryRequestId' = ${wake.id}`,
+    ));
+  let readiness: CarriedRetryReadiness | undefined = admittedReadiness?.success ? admittedReadiness.data : undefined;
+  if (freshAttempt && readiness?.mode !== "fresh_isolated_workspace") {
+    if (readiness) return null;
+    // An automatic retry of the fresh attempt carries the selection on its receipt.
+    const inherited = receipts.map(row => freshReadinessSchema.safeParse(
+      ((row.evidence.explicitUserContinuation as Record<string, unknown> | undefined)?.automaticRetry as
+        Record<string, unknown> | undefined)?.readiness)).find(parsed => parsed.success)?.data;
+    if (inherited) {
+      if (inherited.mode !== "fresh_isolated_workspace" || inherited.retryIntentId !== wake.id
+        || inherited.sourceRunId !== intent.sourceRunId) return null;
+      readiness = inherited;
+    } else {
+      // Preparation selected the fresh attempt after admission. Rebuild the
+      // selection it recorded: this Retry, its source and that source's leases.
+      if (intent.sourceRunId !== explicit.previousRunId) return null;
+      const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, intent.sourceRunId)));
+      readiness = { mode: "fresh_isolated_workspace", retryIntentId: wake.id, sourceRunId: intent.sourceRunId,
+        retainedSourceIds: leases.map(lease => lease.id) };
+    }
+  }
   return { continuation: { commentId: null, taskRetryRequestId: wake.id }, actorId: wake.requestedByActorId,
-    sourceAuthorizationId: receipt?.id ?? wake.id, evidence: {} };
+    sourceAuthorizationId: receipts[0]?.id ?? wake.id, evidence: {}, ...(readiness ? { readiness } : {}) };
 }
 
 /** A graceful server shutdown (an upgrade or restart) stopped this legacy run
@@ -835,7 +874,8 @@ export async function admitExplicitContinuationRetry(input: {
   const explicit = context.explicitUserContinuation as Record<string, unknown> | undefined;
   if (!explicit || !z.string().guid().safeParse(explicit.previousRunId).success || explicit.failedRunId) return null;
   const authority = explicit.commentId === null
-    ? await readTaskRetryRetryAuthority(db, { companyId, issueId, agentId, parentRunId: parent.id, explicit })
+    ? await readTaskRetryRetryAuthority(db, { companyId, issueId, agentId, parentRunId: parent.id, explicit,
+      workspaceSelectionRenewable: shutdownInterrupted })
     : await readCommentRetryAuthority(db, { companyId, issueId, parentRunId: parent.id, explicit });
   if (!authority) return null;
   const [superseding] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
@@ -883,6 +923,7 @@ export async function admitExplicitContinuationRetry(input: {
       ...continuation, actorId: authority.actorId, runId: input.successorRunId, ...authority.evidence,
       recordedAt: input.now.toISOString(), automaticRetry: {
         sourceRunId: parent.id, sourceAuthorizationId: authority.sourceAuthorizationId,
+        ...(authority.readiness ? { readiness: authority.readiness } : {}),
       },
     } },
   });
