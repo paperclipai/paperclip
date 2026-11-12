@@ -45,11 +45,16 @@ it.each(cases)("reuses actual $adapter controls and Run Policy disclosure for $h
     for (const label of [...test.labels, "Timeout (sec)", "Interrupt grace period (sec)"]) expect(control(sides[1]!, label)).toEqual(control(sides[0]!, label));
     const pool = sides[1]!;
     expect(pool.textContent).not.toContain("ACP state directory");
-    expect(pool.textContent?.includes("Local Claude skills and plugins")).toBe(test.harness === "claude_code" && test.runner === "legacy");
+    expect(pool.textContent).not.toContain("Local Claude skills and plugins");
+    if (test.harness === "claude_code" && test.runner === "legacy") {
+      const advanced=[...pool.querySelectorAll("button")].find(button=>button.textContent?.trim()==="Advanced")!;
+      await act(async()=>advanced.click());
+      expect(pool.textContent).toContain("Local Claude skills and plugins");
+    }
     expect(pool.textContent).not.toContain("ACP server command");
     expect(pool.querySelector('[aria-label="Harness"]')).toBeNull();
     expect(pool.querySelector('[aria-label="Model"]')).toBeNull();
-    expect([...pool.querySelectorAll("button")].some(button => button.textContent?.trim() === "Advanced")).toBe(false);
+    expect([...pool.querySelectorAll("button")].some(button => button.textContent?.trim() === "Advanced")).toBe(test.harness === "claude_code" && test.runner === "legacy");
     if (test.harness === "codex" && test.runner === "legacy") expect(pool.textContent).toContain("Fast mode consumes credits/tokens much faster");
     for (const side of sides) {
       const timeout = side.querySelector<HTMLInputElement>('[aria-label="Timeout (sec)"]')!;

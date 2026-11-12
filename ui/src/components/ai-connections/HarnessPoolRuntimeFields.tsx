@@ -34,7 +34,7 @@ export function HarnessPoolRuntimeFields({ member, companyId, onChange, harnessF
     {accountFields}
   </>} runtime={<>
     {confirmCli && <div className="space-y-2 text-sm"><p>Switch to CLI and remove ACP session and permission settings? Review CLI permissions before saving.</p><div className="flex gap-2"><Button variant="outline" onClick={() => setConfirmCli(false)}>Keep ACP settings</Button><Button onClick={() => changeEngine("cli")}>Switch to CLI</Button></div></div>}
-    <AgentRuntimeConfigSections showSectionTitles={false} fieldProps={{
+    <AgentRuntimeConfigSections showSectionTitles={false} showAdvanced={!native && member.harness.type === "claude_code"} fieldProps={{
       companyId, mode: "edit", isCreate: false, adapterType: native ? "paperclip_runner" : adapters[member.harness.type],
       values: null, set: null, config, models: [], hideModel: true, hideInstructionsFile: true, hideRunnerHarness: true, allowedConfigKeys,
       eff: (_group, _key, original) => original,

@@ -5,7 +5,7 @@
 Settings > Pools stores runner behavior per ordered member. A Claude Legacy
 member exposes local profile import (off, copy per run, or cache per agent), an
 optional read-only profile source directory, and session transcript retention
-with a positive whole-day retention period under Advanced Run Policy. These
+with a positive whole-day retention period under the Claude configuration's Advanced disclosure. These
 settings travel with the selected member; a fallback to another harness clears
 them. Transcript storage remains scoped to the company, agent, task and account.
 The managed Claude implementation is supplied by PR #18150; upstream integration

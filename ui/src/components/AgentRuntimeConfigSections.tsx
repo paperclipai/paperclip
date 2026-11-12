@@ -23,7 +23,7 @@ function RuntimeFields({ fieldProps, section }: Pick<Props, "fieldProps"> & { se
   const adapter = useMemo(() => getUIAdapter(fieldProps.adapterType), [fieldProps.adapterType]);
   return <>
     {fieldProps.adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...fieldProps} section={section} />}
-    {fieldProps.adapterType === "claude_local" && section === "runPolicy" && fieldProps.allowedConfigKeys?.has("profileImportMode") && <ClaudeRuntimePolicyFields {...fieldProps} />}
+    {fieldProps.adapterType === "claude_local" && section === "advanced" && fieldProps.allowedConfigKeys?.has("profileImportMode") && <ClaudeRuntimePolicyFields {...fieldProps} />}
     <adapter.ConfigFields {...fieldProps} section={section} />
   </>;
 }

@@ -310,7 +310,8 @@ it.each([undefined, false])("matches actual Codex bypass policy for saved settin
 
 it("edits the shared Claude profile and transcript policies per pool member", async () => {
   await mount({ id: "claude", harness: { type: "claude_code" }, runner: "legacy", model: "sonnet", adapterConfig: { engine: "cli" } });
-  await expandPolicy();
+  const advanced=[...host.querySelectorAll("button")].find(button=>button.textContent?.trim()==="Advanced")!;
+  expect(advanced).toBeTruthy();flushSync(()=>advanced.click());await settle();
   const select=host.querySelector<HTMLSelectElement>('[aria-label="Local Claude skills and plugins"]')!;
   expect(select).toBeTruthy();
   flushSync(()=>{select.value="cache";select.dispatchEvent(new Event("change",{bubbles:true}));}); await settle();
