@@ -48,7 +48,7 @@ import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravi
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
-import { probeAiConnectionUsage } from "./ai-connection-usage.js";
+import { aiConnectionUsageCache, aiConnectionUsageCacheKey, probeAiConnectionUsage, probeAiConnectionUsageDetailed } from "./ai-connection-usage.js";
 import { probeAiAccountIdentity } from "./ai-account-identity.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
@@ -238,7 +238,22 @@ export function aiConnectionService(db: Db) {
     if (!metadata.success) throw notFound("AI connection not found");
     return { row, metadata: metadata.data };
   }
-  /** On-demand account observation for either runner; never probes ambient CLI auth. */
+  /** The shared usage cache key: one grant at its current credential version. */
+  async function usageCacheKey(companyId: string, grant: { id: string; updatedAt: Date; credentialSecretRefs: Array<{ secretId: string; configPath: string }> }) {
+    const ref = grant.credentialSecretRefs.find((r) => r.configPath === "ai.credential");
+    const [secret] = ref ? await db.select({ version: companySecrets.latestVersion }).from(companySecrets)
+      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, ref.secretId))) : [];
+    return aiConnectionUsageCacheKey({ companyId, grantId: grant.id, secretId: ref?.secretId ?? null, secretVersion: secret?.version ?? null, grantUpdatedAt: grant.updatedAt });
+  }
+  /** The cached usage result for a grant, if one is current; never calls the provider. */
+  async function cachedUsage(companyId: string, grantId: string): Promise<AiConnectionUsage | undefined> {
+    const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, grantId)));
+    return grant ? aiConnectionUsageCache.peek(await usageCacheKey(companyId, grant)) : undefined;
+  }
+  /**
+   * On-demand account observation for either runner; never probes ambient CLI auth.
+   * Reads through the shared usage cache, so callers share provider calls and backoff.
+   */
   async function probeUsage(companyId: string, userId: string, connectionId: string, grantId?: string): Promise<AiConnectionUsage> {
     const { row, metadata } = await readableAccount(companyId, userId, connectionId, grantId);
     const identity = { connectionId: row.connection.id, grantId: row.grant.id, ...metadata };
@@ -250,8 +265,12 @@ export function aiConnectionService(db: Db) {
     if (!supportsAiConnectionUsage(metadata.provider, metadata.method)) {
       return { ...identity, ...await probeAiConnectionUsage(metadata, "") };
     }
-    const value = await credential(row);
-    return { ...identity, ...await probeAiConnectionUsage(metadata, value) };
+    // Authorization above runs on every call; only the provider check is shared.
+    return aiConnectionUsageCache.observe(await usageCacheKey(companyId, row.grant), async () => {
+      const value = await credential(row);
+      const { usage, retryAfterMs } = await probeAiConnectionUsageDetailed(metadata, value);
+      return { usage: { ...identity, ...usage }, retryAfterMs };
+    });
   }
   async function accountIdentity(companyId: string, userId: string, connectionId: string, grantId?: string,
     audit?: { actorType: "user" | "agent" | "system"; actorId: string; heartbeatRunId?: string | null }): Promise<AiConnectionAccountIdentity> {
@@ -1269,5 +1288,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, cachedUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
 }

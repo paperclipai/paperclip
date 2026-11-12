@@ -303,6 +303,42 @@ describe("durable, authorized connection routing", () => {
     try { const pool = await makePool({ mode: "usage_aware", members: [members[1]!] }); const start = Date.now(); expect((await resolve(pool.id, "slow-probe")).memberId).toBe(members[1]!.id); expect(Date.now() - start).toBeLessThan(20_000); expect(proposal.mock.calls.at(-1)?.[2].candidates[0]?.usage).toBeUndefined(); }
     finally { spy.mockRestore(); }
   }, 25_000);
+  it("shares one cached usage check between the usage route and pool routing", async () => {
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[1]!.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    await secretService(db).rotate(ref.secretId, { value: "fixture-route-shared", preserveAiSessionEpoch: true }, { userId: "alice" });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] } as unknown as typeof req.actor; next(); });
+    app.use("/api", aiConnectionRoutes(db)); app.use(errorHandler);
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 12 } })));
+    try {
+      const url = `/api/companies/${companyId}/ai-connections/${members[1]!.binding.connectionId}/usage?grantId=${members[1]!.binding.grantId}`;
+      const direct = await request(app).get(url);
+      expect(direct.status).toBe(200); expect(direct.body.status).toBe("ok"); expect(spy).toHaveBeenCalledTimes(1);
+      expect((await request(app).get(url)).body.checkedAt).toBe(direct.body.checkedAt);
+      const pool = await makePool({ mode: "usage_aware", members: [members[1]!] }); await resolve(pool.id, "route-shared");
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(proposal.mock.calls.at(-1)?.[2].candidates[0]?.usage?.checkedAt).toBe(direct.body.checkedAt);
+      expect((await service().inspect(companyId, pool.id, "alice"))[members[1]!.id]?.checkedAt).toBe(direct.body.checkedAt);
+    } finally { spy.mockRestore(); }
+  });
+  it("keeps a throttled usage check unknown to the policy and backs it off", async () => {
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[1]!.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    await secretService(db).rotate(ref.secretId, { value: "fixture-throttled", preserveAiSessionEpoch: true }, { userId: "alice" });
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 429, headers: { "Retry-After": "120" } }));
+    try {
+      const pool = await makePool({ mode: "usage_aware", members: [members[1]!] });
+      const before = Date.now();
+      expect((await resolve(pool.id, "throttled-1")).memberId).toBe(members[1]!.id);
+      const usage = proposal.mock.calls.at(-1)?.[2].candidates[0]?.usage;
+      // A throttled check is neither zero usage nor exhaustion: no limits, an explicit retry time.
+      expect(usage).toMatchObject({ status: "error", errorCode: "rate_limited", limits: [], overage: null });
+      expect(Date.parse(usage!.retryAt!)).toBeGreaterThanOrEqual(before + 120_000);
+      expect((await resolve(pool.id, "throttled-2")).memberId).toBe(members[1]!.id);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally { spy.mockRestore(); }
+  });
   it("persists run-key affinity before policy calls and reuses it across allocation recovery", async () => {
     await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true, enableWorktreeRunExecution: true });
     const pool = await makePool({ members: [members[1]!] });
