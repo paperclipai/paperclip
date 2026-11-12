@@ -290,6 +290,25 @@ export async function rehydratePinnedSkillAssets(
   return { ...context, skills };
 }
 
+/**
+ * The admitted context names every skill by digest, so the Runner's copy is
+ * described without local files. Pinned skill files are rehydrated on this
+ * server now, or, when reconnecting to a live remote Runner that already holds
+ * them, only if a launch must stage them again.
+ */
+export async function prepareRuntimeContextSource(
+  db: Db,
+  binding: { companyId: string; runId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+  options: { deferUntilStaged: boolean },
+) {
+  let staged = options.deferUntilStaged ? null : await rehydratePinnedSkillAssets(db, binding, context);
+  return {
+    described: staged ?? context,
+    forStaging: async () => (staged ??= await rehydratePinnedSkillAssets(db, binding, context)),
+  };
+}
+
 export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {
   const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
     (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,

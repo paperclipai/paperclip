@@ -3349,7 +3349,11 @@ on a server whose cache is empty. The run log records the
 `heartbeat.prepare.configuration_skills_adopted` phase and a lifecycle event with
 payload `skillPreparation: "reused_admitted"`. Every other start, including a
 dead-Runner resume and a run saved by an older release without saved skill
-versions or a runtime context, prepares its skills as before. The session
+versions or a runtime context, prepares its skills as before. The Runner
+controller follows the same rule for the same reconnect: it describes the
+Runner's skills by their admitted digests and rehydrates the pinned skill files
+on this server only if it must launch a Runner process and stage them again.
+The digest checks then run as before. The session
 configuration fingerprint is unchanged, because it uses each skill's key,
 runtime name, and version, not its local path.
 
