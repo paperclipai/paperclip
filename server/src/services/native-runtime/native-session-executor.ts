@@ -59,6 +59,7 @@ import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@pa
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
@@ -821,6 +822,25 @@ function sandboxProviderLeaseId(target?: AdapterExecutionTarget | null): string 
  * reports the typed pre-provider failure that sends the next attempt to a
  * fresh sandbox instead of failing the task.
  */
+async function retireInProcessWarmOwnerOnSandbox(runId: string, providerLeaseId: string | null): Promise<boolean> {
+  for (const [scope, entry] of warmNativeSessions) {
+    if (entry.runId !== runId || entry.released || (providerLeaseId && entry.providerLeaseId !== providerLeaseId)) continue;
+    if (entry.busy || entry.preparingRunId) {
+      throw new NativePredecessorRetirementUnprovenError(runId, providerLeaseId, new Error("runner_port_holder_busy"));
+    }
+    if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+    entry.busy = true;
+    entry.closeOnReleaseReason = "warm Runner held the sandbox Runner port for another session";
+    try {
+      await retireWarmPredecessor(entry, entry.closeOnReleaseReason);
+      forgetWarmNativeSession(scope, entry);
+    } finally { entry.busy = false; }
+    return true;
+  }
+  return false;
+}
+
 async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
   options?: Parameters<typeof closeWarmNativeSession>[2]) {
   // Chaos cell SR1U: a sandbox owner whose stop stays unconfirmed even when
@@ -12072,6 +12092,22 @@ async function executePaperclipNativeSessionAttempt(
       remoteCleanupLease = await readRemoteCleanupLease();
       return true;
     };
+    const portTarget = input.runnerExecutionTarget;
+    if (input.useRunnerd && !input.backend && !existingWarmSession && portTarget?.kind === "remote" && portTarget.transport === "sandbox"
+      && portTarget.runner && !portTarget.runnerTask && portTarget.sandboxLeaseAcquisition?.outcome === "resumed"
+      && input.restartRecovery?.kind !== "reattach_remote_runner"
+      && input.restartRecovery?.kind !== "reattach_existing_runner") {
+      const runtimeRoot = posix.join(portTarget.remoteCwd, ".paperclip-runtime", "paperclip-runner");
+      const providerLeaseId = portTarget.sandboxLeaseAcquisition?.providerLeaseId ?? null;
+      const retirePortHolders = () => retireSandboxRunnerPortHolders({
+        db: input.db, companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+        runId: input.execution.binding.runId, runner: portTarget.runner!, runtimeRoot,
+        ownSessionRoot: posix.join(runtimeRoot, "sessions", createHash("sha256").update(nativeSessionKey(input.execution)).digest("hex")),
+        providerLeaseId, adoptedRunId: remoteWarmRecovery?.identity.runId ?? null,
+        retireInProcess: holderRunId => retireInProcessWarmOwnerOnSandbox(holderRunId, providerLeaseId), onLog: input.onLog,
+      });
+      await trace.measure("runner.port_holders.retire", () => executionContext ? executionContext.wait(retirePortHolders) : retirePortHolders());
+    }
     nativeSessionExecuteStartedAtMs = Date.now();
     native = await trace.measure(
       "native.session.execute",

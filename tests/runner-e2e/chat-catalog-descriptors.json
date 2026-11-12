@@ -1999,6 +1999,7 @@
     "scenarioId": "companies.agent-observability",
     "sourceFiles": [
       "chat-catalog-domains/identity-observability.ts",
+      "chat-catalog-domains/api-read-receipts.ts",
       "chat-catalog-domains/identity-company-observer.ts",
       "chat-catalog-domains/identity-private-browser.ts",
       "chat-catalog-domains/identity-private-browser-worker.ts",
@@ -2007,7 +2008,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.agent-observability.structural.v3",
+    "oracleVersion": "paperclip.chat-catalog.agent-observability.structural.v4",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 3,
     "turnTimeoutMs": 120000,
@@ -3454,7 +3455,7 @@
       "chat-catalog-domains/internal-inbox-search.ts",
       "chat-scenarios/inbox-search.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.show-my-work.v4",
+    "oracleVersion": "paperclip.chat-catalog.internal.show-my-work.v5",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -3559,9 +3560,10 @@
       "chat-catalog-domains/privileged-support.ts",
       "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-instance.ts",
+      "chat-rendered-links.ts",
       "chat-scenarios/instance-operations.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.restart-service.v2",
+    "oracleVersion": "paperclip.chat-catalog.privileged.restart-service.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -5451,7 +5453,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v6",
+    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v7",
     "coverageGaps": [],
     "expectedRunCount": 5,
     "minimumRunCount": 4,

@@ -8,7 +8,7 @@ import { runScopedCompanionSurface } from "./chat-companion-surface.js";
 import { chatQueryWithAttachments, resolveChatQueryAttachments, verifyChatQueryAttachments, type ChatQueryAttachmentReceipt } from "./chat-query-attachments.js";
 import { chatCatalogNeverStartedTerminalTaskRun, chatCatalogRunStatusAllowed, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
 import { chatCatalogCaseFingerprint, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { pollUntil } from "./api.js";
 import { collectChatRunEvidence, sendChatMessage } from "./chat-flow.js";
 import { prepareNativeStopCanonicalBoundary } from "./chat-native-stop-boundary.js";
@@ -41,6 +41,8 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
   let persistedQuery = scenario.query;
   let queryAttachments: ChatQueryAttachmentReceipt[] = [];
   let setupBoundary: ChatCatalogSetupBoundary = { humanCommentIds: [], runIds: [] };
+  // The conversation as the person sees it after the persistence reload; final evidence is read there.
+  let conversationUrl: string | undefined;
   async function conversation(persist = true) {
     await context.refreshIssue();
     const issue = context.issue();
@@ -220,7 +222,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     expect(chatCatalogNativePhaseIsTimely(context), "Original selected native observation budget before final proof").toBe(true);
     const originalIssueId = context.issue()?.id;
     await input.page.reload({ waitUntil: "domcontentloaded" });
-    if (!slack) await expect(input.page.getByTestId("task-chat-composer-input")).toBeVisible();
+    if (!slack) { await expect(input.page.getByTestId("task-chat-composer-input")).toBeVisible(); conversationUrl = input.page.url(); }
     const persisted = await refresh();
     expect(context.issue()?.id, "Source chat survives browser reload").toBe(originalIssueId);
     expect(persisted.grade.passed, "Independent oracle survives browser reload").toBe(true);
@@ -273,6 +275,9 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       }
     } else {
       try {
+        // verifyResult may follow a link away or return with only the document loaded. Read the final
+        // evidence from the rendered conversation, as the graded reload did, not from a page mid-load.
+        if (conversationUrl) await reopenConversation(input.page, conversationUrl);
         const finalConversation = await conversation();
         if (state) await refresh();
         const runs = await context.allRuns();
@@ -294,4 +299,12 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       }
     }
   }
+}
+
+async function reopenConversation(page: Page, url: string) {
+  try {
+    if (page.url() !== url) await page.goto(url, { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 30_000 });
+    await page.locator('[data-testid="task-chat-thread"], [data-testid="thread-root"]').first().waitFor({ state: "attached", timeout: 30_000 });
+  } catch { /* Evidence is still collected; a page that cannot reopen yields an honest empty link read. */ }
 }

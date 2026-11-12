@@ -111,4 +111,16 @@ describe("waits for the latest saved reply to render before reading links", () =
     expect(await waitForLatestConversationReplyRender(p, bindings, 300, 50)).toBe("pending");
     const started = Date.now(); expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("pending"); expect(Date.now() - started).toBeLessThan(1_000);
   });
+  // Cohort 3 on dfd2a6efca (access.other-company, teams.install-team and six more): the final evidence read
+  // ran on a freshly loaded conversation whose wait had expired in an earlier document, so it read instantly
+  // and saved no links although the reply rendered them. A new document gets its own bounded wait.
+  it("waits again in a newly loaded document after an earlier document's wait expired", async () => {
+    const bindings = conversationLinkBindings(input());
+    document.body.innerHTML = thread(); document.querySelector('#comment-reply')!.remove();
+    const p = page();
+    expect(await waitForLatestConversationReplyRender(p, bindings, 200, 50)).toBe("pending");
+    delete (window as typeof window & { __paperclipConversationLinkDocument?: string }).__paperclipConversationLinkDocument;
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 300);
+    expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("rendered");
+  });
 });
