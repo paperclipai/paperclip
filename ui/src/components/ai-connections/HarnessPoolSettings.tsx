@@ -7,12 +7,14 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { aiConnectionPoolsApi } from "@/api/ai-connection-pools";
 import { describeError } from "@/api/errors";
 import { Button } from "@/components/ui/button";
+import { ConfigSaveBar } from "@/components/ConfigSaveBar";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 
 import { HarnessPoolMemberFields, type HarnessPoolMemberDraft } from "./HarnessPoolMemberFields";
 
 type PoolDraft = Omit<HarnessPoolConfigV2, "members"> & { members: HarnessPoolMemberDraft[] };
+function poolDraft({ id: _id, companyId: _company, revision: _revision, ...config }: HarnessPool): PoolDraft { return config; }
 const emptyPool = (name: string): PoolDraft => ({ schemaVersion: 2, kind: "harness_pool", name, enabled: true, mode: "failover", members: [] });
 
 export function HarnessPoolSettings({ companyId }: { companyId: string }) {
@@ -29,6 +31,9 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
   function clearSearch() { setSearch(""); searchRef.current?.focus(); }
   const [editing, setEditing] = useState<HarnessPool>();
   const [draft, setDraft] = useState<PoolDraft>();
+  const dirty = useMemo(() => Boolean(draft && (!editing || JSON.stringify(draft) !== JSON.stringify(poolDraft(editing)))), [draft, editing]);
+  const [savedVersion, setSavedVersion] = useState(0);
+  const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [archiveRequested, setArchiveRequested] = useState(false);
@@ -50,7 +55,7 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
     setDraft(current => { if (!current) return current; const members = [...current.members]; [members[index], members[index + delta]] = [members[index + delta]!, members[index]!]; return { ...current, members }; });
   }
   const loadError = accounts.error ?? pools.error ?? legacy.error;
-  return <section className="space-y-4" aria-label="Harness pools">
+  return <section className="space-y-4 agent-settings-with-save-bar" aria-label="Harness pools">
     <div className="space-y-2"><h1 className="text-lg font-semibold">Pools</h1><p className="text-sm text-muted-foreground">Manage shared harness settings and fallback order for your agents.</p></div>
     {loadError ? <p role="alert" className="text-sm text-destructive">{describeError(loadError).body} <Button variant="outline" onClick={() => { void accounts.refetch(); void pools.refetch(); void legacy.refetch(); }}>Retry</Button></p> : accounts.isPending || (allowed && pools.isPending) ? <p>Loading pools…</p> : !allowed ? <p className="text-sm text-muted-foreground">Connection management permission is required.</p> : <>
       <div className="flex min-h-(--sz-480px) flex-col md:flex-row">
@@ -70,7 +75,7 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
             <Button key={pool.id} variant="ghost" aria-label={`${pool.name} · ${pool.members.length} members${pool.enabled ? "" : " · disabled"}`}
               className={`h-auto w-full justify-start whitespace-normal rounded-md px-2.5 py-3 text-left ${editing?.id === pool.id ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
               aria-pressed={editing?.id === pool.id} disabled={busy}
-              onClick={() => { const { id: _id, companyId: _company, revision: _revision, ...config } = pool; setEditing(pool); setDraft(config); setArchiveRequested(false); setError(""); }}>
+              onClick={() => { setEditing(pool); setDraft(poolDraft(pool)); setArchiveRequested(false); setError(""); }}>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5"><span className="truncate text-sm font-medium">{pool.name}</span><span className="truncate text-xs text-muted-foreground">{pool.members.length} members{pool.enabled ? "" : " · disabled"}</span></span>
             </Button>)}</nav>
           {!pools.data?.length ? <p className="px-2 py-6 text-sm text-muted-foreground">No pools yet. Add a pool to share harness settings between agents.</p>
@@ -96,7 +101,9 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
         </section>)}</div>
         <Button variant="outline" disabled={busy || draft.members.length >= 100} onClick={() => setDraft({ ...draft, members: [...draft.members, { id: crypto.randomUUID(), harness: { type: "codex" }, runner: "paperclip", model: "" }] })}>Add member</Button>
         {editing && <><p className="text-sm text-muted-foreground">Used by: {inspection.data ? inspection.data.usedBy.map(agent => agent.name).join(", ") || "No agents" : inspection.error ? "Inspection unavailable" : "Loading affected agents…"}</p>{inspection.error && <p role="alert" className="text-sm text-destructive">{describeError(inspection.error).body} <Button variant="outline" onClick={() => void inspection.refetch()}>Retry inspection</Button></p>}</>}
-        <div className="flex items-center justify-between gap-2"><Button variant="outline" disabled={busy} onClick={() => { setDraft(undefined); setEditing(undefined); }}>Cancel</Button><Button disabled={busy} onClick={() => void action(async () => { const config = harnessPoolConfigSchema.parse(draft); const saved = await harnessPoolsApi.save(companyId, { id: editing?.id, expectedRevision: editing?.revision, config }); setEditing(saved); setDraft(config); await refresh(); })}>{busy ? "Saving…" : "Save pool"}</Button></div>
+        <ConfigSaveBar ariaLabel="Unsaved pool changes" dirty={dirty} saving={saving} disabled={busy} savedVersion={savedVersion}
+          onDiscard={() => { setDraft(editing ? poolDraft(editing) : undefined); setArchiveRequested(false); setError(""); }}
+          onSave={() => { if (!dirty || busy) return; setSaving(true); void action(async () => { const config = harnessPoolConfigSchema.parse(draft); const saved = await harnessPoolsApi.save(companyId, { id: editing?.id, expectedRevision: editing?.revision, config }); setEditing(saved); setDraft(poolDraft(saved)); setSavedVersion(version => version + 1); await refresh(); }).finally(() => setSaving(false)); }} />
         {editing && <section aria-label="Danger zone" className="space-y-4 border-t border-border pt-6">
           <h2 className="text-xs font-medium uppercase tracking-wide text-destructive">Danger zone</h2>
           <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-4">

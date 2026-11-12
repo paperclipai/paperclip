@@ -88,7 +88,7 @@ it("creates a named pool with ordered models on the same account and leaves othe
     const modelOption = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(item => item.textContent === (index === 0 ? "Smart A" : "Smart B"))!;
     expect(modelOption).toBeTruthy(); flushSync(() => modelOption.click()); await settle();
   }
-  click("Save pool"); await settle();
+  click("Save changes"); await settle();
   expect(mocks.save).toHaveBeenCalledWith("company",expect.objectContaining({ config:expect.objectContaining({name:"My pool",schemaVersion:2,members:[expect.objectContaining({model:"smart-a",connection:expect.objectContaining({connectionId:account.id})}),expect.objectContaining({model:"smart-b",connection:expect.objectContaining({connectionId:account.id})})]}) }));
   } finally { flushSync(()=>root.unmount()); client.clear();host.remove(); }
 }, 30_000);
@@ -173,8 +173,9 @@ it("edits an existing pool with its revision and preserves member runtime settin
     flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.getAttribute("aria-label")?.startsWith("Existing pool ·"))!.click());await settle();
     expect(host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!.value).toBe("Existing pool");
     expect(host.querySelector('[aria-label="Runner"]')?.textContent).toContain("Legacy");
-    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Save pool")!.click());await settle();
-    expect(mocks.save).toHaveBeenCalledWith("company",{id,expectedRevision:7,config});
+    flushSync(()=>host.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Save changes")!.click());await settle();
+    expect(mocks.save).toHaveBeenCalledWith("company",{id,expectedRevision:7,config:{...config,enabled:false}});
   } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
 });
 
@@ -224,4 +225,26 @@ it("filters hundreds of pools without repeatedly normalizing every name", async 
     }
     expect(nameReads).toBeLessThan(20);
   } finally {flushSync(()=>root.unmount());client.clear();host.remove();}
+});
+
+
+it("shows the shared dirty footer and discards edits without leaving the selected pool", async () => {
+  const config = { id:crypto.randomUUID(), companyId:"company", revision:3, schemaVersion:2, kind:"harness_pool", name:"Saved pool", enabled:true, mode:"failover", members:[] };
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]}); mocks.legacy.mockResolvedValue([]);
+  mocks.pools.mockResolvedValue([config]); mocks.inspect.mockResolvedValue({members:{},usedBy:[]});
+  const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  try {
+    flushSync(()=>root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>));await settle();
+    flushSync(()=>host.querySelector<HTMLButtonElement>('[aria-label="Saved pool · 0 members"]')!.click());await settle();
+    const footer=()=>host.querySelector('footer[aria-label="Unsaved pool changes"]')!;
+    expect(footer().getAttribute("data-visible")).toBe("false");
+    const name=host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!;
+    flushSync(()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(name,"Changed pool");name.dispatchEvent(new Event("input",{bubbles:true}));});
+    expect(footer().getAttribute("data-visible")).toBe("true");
+    expect(footer().textContent).toContain("Unsaved changes");expect(footer().textContent).toContain("Save changes");
+    flushSync(()=>Array.from(footer().querySelectorAll("button")).find(button=>button.textContent==="Discard")!.click());
+    expect(name.value).toBe("Saved pool");expect(footer().getAttribute("data-visible")).toBe("false");
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(host.querySelector('[aria-label="Danger zone"]')).toBeTruthy();
+  }finally{flushSync(()=>root.unmount());client.clear();host.remove();}
 });
