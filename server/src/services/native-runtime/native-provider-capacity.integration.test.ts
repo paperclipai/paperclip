@@ -429,6 +429,42 @@ describe("native provider capacity failure persistence", () => {
     expect(errors).toEqual([]);
   }, 30_000);
 
+  it("plans an automatic Retry from a typed rate-limit retry time without reset wording", async () => {
+    // A rate limit whose provider named only its window; the runner typed the retry time.
+    const resetAt = new Date(Date.now() + 15 * 60_000);
+    resetAt.setUTCMilliseconds(0);
+    const userId = `user-${randomUUID()}`;
+    const { runId, issueId } = await failTurn({ responsibleUserId: userId, payload: {
+      status: "failed",
+      error: {
+        code: "RUNTIME",
+        message: "ACP agent reported a terminal limit failure.",
+        providerFailure: {
+          schema: "paperclip.provider-failure.v1",
+          provider: "anthropic",
+          phase: "turn",
+          category: "rate_limit",
+          retryability: "transient",
+          retryAt: resetAt.toISOString(),
+          message: "ACP agent reported a terminal limit failure.\nTokens-per-hour (TPH) rate limit exceeded",
+        },
+      },
+    } });
+    const hold = await holdFor(issueId);
+    expect(hold).toMatchObject({ cause: "native_provider_usage_limit",
+      evidence: expect.objectContaining({ providerLimitResetAt: resetAt.toISOString() }) });
+    expect(hold.nextAction).toBe(`The provider usage limit resets at ${resetAt.toISOString()}. `
+      + "Paperclip will retry this task then; Retry starts it sooner if usage capacity is already restored.");
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }))
+      .resolves.toEqual({ requested: false, waitUntil: resetAt });
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id },
+      new Date(resetAt.getTime() + 1000))).resolves.toMatchObject({ requested: true });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.idempotencyKey, `task-retry:provider-limit-reset:${runId}`)));
+    expect(receipt).toMatchObject({ reason: "task_retry", requestedByActorId: userId });
+  });
+
   it("leaves a visible Retry when no user is accountable for the run", async () => {
     const resetAt = new Date(Date.now() + 3 * 60 * 60_000);
     resetAt.setUTCMinutes(0, 0, 0);

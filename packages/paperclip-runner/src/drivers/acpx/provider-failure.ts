@@ -83,6 +83,30 @@ function sessionLimitCategory(failure: AcpxTerminalSessionFailure | undefined): 
   return undefined;
 }
 
+// A gateway or serving endpoint rejects a request over its rate limit with a
+// 429 that names the window but no reset time, such as error_code
+// REQUEST_LIMIT_EXCEEDED. The window reopens by itself, unlike a quota.
+const RATE_LIMIT_WINDOW_RE =
+  /(?:REQUEST_LIMIT_EXCEEDED|user[\s-]defined\s+rate\s+limit(?:\(s\)|s)?\s+exceeded|tokens[-\s]per[-\s](?:hour|minute)\b[^\n]{0,40}rate\s+limit)/i;
+const RATE_LIMIT_PER_MINUTE_RE = /per[-\s]minute|\b(?:tpm|qpm)\b/i;
+// Wording the server reads a reset time from; a typed retryAt would override it.
+const RATE_LIMIT_RESET_RE = /\btry again at\b|\bresets?\b/i;
+// An hourly window is tried again every quarter hour, so a retry lands inside
+// the one-hour prompt cache. A per-minute window is empty again within a
+// minute; two minutes leave room for other users of a shared limit.
+export const ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS = 15 * 60_000;
+export const ACPX_RATE_LIMIT_PER_MINUTE_RETRY_DELAY_MS = 2 * 60_000;
+
+/** When to retry a rate-limited typed session failure whose provider named a window but no reset. */
+function sessionRateLimitRetryAt(failure: AcpxTerminalSessionFailure | undefined, now: number): string | undefined {
+  if (sessionLimitCategory(failure) !== "rate_limit") return undefined;
+  const text = [failure?.title, failure?.details].filter(value => typeof value === "string").join("\n");
+  if (!RATE_LIMIT_WINDOW_RE.test(text) || RATE_LIMIT_RESET_RE.test(text)) return undefined;
+  const delay = RATE_LIMIT_PER_MINUTE_RE.test(text)
+    ? ACPX_RATE_LIMIT_PER_MINUTE_RETRY_DELAY_MS : ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS;
+  return new Date(now + delay).toISOString();
+}
+
 /**
  * Claude Code reports a model it cannot run (unknown, retired, or not on the
  * account) as an AIR `request` failure with this fixed title. The user must
@@ -121,8 +145,9 @@ export function acpxProviderFailure(error: unknown, agent: string, phase: Provid
     ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined)
     ?? sessionLimitCategory(sessionFailure)
     ?? sessionModelCategory(agent, sessionFailure);
+  const retryAt = category === "rate_limit" ? sessionRateLimitRetryAt(sessionFailure, Date.now()) : undefined;
   return createProviderFailure({ provider: agent === "claude" ? "anthropic" : agent === "codex" ? "openai" : agent,
-    phase, message, httpStatus: status, providerCode: code, requestId: data.request_id, category, environment });
+    phase, message, httpStatus: status, providerCode: code, requestId: data.request_id, category, retryAt, environment });
 }
 
 export function acpxTerminalResult(result: unknown, agent: string, environment: NodeJS.ProcessEnv = {},

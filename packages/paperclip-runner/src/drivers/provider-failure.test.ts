@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
-import { acpxProviderFailure, acpxTerminalResult } from "./acpx/provider-failure.js";
+import {
+  ACPX_RATE_LIMIT_PER_MINUTE_RETRY_DELAY_MS, ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS, acpxProviderFailure, acpxTerminalResult,
+} from "./acpx/provider-failure.js";
 import { codexProviderFailure } from "./codex/provider-failure.js";
 import { openCodeProviderFailure } from "./opencode/provider-failure.js";
 import { createProviderFailure, providerFailureFromError } from "./provider-failure.js";
@@ -77,6 +79,52 @@ describe("provider failure boundary", () => {
     // The thrown form of the same terminal is classified the same way.
     expect(acpxProviderFailure(new Error(generic), "claude", "turn", {}, false, { category: "limit", title: "Claude is temporarily rate limited." }))
       .toMatchObject({ category: "rate_limit", message: `${generic}\nClaude is temporarily rate limited.` });
+  });
+
+  describe("a rate limit window without a reported reset", () => {
+    const now = new Date("2026-11-12T10:00:00.000Z");
+    const after = (ms: number) => new Date(now.getTime() + ms).toISOString();
+    const generic = "ACP agent reported a terminal limit failure.";
+    const failed = { status: "failed", error: { code: "RUNTIME", message: generic } };
+    const terminal = (failure: { category: string; title?: string; details?: string }) =>
+      (acpxTerminalResult(failed, "claude", {}, failure).error as Record<string, unknown>).providerFailure as Record<string, unknown>;
+    afterEach(() => vi.useRealTimers());
+
+    it("retries an hourly window after a quarter hour", () => {
+      vi.useFakeTimers({ now });
+      expect(terminal({ category: "limit", title: "API Error: 429 rate limit exceeded",
+        details: '{"error_code":"REQUEST_LIMIT_EXCEEDED","message":"Tokens-per-hour (TPH) rate limit exceeded"}' }))
+        .toMatchObject({ category: "rate_limit", retryability: "transient", retryAt: after(ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS) });
+    });
+
+    it("retries a per-minute window after two minutes", () => {
+      vi.useFakeTimers({ now });
+      expect(terminal({ category: "limit", title: "API Error: 429 rate limit exceeded",
+        details: '{"error_code":"REQUEST_LIMIT_EXCEEDED","message":"Exceeded the tokens-per-minute (TPM) rate limit"}' }))
+        .toMatchObject({ category: "rate_limit", retryability: "transient", retryAt: after(ACPX_RATE_LIMIT_PER_MINUTE_RETRY_DELAY_MS) });
+    });
+
+    it("reads the window from the title alone", () => {
+      vi.useFakeTimers({ now });
+      expect(terminal({ category: "limit", title: "Tokens-per-hour (TPH) rate limit exceeded" }))
+        .toMatchObject({ category: "rate_limit", retryAt: after(ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS) });
+      expect(acpxProviderFailure(new Error(generic), "claude", "turn", {}, false,
+        { category: "limit", title: "User-defined rate limit exceeded: REQUEST_LIMIT_EXCEEDED" }))
+        .toMatchObject({ category: "rate_limit", retryAt: after(ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS) });
+    });
+
+    it("sets no retry time without window wording, with a reported reset, or outside a rate limit", () => {
+      vi.useFakeTimers({ now });
+      for (const failure of [
+        { category: "limit", title: "Claude is temporarily rate limited." },
+        { category: "limit", title: "Tokens-per-hour (TPH) rate limit exceeded · resets 2am (UTC)" },
+        { category: "limit", title: "Context window limit exceeded" },
+        { category: "service", title: "Tokens-per-hour (TPH) rate limit exceeded" },
+        { category: "request", title: "REQUEST_LIMIT_EXCEEDED" },
+      ]) {
+        expect(terminal(failure), JSON.stringify(failure)).not.toHaveProperty("retryAt");
+      }
+    });
   });
 
   it("classifies Claude's rejection of the selected model as an unavailable model", () => {
