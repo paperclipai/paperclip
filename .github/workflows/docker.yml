@@ -130,6 +130,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read # download a verified merge-queue image artifact of this commit
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -238,7 +239,77 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build-before-merge. When the merge queue already built and probed this
+      # exact commit (docker-merge-group.yml, with no registry credentials),
+      # push those bytes instead of rebuilding. scripts/merge-group-image.mjs
+      # requires a successful merge-group run of this repository for this SHA
+      # and checks the record's commit, tree, architecture and archive digest.
+      # Any missing or mismatched proof, or any failure here, leaves
+      # `steps.promote.outputs.digest` empty and the build below runs as
+      # before. The probe below and the exact-source gate apply either way.
+      - name: Find the merge-queue build of this commit
+        id: find
+        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          ARCH: ${{ matrix.arch }}
+        # Master's copy from before this push selects the run; see the promote
+        # step below.
+        run: |
+          set -euo pipefail
+          trusted="$RUNNER_TEMP/merge-group-image-trusted.mjs"
+          git show "$BEFORE:scripts/merge-group-image.mjs" > "$trusted"
+          node "$trusted" find --arch "$ARCH"
+
+      - name: Download the merge-queue image
+        if: steps.find.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: merge-group-image-${{ matrix.arch }}
+          run-id: ${{ steps.find.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/merge-group-image
+
+      - name: Promote the merge-queue image
+        id: promote
+        if: steps.find.outputs.run_id != ''
+        continue-on-error: true
+        env:
+          ARCH: ${{ matrix.arch }}
+          DIRECTORY: ${{ runner.temp }}/merge-group-image
+          IMAGE_NAME: ghcr.io/${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # Say plainly when this runner image cannot promote, instead of
+          # failing later inside the copy.
+          if ! command -v skopeo >/dev/null; then
+            echo "::notice title=Merge-queue promotion unavailable::skopeo is not installed on this runner; building from source."
+            exit 1
+          fi
+          echo "Promoting with $(skopeo --version)"
+          # Run the verifier as master had it before this push, not the copy
+          # this push brings, so a push cannot weaken the check it must pass.
+          # The verifier refuses any push that changes the pipeline since
+          # BEFORE. A push whose BEFORE has no verifier builds from source.
+          trusted="$RUNNER_TEMP/merge-group-image-trusted.mjs"
+          git show "$BEFORE:scripts/merge-group-image.mjs" > "$trusted"
+          # Verify without writing a step output: the digest is set only after
+          # the exact bytes are in the registry.
+          verified="$(GITHUB_OUTPUT='' node "$trusted" verify --arch "$ARCH" --dir "$DIRECTORY" --since "$BEFORE")"
+          digest="$(printf '%s\n' "$verified" | sed -n 's/^digest=//p')"
+          printf '%s' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'
+          # --preserve-digests fails rather than re-encode, so the registry
+          # holds exactly the archived image under the recorded digest.
+          skopeo copy --all --preserve-digests "oci-archive:$DIRECTORY/image.tar" "docker://$IMAGE_NAME@$digest"
+          echo "Promoted the merge-queue image $IMAGE_NAME@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
+        if: steps.promote.outputs.digest == ''
         uses: docker/setup-buildx-action@v4
         with:
           buildkitd-config-inline: |
@@ -252,6 +323,7 @@ jobs:
       # way to check image/migrator compatibility up front.
       - name: Compute schema migration labels
         id: schema
+        if: steps.promote.outputs.digest == ''
         run: |
           set -euo pipefail
           last=$(ls packages/db/src/migrations/*.sql | sed 's|.*/||' | LC_ALL=C sort | tail -1)
@@ -267,6 +339,7 @@ jobs:
       # so parallel canary builds cannot race it backwards.
       - name: Docker meta
         id: meta
+        if: steps.promote.outputs.digest == ''
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
@@ -283,6 +356,7 @@ jobs:
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
       - name: Build and push by digest
         id: build
+        if: steps.promote.outputs.digest == ''
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -311,6 +385,18 @@ jobs:
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }},mode=max
           labels: ${{ steps.meta.outputs.labels }}
 
+      # Exactly one of the two paths produced this leg's digest.
+      - name: Select image digest
+        id: image
+        env:
+          PROMOTED: ${{ steps.promote.outputs.digest }}
+          BUILT: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${PROMOTED:-$BUILT}"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       # PID 1 must be an init that reaps adopted orphans. With node there, the
       # orphans agent runs leave behind are never wait()ed and pin as zombies
       # until the cgroup pid limit is exhausted and every fork() in the
@@ -325,7 +411,7 @@ jobs:
       - name: Verify PID 1 reaps orphaned processes
         env:
           # Through the environment, not interpolated into the script body.
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_NAME: ghcr.io/${{ github.repository }}
           PLATFORM: ${{ matrix.platform }}
         run: |
@@ -341,7 +427,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
+          digest="${{ steps.image.outputs.digest }}"
           test -n "$digest"
           touch "/tmp/digests/${digest#sha256:}"
 
