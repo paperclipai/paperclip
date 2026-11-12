@@ -393,9 +393,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             followSymlinks: true,
           }],
         });
+        // Track the in-flight restore: it reads the baseline, so the release
+        // below must wait for it even when a sibling cleanup step rejected.
+        let remoteWorkspaceRestore: Promise<void> | null = null;
         restoreRemoteWorkspace = () =>
-          preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
-        releaseRemoteWorkspaceSnapshot = async () => { await preparedExecutionTargetRuntime.cleanupWorkspaceSnapshot?.(); };
+          (remoteWorkspaceRestore = preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line)));
+        releaseRemoteWorkspaceSnapshot = async () => {
+          await remoteWorkspaceRestore?.catch(() => {});
+          await preparedExecutionTargetRuntime.cleanupWorkspaceSnapshot?.();
+        };
         effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
         refreshPaperclipWorkspaceEnvForExecution({
           env,
