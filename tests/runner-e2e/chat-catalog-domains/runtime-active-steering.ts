@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import type { IssueQueuedCommentQueue } from "../../../packages/shared/src/types/issue.js";
 import { pollUntil } from "../api.js";
 import { submitTaskReply } from "../user-actions.js";
-import { readRegisteredArtifacts } from "../registered-artifact.js";
+import { readRegisteredArtifacts, RegisteredArtifactNotFoundError } from "../registered-artifact.js";
 import { checks, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
@@ -25,10 +25,20 @@ export function hasVisibleBlueDesign(elements: Array<{ tag: string; role?: strin
     ? isBlueColor(element.background) || element.tag !== "BODY" && isBlueColor(element.color) : false);
 }
 const direction = "Switch to a blue design while you are working.";
-/** The website-delivery document is current at the run that produced the output, or, after a same-turn steer, at the one
- * normal turn that consumed the chat lead's queued relay and may have updated it. */
-export function steerDeliveryRevisionBound(o: Parameters<typeof deliveryRevisionBound>[0], taskId: string, workerId: string, outputRunId: string, relayConsumerRunId?: string) {
-  return deliveryRevisionBound(o, taskId, outputRunId, workerId) || (!!relayConsumerRunId && deliveryRevisionBound(o, taskId, relayConsumerRunId, workerId));
+/** The website-delivery document is current at a run of this work: the worker's original run, the one normal turn
+ * that consumed the person's message, or, after a same-turn steer, the turn that consumed the chat lead's relay. */
+export function steerDeliveryRevisionBound(o: Parameters<typeof deliveryRevisionBound>[0], taskId: string, workerId: string, runIds: readonly string[]) {
+  return runIds.some(runId => deliveryRevisionBound(o, taskId, runId, workerId));
+}
+/** The worker may read the queued direction from task history and apply it in its original run, before the normal
+ * continuation consumes the message; either run may register the website. The deliverable is the website.html the
+ * worker registered last, and it counts only when registered after the person's direction was saved. */
+export function finalSteeredArtifact(candidates: Array<{ runId: string; registeredAt: string; blue: boolean }>, directionSavedAt: string) {
+  const saved = Date.parse(directionSavedAt);
+  const latest = candidates.filter(row => Number.isFinite(Date.parse(row.registeredAt)))
+    .sort((a, b) => Date.parse(a.registeredAt) - Date.parse(b.registeredAt)).at(-1);
+  if (!latest) return undefined;
+  return { runId: latest.runId, blue: latest.blue, registeredAfterDirection: Number.isFinite(saved) && Date.parse(latest.registeredAt) > saved };
 }
 /** Branch a run must take, decided by what the harness actually advertised and how the product answered. */
 export function steeringBranch(disposition: unknown, steerStatus: unknown) {
@@ -57,9 +67,9 @@ export function gradeActiveSteering(value: unknown) {
       : branch === "provider-rejected-normal-continuation" && ["steering_rejected", "steering_unsupported"].includes(String(s.steerFailureCode)) && s.steerStatus === 409 && s.providerFailureVisible === true
         && s.failureRetainedMessage === true && retained && s.supportedContinuationVisible === true && s.ordinaryConsumerCount === 1 && s.continuationInputBound === true),
   "A durable same-run ACK is required for delivery; a runtime that cannot steer (or a provider rejection) instead keeps the exact message visibly queued, records no steering, and one normal continuation consumes it.");
-  c.add("actual-blue-output-correct-native-owner", s.actualBlueArtifact === true && s.deliveryRevisionBound === true && s.workerTaskDone === true && s.queueEmptyAtEnd === true
+  c.add("actual-blue-output-correct-native-owner", s.actualBlueArtifact === true && s.artifactRegisteredAfterDirection === true && s.deliveryRevisionBound === true && s.workerTaskDone === true && s.queueEmptyAtEnd === true
     && o.runs.length === (accepted && !Number(s.leadRelayCount) ? 2 : 3) && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1,
-  "Actual delivered HTML renders blue, and the consuming native run saved its task delivery document, with no duplicate work or hidden run.");
+  "The website the worker registered last, after the direction was saved, renders blue (whichever of its runs applied the direction), and the delivery document is current at a run of that work, with no duplicate work or hidden run.");
   return c.result();
 }
 /** What the person can actually do with the queued message: an enabled Steer control, or the supported continuation (Interrupt) control. */
@@ -87,7 +97,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, humanId: session.user.id, queueBefore: before, targetId, ...controls };
 }, gradeActiveSteering, {
-  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v7",
+  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v8",
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
@@ -167,12 +177,22 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
       && row.details?.commentId === state.targetId && row.details?.targetRunId === state.workerRunId && row.details?.duplicate === false);
     state.steeredActivityCount = o.activity.filter(row => row.action === "issue.queued_comment_steered" && row.entityId === task.id).length;
     if (state.outputRunId) {
-      const [artifact] = await readRegisteredArtifacts(ctx.input.api, task.id, String(state.outputRunId), ["website.html"]);
-      if (artifact?.contentVerified) {
-        state.actualBlueArtifact = hasVisibleBlueDesign(await renderRuntimeArtifact(ctx, artifact.content));
+      const runIds = [...new Set([String(state.workerRunId), String(state.outputRunId), ...(typeof state.relayConsumerRunId === "string" ? [state.relayConsumerRunId] : [])])];
+      const products = await ctx.input.api.get<Array<{ id: string; createdAt: string }>>(`/api/issues/${task.id}/work-products`);
+      const candidates: Array<{ runId: string; registeredAt: string; blue: boolean }> = [];
+      for (const runId of runIds) {
+        let artifact: Awaited<ReturnType<typeof readRegisteredArtifacts>>[number] | undefined;
+        try { [artifact] = await readRegisteredArtifacts(ctx.input.api, task.id, runId, ["website.html"]); }
+        catch (error) { if (error instanceof RegisteredArtifactNotFoundError) continue; throw error; }
+        const registeredAt = products.find(row => row.id === artifact?.workProductId)?.createdAt;
+        if (artifact?.contentVerified && registeredAt) candidates.push({ runId, registeredAt, blue: hasVisibleBlueDesign(await renderRuntimeArtifact(ctx, artifact.content)) });
       }
-      // The rendered page proves the colour; the document must be the requested website-delivery record, current at the consuming run's revision.
-      state.deliveryRevisionBound = steerDeliveryRevisionBound(o, task.id, (state.worker as Entity).id, String(state.outputRunId), typeof state.relayConsumerRunId === "string" ? state.relayConsumerRunId : undefined);
+      const direction = (await ctx.input.api.get<Array<{ id: string; createdAt: string }>>(`/api/issues/${task.id}/comments?order=asc`)).find(row => row.id === state.targetId);
+      const final = finalSteeredArtifact(candidates, String(direction?.createdAt));
+      if (!final) throw new RegisteredArtifactNotFoundError("website.html");
+      state.artifactRunId = final.runId; state.actualBlueArtifact = final.blue; state.artifactRegisteredAfterDirection = final.registeredAfterDirection;
+      // The rendered page proves the colour; the document must be the requested website-delivery record, current at a run of this work.
+      state.deliveryRevisionBound = steerDeliveryRevisionBound(o, task.id, (state.worker as Entity).id, runIds);
     }
     return o;
   },

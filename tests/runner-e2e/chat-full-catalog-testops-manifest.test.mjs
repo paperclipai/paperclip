@@ -440,6 +440,16 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "instance-operations.instance-settings",
     "expectedOutcome"
+  ],
+  // Decision after full cohort 4: the answer shapes the resulting work, in its saved brief or saved deliverable.
+  [
+    "questions-and-approvals.necessary-question",
+    "expectedOutcome"
+  ],
+  // Full cohort 5: "this task" in a chat read as the chat itself; the query names the Website task.
+  [
+    "tasks.assignment-conflict",
+    "originalQuery"
   ]
 ]);
   for (const change of repair.changedFields) {

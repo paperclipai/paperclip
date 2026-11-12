@@ -6,6 +6,8 @@ import {
 import { remoteWorkspaceRunReferenceSchema, type RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
 import { runOwnerFenceHeldSql } from "./remote-workspace-writer-hold.js";
+import { carriesInheritedRunnerIdentity } from "./native-runtime/native-inherited-runner-retry.js";
+import { PROCESS_IDENTITY_RECORDED } from "./native-local-process-stop.js";
 
 /**
  * A writer's prepared files equal its saved version only while nothing ran in
@@ -44,6 +46,15 @@ const FILE_NEUTRAL_OPERATION_PHASES = ["remote_workspace_restore", "workspace_fi
 /** Terminal states of a run that ended without a result. */
 const ENDED_WITHOUT_RESULT = ["failed", "cancelled", "interrupted", "timed_out"];
 
+async function carriesOnlyInheritedRunnerIdentity(tx: Pick<Db, "select">,
+  run: Parameters<typeof carriesInheritedRunnerIdentity>[1]): Promise<boolean> {
+  if (!await carriesInheritedRunnerIdentity(tx, run)) return false;
+  const [own] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED))).limit(1);
+  return !own;
+}
+
 export type UnchangedProofRefusal =
   | "baseline_missing" | "authority_mismatch" | "writer_not_ended" | "writer_owner_live" | "process_recorded"
   | "reference_mismatch" | "provider_session_started" | "execution_recorded" | "result_recorded"
@@ -68,15 +79,18 @@ export async function proveRemoteWorkspaceUnchanged(tx: Pick<Db, "select">, inpu
   if (!authority.dirty || !authority.location || authority.epoch !== baseline.epoch || authority.snapshotId !== baseline.snapshotId)
     return { proven: false, reason: "authority_mismatch" };
 
-  const [run] = await tx.select({ status: heartbeatRuns.status, processPid: heartbeatRuns.processPid,
+  const [run] = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    nativeSessionId: heartbeatRuns.nativeSessionId, createdAt: heartbeatRuns.createdAt,
+    status: heartbeatRuns.status, processPid: heartbeatRuns.processPid,
     processGroupId: heartbeatRuns.processGroupId, processStartedAt: heartbeatRuns.processStartedAt,
     sessionIdAfter: heartbeatRuns.sessionIdAfter, runnerProfileJson: heartbeatRuns.runnerProfileJson,
     ownerFenceHeld: runOwnerFenceHeldSql() }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, runId)));
   if (!run || !ENDED_WITHOUT_RESULT.includes(run.status)) return { proven: false, reason: "writer_not_ended" };
   if (!input.callerOwnsWriter && run.ownerFenceHeld) return { proven: false, reason: "writer_owner_live" };
-  if (run.processPid !== null || run.processGroupId !== null || run.processStartedAt !== null || run.sessionIdAfter !== null)
-    return { proven: false, reason: "process_recorded" };
+  if (run.sessionIdAfter !== null) return { proven: false, reason: "process_recorded" };
+  if ((run.processPid !== null || run.processGroupId !== null || run.processStartedAt !== null)
+    && !await carriesOnlyInheritedRunnerIdentity(tx, run)) return { proven: false, reason: "process_recorded" };
   const profile = object(run.runnerProfileJson);
   const reference = remoteWorkspaceRunReferenceSchema.safeParse(profile.remoteWorkspace);
   if (profile.nativeWorkspaceSync != null || !reference.success || reference.data.state !== "prepared"
