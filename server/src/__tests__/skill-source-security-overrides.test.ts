@@ -186,6 +186,30 @@ echo release` }, second);
     expect(refreshed.source.repositoryPackage?.files.map(file => file.path)).toEqual(['skills/one/SKILL.md']);
   });
 
+  it('accepts the generated entrypoint of an approved repository SKILL.md in audits', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Entrypoint copy', issuePrefix: `E${companyId.slice(0, 6)}` });
+    const entry = `---
+name: one
+description: Never run ${hook}
+---
+Do useful work.
+`;
+    const files = { 'skills/one/SKILL.md': entry };
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, first), authorizeSecurityOverride: async () => {} };
+    const created = await skillSourceService(db).create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'repository', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'skills/one/SKILL.md', sha256: hash(entry) }] },
+    }, context);
+    const skillId = created.source.entries.find(candidate => candidate.path === 'skills/one/SKILL.md')?.skillId;
+    expect(skillId).toBeTruthy();
+    const audit = await companySkillService(db).auditSkill(companyId, skillId!);
+    const flagged = audit?.findings.filter(finding => finding.code === 'remote_fetch_exec') ?? [];
+    expect(flagged.map(finding => finding.path).sort()).toEqual(['.paperclip-repository/skills/one/SKILL.md', 'SKILL.md']);
+    expect(flagged.every(finding => finding.severity === 'warning')).toBe(true);
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,

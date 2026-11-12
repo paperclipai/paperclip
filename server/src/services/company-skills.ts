@@ -3605,7 +3605,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   }
 
   /** The approval saved on a skill's GitHub source, applied to the installed files the way the source scan applies it. */
-  async function savedSecurityOverrideAcceptor(skill: CompanySkill) {
+  async function savedSecurityOverrideAcceptor(skill: CompanySkill, installedRoot: string) {
     const sourceId = asString(skill.metadata?.skillSourceId);
     const entrypoint = asString(skill.metadata?.skillSourcePath);
     if (!sourceId || !entrypoint || !skill.sourceRef) return undefined;
@@ -3621,7 +3621,15 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       ? (filePath: string) => filePath.startsWith(repositoryPrefix) ? filePath.slice(repositoryPrefix.length)
         : filePath === "agents/openai.yaml" ? policyCopy : `${repositoryPrefix}${filePath}`
       : (filePath: string) => filePath === "SKILL.md" ? entrypoint : fromSkillDirectory(filePath);
-    return securityOverrideAcceptor([source?.securityOverride], skill.sourceRef, toRepositoryPath);
+    const accept = securityOverrideAcceptor([source?.securityOverride], skill.sourceRef, toRepositoryPath);
+    if (!accept || skill.metadata?.packageMode !== "repository") return accept;
+    // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only
+    // when the installed original itself matches the approval.
+    const original = await fs.readFile(path.join(installedRoot, REPOSITORY_CONTENT_DIR, ...entrypoint.split("/"))).catch(() => null);
+    if (!original) return accept;
+    const originalHash = sha256Buffer(original);
+    return (filePath: string, sha256: string, code: string) => filePath === "SKILL.md"
+      ? accept(`${repositoryPrefix}${entrypoint}`, originalHash, code) : accept(filePath, sha256, code);
   }
 
   async function auditSkillContents(skill: CompanySkill): Promise<CompanySkillAuditResult> {
@@ -3638,7 +3646,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           sourceLocator,
           fileInventory: version.repositorySnapshotId || version.packageSnapshotId
             ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
-        }, true, await savedSecurityOverrideAcceptor(skill));
+        }, true, await savedSecurityOverrideAcceptor(skill, sourceLocator));
       });
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
