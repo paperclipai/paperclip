@@ -93,3 +93,25 @@ it("offers agent identities independently of their current harness, without gran
     expect(vi.mocked(projectsApi.setClaudeProjectTrust).mock.calls.at(-1)?.[2]).toEqual(["pooled"]);
   }finally{await act(async()=>root.unmount());client.clear();host.remove();vi.clearAllMocks();}
 });
+
+
+it("keeps selection lookup work linear for hundreds of agents with saved grants", async () => {
+  const candidates=Array.from({length:500},(_,index)=>({id:`agent-${index}`,name:`Agent ${index}`,adapterType:index%2?"paperclip_runner":"claude_local"}));
+  let selectionReads=0;
+  const saved=new Proxy(candidates.slice(0,100).map(agent=>agent.id),{get(target,key,receiver){
+    if(typeof key==="string" && /^\d+$/.test(key) && ++selectionReads>800) throw new Error("Repeated selection scans");
+    return Reflect.get(target,key,receiver);
+  }});
+  vi.mocked(projectsApi.getClaudeProjectTrust).mockResolvedValue({agentIds:saved});
+  vi.mocked(projectsApi.setClaudeProjectTrust).mockResolvedValue({agentIds:[]});
+  vi.mocked(agentsApi.list).mockResolvedValue(candidates as never);
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const settle=()=>new Promise(resolve=>setTimeout(resolve,20));
+  try {
+    await act(async()=>{root.render(<QueryClientProvider client={client}><ClaudeProjectTrust companyId="company" projectId="project" workspace={workspace} disabled={false} onSaved={()=>{}} /></QueryClientProvider>);await settle();});await act(async()=>{await settle();});
+    const checks=[...host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')];
+    expect(checks).toHaveLength(500);expect(checks.filter(check=>check.getAttribute("aria-checked")==="true")).toHaveLength(100);
+    await act(async()=>checks[99]!.click());await act(async()=>checks[499]!.click());
+    await act(async()=>{[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="Save Claude trust")!.click();await settle();});
+    const sent=vi.mocked(projectsApi.setClaudeProjectTrust).mock.calls.at(-1)?.[2];expect(sent).toHaveLength(100);expect(sent).toContain("agent-499");expect(sent).not.toContain("agent-99");expect(selectionReads).toBeLessThanOrEqual(800);
+  }finally{await act(async()=>root.unmount());client.clear();host.remove();vi.clearAllMocks();}
+});

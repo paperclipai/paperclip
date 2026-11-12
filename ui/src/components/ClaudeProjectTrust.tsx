@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -32,6 +32,7 @@ function ClaudeProjectTrustForm({ companyId, projectId, workspace, disabled, onS
   const trustView = useQueryView(trust);
   const agentsView = useQueryView(agents);
   const [selected, setSelected] = useState<string[]>([]);
+  const selectedIds = useMemo(() => new Set(selected), [selected]);
   useEffect(() => { if (trust.data) setSelected(trust.data.agentIds); }, [trust.data]);
   const save = useMutation({
     mutationFn: () => projectsApi.setClaudeProjectTrust(projectId, workspaceId, selected, new Date(workspace.updatedAt).toISOString(), {
@@ -49,7 +50,7 @@ function ClaudeProjectTrustForm({ companyId, projectId, workspace, disabled, onS
     {agentsView.kind === "error" ? <QueryErrorState size="inline" error={agentsView.error} onRetry={agentsView.retry} /> : null}
     {agents.data?.map((agent) =>
       <label className="flex items-center gap-2 text-sm" key={agent.id}>
-        <Checkbox disabled={disabled} checked={selected.includes(agent.id)} onCheckedChange={(checked) => setSelected((current) =>
+        <Checkbox disabled={disabled} checked={selectedIds.has(agent.id)} onCheckedChange={(checked) => setSelected((current) =>
           checked === true ? [...new Set([...current, agent.id])] : current.filter((id) => id !== agent.id))} />
         {agent.name}
       </label>)}
