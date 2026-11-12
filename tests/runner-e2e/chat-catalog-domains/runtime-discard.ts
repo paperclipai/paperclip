@@ -21,6 +21,26 @@ export function promptCarries(prompt: string | undefined, body: string) {
 export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
   return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
 }
+interface MarkdownSection { heading: string; lines: string[] }
+export function markdownSections(body: string): MarkdownSection[] {
+  const lines = body.split(/\r?\n/), sections: MarkdownSection[] = [];
+  lines.forEach((line, index) => {
+    const level = /^(#{1,6})\s/.exec(line)?.[1]!.length; if (!level) return;
+    const end = lines.findIndex((next, at) => at > index && (/^(#{1,6})\s/.exec(next)?.[1]!.length ?? 7) <= level);
+    sections.push({ heading: line.trim(), lines: lines.slice(index + 1, end < 0 ? lines.length : end) });
+  });
+  return sections;
+}
+export function contactSectionRemoved(consumed: string, previous: string | undefined, final: string, label: string) {
+  const carrying = markdownSections(consumed).filter(section => [section.heading, ...section.lines].some(line => line.includes(label)));
+  const titled = carrying.filter(section => section.heading.includes(label));
+  const earlier = new Set(markdownSections(previous ?? "").map(section => section.heading));
+  const added = carrying.filter(section => !earlier.has(section.heading)).sort((a, b) => a.lines.length - b.lines.length);
+  const blocks = titled.length ? titled : added.slice(0, 1);
+  if (!blocks.length) return false;
+  const headings = new Set(markdownSections(final).map(section => section.heading)), lines = new Set(final.split(/\r?\n/).map(line => line.trim()));
+  return blocks.every(block => !headings.has(block.heading) && block.lines.map(line => line.trim()).filter(line => line.length >= 20).every(line => !lines.has(line)));
+}
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-pending-and-consumed-cancellation-evidence", !!o, "Both actual human discard and separately consumed input with later new direction are required."); if (!o) return c.result();
@@ -49,7 +69,7 @@ export function gradeDiscard(value: unknown) {
   return c.result();
 }
 export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-message", ctx => humanQueuedRuntime(ctx, contactText), gradeDiscard, {
-  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v4",
+  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v5",
   sourceFiles: ["chat-catalog-domains/runtime-discard.ts", "chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -122,8 +142,16 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     state.consumedLabelSaved = o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(label));
     const latest = o.revisions.filter(row => row.createdByRunId === state.finalWorkerRunId && row.createdByAgentId === worker
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
-    state.finalPlanWithoutContact = latest.length > 0 && latest.every(row => !(row.body ?? "").includes(label))
-      && o.documents.every(doc => !(o.revisions.find(row => row.id === doc.latestRevisionId)?.body ?? "").includes(label));
+    const number = (row: object) => Number((row as { revisionNumber?: unknown }).revisionNumber);
+    const contactRemoved = (doc: { id: string; latestRevisionId?: unknown }) => {
+      const revisions = o.revisions.filter(row => row.documentId === doc.id).sort((a, b) => number(a) - number(b));
+      const consumed = revisions.filter(row => row.createdByRunId === state.consumerRunId && (row.body ?? "").includes(label)).at(-1);
+      const final = revisions.find(row => row.id === doc.latestRevisionId);
+      if (!consumed) return !(final?.body ?? "").includes(label);
+      const previous = revisions.filter(row => number(row) < number(consumed)).at(-1);
+      return !!final && contactSectionRemoved(consumed.body ?? "", previous?.body ?? undefined, final.body ?? "", label);
+    };
+    state.finalPlanWithoutContact = latest.length > 0 && o.documents.every(doc => contactRemoved(doc));
     return o;
   },
   async cleanup(ctx, state) { try { await cleanupIdentityProbes(ctx); } finally { await releaseRuntimeWorker(state); } },

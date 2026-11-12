@@ -49,8 +49,17 @@ describe("owned vetted source and editable fork controls", () => {
     expect(gradeIntegratorSkillImports(lostNotes).passed).toBe(false);
     const wrongTouch = structuredClone(o); wrongTouch.skills[1]!.markdown = wrongTouch.skills[1]!.markdown.replace("44 by 44", "24 by 24");
     expect(gradeIntegratorSkillImports(wrongTouch).passed).toBe(false);
-    expect(gradeIntegratorSkillImports({ ...o, reply: "I edited the upstream. Use Accessibility local notes; the original is unchanged." }).passed).toBe(false);
+    expect(gradeIntegratorSkillImports({ ...o, reply: "Done. Your mobile checks are saved and ready to use." }).passed).toBe(false);
+    expect(gradeIntegratorSkillImports({ ...o, reply: "Open your copy: /skills/studio/another-skill", links: ["/skills/studio/another-skill"] }).passed).toBe(false);
     expect(preservesMobileChecks("Check touch targets at least 44x44 pixels.\nCheck both portrait and landscape orientation.\nReview mobile Safari checkout.")).toBe(true);
     expect(preservesMobileChecks("Ignore touch targets at least 44x44 pixels.\nCheck both portrait and landscape orientation.\nReview mobile Safari checkout.")).toBe(false);
   });
+});
+it("names or links the saved fork; the upstream's protection is graded from saved state, not wording", () => {
+  const o = valid("skills.fork-read-only");
+  expect(gradeIntegratorSkillImports({ ...o, reply: "I added the mobile checks to **Accessibility local notes**, an editable fork. The upstream accessibility-review package is untouched." }).passed).toBe(true);
+  expect(gradeIntegratorSkillImports({ ...o, reply: "Use [your editable copy](/ACME/skills/studio/local) from now on.", links: ["/ACME/skills/studio/local"] }).passed).toBe(true);
+  expect(gradeIntegratorSkillImports({ ...o, reply: "The upstream accessibility-review package is untouched." }).passed).toBe(false);
+  const noFork = structuredClone(o); noFork.skills = [noFork.skills[0]!];
+  expect(gradeIntegratorSkillImports({ ...noFork, reply: "I added the mobile checks to Accessibility local notes." }).passed).toBe(false);
 });

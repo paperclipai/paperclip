@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
+import { contactSectionRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
 function valid() {
   const neighbour = { position: 0, comment: { id: "font", body: "Use a readable font.", authorUserId: "human", authorAgentId: null } };
   return { scenarioId: "steering.discard-queued-message", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -68,4 +68,22 @@ it("rejects a native prompt that carries other comments but not the direction co
 it("rejects an unbound later worker in the grade when its prompt lacks the direction", () => {
   const o = valid(); o.state.cancelDirectionRunBound = promptCarries(`{"body":${JSON.stringify("unrelated")}}`, "Remove the contact section.\nKeep fonts.");
   expect(gradeDiscard(o).passed).toBe(false);
+});
+const label = "78f7e3a6c6ec-1";
+const initialPlan = "# Website Plan (Initial)\n\n## Status\n\nInitial plan document created.\n\n## Accessible font guidance (retained)\n\n- **Readable base size:** body text at least 16px (1rem).\n";
+const consumedPlan = `# Website Plan\n\n## Human direction\n\n- Use a readable font with accessible labels.\n- Add a contact section to the saved website plan, labelled \`${label}\`.\n\n## Status\n\nPlan updated with the requested contact section.\n\n## Contact section (label: ${label})\n\n- **Label:** \`${label}\`\n- **Purpose:** give visitors a clear, accessible way to reach the site owner.\n- **Accessibility requirements:**\n  - Every field has a persistently visible, programmatically associated label.\n\n## Accessible font guidance (retained)\n\n- **Readable base size:** body text at least 16px (1rem).\n`;
+it("full cohort 6: the contact section is gone although a superseded note still names its label", () => {
+  const final = `# Website Plan\n\n## Human direction\n\n- Use a readable font with accessible labels.\n- No contact section is included; the earlier \`${label}\` contact-section request has been superseded.\n\n## Status\n\nPlan revised: the \`${label}\` contact section has been removed.\n\n## Accessible font guidance (retained)\n\n- **Readable base size:** body text at least 16px (1rem).\n`;
+  expect(contactSectionRemoved(consumedPlan, initialPlan, final, label)).toBe(true);
+  expect(contactSectionRemoved(consumedPlan, initialPlan, initialPlan, label)).toBe(true);
+});
+it("reworded valid: a section labelled only in its body is found as the new section carrying the label", () => {
+  const consumed = `# Plan\n\n## Fonts\n\n- Accessible fonts.\n\n## Contact\n\nReference: ${label}\n- Contact form with visible labels for every field.\n`;
+  expect(contactSectionRemoved(consumed, "# Plan\n\n## Fonts\n\n- Accessible fonts.\n", "# Plan\n\n## Fonts\n\n- Accessible fonts.\n\n## Changes\n\nRemoved the contact section (" + label + ").\n", label)).toBe(true);
+});
+it("broken: the contact section remains, renamed, emptied of its heading, or was never identifiable", () => {
+  expect(contactSectionRemoved(consumedPlan, initialPlan, consumedPlan, label)).toBe(false);
+  expect(contactSectionRemoved(consumedPlan, initialPlan, consumedPlan.replace(`## Contact section (label: ${label})`, "## Get in touch"), label)).toBe(false);
+  expect(contactSectionRemoved(consumedPlan, initialPlan, consumedPlan.replace(`## Contact section (label: ${label})\n`, ""), label)).toBe(false);
+  expect(contactSectionRemoved(`# Plan\n\nLabel ${label} only in the preamble.\n`, undefined, "# Plan\n", label)).toBe(false);
 });
