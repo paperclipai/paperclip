@@ -1,5 +1,6 @@
-import { and, asc, eq, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, notInArray, sql } from "drizzle-orm";
 import { agents, companies, heartbeatRuns, type Db } from "@paperclipai/db";
+import { instanceSettingsService, isTruthyRuntimeEnvValue, resolveWorktreeRunExecutionActivation } from "./instance-settings.js";
 
 export const QUEUED_RUN_REDRIVE_AFTER_MS = 60_000;
 export const QUEUED_RUN_REDRIVE_MAX_INTERVAL_MS = 15 * 60_000;
@@ -19,7 +20,8 @@ export type UndispatchedQueuedRun = {
 
 type PageCursor = { at: string; runId: string };
 
-async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefined, after: PageCursor | null, limit: number):
+async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefined, createdAfter: Date | null | undefined,
+  after: PageCursor | null, limit: number):
   Promise<Array<UndispatchedQueuedRun & { cursorAt: string }>> {
   return db.select({
     runId: heartbeatRuns.id,
@@ -34,6 +36,7 @@ async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefin
     .where(and(
       eq(heartbeatRuns.status, "queued"),
       companyId ? eq(heartbeatRuns.companyId, companyId) : undefined,
+      createdAfter ? gte(heartbeatRuns.createdAt, createdAfter) : undefined,
       eq(companies.status, "active"),
       eq(agents.lifecycleState, "ready"),
       notInArray(agents.status, NOT_READY_AGENT_STATUSES),
@@ -47,14 +50,16 @@ async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefin
 }
 
 /** Every undispatched queued run, read page by page with no cap; one
- * company's runs when `companyId` is given. */
-export async function listUndispatchedQueuedRuns(db: Db, options: { companyId?: string; pageSize?: number } = {}):
+ * company's runs when `companyId` is given. `createdAfter` is the worktree
+ * execution cutoff: dispatch never starts a run created before it. */
+export async function listUndispatchedQueuedRuns(db: Db,
+  options: { companyId?: string; createdAfter?: Date | null; pageSize?: number } = {}):
   Promise<UndispatchedQueuedRun[]> {
   const pageSize = options.pageSize ?? UNDISPATCHED_PAGE_SIZE;
   const runs: UndispatchedQueuedRun[] = [];
   let after: PageCursor | null = null;
   for (;;) {
-    const page = await listUndispatchedQueuedRunPage(db, options.companyId, after, pageSize);
+    const page = await listUndispatchedQueuedRunPage(db, options.companyId, options.createdAfter, after, pageSize);
     runs.push(...page.map(({ cursorAt: _cursorAt, ...run }) => run));
     if (page.length < pageSize) return runs;
     const last = page[page.length - 1]!;
@@ -97,4 +102,18 @@ export function createQueuedRunRedriveSchedule(now: () => number = Date.now) {
       return { companyIds: [...companyIds], nextAt };
     },
   };
+}
+
+/** Whether this runtime dispatches queued runs at all, and from which
+ * creation time, read the way dispatch reads them: a worktree runtime starts
+ * nothing until worktree execution is armed, and then only runs created after
+ * its cutoff. */
+export async function readQueuedRunExecutionWindow(db: Db, runtimeEnv: Record<string, string | undefined> = process.env):
+  Promise<{ dispatches: boolean; createdAfter: Date | null }> {
+  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) return { dispatches: true, createdAfter: null };
+  const activation = resolveWorktreeRunExecutionActivation(await instanceSettingsService(db).getExperimental(),
+    runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || null);
+  const cutoff = activation.armed ? new Date(activation.cutoff) : null;
+  return cutoff && !Number.isNaN(cutoff.getTime()) ? { dispatches: true, createdAfter: cutoff }
+    : { dispatches: false, createdAfter: null };
 }

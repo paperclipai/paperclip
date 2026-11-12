@@ -29,6 +29,8 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import { applyOwnershipReportBackstops, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { listUndispatchedQueuedRuns } from "../services/queued-run-dispatch-liveness.js";
 import { releaseLapsedCoordinatorOwner } from "../services/workspace-recovery-stop-proof.js";
 import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import {
@@ -1006,6 +1008,29 @@ describe("report-only ownership reconciliation", () => {
       await applyOwnershipReportBackstops(db, second);
       expect(signals).toEqual([]);
     } finally { unsubscribe(); }
+  });
+
+  it("does not report queued runs a worktree runtime will never start: before its cutoff or while execution is off", async () => {
+    const copied = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: copied, companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(19) });
+    const queuedRunViolations = async () => (await runOwnershipReconciliationPass(db,
+      { state: createOwnershipReportState(), record: false })).violations.filter(violation => violation.kind === "queued_run");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "true");
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ownership-worktree");
+    const settings = instanceSettingsService(db);
+    try {
+      expect(await queuedRunViolations()).toEqual([]);
+      await settings.updateExperimental({ enableWorktreeRunExecution: true });
+      expect(await queuedRunViolations()).toEqual([]);
+      expect(await listUndispatchedQueuedRuns(db, { createdAfter: minutesAgo(1) })).toEqual([]);
+      expect((await listUndispatchedQueuedRuns(db)).map(run => run.runId)).toEqual([copied]);
+    } finally {
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      vi.unstubAllEnvs();
+      vi.stubEnv("PAPERCLIP_HOME", home);
+      vi.stubEnv("SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR", orphanSpool);
+    }
   });
 
   it("signals queued-run dispatch when finalization work settles or a finished coordinator's lapsed owner is released", async () => {

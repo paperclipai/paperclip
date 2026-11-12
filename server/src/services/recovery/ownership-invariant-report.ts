@@ -11,7 +11,7 @@ import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { persistActivity } from "../activity-log.js";
-import { listUndispatchedQueuedRuns, QUEUED_RUN_NOT_DISPATCHED } from "../queued-run-dispatch-liveness.js";
+import { listUndispatchedQueuedRuns, QUEUED_RUN_NOT_DISPATCHED, readQueuedRunExecutionWindow } from "../queued-run-dispatch-liveness.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 import { LEGACY_OWNER_REASONS, recordVersionAttestations } from "./owner-gone-attestation.js";
 import {
@@ -623,7 +623,9 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
  * start it. One that stays queued past the grace window while its ready agent
  * runs nothing has lost its dispatch signal (invariant 7). */
 async function checkQueuedRunsDispatched(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
-  const runs = await listUndispatchedQueuedRuns(db, { pageSize: limit });
+  const window = await readQueuedRunExecutionWindow(db);
+  if (!window.dispatches) return { violations: [], nextDueAt: null };
+  const runs = await listUndispatchedQueuedRuns(db, { pageSize: limit, createdAfter: window.createdAfter });
   const cutoff = now.getTime() - QUEUED_RUN_DISPATCH_GRACE_MS;
   const violations: InvariantViolation[] = [];
   let nextDueAt: Date | null = null;
