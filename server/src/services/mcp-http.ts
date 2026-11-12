@@ -1,4 +1,4 @@
-import { MCP_APPS_CLIENT_CAPABILITY } from "@paperclipai/shared";
+import { MCP_APPS_CLIENT_CAPABILITY, MCP_SKILLS_CLIENT_CAPABILITY } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { markMcpHttpResponseFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 // Helpers for talking to remote MCP servers over the Streamable HTTP transport.
@@ -51,8 +51,9 @@ export function isModernMcpProtocolVersion(version: unknown): version is string 
  * Legacy sessions keep the handshake capabilities they have always received.
  */
 export function mcpClientCapabilities(protocolVersion: string): Record<string, unknown> {
+  // The skills extension is defined against stateless MCP only.
   return isModernMcpProtocolVersion(protocolVersion)
-    ? { elicitation: { url: {} }, extensions: MCP_APPS_CLIENT_CAPABILITY }
+    ? { elicitation: { url: {} }, extensions: { ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY } }
     : { extensions: MCP_APPS_CLIENT_CAPABILITY };
 }
 
@@ -383,6 +384,31 @@ export function knownMcpProtocolVersion(eraKey: string): string | null {
 
 export function forgetMcpProtocolVersion(eraKey: string) {
   eras.delete(eraKey);
+  serverCapabilities.delete(eraKey);
+}
+
+// What a stateless server advertised in `server/discover`, kept beside its era
+// so a catalog refresh can tell whether the server serves skills without
+// asking again.
+const serverCapabilities = new Map<string, { capabilities: Record<string, unknown>; expiresAt: number }>();
+
+export function rememberMcpServerCapabilities(eraKey: string, capabilities: Record<string, unknown>) {
+  for (const [key, value] of serverCapabilities) if (value.expiresAt <= Date.now()) serverCapabilities.delete(key);
+  if (serverCapabilities.size >= 2000) serverCapabilities.delete(serverCapabilities.keys().next().value!);
+  serverCapabilities.set(eraKey, { capabilities, expiresAt: Date.now() + ERA_TTL_MS });
+}
+
+/** The capabilities a stateless server last advertised, or null when not known in this process. */
+export function knownMcpServerCapabilities(eraKey: string): Record<string, unknown> | null {
+  const cached = serverCapabilities.get(eraKey);
+  if (!cached || cached.expiresAt <= Date.now()) return null;
+  return cached.capabilities;
+}
+
+/** Whether advertised capabilities declare an MCP extension. */
+export function mcpServerDeclaresExtension(capabilities: Record<string, unknown> | null, extensionId: string): Record<string, unknown> | null {
+  const extensions = record(capabilities?.extensions);
+  return record(extensions?.[extensionId]);
 }
 
 type McpInitializeInput = {
@@ -393,7 +419,7 @@ type McpInitializeInput = {
   eraKey?: string;
 };
 
-type DiscoverOutcome = { protocolVersion: string } | { legacy: true };
+type DiscoverOutcome = { protocolVersion: string; capabilities?: Record<string, unknown> } | { legacy: true };
 
 /**
  * Ask the server which versions it supports (`server/discover`). A modern
@@ -433,7 +459,8 @@ async function discoverMcpProtocol(input: McpInitializeInput): Promise<DiscoverO
   if (result && Array.isArray(result.supportedVersions)) {
     const selected = selectMcpProtocolVersion(result.supportedVersions);
     if (!selected) throw new McpHttpInitializationError("This app uses an MCP version Paperclip does not support yet.", "initialize", response.status);
-    return { protocolVersion: selected };
+    const capabilities = record(result.capabilities);
+    return { protocolVersion: selected, ...(capabilities ? { capabilities } : {}) };
   }
   const modernError = mcpModernErrorOf(payload);
   if (modernError) {
@@ -483,6 +510,7 @@ export async function negotiateMcpProtocolVersion(input: McpInitializeInput): Pr
   const outcome = await discoverMcpProtocol(input);
   const protocolVersion = "protocolVersion" in outcome ? outcome.protocolVersion : MCP_PROTOCOL_VERSION;
   if (input.eraKey) rememberMcpProtocolVersion(input.eraKey, protocolVersion);
+  if (input.eraKey && "capabilities" in outcome && outcome.capabilities) rememberMcpServerCapabilities(input.eraKey, outcome.capabilities);
   return protocolVersion;
 }
 
