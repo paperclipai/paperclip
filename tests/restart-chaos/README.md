@@ -1272,11 +1272,13 @@ tasks that never launched are printed and recorded (`unlaunched` in `staging_mix
 `staging-mix-resources.json`); they are not tasks started. Subtasks are created by their parents at any time. The
 three agents' `maxConcurrentRuns` split `--mix-runs` by the ratio, one run each first. The harness keeps runs plus queue
 tasks in flight, so about `--mix-queue` tasks wait in Paperclip's own queue behind the running ones. `--mix-tasks` sets
-the task count for a smoke; otherwise the count fills the arrival window.
+the task count for a smoke; otherwise the count fills the arrival window. An arrival window shorter than the first burst is refused at
+start, and a wave that started no task fails as a harness error.
 
 **Faults.** The faults in `--faults` fire on the wave's own clock, one every `--mix-fault-spacing-minutes` (default
 40, staging's deploy cadence) before `--mix-minutes` ends, cycling through the kinds. Each slot fires after the previous
-one settled and hits every task in flight (`staging_mix_fault_slot` in the timeline). The tasks show fault `K13`, as storm
+one settled and at least one task is in flight; it hits every task in flight (`staging_mix_fault_slot` and
+`slotCoverage` record how many). The tasks show fault `K13`, as storm
 tasks do: the wave's clock crosses them. A slot that never fired because every task rested first fails the wave as a
 harness error (`staging_mix_fault_slots_missed`). With `--faults K0` the tasks are `K0` and nothing fires.
 

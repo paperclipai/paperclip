@@ -162,6 +162,14 @@ describe("staging-mix planning", () => {
     expect(arrivalEndMs({ minutes: 30, faultSpacingMinutes: 40, arrivalCutoffMinutes: 10 }, { faults: [] })).toBe(20 * 60_000);
   });
 
+  it("refuses an arrival window that would start no task, with the numbers", () => {
+    expect(() => wave(["--workload", "staging-mix", "--faults", "K0", "--mix-minutes", "30"])).toThrow(/arrival window is empty: arrivals stop 45 min .* at 0.0 min/);
+    expect(() => wave(["--workload", "staging-mix", "--faults", "K15", "--mix-minutes", "50", "--mix-fault-spacing-minutes", "40", "--mix-turn-minutes", "15-45"]))
+      .toThrow(/before the last fault slot ends/);
+    expect(wave(["--workload", "staging-mix", "--faults", "K0", "--mix-minutes", "30", "--mix-turn-minutes", "5-15"]).stagingMix!.arrivalEndMs).toBe(15 * 60_000);
+    expect(wave(["--workload", "staging-mix", "--faults", "K0", "--mix-minutes", "30", "--mix-tasks", "6"]).tasks).toBe(6);
+  });
+
   it("expresses the one-hour form: 3 swaps 12 minutes apart, 8-9 minute overlaps, 5-15 minute turns at 15 runs", () => {
     const short = wave(["--workload", "staging-mix", "--faults", "K15", "--k15-overlap-seconds", "480-540", "--mix-runs", "15", "--mix-queue", "3",
       "--mix-minutes", "40", "--mix-fault-spacing-minutes", "12", "--mix-turn-minutes", "5-15", "--seed", "12"]);
@@ -355,19 +363,22 @@ describe("staging-mix resource guard", () => {
   });
 
   it("fires each slot once, after the previous one settled, and names the slots that never fired", () => {
-    const options = wave(["--workload", "staging-mix", "--faults", "K15", "--k15-overlap-seconds", "30-60", "--mix-minutes", "25", "--mix-fault-spacing-minutes", "10"]);
+    const options = wave(["--workload", "staging-mix", "--faults", "K15", "--k15-overlap-seconds", "30-60", "--mix-minutes", "25", "--mix-fault-spacing-minutes", "10", "--mix-turn-minutes", "5-10"]);
     const plan = planStagingMixWave("w", options);
     const run = new StagingMixRun(options.stagingMix!, 0, () => undefined, "/nonexistent", plan.stagingMixSlots!, 3_072, () => sample(8_000));
     expect(run.slotDue(10 * 60_000 - 1)).toBeNull();
     const first = run.slotDue(10 * 60_000)!;
     expect(first.atMs).toBe(10 * 60_000);
-    expect(run.commitSlot(first)).toBe(true);
-    expect(run.commitSlot(first)).toBe(false);
+    expect(run.commitSlot(first, 0)).toBe(false);
+    expect(run.shortfall(4)).toEqual(["fault slot(s) at 10 min, 20 min never fired on a live task"]);
+    expect(run.commitSlot(first, 3)).toBe(true);
+    expect(run.commitSlot(first, 3)).toBe(false);
     expect(run.slotDue(30 * 60_000)).toBeNull();
     run.slotSettled();
     expect(run.slotDue(30 * 60_000)!.atMs).toBe(20 * 60_000);
     expect(run.unfiredSlots().map(slot => slot.atMs)).toEqual([20 * 60_000]);
-    expect(run.summary()).toMatchObject({ slotsPlanned: 2, slotsFired: 1 });
+    expect(run.summary()).toMatchObject({ slotsPlanned: 2, slotsFired: 1, slotCoverage: [{ atMs: 10 * 60_000, kind: "K15", exposed: 3 }] });
+    expect(run.shortfall(0)).toEqual(["the staging mix started no task", "fault slot(s) at 20 min never fired on a live task"]);
   });
 
   it("sums only the harness's own process tree and reads macOS available memory", () => {

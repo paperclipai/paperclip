@@ -143,6 +143,11 @@ export function applyStagingMix(options: WaveOptions, values: MixArgs, environme
     arrivalEndMs: arrivalEndMs({ minutes, faultSpacingMinutes, arrivalCutoffMinutes }, options),
     ...(values["mix-tasks"] !== undefined ? { tasks: whole(values["mix-tasks"], "mix-tasks", 1, 1, 2_000) } : {}),
   };
+  if (mix.tasks === undefined && mix.arrivalEndMs < (mix.runs + mix.queue) * BURST_GAP_MS) {
+    throw new Error(`The staging-mix arrival window is empty: arrivals stop ${mix.arrivalCutoffMinutes} min (--mix-arrival-cutoff-minutes, default the longest turn) `
+      + `before ${options.faults.length ? "the last fault slot ends" : "--mix-minutes ends"}, at ${(mix.arrivalEndMs / 60_000).toFixed(1)} min. `
+      + "Raise --mix-minutes, shorten --mix-turn-minutes or lower --mix-arrival-cutoff-minutes");
+  }
   if (mix.runs > mix.runCap) {
     throw new Error(`--mix-runs ${mix.runs} exceeds the local run cap of ${mix.runCap} (--mix-run-cap or RESTART_CHAOS_MIX_RUN_CAP; see README "Staging mix")`);
   }

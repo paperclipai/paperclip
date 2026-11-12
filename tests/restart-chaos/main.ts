@@ -713,10 +713,11 @@ async function main(): Promise<number> {
         }
       }
       const slot = mix && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady ? mix.slotDue(Date.now()) : null;
-      if (mix && slot) {
-        const exposed = active.filter(candidate => !candidate.done);
+      const slotExposed = slot ? active.filter(candidate => !candidate.done) : [];
+      if (mix && slot && slotExposed.length) {
+        const exposed = slotExposed;
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
-        if (mix.commitSlot(slot)) {
+        if (mix.commitSlot(slot, exposed.length)) {
           timeline.add("staging_mix_fault_slot", { ...slot, exposed: exposed.map(candidate => candidate.plan.taskId) });
           fireFault(slot.kind, slot.holdMs, "staging-mix", exposed, undefined, () => mix?.slotSettled());
         }
@@ -732,13 +733,13 @@ async function main(): Promise<number> {
     sandboxWatchStopped = true;
     await mix?.stop();
     await Promise.all(faultWork);
-    const unfired = mix && !interrupted ? mix.unfiredSlots() : [];
-    if (unfired.length) {
-      timeline.add("staging_mix_fault_slots_missed", { unfired });
-      harnessError ??= new Error(`Staging-mix fault slot(s) at ${unfired.map(entry => `${Math.round(entry.atMs / 60_000)} min`).join(", ")} never fired: every task rested first`);
+    const mixShortfall = mix && !interrupted ? mix.shortfall(launched.length) : [];
+    if (mixShortfall.length) {
+      timeline.add("staging_mix_shortfall", { problems: mixShortfall, unfired: mix!.unfiredSlots() });
+      harnessError ??= new Error(`Staging mix tested less than planned: ${mixShortfall.join("; ")}`);
     }
     if (mix) console.info(`Staging mix: ${launched.length} tasks started; ${mix.unlaunched} planned tasks never launched (excluded from tasks started); `
-      + `${mix.slots.length - unfired.length}/${mix.slots.length} fault slots fired`);
+      + `fault slots fired ${mix.slotCoverage.map(entry => `${Math.round(entry.atMs / 60_000)}m:${entry.kind}×${entry.exposed} tasks`).join(", ") || "none"} of ${mix.slots.length}`);
     if (storageTrigger) {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
       storageSection = storageTriggerMarkdown(storageTrigger.receipts);

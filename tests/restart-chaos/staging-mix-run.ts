@@ -72,6 +72,7 @@ export class StagingMixRun {
   private timer: NodeJS.Timeout | null = null;
   private slotsFired = 0;
   private slotUnsettled = false;
+  readonly slotCoverage: Array<{ atMs: number; kind: string; exposed: number }> = [];
   unlaunched = 0;
   inFlight = () => 0;
 
@@ -107,8 +108,9 @@ export class StagingMixRun {
     return !this.slotUnsettled && slot && now >= this.startedAt + slot.atMs ? slot : null;
   }
 
-  commitSlot(slot: StagingMixSlot): boolean {
-    if (this.slots[this.slotsFired] !== slot || this.slotUnsettled) return false;
+  commitSlot(slot: StagingMixSlot, exposed: number): boolean {
+    if (this.slots[this.slotsFired] !== slot || this.slotUnsettled || exposed < 1) return false;
+    this.slotCoverage.push({ atMs: slot.atMs, kind: slot.kind, exposed });
     this.slotsFired += 1;
     this.slotUnsettled = true;
     return true;
@@ -117,6 +119,14 @@ export class StagingMixRun {
   slotSettled(): void { this.slotUnsettled = false; }
 
   unfiredSlots(): StagingMixSlot[] { return this.slots.slice(this.slotsFired); }
+
+  shortfall(started: number): string[] {
+    const problems: string[] = [];
+    if (started === 0) problems.push("the staging mix started no task");
+    const unfired = this.unfiredSlots();
+    if (unfired.length) problems.push(`fault slot(s) at ${unfired.map(entry => `${Math.round(entry.atMs / 60_000)} min`).join(", ")} never fired on a live task`);
+    return problems;
+  }
 
   mayLaunch(now: number, next: TaskPlan): boolean {
     if (this.ended || !next.stagingMix || now < this.startedAt + next.stagingMix.arriveAtMs) return false;
@@ -131,7 +141,7 @@ export class StagingMixRun {
 
   summary() {
     const peak = (key: "rssMb" | "cpuPercent" | "load1m" | "inFlight") => Math.max(0, ...this.samples.map(sample => sample[key]));
-    return { slotsPlanned: this.slots.length, slotsFired: this.slotsFired, unlaunched: this.unlaunched, samples: this.samples.length, peakRssMb: peak("rssMb"), peakCpuPercent: peak("cpuPercent"), peakLoad1m: peak("load1m"), peakInFlight: peak("inFlight"),
+    return { slotsPlanned: this.slots.length, slotsFired: this.slotsFired, slotCoverage: this.slotCoverage, unlaunched: this.unlaunched, samples: this.samples.length, peakRssMb: peak("rssMb"), peakCpuPercent: peak("cpuPercent"), peakLoad1m: peak("load1m"), peakInFlight: peak("inFlight"),
       minAvailableMb: Math.min(...this.samples.map(sample => sample.availableMb)), totalMemoryMb: Math.round(os.totalmem() / 1_048_576), cpus: os.cpus().length };
   }
 
