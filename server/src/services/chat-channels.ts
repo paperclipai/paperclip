@@ -3540,7 +3540,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       await invalidateRuntime(endpointId);
       return "settled";
     },
-    reconcileProviderResourceRows, reconcileDiscordCommands, runtimeFor, runtimeContextForRecord,
+    reconcileProviderResourceRows, reconcileDiscordCommands, runtimeFor: photonExternalRuntimeOwner.configurationRuntimeFor, runtimeContextForRecord,
     stageTelegramMaintenance, processTelegramMaintenance, recordTelegramStopSubscription,
     fetchImpl, redactError, runtimeGeneration, leasedChatProvider, PROVIDER_LABELS, SUPPLIED_CREDENTIAL_KEYS, RECONNECT_CREDENTIAL_KEYS,
     PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS, isSupportedTelegramWebhookBaseUrl,

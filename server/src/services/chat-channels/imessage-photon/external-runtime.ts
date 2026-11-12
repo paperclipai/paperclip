@@ -68,7 +68,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
   broker(): PhotonExternalBroker | undefined;
   withReceiverLease<T>(record: EndpointRecord, work: (lease: { token: string }) => Promise<T>): Promise<T>;
   endpointRecord(id: string): Promise<EndpointRecord | null>;
-  runtimeFor(endpoint: EndpointRecord["endpoint"], input: { requireDiscordOwnership?: boolean }): Promise<ChatEndpointRuntime>;
+  runtimeFor(endpoint: EndpointRecord["endpoint"], input: { requireDiscordOwnership?: boolean; waitForDiscordOwnership?: boolean }): Promise<ChatEndpointRuntime>;
   context(runtime: ChatEndpointRuntime): RuntimeContext | undefined;
   ownership(id: string): DiscordGatewayOwnership | undefined;
   release(ownership: DiscordGatewayOwnership): Promise<void>;
@@ -96,6 +96,35 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
   async function placement(record: EndpointRecord) {
     if (record.endpoint.provider !== "imessage-photon") return null;
     return selected(record);
+  }
+  /** Configuration needs a ready sender, not an idle renewable receiver lease.
+   * Recover unfinished custody through the existing finite lease owner before
+   * asking the normal Runtime registry to construct an external-only sender. */
+  async function configurationRuntimeFor(endpoint: EndpointRecord["endpoint"],
+    input: { requireDiscordOwnership?: boolean; waitForDiscordOwnership?: boolean } = {}): Promise<ChatEndpointRuntime> {
+    if (endpoint.provider !== "imessage-photon") return options.runtimeFor(endpoint, input);
+    const record = await options.endpointRecord(endpoint.id);
+    if (!record) return options.runtimeFor(endpoint, input);
+    const prior = await store.read({ companyId: record.endpoint.companyId, endpointId: endpoint.id });
+    const connector = options.broker()?.instanceIdentity();
+    let recoveredOriginalHandoff = false;
+    if (prior && (prior.phase === "enrolling" || prior.phase === "joining")
+      && prior.identity.subject === (record.endpoint.setup as InternalSetupState).photonExternalSubject
+      && connector && prior.binding.instanceId === connector.instanceId && prior.binding.environment === connector.environment) {
+      if (!isDeepStrictEqual(await store.inspect(prior.identity), prior))
+        throw conflict("Photon original handoff changed during configuration; retry with current authority");
+      // Normal configuration has already joined and invalidated its old Runtime.
+      // reconcile retains all current lease/binding and physical-debt fences.
+      await reconcile(endpoint.id);
+      recoveredOriginalHandoff = true;
+    }
+    const current = await options.endpointRecord(endpoint.id);
+    if (current && await placement(current)) {
+      return options.runtimeFor(current.endpoint, { ...input, requireDiscordOwnership: false, waitForDiscordOwnership: false });
+    }
+    if (recoveredOriginalHandoff)
+      throw conflict("Photon original handoff has no current external placement; retry with current authority");
+    return options.runtimeFor(endpoint, input);
   }
   async function reserveLocalRuntime(record: EndpointRecord, context: RuntimeContext, lease: { token: string }, config: ResolvedPhotonChatConfig): Promise<PhotonRuntimeAllocation | null> {
     await options.joinConstructionCleanup?.(record.endpoint.id);
@@ -513,7 +542,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     return { actionId, state: "scheduled" as const };
   }
   ingress.set(db, receive);
-  return { reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === receive) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
+  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === receive) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
 }
 
 /** Called by normal configuration SQL with its actual authorized actor. Existing
