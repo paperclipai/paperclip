@@ -73,6 +73,17 @@ const connections: AiConnectionMetadata[] = [
       models: [],
     },
   },
+  {
+    provider: "openai",
+    method: "api_key",
+    routing: {
+      kind: "litellm",
+      protocol: "chat",
+      baseUrl: "https://litellm.example",
+      auth: "bearer",
+      models: [],
+    },
+  },
   ...(["responses", "messages"] as const).map((protocol) => ({
     provider: "openrouter" as const,
     method: "api_key" as const,
@@ -172,7 +183,16 @@ describe("fast response provider", () => {
       "http://localhost:8080/v1/chat/completions",
       null,
     ],
-  ])(
+    ...(["https://litellm.example", "https://litellm.example/v1/"] as const).map(baseUrl => [
+      {
+        provider: "openai",
+        method: "api_key",
+        routing: { kind: "litellm", protocol: "chat", baseUrl, auth: "bearer", models: [] },
+      },
+      "https://litellm.example/v1/chat/completions",
+      "Bearer fixture-key",
+    ] as const),
+  ] as const)(
     "honors saved chat endpoint/auth %j",
     async (metadata, expectedUrl, auth) => {
       const fetch = vi.fn(async () => response(chatResponse()));

@@ -1,0 +1,25 @@
+{
+  "retrievedAt": "2026-10-11",
+  "providers": [
+    {
+      "slug": "litellm",
+      "provider": "LiteLLM",
+      "file": "ui/public/brands/apps/litellm.svg",
+      "sourceUrl": "https://github.com/BerriAI/litellm/blob/main/ui/litellm-dashboard/public/assets/logos/litellm_monogram.svg",
+      "linkedFrom": "https://github.com/BerriAI/litellm",
+      "retrievedAt": "2026-10-11",
+      "sha256": "8e06e57b4093d12be1b90cbb9658a7d810e54d8c3a283f62a627410da7c159f9",
+      "note": "Official LiteLLM monogram from the LiteLLM dashboard assets. Paths are kept; the fill is #0117BE."
+    },
+    {
+      "slug": "litellm",
+      "provider": "LiteLLM",
+      "file": "ui/public/brands/apps/litellm-dark.svg",
+      "sourceUrl": "https://github.com/BerriAI/litellm/blob/main/ui/litellm-dashboard/public/assets/logos/litellm_monogram.svg",
+      "linkedFrom": "https://github.com/BerriAI/litellm",
+      "retrievedAt": "2026-10-11",
+      "sha256": "248548316b2f9e17c2ee34e8243b7c8cb7388c1bbf8e51674a5c938ee2701632",
+      "note": "Same monogram paths with a white fill for the dark frame."
+    }
+  ]
+}

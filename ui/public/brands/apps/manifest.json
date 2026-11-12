@@ -537,6 +537,13 @@
       "darkAsset": "/brands/apps/openrouter-dark.svg"
     },
     {
+      "slug": "litellm",
+      "provider": "LiteLLM",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/litellm.svg",
+      "darkAsset": "/brands/apps/litellm-dark.svg"
+    },
+    {
       "slug": "xai",
       "provider": "Grok",
       "catalogVisible": true,

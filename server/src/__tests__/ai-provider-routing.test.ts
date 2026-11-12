@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
+  aiConnectionCatalogSlug,
   aiProviderRoutingSchema,
   aiRoutingHarness,
+  aiProviderSetupPreset,
+  aiRoutingBaseUrl,
   aiRoutingModel,
   createAiConnectionSchema,
   isAiConnectionCompatible,
+  isAiRoutingCompatible,
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "../services/ai-provider-routing.js";
 
@@ -169,5 +173,57 @@ describe("provider routing", () => {
     });
     expect(aiProviderRoutingSchema.safeParse({ ...routing, auth: "aws_credentials" }).success).toBe(false);
     for (const key of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) expect(projected.env).not.toHaveProperty(key);
+  });
+  const litellm = (extra: object = {}) => ({ kind: "litellm", protocol: "chat", auth: "bearer", baseUrl: "https://litellm.example", ...extra });
+  it.each([
+    [litellm(), true],
+    [litellm({ baseUrl: "http://localhost:4000", auth: "none" }), true],
+    [litellm({ baseUrl: "http://[::1]:4000" }), true],
+    [litellm({ baseUrl: "http://litellm.example:4000" }), false],
+    [litellm({ baseUrl: undefined }), false],
+    [litellm({ protocol: "responses" }), false],
+    [litellm({ protocol: "messages" }), false],
+    [litellm({ auth: "api_key" }), false],
+    [litellm({ baseUrl: "https://user:secret@litellm.example" }), false],
+    [litellm({ baseUrl: "https://litellm.example/?key=secret" }), false],
+  ])("validates LiteLLM routing %j", (route, valid) => {
+    expect(aiProviderRoutingSchema.safeParse(route).success).toBe(valid);
+  });
+  it.each([
+    ["claude_local", true], ["codex_local", true], ["opencode_local", true], ["hermes_local", true],
+    ["gemini_local", false], ["grok_local", false], ["http", false],
+  ])("LiteLLM compatibility with %s is %s", (harness, expected) => {
+    expect(isAiRoutingCompatible(aiProviderRoutingSchema.parse(litellm()), harness)).toBe(expected);
+  });
+  it.each(["https://litellm.example", "https://litellm.example/", "https://litellm.example/v1", "https://litellm.example/v1/"])("derives LiteLLM base URL per harness from %s", baseUrl => {
+    const route = aiProviderRoutingSchema.parse(litellm({ baseUrl }));
+    expect(aiRoutingBaseUrl(route, "claude_local")).toBe("https://litellm.example");
+    for (const harness of ["codex_local", "opencode_local", "hermes_local", "fast_response"]) expect(aiRoutingBaseUrl(route, harness)).toBe("https://litellm.example/v1");
+  });
+  it("projects LiteLLM into each harness", () => {
+    const route = aiProviderRoutingSchema.parse(litellm({ baseUrl: "https://litellm.example/v1/" }));
+    const codex = managedProviderRouting(route, "codex_local", "fixture-secret", "gpt-5.4");
+    expect(codex.codexConfig).toContain('base_url = "https://litellm.example/v1"');
+    expect(codex.codexConfig).not.toContain("fixture-secret");
+    const claude = managedProviderRouting(route, "claude_local", "fixture-secret", "claude-sonnet-4.6");
+    expect(claude.env.ANTHROPIC_BASE_URL).toBe("https://litellm.example");
+    expect(claude.env.ANTHROPIC_AUTH_TOKEN).toBe("fixture-secret");
+    const opencode = managedProviderRouting(route, "opencode_local", "fixture-secret", "gpt-5.4");
+    expect(opencode.config.model).toBe("paperclip/gpt-5.4");
+    expect(opencode.env.PAPERCLIP_AI_PROVIDER_URL).toBe("https://litellm.example/v1");
+    expect(JSON.parse(opencode.env.OPENCODE_CONFIG_CONTENT).provider.paperclip.options.baseURL).toBe("https://litellm.example/v1");
+    const hermes = managedProviderRouting(route, "hermes_local", "fixture-secret", "gpt-5.4");
+    expect(hermes.hermesConfig).toContain('provider: "custom"');
+    expect(hermes.hermesConfig).toContain('base_url: "https://litellm.example/v1"');
+    expect(hermes.hermesConfig).not.toContain("fixture-secret");
+    expect(aiRoutingModel(route, "opencode_local", "gpt-5.4")).toBe("paperclip/gpt-5.4");
+  });
+  it("accepts LiteLLM only on OpenAI API-key connections and maps its catalog identity", () => {
+    const input = { provider: "openai", method: "api_key", name: "LiteLLM", ownership: "personal", apiKey: "fixture-key", routing: litellm() };
+    expect(createAiConnectionSchema.safeParse(input).success).toBe(true);
+    expect(createAiConnectionSchema.safeParse({ ...input, provider: "anthropic" }).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...input, method: "subscription", apiKey: undefined, loginSessionId: "session" }).success).toBe(false);
+    expect(aiConnectionCatalogSlug("openai", { kind: "litellm", protocol: "chat" })).toBe("litellm");
+    expect(aiProviderSetupPreset("litellm")).toEqual({ provider: "litellm" });
   });
 });
