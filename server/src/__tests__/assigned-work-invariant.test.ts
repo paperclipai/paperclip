@@ -132,6 +132,21 @@ describePostgres("assigned-work invariant sweep", () => {
       .toMatchObject({ outcome: "ok", verdict: { clause: "pending_intent", intent: "queued_wake" } });
   }, 60_000);
 
+  it("a wake claimed long ago that never became a run is not a pending path", async () => {
+    // Wave w-20261112T211412-s7201: wake 49c5540e claimed at 22:20:16, run_id still null at 22:35.
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    await f.run(issueId, { status: "succeeded", errorCode: null, livenessState: null });
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_children_completed", status: "claimed", payload: { issueId },
+      claimedAt: new Date(Date.now() - 15 * 60_000), createdAt: new Date(Date.now() - 40 * 60_000) });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 50)).map(row => row.id)).toContain(issueId);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
+      .toMatchObject({ verdict: { kind: "violation", reason: "no_pending_path" } });
+  }, 60_000);
+
   it("an in_progress task whose native run failed needing reconciliation (silently skipped today) gets one continuation", async () => {
     const f = await seedCompany();
     const issueId = await f.issue();

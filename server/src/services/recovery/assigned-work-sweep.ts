@@ -57,7 +57,7 @@ export const ASSIGNED_WORK_REPORT_LIMIT = 2_000;
 
 const OPEN_STATUSES = ["todo", "in_progress", "blocked"] as const;
 const PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
-/** How long a deferred wake counts as pending when no run holds its task. */
+/** How long a deferred wake (no run holding its task) or a claimed wake with no run counts as pending. */
 const DEFERRED_WAKE_PENDING_BOUND_MS = 5 * 60_000;
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
@@ -200,8 +200,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           // A wake deferred behind a run is promoted when that run releases the
           // task. With no live run (checked first), one older than the bound has
           // nothing left that will promote it, so it is not a pending path.
-          sql`(${agentWakeupRequests.status} <> 'deferred_issue_execution'
-            or ${agentWakeupRequests.createdAt} > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)`,
+          sql`(${agentWakeupRequests.status} = 'queued'
+            or (${agentWakeupRequests.status} = 'deferred_issue_execution'
+              and ${agentWakeupRequests.createdAt} > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)
+            -- A claimed wake becomes a run within seconds; one claimed long ago with no run never will.
+            or (${agentWakeupRequests.status} = 'claimed' and (${agentWakeupRequests.runId} is not null
+              or coalesce(${agentWakeupRequests.claimedAt}, ${agentWakeupRequests.createdAt})
+                > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)))`,
           sql`${agentWakeupRequests.payload}->>'issueId' = any(${idParam})`))
         .groupBy(sql`${agentWakeupRequests.payload}->>'issueId'`),
       database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
@@ -431,8 +436,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz))`,
       sql`not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
         and (w.payload->>'issueId') = ${issues.id}::text
-        and (w.status in ('queued', 'claimed') or (w.status = 'deferred_issue_execution'
-          and w.created_at > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)))`,
+        and (w.status = 'queued'
+          or (w.status = 'deferred_issue_execution' and w.created_at > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)
+          or (w.status = 'claimed' and (w.run_id is not null
+            or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz))))`,
       sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
         and t.issue_id = ${issues.id} and t.status = 'pending'
         and ${interactionNotSupersededSql(sql`t.company_id`, sql`t.issue_id::text`, sql`t.created_at`)})`,
