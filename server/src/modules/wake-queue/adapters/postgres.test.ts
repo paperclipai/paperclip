@@ -474,6 +474,36 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect((await release({ companyId, runId, now: new Date(), suppressImmediateRecovery: true, resumeStrandedQueue: true })).outcome.kind).toBe("promoted");
   });
 
+  it.each([true, false])("promotes saved input behind a restart-ended native run only once the fresh continuation replaced it (replaced: %s)", async replaced => {
+    const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, status: "in_progress", assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "failed", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, finishedAt: new Date(),
+      errorCode: "native_restart_recovery_blocked",
+      resultJson: replaced ? { freshContinuationSupersededAt: new Date().toISOString() } : {},
+    }).where(eq(heartbeatRuns.id, runId));
+    // Restart recovery ended the run: its finalization stays terminal_failure, never committed.
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "terminal_failure",
+      recoveryState: "blocked", failureCode: "native_restart_recovery_blocked" });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "responsible-user", body: "Follow-up during the run" }).returning();
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
+      payload: { _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } },
+    });
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    });
+    const result = await release({ companyId, runId, now: new Date(), suppressImmediateRecovery: true, resumeStrandedQueue: true });
+    if (replaced) {
+      expect(result.outcome.kind).toBe("promoted");
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).not.toBe("deferred_issue_execution");
+      // No reconciliation incident re-blocks the task the fallback released.
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).not.toBe("blocked");
+    } else {
+      expect(result.outcome.kind).toBe("released");
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).toBe("deferred_issue_execution");
+    }
+  });
+
   it.each([
     "completed", "multiple_comments", "repeated_reference", "parent_reference", "mixed_issue_references", "mixed_foreign_references", "mixed_unknown_references", "no_comments", "missing_comment",
     "human_comment", "other_run_comment", "foreign_comment", "other_issue_comment", "deleted_comment",
