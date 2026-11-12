@@ -52,6 +52,11 @@ export async function listWorkspaceFiles(root: string): Promise<string[]> {
 
 export const QUEUED_TRIGGER_MAX_EMPTY_SAMPLES = 3;
 
+export function bannerRestDue(since: number, now: number, raw = process.env.RESTART_CHAOS_MIX_BANNER_REST_SECONDS): boolean {
+  if (raw === undefined || raw === "" || !/^[0-9]+$/.test(raw)) return false;
+  return now - since >= Number(raw) * 1000;
+}
+
 function stillQueued(runs: readonly RunSample[]): boolean {
   return runs.some(run => run.status === "queued" && !run.startedAt) && !runs.some(run => run.startedAt || run.status === "running");
 }
@@ -207,6 +212,7 @@ export class TaskObserver {
   readonly record: TaskRecord;
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
+  private bannerSince: number | null = null;
   private childrenSettledAt: number | null = null;
   private childStallCheckedAt: number | null = null;
   private stallSince: number | null = null;
@@ -693,8 +699,13 @@ export class TaskObserver {
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
       if (this.plan.stagingMix?.retryDuringWave && holdsRetry(this.record, this.plan.stagingMix.holdMs, now)) { this.restCandidateSince = null; return; }
       if (!this.plan.stagingMix || this.plan.stagingMix.retryDuringWave) { await this.boardRetry(sample, now); return; }
-      this.restCandidateSince = null;
-      return;
+      this.bannerSince ??= now;
+      if (!bannerRestDue(this.bannerSince, now)) {
+        this.restCandidateSince = null;
+        return;
+      }
+    } else {
+      this.bannerSince = null;
     }
     this.record.restAt = this.restCandidateSince ?? now;
     this.record.finalStatus = status;
