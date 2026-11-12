@@ -149,6 +149,7 @@ import {
   initializeMcpHttpSession,
   getMcpHttpSession,
   forgetMcpHttpSession,
+  forgetMcpHttpSessions,
   readMcpHttpResponse,
   McpHttpResponseError,
   McpHttpInitializationError,
@@ -448,6 +449,9 @@ interface ExecuteTestCallInput {
   timeoutMs?: number;
   /** MCP Apps view calls only: return the redacted provider `_meta`. Never set for agent-reachable callers. */
   includeResultMeta?: boolean;
+  /** MCP Apps view calls only: the task (and its project) the view belongs to, so task- and project-scoped rules apply. */
+  issueId?: string | null;
+  projectId?: string | null;
 }
 
 interface ExecutePluginToolInput {
@@ -5598,6 +5602,8 @@ export function createToolGatewayService(
     callerHeaders?: Record<string, string | string[] | undefined>;
     /** Larger limit for MCP Apps view documents, which go to the browser, never to an agent. */
     maxResponseBytes?: number;
+    /** False for reads whose failure says nothing about the connection (an MCP Apps view document). */
+    markHealth?: boolean;
   }): Promise<unknown> {
     const grant = await resolveConnectionGrant(input.session, input.connection);
     const endpoint = await resolvedRemoteEndpoint(
@@ -5619,23 +5625,41 @@ export function createToolGatewayService(
       credentialHeaders,
       callerHeaders: input.callerHeaders,
     });
-    const contextInit: RequestInit = {
-      method: "POST",
-      redirect: "manual",
-      headers: mcpHttpRequestHeaders(headers),
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: `paperclip-context-${randomUUID()}`,
-        method: input.method,
-        params: input.params,
-      }),
+    const requestId = `paperclip-context-${randomUUID()}`;
+    const dispatch = (init: RequestInit) => options.remoteHttpRequest
+      ? options.remoteHttpRequest(endpoint, init)
+      : guardedRemoteHttpFetch(endpoint, init, remoteHttpFetchOptions());
+    // Stateful servers need the same MCP session setup as tool calls.
+    const sessionScope = connectionRequiresMcpSession(input.connection)
+      ? `${input.connection.id}:grant:${grant.id}:actor:${input.session.agentId}:${endpoint}`
+      : null;
+    const send = async (fresh: boolean) => {
+      let requestHeaders: Record<string, string> = headers;
+      if (sessionScope) {
+        if (fresh) forgetMcpHttpSessions(input.connection.id);
+        requestHeaders = await getMcpHttpSession({
+          scope: sessionScope,
+          send: (init) => dispatch({ ...init, redirect: "manual" }),
+          headers,
+          requestId,
+        });
+      }
+      return dispatch({
+        method: "POST",
+        redirect: "manual",
+        headers: mcpHttpRequestHeaders(requestHeaders),
+        body: JSON.stringify({ jsonrpc: "2.0", id: requestId, method: input.method, params: input.params }),
+      });
     };
-    const response = options.remoteHttpRequest
-      ? await options.remoteHttpRequest(endpoint, contextInit)
-      : await guardedRemoteHttpFetch(endpoint, contextInit, remoteHttpFetchOptions());
+    let response = await send(false);
+    if (sessionScope && (response.status === 404 || response.status === 400)) {
+      // An expired or unknown session: start a new one once.
+      await response.body?.cancel().catch(() => undefined);
+      response = await send(true);
+    }
     const body = await readBoundedRemoteResponse(response, undefined, input.maxResponseBytes);
     if (!response.ok) {
-      await markRemoteConnectionHealth(
+      if (input.markHealth !== false) await markRemoteConnectionHealth(
         input.connection,
         "error",
         `Remote MCP server failed ${input.method}.`,
@@ -5684,7 +5708,7 @@ export function createToolGatewayService(
         },
       );
     }
-    await markRemoteConnectionHealth(
+    if (input.markHealth !== false) await markRemoteConnectionHealth(
       input.connection,
       "ok",
       `Remote MCP server responded to ${input.method}.`,
@@ -5699,6 +5723,7 @@ export function createToolGatewayService(
     params?: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
     maxResponseBytes?: number;
+    markHealth?: boolean;
   }): Promise<unknown> {
     const [application] = await db.select({ applicationKey: toolApplications.applicationKey }).from(toolApplications)
       .where(and(eq(toolApplications.id, input.connection.applicationId), eq(toolApplications.companyId, input.session.companyId))).limit(1);
@@ -9910,8 +9935,8 @@ export function createToolGatewayService(
         companyId: input.companyId,
         agentId: input.agentId,
         runId: input.managementContext?.workContext.runId ?? null,
-        issueId: input.managementContext?.workContext.issueId ?? null,
-        projectId: input.managementContext?.workContext.projectId ?? null,
+        issueId: input.issueId ?? input.managementContext?.workContext.issueId ?? null,
+        projectId: input.projectId ?? input.managementContext?.workContext.projectId ?? null,
         originatingAgentId: actingAgentId,
         actorType: actingAgentId ? "agent" : "user",
         actorId: actingAgentId ?? input.userId,
@@ -10214,6 +10239,8 @@ export function createToolGatewayService(
         params: { uri: input.view.resourceUri },
         // JSON (or SSE) framing escapes the document, so allow headroom over the HTML limit.
         maxResponseBytes: MCP_APP_MAX_HTML_BYTES * 2,
+        // A view document that fails to load says nothing about the connection's tools.
+        markHealth: false,
       });
       const resource = readMcpAppResource(result, input.view.resourceUri);
       if (!resource) {
@@ -10234,7 +10261,7 @@ export function createToolGatewayService(
     async callMcpAppViewTool(input: {
       companyId: string;
       userId: string;
-      view: { connectionId: string; agentId: string | null };
+      view: { connectionId: string; agentId: string | null; issueId: string | null };
       toolName: string;
       arguments: Record<string, unknown>;
       signal?: AbortSignal;
@@ -10247,8 +10274,15 @@ export function createToolGatewayService(
       if (!tool || !mcpAppToolCallableFromApp((asRecord(tool.providerMetadata)?.ui ?? null) as McpAppToolUi | null)) {
         throw new ToolGatewayHttpError(404, `Tool "${input.toolName}" is not available to this app`, "mcp_app_tool_not_found");
       }
+      // Task- and project-scoped rules (block, Ask first) see the view's task.
+      const [issue] = input.view.issueId
+        ? await db.select({ id: issues.id, projectId: issues.projectId }).from(issues)
+          .where(and(eq(issues.id, input.view.issueId), eq(issues.companyId, input.companyId))).limit(1)
+        : [];
       const outcome = await this.executeTestCall({
         companyId: input.companyId,
+        issueId: issue?.id ?? null,
+        projectId: issue?.projectId ?? null,
         connectionId: input.view.connectionId,
         agentId: input.view.agentId,
         userId: input.userId,

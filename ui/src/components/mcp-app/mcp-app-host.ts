@@ -213,6 +213,16 @@ export function mcpAppDocument(html: string, csp: McpAppResourceCsp): string {
 }
 
 /**
+ * Views render only where the navigation guard can cancel script-driven
+ * navigations of the frame (location assignment, meta refresh), which needs the
+ * Navigation API. The parent and the sandboxed frame run in the same engine.
+ */
+export function mcpAppNavigationGuardSupported(target: unknown = typeof window === "undefined" ? undefined : window): boolean {
+  const navigation = (target as { navigation?: { addEventListener?: unknown } } | undefined)?.navigation;
+  return typeof navigation?.addEventListener === "function";
+}
+
+/**
  * Runs before the view's own scripts. The view's frame must never load another
  * document: that document would inherit the frame's message channel. The
  * sandbox allows no popups, so every way out goes through the host's

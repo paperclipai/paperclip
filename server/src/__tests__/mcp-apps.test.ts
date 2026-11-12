@@ -4,7 +4,7 @@ import http from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants, toolCatalogEntries, toolMcpAppViews,
+  agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants, toolCatalogEntries, toolConnections, toolMcpAppViews, toolPolicies,
 } from "@paperclipai/db";
 import { MCP_APP_MIME_TYPE, MCP_APPS_EXTENSION_ID } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -58,7 +58,7 @@ const support = await getEmbeddedPostgresTestSupport();
   }, 30000);
   afterAll(async () => { await temp?.cleanup(); });
 
-  async function fixture() {
+  async function fixture(options: { requireSession?: boolean } = {}) {
     const origin = "https://circleback.ai";
     const endpoint = `${origin}/api/mcp`;
     const accessToken = `circleback-fixture-${randomUUID()}`;
@@ -66,6 +66,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: actor.actorId, status: "active", membershipRole: "admin" });
     let authorized = false;
     const initializeCapabilities: unknown[] = [];
+    const resourceReadSessions: Array<string | null> = [];
+    let failResourceReads = false;
     const request = vi.fn(async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
       const body = String(init.body ?? "");
@@ -76,11 +78,18 @@ const support = await getEmbeddedPostgresTestSupport();
         const rpc = JSON.parse(body);
         if (rpc.method === "initialize") {
           initializeCapabilities.push(rpc.params?.capabilities);
-          return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "Circleback fixture", version: "1" } } });
+          return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "Circleback fixture", version: "1" } } },
+            options.requireSession ? { headers: { "mcp-session-id": "fixture-session" } } : undefined);
+        }
+        // A stateful server refuses requests outside an initialized session.
+        if (options.requireSession && rpc.method !== "notifications/initialized" && headers.get("mcp-session-id") !== "fixture-session") {
+          return Response.json({ jsonrpc: "2.0", id: rpc.id ?? null, error: { code: -32000, message: "Bad Request: No valid session ID provided" } }, { status: 400 });
         }
         if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
         if (rpc.method === "tools/list") return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { tools } });
         if (rpc.method === "resources/read") {
+          resourceReadSessions.push(headers.get("mcp-session-id"));
+          if (failResourceReads) return new Response("view unavailable", { status: 500 });
           return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { contents: [{
             uri: rpc.params.uri, mimeType: MCP_APP_MIME_TYPE, text: VIEW_HTML,
             _meta: { ui: { csp: { resourceDomains: ["https://cdn.circleback.ai"] }, prefersBorder: true } },
@@ -134,7 +143,8 @@ const support = await getEmbeddedPostgresTestSupport();
     app.use(toolAccessRoutes(db, { toolGateway: gateway, remoteHttpRequest: request, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] }));
     app.use(mcpAppsRoutes(db, gateway));
     app.use(errorHandler);
-    return { company, agent, issue, run, gateway, session, request, app, initializeCapabilities, connectionId: signedIn.connectionId,
+    return { company, agent, issue, run, gateway, session, request, app, initializeCapabilities, resourceReadSessions, connectionId: signedIn.connectionId,
+      failResourceReads: (fail: boolean) => { failResourceReads = fail; },
       setActor: (kind: "board" | "agent" | "teammate") => { actorKind = kind; } };
   }
 
@@ -198,6 +208,13 @@ const support = await getEmbeddedPostgresTestSupport();
       _meta: { "circleback/cards": [{ id: "m1" }] },
     });
 
+    // Task-scoped rules apply to a view's tool calls: Ask first holds the call.
+    const [askFirst] = await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Ask first on this task", policyType: "require_approval", priority: 1, selectors: { issueId: f.issue.id } }).returning();
+    const held = await http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
+      .send({ name: "RefreshMeetingCards", arguments: { meetingIds: ["m1"] } }).expect(200);
+    expect(held.body).toMatchObject({ isError: true, content: [{ type: "text", text: expect.stringContaining("needs approval") }] });
+    await db.delete(toolPolicies).where(eq(toolPolicies.id, askFirst.id));
+
     // A model-only tool is never callable from a view.
     await http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
       .send({ name: "DisplayCalendarEvents", arguments: {} }).expect(404);
@@ -229,5 +246,24 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.issue.id));
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(404);
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(404);
+  });
+
+  it("reads view documents through an MCP session when the server requires one, without touching connection health", async () => {
+    const f = await fixture({ requireSession: true });
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.connectionId));
+    expect(connection.config).toMatchObject({ mcpSessionRequired: true });
+    const listed = await f.gateway.listToolsForSession(f.session.token);
+    const display = listed.find(tool => tool.upstreamToolName === "DisplayMeetings")!;
+    await f.gateway.executeTool({ sessionToken: f.session.token, tool: display.name, parameters: { meetingIds: ["m1"] }, idempotencyKey: randomUUID() });
+    const viewId = (await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200)).body[0].id as string;
+    const detail = await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(200);
+    expect(detail.body.resource.html).toBe(VIEW_HTML);
+    expect(f.resourceReadSessions.at(-1)).toBe("fixture-session");
+
+    const healthBefore = (await db.select().from(toolConnections).where(eq(toolConnections.id, f.connectionId)))[0]!.healthStatus;
+    f.failResourceReads(true);
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(502);
+    const healthAfter = (await db.select().from(toolConnections).where(eq(toolConnections.id, f.connectionId)))[0]!.healthStatus;
+    expect(healthAfter).toBe(healthBefore);
   });
 });

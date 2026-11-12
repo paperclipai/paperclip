@@ -54,6 +54,7 @@ afterEach(() => {
 describe("McpAppTurnViews", () => {
   it("loads a view's document only when it nears the viewport", async () => {
     vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    vi.stubGlobal("navigation", { addEventListener: () => undefined });
     const { container, root } = await render(2);
     expect(container.querySelectorAll("[data-testid=mcp-app-view-placeholder]")).toHaveLength(2);
     expect(detail).not.toHaveBeenCalled();

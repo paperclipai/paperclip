@@ -6,6 +6,9 @@ import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { McpAppFrame } from "./McpAppFrame";
+import { mcpAppNavigationGuardSupported } from "./mcp-app-host";
+
+const UNSUPPORTED_BROWSER_MESSAGE = "This browser can't show this app's widget safely. The tool result is still in the activity.";
 
 export interface McpAppViewContentProps {
   detail: McpAppViewDetail | undefined;
@@ -17,10 +20,11 @@ export interface McpAppViewContentProps {
 
 /** Presentational shell, shared by the live view and its stories. */
 export function McpAppViewContent({ detail, status, errorMessage, callTool, displayName }: McpAppViewContentProps) {
-  if (status === "error") {
+  const unsupported = !mcpAppNavigationGuardSupported();
+  if (status === "error" || unsupported) {
     return (
       <div role="status" data-testid="mcp-app-view-error" className="ml-1.5 mt-0.5 border-l-2 border-border py-1 pl-2.5 text-(length:--text-micro) text-muted-foreground">
-        {errorMessage ?? "This app's view could not be shown."}
+        {unsupported ? UNSUPPORTED_BROWSER_MESSAGE : errorMessage ?? "This app's view could not be shown."}
       </div>
     );
   }
@@ -59,6 +63,8 @@ export function McpAppView({ issueId, view, displayName }: { issueId: string; vi
   const query = useQuery({
     queryKey: queryKeys.mcpApps.detail(issueId, view.id),
     queryFn: ({ signal }) => mcpAppsApi.detail(issueId, view.id, signal),
+    // No document download where the view cannot be shown safely.
+    enabled: mcpAppNavigationGuardSupported(),
     staleTime: 5 * 60_000,
     retry: 1,
   });
