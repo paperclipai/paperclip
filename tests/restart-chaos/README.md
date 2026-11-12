@@ -26,7 +26,7 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 `--faults K0` plans cells with no fault, for workloads whose shape is the fault (W2, below). `--fail-recovery-step`,
-`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home`, `--ephemeral-server`, `--runner-bind-fault` and `--workload staging-mix` are described in their own sections.
+`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home`, `--ephemeral-server`, `--runner-bind-fault`, `--release-swap` and `--workload staging-mix` are described in their own sections.
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 `--matrix` crosses every selected workload with every fault kind (below), and `--server-from <dir>`
@@ -541,6 +541,105 @@ the Runner's listen port for 15 s. The server waits until that listener has boun
 `[paperclip-runner] test bind fault armed on port <n>` (or `failed`) to the run log, so a wave can count the runs that
 really took this path. Every run then takes it once per server generation, and the run must still finish without
 Retry. It needs `--env daytona`.
+
+## Release swap (RS1, `--release-swap`)
+
+```sh
+# Smoke: 2 swaps, 5 minutes apart, 90 s overlap, 2-minute settle.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --adapters opencode --workloads A1,T1 \
+  --release-swap --release-swap-count 2 --release-swap-spacing-minutes 5 --release-swap-overlap-seconds 90 \
+  --release-swap-settle-minutes 2 --concurrency 2 --tasks 40 --seed 7101
+# The default wave: 6 swaps, 40 minutes apart, 8.5-minute overlap, 15-minute settle, staging's volume-free shape.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --storage s3 \
+  --daytona-warm --daytona-cpu 2 --adapters opencode,codex,claude --release-swap --concurrency 12 --tasks 200 --seed 7100
+# The short form for hourly comparisons of fix PRs: 3 swaps, 12 minutes apart, the same 8.5-minute overlap, 15-minute settle.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --storage s3 \
+  --daytona-warm --daytona-cpu 2 --adapters opencode,codex,claude --release-swap-short --concurrency 12 --tasks 200 --seed 7110
+```
+
+`--release-swap` runs the full default (6 swaps, 40 minutes apart). `--release-swap-short` runs 3 swaps 12 minutes
+apart with the full 510 s overlap, so two servers run for most of each cycle. Either takes the `--release-swap-*`
+options below, which override the preset. Workload sizing (turn length, concurrency) comes from the workload flags.
+
+Staging takes a release about every 40 minutes as an overlap swap: the incoming server B starts with a new
+deployment identity and process space against the same database and storage while the outgoing server A keeps
+serving and driving runs; both run for 8–9 minutes; then A gets SIGTERM. RS1 repeats that swap on one database,
+so state saved during swap N is resumed after swaps N+1 and N+2.
+
+- **Each swap** is a K15 rolling redeploy (`redeploy.ts`, the edge proxy of `--k15-overlap-seconds`). B boots
+  beside A, the edge sends new connections to B once B reports `ready`, both stay up for the overlap, and A
+  gets a graceful SIGTERM. B becomes A for the next swap. On `--env daytona` the cell adds `--k15-fresh-home`
+  and `--ephemeral-server` (staging's volume-free shape, which needs `--storage s3`); locally both servers
+  share the instance home.
+- **Schedule** (`release-swap-schedule.ts`): swap *k* starts *k* × spacing after the wave starts, never before
+  the previous one settled. Tasks keep launching from the `--tasks` pool, during the overlap too, until the last
+  swap settled; then they drain. The next swap never starts before the previous outgoing server has exited, and the
+  spacing must leave the overlap plus 2 minutes for the incoming server's boot. The cell plans its own swaps, so it refuses `--faults`, `--storm-minutes`,
+  `--k15-overlap-seconds`, `--k15-hold-seconds`, `--replay`, `--crash-point`, `--matrix` and `--upgrade-from`.
+- **The outgoing server starts runs** (`release-swap-driver.ts`, `release-swap-setup.ts`). The harness hires one
+  probe agent per adapter, a copy of the seeded agent with its own concurrency (10 locally, 4 on Daytona), so
+  probes never queue behind the workload. It creates small probe tasks (the A1 brief) for it through A's own port,
+  not the edge: one when B is spawned, then one every 2 s locally (20 s on Daytona, at most 40 or 8) and one when B
+  enters its startup recovery pass (`/api/ready` reports `recovering`) for as long as B boots, while the run sampler
+  reads every 500 ms, and one timed so that its run
+  starts about 20 s before A's SIGTERM (the wake goes out 20 s plus the swap's measured wake-to-start latency
+  early). Every 2 s from B's spawn
+  until 60 s after A stopped, the harness samples the wave's runs and their owning controller's PID. Each swap
+  records which runs A and B started during the overlap, whether the late probe's run was started by A within the
+  60 s before its SIGTERM, and whether a run A started was still preparing (`execution_stage` `preparing` or
+  `dispatching`) while B's recovery pass ran. The owner is the run's controller boot (`heartbeat_runs` for legacy
+  runs, `native_run_finalizations` for native runs). The recovery pass is the time B's `/api/ready` reports
+  `recovering`; a swap where that phase was never seen has no recovery evidence. A run the product starts
+  elsewhere is reported as a finding, not forced. A swap whose outgoing server is never stopped (B failed to
+  start, the wave ended, or the harness was interrupted) is marked abandoned, and its sampling stops.
+- **Plug-ins.** `ReleaseSwapDriver.plugins` is the per-swap hook list. Each plug-in sees every phase
+  (`before_spawn`, `spawned`, `switched`, `stopping`, `stopped`); a plug-in that returns a checkout directory at
+  `before_spawn` makes B (and every later server) run that build, for the mixed-version variant.
+
+| Option | Default | Range |
+| --- | --- | --- |
+| `--release-swap-count` | 6 | 1–24 |
+| `--release-swap-spacing-minutes` | 40 | 2–120; must exceed the overlap plus 2 minutes |
+| `--release-swap-overlap-seconds` | 510 | 30–600 |
+| `--release-swap-settle-minutes` | 15 | 1–60 |
+| `--release-swap-drain-minutes` | the longest task budget plus the settle | 1–240 |
+
+**Disk.** On Daytona (`--k15-fresh-home`) each swap removes the outgoing generation's instance home once that
+server has stopped (the first home holds the database and stays). Every swap records the temporary root's size
+(`release_swap_disk`). The wave's temporary root is removed when the wave ends; what stays is `results/<wave>`.
+
+**Grading** (`release-swap-grade.ts`, `release-swap-finish.ts`) runs once, after the last swap plus the settle
+period and a bounded drain: the grader waits until no started task has a queued or running run with activity in the
+last 5 minutes, or until the drain cap. A task still running at the cap is not counted in the number; the headline
+reports how many with the age of their last activity, and the wave fails. The grade uses the same 5-minute threshold:
+after the drain, a run with no event for 5 minutes, a queued wake, a scheduled retry or a working notice with no
+progressing run behind it is not pending work, so the task is `nothing pending`. The single read then covers every task of the wave's company that had a run (probes and agent-created subtasks included), the
+way the board shows it:
+
+| Verdict | When |
+| --- | --- |
+| `pass` | Done, and nobody clicked Retry. Failed runs the system recovered from do not count against it. |
+| `needed_retry` | Retry was clicked, during the wave by the observer or now by the grader (the board's Retry button when the UI is served, else the same API call). The result says whether the click worked: accepted, then a later run succeeded or the task is done, checked again after another settle period. |
+| `open_no_owner` | To do or in progress with no live run, no queued wake and no named reason a person must act. |
+| `blocked_non_person` | Blocked, held by an execution blocker or a board recovery action, or interrupted, for a reason that is not a person's. A board request such as `choose_model`, `assign_agent`, `resume` or `confirm_run_stopped` counts here: the board asks a person, but it is not one of the reasons below. |
+| `waiting_on_person` | Rests on approval or a question (pending records in the database), a dependency, review, a usage-limit wait, budget or a shared credential. |
+| `still_working` | Still has a live run, a queued wake, a scheduled retry or a system recovery action after the settle period. |
+
+Every failing task carries exactly one label, counted per wave on the summary's `Failing:` line: `nothing pending`
+(`open_no_owner`, or cancelled with no person asking), `blocked for a non-person reason` (`blocked_non_person`), or
+`needed Retry (click worked | click did not work | click result pending)`. A queued or running run with no run event
+and no update for the settle period is not a live owner. A task whose view cannot be read in time is left out of the
+grade, and the headline says how many: the number is then incomplete and the wave fails.
+
+Only `pass` counts as completed. Each grade names its reason, and the summary counts the non-passing tasks by
+verdict and reason, so a wave shows which failure each task rests in. The first line of `release-swap-summary.md` (also the top of `SUMMARY.md`) is
+the wave's one number: `<pass> / <started> tasks completed without human action`. The table under it gives per
+swap the runs that failed (`failed`, `timed_out`, `interrupted`) between that swap and the next, the runs that
+failed with a lost-ownership code while the outgoing server was still alive and owned them, and the time from
+A's SIGTERM to the next event of each run that was live across it and did not fail. `release-swap.json` holds
+every grade, every failed run with its error code, message and last error events, each swap's run samples and
+probes, and the duplicates: two runs of one task executing at once, two Runner processes for one run, repeated
+identical agent comments and repeated subtask titles. The wave fails unless every task passed.
 
 ## Absolute symlink in the workspace (F1)
 
