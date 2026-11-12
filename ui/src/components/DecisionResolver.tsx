@@ -1,12 +1,18 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import { decisionEffectTargetIssueIds, type Agent, type AttentionSubject } from "@paperclipai/shared";
+import { decisionEffectTargetIssueIds, type Agent, type AttentionSubject, type DecisionEffect } from "@paperclipai/shared";
 import { decisionsApi, type DecisionOutcome } from "../api/decisions";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { cn } from "../lib/utils";
 import { useCompany } from "../context/CompanyContext";
 import { DecisionCard, type DecisionIssueRef } from "./DecisionCard";
+import { DecisionCardFooter } from "./DecisionCardFooter";
+import { MarkdownBody } from "./MarkdownBody";
+import { NeedsYouPanel, NeedsYouPanelNote } from "./coordinator/NeedsYouCardKit";
+import { Button } from "./ui/button";
+import { Textarea } from "./ui/textarea";
 
 interface DecisionResolverProps {
   companyId: string;
@@ -18,8 +24,11 @@ interface DecisionResolverProps {
   initialDecision?: DecisionOutcome;
   /** Fresh, authorized terminal record owned by an enclosing detail query. */
   recordedDecision?: DecisionOutcome;
-  /** Called after a decide/dismiss so the parent can refresh the feed row. */
+  /** Called after a decide so the parent can refresh the feed row. */
   onResolved?: () => void;
+  /** A Needs You card's task link (PAP-775). Passing it renders the compact
+   * card: the options in an inset panel, the task link and Submit below. */
+  leading?: ReactNode;
 }
 
 type IssueDetail = Awaited<ReturnType<typeof issuesApi.get>>;
@@ -38,11 +47,102 @@ export function signedCancelTreePreviewIds(targetIssueId: string, snapshot: { de
 /**
  * Container for a Decisions-v1 decision surfaced in the attention feed. Fetches
  * the full decision (`get`) plus the shared open-list (for `targetChanged`),
- * resolves referenced issue ids + the cancel-tree preview, owns the decide /
- * dismiss mutations, and invalidates the attention feed + target-issue keys on
+ * resolves referenced issue ids + the cancel-tree preview, owns the decide
+ * mutation, and invalidates the attention feed + target-issue keys on
  * success — same conventions as {@link AttentionInteractionResolver}.
  */
-export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, recordedDecision, onResolved }: DecisionResolverProps) {
+function issueLabel(ref: DecisionIssueRef | null, id: string) {
+  return ref?.identifier ?? ref?.title ?? `issue ${id.slice(0, 8)}`;
+}
+
+/** What choosing an option does, in one line (mirrors the full card's preview). */
+function effectLine(effect: DecisionEffect, resolve: (id: string) => DecisionIssueRef | null) {
+  const target = issueLabel(resolve(effect.targetIssueId), effect.targetIssueId);
+  switch (effect.type) {
+    case "comment_on_issue": return `Comment on ${target}`;
+    case "create_issue": return `Create “${effect.draft.title}”`;
+    case "update_issue_status": return `Set ${target} to ${effect.status.replaceAll("_", " ")}`;
+    case "assign_issue": return `Reassign ${target}`;
+    case "resolve_blocker": return `Unblock ${target}`;
+    case "cancel_issue_tree": return `Cancel ${target} and its sub-tree`;
+    default: return "Apply effect";
+  }
+}
+
+/**
+ * Paper "Make a choice" (PAP-775): the ask, its options as a radio list in the
+ * inset panel, and one Submit on the right of the footer. A decision that can
+ * cancel an issue tree keeps the full card and its typed confirmation.
+ */
+function CompactDecision({ decision, resolveIssue, targetChanged, busy, errorMessage, leading, onDecide }: {
+  decision: DecisionOutcome;
+  resolveIssue: (id: string) => DecisionIssueRef | null;
+  targetChanged: Record<string, boolean> | null;
+  busy: boolean;
+  errorMessage: string | null;
+  leading: ReactNode;
+  onDecide: (optionId: string, inputValues: Record<string, string>) => void;
+}) {
+  const [optionId, setOptionId] = useState<string | null>(null);
+  const [inputValues, setInputValues] = useState<Record<string, string>>({});
+  const stale = new Set(Object.entries(targetChanged ?? {}).filter(([, changed]) => changed).map(([id]) => id));
+  const requiredUnmet = (decision.inputs ?? []).some((field) => field.required && !(inputValues[field.id] ?? "").trim());
+  const blocked = (id: string | null) => decision.options.find((option) => option.id === id)?.effects
+    .some((effect) => effect.staleness === "strict" && decisionEffectTargetIssueIds(effect).some((target) => stale.has(target))) ?? false;
+  const body = decision.body?.trim();
+  return (
+    <div className="space-y-4" data-decision-state="pending">
+      <div className="space-y-3">
+        <h2 data-decision-prompt className="text-base font-medium">{decision.title}</h2>
+        {body ? <div className="text-sm text-muted-foreground"><MarkdownBody className="paperclip-markdown-on-accent">{body}</MarkdownBody></div> : null}
+      </div>
+      <NeedsYouPanel>
+        {(decision.inputs ?? []).map((field) => (
+          <label key={field.id} className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-muted-foreground">{field.label}{field.required ? " · Required" : ""}</span>
+            <Textarea
+              value={inputValues[field.id] ?? ""}
+              onChange={(event) => setInputValues((current) => ({ ...current, [field.id]: event.target.value }))}
+              placeholder={field.placeholder ?? undefined}
+              maxLength={field.maxLength ?? undefined}
+              className="min-h-16 bg-card text-sm"
+            />
+          </label>
+        ))}
+        <div role="radiogroup" aria-label="Options" className="flex flex-col">
+          {decision.options.map((option) => {
+            const selected = optionId === option.id;
+            const disabled = busy || blocked(option.id);
+            const effects = option.effects.map((effect) => effectLine(effect, resolveIssue));
+            return (
+              <button key={option.id} type="button" role="radio" aria-checked={selected} disabled={disabled} onClick={() => setOptionId(option.id)}
+                className={cn("flex w-full items-start gap-2.5 rounded-sm px-1 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
+                  selected ? "text-foreground" : "text-muted-foreground hover:text-foreground")}>
+                <span aria-hidden className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border", selected ? "border-foreground" : "border-muted-foreground/50")}>
+                  {selected ? <span className="size-2 rounded-full bg-foreground" /> : null}
+                </span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-(length:--text-compact) leading-5">{option.label}{blocked(option.id) ? " · Target changed" : ""}</span>
+                  {option.description ? <span className="text-xs leading-4.5 text-muted-foreground">{option.description}</span> : null}
+                  {effects.length > 0 ? <span className="text-xs leading-4.5 text-muted-foreground">{effects.join(" · ")}</span> : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {stale.size > 0 ? <NeedsYouPanelNote>A target changed since this was proposed, so options that need it unchanged are off.</NeedsYouPanelNote> : null}
+      </NeedsYouPanel>
+      {errorMessage ? <p className="text-xs text-destructive">{errorMessage}</p> : null}
+      <DecisionCardFooter leading={leading}>
+        <Button size="sm" disabled={!optionId || busy || requiredUnmet || blocked(optionId)} onClick={() => { if (optionId) onDecide(optionId, inputValues); }}>
+          {busy ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Submitting…</> : "Submit choice"}
+        </Button>
+      </DecisionCardFooter>
+    </div>
+  );
+}
+
+export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, recordedDecision, onResolved, leading }: DecisionResolverProps) {
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
   const prefix = selectedCompany?.issuePrefix ?? "";
@@ -157,37 +257,35 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     },
   });
 
-  const dismissMutation = useMutation({
-    mutationFn: (reason: string | undefined) => decisionsApi.dismiss(decisionId, reason),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKeys.decisions.detail(decisionId), data);
-      invalidate();
-    },
-  });
+  const compact = leading !== undefined;
 
   if (!recordedDecision && detail.isLoading) {
-    return (
+    const loading = (
       <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading decision…
       </div>
     );
+    return compact ? <div className="space-y-3">{loading}<DecisionCardFooter leading={leading} /></div> : loading;
   }
 
   if ((!recordedDecision && detail.error) || !decision) {
-    return (
+    const gone = (
       <p className="py-3 text-xs text-muted-foreground">
         This decision is no longer available — it may have been resolved elsewhere.
       </p>
     );
+    return compact ? <div className="space-y-3">{gone}<DecisionCardFooter leading={leading} /></div> : gone;
   }
 
-  const busy = decideMutation.isPending || dismissMutation.isPending;
-  const errorMessage =
-    (decideMutation.error instanceof Error && decideMutation.error.message) ||
-    (dismissMutation.error instanceof Error && dismissMutation.error.message) ||
-    null;
+  const busy = decideMutation.isPending;
+  const errorMessage = (decideMutation.error instanceof Error && decideMutation.error.message) || null;
+  const decide = (optionId: string, inputValues: Record<string, string>) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: crypto.randomUUID() });
 
-  return (
+  if (compact && decision.status === "open" && !decision.options.some((option) => option.effects.some((effect) => effect.type === "cancel_issue_tree"))) {
+    return <CompactDecision decision={decision} resolveIssue={resolveIssue} targetChanged={targetChanged} busy={busy} errorMessage={errorMessage} leading={leading} onDecide={decide} />;
+  }
+
+  const card = (
     <DecisionCard
       decision={decision}
       executions={decision.executions}
@@ -208,8 +306,8 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       }
       busy={busy}
       errorMessage={errorMessage}
-      onDecide={(optionId, inputValues) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: crypto.randomUUID() })}
-      onDismiss={(reason) => dismissMutation.mutate(reason)}
+      onDecide={decide}
     />
   );
+  return compact ? <div className="space-y-4">{card}<DecisionCardFooter leading={leading} /></div> : card;
 }

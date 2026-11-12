@@ -88,7 +88,19 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
  * older accepted call with validateRunnerApiCall, so these rules stay out of it.
  * Callers that reserve a mutation receipt must run this before the reservation.
  */
-export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
+export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, received: Readonly<Record<string, unknown>>): void {
+  assertBodyPresent(operation, input, Object.keys(received));
+  if (operation.method !== "GET" && setsResponseWindow(received.responseText)) {
+    throw badRequest(`This request was not sent: responseText applies only to GET reads and never carries request fields. Resend ${operation.operationId} once without responseText, with its request fields in body${requestFieldHint(operation)}.`);
+  }
+}
+
+function setsResponseWindow(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, setting]) => setting !== undefined && !(key === "offsetBytes" && setting === 0));
+}
+
+function assertBodyPresent(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
   if (input.body !== undefined || input.files?.length || !operation.requestBody?.required) return;
   // A PATCH without a body succeeds as a no-op that reads like a completed
   // update. A POST or PUT without a body whose schema names required fields
@@ -191,7 +203,7 @@ export function runnerApiPagination(headers: Headers) {
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
   const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
-  assertRunnerApiDispatchable(operation, validated, Object.keys(input));
+  assertRunnerApiDispatchable(operation, validated, input);
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);

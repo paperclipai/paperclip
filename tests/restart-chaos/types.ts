@@ -12,10 +12,11 @@ import type { TimeFaultRecord } from "./time-faults.js";
  * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
  * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
  * MS1–MS3 (two servers, one database, multi-server.ts): a second server beside the first.
- * CR1–CR5 (staging class R, class-r.ts): a long-held redeploy, a provider-only kill in the sandbox, a plugin RPC stall
- * mid-tool (CR3), right after a K1 restart while the run reattaches (CR4), or while the run launches (CR5).
+ * CR1–CR6 (staging class R, class-r.ts): a long-held redeploy, a provider-only kill in the sandbox, a plugin RPC stall
+ * mid-tool (CR3), right after a K1 restart while the run reattaches (CR4), while the run launches (CR5), or while the
+ * replacement activates the plugin at boot (CR6).
  */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3", "CR1", "CR2", "CR3", "CR4", "CR5"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3", "CR1", "CR2", "CR3", "CR4", "CR5", "CR6"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /** The shortest seeded K4 outage (scheduler.ts K4_HOLD_RANGE_MS), also the K4 hold after a provider fault. */
 export const K4_MIN_HOLD_MS = 120_000;
@@ -104,7 +105,7 @@ export interface WaveOptions {
   cr1HoldMs?: [number, number];
   /** `--cr2-hold-seconds`: a K15 outage around CR2's provider kill; absent or 0 keeps the controller up. */
   cr2HoldMs?: [number, number];
-  /** `--cr3-stall-seconds`: how long CR3, CR4 and CR5 stop the Daytona plugin worker; absent means 45 s. */
+  /** `--cr3-stall-seconds`: how long CR3–CR6 stop the Daytona plugin worker; absent means 45 s. */
   cr3StallMs?: [number, number];
   /** `--tm1-hold-seconds`: the seeded TM1 stall range (time-faults-config.ts); absent uses 95–150 s. */
   tm1HoldMs?: [number, number];
@@ -342,7 +343,7 @@ export interface FaultReceipt {
   repeatedRestart?: RepeatedRestartRecord;
   /** MS1–MS3: the second server and what happened to the first. */
   multiServer?: import("./multi-server.js").MultiServerRecord;
-  /** CR1–CR5: the provider kill or plugin stall and the sandbox captures taken around the fault (class-r.ts). */
+  /** CR1–CR6: the provider kill or plugin stall and the sandbox captures taken around the fault (class-r.ts). */
   classR?: import("./class-r.js").ClassRRecord;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;

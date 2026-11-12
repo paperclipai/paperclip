@@ -25,7 +25,7 @@ import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HAR
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
-import { rehydratePinnedInstructionAsset, rehydratePinnedSkillAssets } from "./runtime-context.js";
+import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
@@ -58,8 +58,10 @@ import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
-import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
+import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
+import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
@@ -159,7 +161,7 @@ import {
 import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerNeverAuthenticated, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS, localRunnerProcessReconnectGraceMs } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -848,12 +850,29 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
     throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId,
       new Error("warm Runner stop unconfirmed (injected test fault)"));
   }
-  try { await closeWarmNativeSession(entry, reason, options); }
-  catch (error) {
-    entry.retirementUnproven = true;
-    throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
+  const directoryWaitDeadline = Date.now() + warmRetirementDirectoryWait.timeoutMs;
+  for (;;) {
+    try {
+      await closeWarmNativeSession(entry, reason, options);
+      return;
+    } catch (error) {
+      if (error instanceof AgentDirectoryOperationBusyError) {
+        if (Date.now() + warmRetirementDirectoryWait.pollMs <= directoryWaitDeadline) {
+          await new Promise(resolve => setTimeout(resolve, warmRetirementDirectoryWait.pollMs));
+          continue;
+        }
+        await entry.instructionWorkingCopy?.retirementFailed?.().catch(receiptError => {
+          logger.warn({ err: receiptError, runId: entry.runId }, "could not keep the predecessor's agent files for later collection");
+        });
+        throw new NativePredecessorRetirementDirectoryBusyError(entry.runId, error);
+      }
+      entry.retirementUnproven = true;
+      throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
+    }
   }
 }
+
+export const warmRetirementDirectoryWait = { timeoutMs: 300_000, pollMs: 1_000 };
 
 /**
  * An owner whose retirement stayed unproven lives only in its own sandbox,
@@ -1127,6 +1146,10 @@ async function closeIdleWarmNativeSessions(input: {
       closed += 1;
     } catch (error) {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+      if (!detach && error instanceof AgentDirectoryOperationBusyError) {
+        busy += 1;
+        continue;
+      }
       const destroyed = !detach && input.forceStopUnsettled && input.db
         ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
           logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
@@ -8624,6 +8647,10 @@ function armWarmNativeSessionIdleTimer(
       .then(() => { forgetWarmNativeSession(sessionId, current); })
       .catch(error => {
         if (released) current.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+        if (!released && error instanceof AgentDirectoryOperationBusyError) {
+          armWarmNativeSessionIdleTimer(sessionId, current, agentDirectoryBusyRetryDelayMs());
+          return;
+        }
         logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
           providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error) },
         released ? "idle warm native session detach failed" : "idle warm native session close failed");
@@ -8869,6 +8896,7 @@ export function nativeSessionFailureSourceCode(
   | "runner_task_admission_rejected"
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
+  | "runner_ingress_startup_failed"
   | "local_runtime_api_listener_unavailable"
   | typeof NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE
   | "native_session_interrupted" {
@@ -8995,7 +9023,7 @@ export function nativeSessionFailureSourceCode(
   // before startup completes, and session.open precedes every prompt. The
   // outcome is unknown, so durable evidence (no provider event, no checkpoint)
   // still decides whether a same-run bootstrap retry is safe.
-  if (/^(?:runner_local_connect_failed|runner_direct_wss_failed|runner_ingress_unavailable): PRP command session\.open timed out$/.test(message)) {
+  if (/^(?:runner_local_connect_failed|runner_direct_wss_failed|runner_ingress_unavailable): PRP command session\.open timed out(?: \([^()]*\))?$/.test(message)) {
     return "provider_session_open_timeout";
   }
   // This process has no HTTP listener (graceful shutdown closes it first), so
@@ -9004,7 +9032,17 @@ export function nativeSessionFailureSourceCode(
   if (/\blocal_runtime_api_listener_unavailable\b/.test(message)) {
     return "local_runtime_api_listener_unavailable";
   }
+  if (runnerIngressConnectionFailure(error)) return "runner_ingress_startup_failed";
   return "native_session_interrupted";
+}
+
+function runnerIngressConnectionFailure(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  if (value.code === "runner_connection_lease_expired") return false;
+  if (typeof value.message === "string"
+    && /^runner_ingress_(?:auth_failed|unavailable): (?:Runner ingress did not complete PRP authentication before the deadline|Runner ingress connection failed)\.$/.test(value.message)) return true;
+  return runnerIngressConnectionFailure(value.cause, depth + 1);
 }
 
 const NATIVE_PROVIDER_SIDE_EFFECT_PENDING_ACTION =
@@ -9139,7 +9177,10 @@ export async function nativeProviderRecoveryEvidence(input: {
     NATIVE_PROVIDER_STARTUP_REJECTED,
     "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
-  ]).has(input.sourceFailureCode);
+  ]).has(input.sourceFailureCode) || (input.sourceFailureCode === "runner_ingress_startup_failed"
+    && !checkpointExists && !providerEventsExist && !!run?.nativeIssueId && !!run.nativeSessionId && !!run.runnerInstanceId
+    && await nativeRunnerNeverAuthenticated(input.db, { companyId: run.companyId, issueId: run.nativeIssueId, runId: run.id },
+      { runId: run.id, normalizedSessionId: run.nativeSessionId, runnerInstanceId: run.runnerInstanceId }));
   // A closed runtime API listener means this server stopped serving (a
   // graceful drain) before the attempt could reach its remote runner. A
   // follow-up may still carry its settled predecessor's provider session,
@@ -10637,7 +10678,8 @@ async function executePaperclipNativeSessionAttempt(
     },
   });
   nativeRunRecoveryFlushers.set(traceRunId, flushRecovery);
-  await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget));
+  await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget,
+    { reattachedRetainedLease: input.restartRecovery?.kind === "reattach_remote_runner" }));
   if (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") {
     await emitStartupReuse(input.onEvent, "workspace", { state: "not_applicable", reason: "not_applicable" });
   }
@@ -10686,6 +10728,7 @@ async function executePaperclipNativeSessionAttempt(
   });
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let remoteWarmRecovery: RemoteWarmSessionRecovery | undefined;
+  let pluginTaskDescription: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}> | undefined;
   const cachedReleasedOwner = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
   if (cachedReleasedOwner?.released) {
     const proof = releasedWarmRunner(readWarmNativeEnvelope(input.execution));
@@ -10728,7 +10771,9 @@ async function executePaperclipNativeSessionAttempt(
     if (taskTarget.transport === "sandbox" && taskTarget.runnerTask && taskTarget.leaseId &&
         durableIdentityMatchesSession(identity,input.execution) && identity.runId !== input.execution.binding.runId) {
       // Inspection can replace a stopped retained task before deciding between adoption and checkpoint recovery.
-      await taskTarget.runnerTask({kind:"describe"});
+      const description = environmentTaskResultSchema.parse(await taskTarget.runnerTask({kind:"describe"}));
+      if (description.kind !== "description") throw new Error("Plugin Runner description unavailable");
+      pluginTaskDescription = description;
       if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed") {
         await recoverPluginRunnerCheckpoint(input, root);
       }
@@ -11709,7 +11754,6 @@ async function executePaperclipNativeSessionAttempt(
   );
   let existingWarmSession: NativeSession | undefined;
   let reusingReleasedRunner = false;
-  let pluginTaskDescription: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}> | undefined;
   let managedCredentialSession: NativeSession | undefined;
   let githubAccess: NativeGitHubAccess | undefined;
   let releaseGitHubRun: (() => void) | undefined;
@@ -11747,7 +11791,9 @@ async function executePaperclipNativeSessionAttempt(
       if (entry) entry.preparingRunId = undefined;
       const taskTarget=input.runnerExecutionTarget;
       if ((entry?.pluginTaskId || remoteWarmRecovery?.releasedSource) && taskTarget?.kind === "remote" && taskTarget.transport === "sandbox" && taskTarget.runnerTask) {
-        const description=environmentTaskResultSchema.parse(await (executionContext
+        const priorDescription = pluginTaskDescription?.taskId === taskTarget.sandboxLeaseAcquisition?.providerLeaseId
+          ? pluginTaskDescription : undefined;
+        const description=priorDescription ?? environmentTaskResultSchema.parse(await (executionContext
           ? executionContext.wait(() => taskTarget.runnerTask!({kind:"describe"}, { executionContext }))
           : taskTarget.runnerTask({kind:"describe"})));
         if(description.kind !== "description") throw new Error("Plugin Runner description unavailable");
@@ -12058,7 +12104,7 @@ async function executePaperclipNativeSessionAttempt(
       const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));
       if (description.kind !== "description" || description.taskId === retainedTaskId) return false;
       existingWarmSession = undefined;
-      pluginTaskDescription = undefined;
+      pluginTaskDescription = description;
       await finishStartupContextForFallback();
       persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest, target.kind);
       runnerdBackend = await createExecutionBackend();
@@ -15285,6 +15331,11 @@ export function createRemoteRunnerProcessLauncher(input: {
         }
       }
       if (pendingSignal) return cancelledBeforeDispatch();
+      const bootstrapTicket = spec.refreshBootstrapTicket ? await spec.refreshBootstrapTicket() : null;
+      if (pendingSignal) return cancelledBeforeDispatch();
+      const launchEnvironment = bootstrapTicket
+        ? { ...spec.environment, PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: bootstrapTicket }
+        : spec.environment;
       const launchStartedAtMs = Date.now();
       // The provider's onSpawn callback is optional and some sandbox command
       // runners cannot report a remote pid until after the command has begun
@@ -15335,7 +15386,7 @@ export function createRemoteRunnerProcessLauncher(input: {
           ...remoteArgs,
         ],
         cwd: input.target.remoteCwd,
-        env: processEnvironment(spec.environment),
+        env: processEnvironment(launchEnvironment),
         timeoutMs: 20_000,
         bypassSession: true,
         onLog: input.onLog,
@@ -16013,7 +16064,9 @@ async function createRunnerdBackendWithinSessionClaim(
       if(stopped.kind!=="status" || stopped.executionStopped!==true) throw new Error("Plugin Runner termination is unconfirmed; reconcile the saved task");
       await pluginTask({kind:"complete"});
     }
-    const description = input.pluginTaskDescription ?? environmentTaskResultSchema.parse(await pluginTask({ kind: "describe" }));
+    const priorDescription = input.pluginTaskDescription?.taskId === remoteTarget.sandboxLeaseAcquisition?.providerLeaseId
+      ? input.pluginTaskDescription : undefined;
+    const description = priorDescription ?? environmentTaskResultSchema.parse(await pluginTask({ kind: "describe" }));
     if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");
     const saved = durableBinding ? durableIdentity as RunnerdDurableIdentity : undefined;
     const prior = saved ? {
@@ -16402,9 +16455,13 @@ async function createRunnerdBackendWithinSessionClaim(
       : remoteRunnerFilesystemRoot
         ? posix.join(remoteRunnerFilesystemRoot, directory.name)
         : null;
-  const sourceRuntimeContext = "runtimeContext" in input.execution
-    ? await rehydratePinnedSkillAssets(input.db, input.execution.binding, input.execution.runtimeContext)
+  // A reconnect to a live remote Runner stages nothing unless it relaunches, so
+  // it does not wait on this server's skill cache before reaching the Runner.
+  const runtimeContextSource = "runtimeContext" in input.execution
+    ? await prepareRuntimeContextSource(input.db, input.execution.binding, input.execution.runtimeContext,
+      { deferUntilStaged: input.restartRecovery?.kind === "reattach_remote_runner" && remoteRunnerFilesystemRoot !== null })
     : null;
+  const sourceRuntimeContext = runtimeContextSource?.described ?? null;
   const remoteRuntimeContext: NativeRuntimeContextSnapshot | null =
     remoteRunnerFilesystemRoot && sourceRuntimeContext
       ? {
@@ -17213,8 +17270,8 @@ async function createRunnerdBackendWithinSessionClaim(
               location: directory.location,
               targetPath: remotePersistencePath(directory),
             })),
-            runtimeContext: remoteRunnerFilesystemRoot && sourceRuntimeContext && remoteRuntimeContext
-              ? { source: sourceRuntimeContext, target: remoteRuntimeContext, filesystemRoot: remoteRunnerFilesystemRoot }
+            runtimeContext: remoteRunnerFilesystemRoot && runtimeContextSource && remoteRuntimeContext
+              ? { source: await runtimeContextSource.forStaging(), target: remoteRuntimeContext, filesystemRoot: remoteRunnerFilesystemRoot }
               : null,
             caBundleMapping: remoteCaBundleMapping,
             stageFile: asset => stageRemoteRunnerFile({ target: remoteTarget, runner: remoteCommandRunner, ...asset }),
@@ -17809,7 +17866,8 @@ async function createRunnerdBackendWithinSessionClaim(
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
         recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
         // Remote launchers record their own stage and launch spans.
-        ...(remoteTarget ? {} : { onStartupStep: (step: Parameters<typeof recordNativeRunnerStartupStep>[1]) => recordNativeRunnerStartupStep(input.trace, step) }),
+        onStartupStep: (step: Parameters<typeof recordNativeRunnerStartupStep>[1]) =>
+          recordNativeRunnerStartupStep(input.trace, step, remoteTarget ? "remote" : "local"),
         onSpawn: input.onSpawn,
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",

@@ -525,6 +525,10 @@ class OpenCodeHarnessSession implements HarnessSession {
   readonly #streamingParts = new Map<string, Record<string, unknown>>();
   readonly #completedTextPartIds = new Set<string>();
   readonly #completedReasoningPartIds = new Set<string>();
+  /** Latest trimmed text of each reasoning part in the current turn, recorded while it streams. */
+  readonly #reasoningTexts = new Map<string, string>();
+  /** Completed text parts rejected as reasoning copies; they stay rejected after the reasoning is cleared. */
+  readonly #reasoningEchoPartIds = new Set<string>();
   readonly #completedTextParts: Array<{
     partId: string;
     messageId: string | null;
@@ -697,6 +701,8 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#lastNonTerminalToolSourceSeq = 0;
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
+    this.#reasoningTexts.clear();
+    this.#reasoningEchoPartIds.clear();
     this.#completedTextParts.length = 0;
     this.#outputLimitedMessageIds.clear();
     // `#terminalTurns` clears here for its own persisted-snapshot bookkeeping.
@@ -821,6 +827,22 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#activeTurnId = null;
   }
 
+  /**
+   * Whether assistant text repeats a reasoning part: the whole part once the
+   * text is complete, or the start of one while it still streams.
+   */
+  #echoesReasoning(content: string, completed: boolean): boolean {
+    const value = content.trim();
+    if (!value) return false;
+    for (const reasoning of this.#reasoningTexts.values())
+      if (completed ? reasoning === value : reasoning.startsWith(value)) return true;
+    return false;
+  }
+
+  #isReasoningEcho(part: { partId: string; text: string }): boolean {
+    return this.#reasoningEchoPartIds.has(part.partId) || this.#echoesReasoning(part.text, true);
+  }
+
   /** A response cut off at the output limit is incomplete, so it is never a final answer. */
   #isOutputLimited(part: { messageId: string | null }): boolean {
     return part.messageId !== null && this.#outputLimitedMessageIds.has(part.messageId);
@@ -840,7 +862,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (this.#interruptedTurnId === turnId) return false;
     const recovery = this.#emptyResponseRecovery;
     const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
-    if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary && !this.#isOutputLimited(part))) return false;
+    if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary && !this.#isOutputLimited(part) && !this.#isReasoningEcho(part))) return false;
     // Both idle event forms can remain queued from the empty response. Wait
     // for correction evidence. A completed answer part is sufficient even
     // when its message header omits completion metadata. An idle response
@@ -856,6 +878,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       return true;
     }
     this.#emptyResponseRecovery = { turnId, priorMessages: new Set(this.#messageRoles.keys()), responseStarted: false, responseFinished: false };
+    for (const part of this.#completedTextParts)
+      if (this.#echoesReasoning(part.text, true)) this.#reasoningEchoPartIds.add(part.partId);
+    this.#reasoningTexts.clear();
     this.#emit("harness.diagnostic", { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }, { turnId });
     this.#armEmptyResponseAckTimer(turnId, "OpenCode did not start its requested final response.");
     const opening = this.#turnHitOutputLimit(turnId)
@@ -2131,8 +2156,17 @@ class OpenCodeHarnessSession implements HarnessSession {
     }
     const content = text(part.text, text(part.output));
     const previous = this.#partText.get(partId) ?? "";
-    this.#partText.set(partId, content);
-    if (partType === "text" && content.length > 0) {
+    const completedAt = record(part.time).end;
+    const completed = Number.isFinite(completedAt);
+    // Some OpenRouter models (DeepSeek v4.1 flash, for one) end a step by
+    // repeating their reasoning as an ordinary text part. That copy is
+    // planning, not prose for the person, so it never streams as progress
+    // and never becomes the reply. Hold a text part while it still matches
+    // the start of a completed reasoning part, and release it once it differs.
+    if (partType === "reasoning" && content.trim()) this.#reasoningTexts.set(partId, content.trim());
+    const reasoningEcho = partType === "text" && this.#echoesReasoning(content, completed);
+    if (!reasoningEcho) this.#partText.set(partId, content);
+    if (partType === "text" && content.length > 0 && !reasoningEcho) {
       for (const reference of paperclipWorkspaceFileReferencesFromText(
         this.#workingDirectory,
         content,
@@ -2150,7 +2184,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     const delta = content.startsWith(previous)
       ? content.slice(previous.length)
       : content;
-    if (delta) {
+    if (delta && !reasoningEcho) {
       // OpenCode calls assistant prose a `text` part, but `text` is not a PRP
       // item identity and is consequently ignored by the task projection.
       // Until settlement selects one completed part as the final response,
@@ -2194,11 +2228,10 @@ class OpenCodeHarnessSession implements HarnessSession {
         { turnId, itemId: partId },
       );
     }
-    const completedAt = record(part.time).end;
     if (
       partType === "reasoning" &&
       content.trim().length > 0 &&
-      Number.isFinite(completedAt) &&
+      completed &&
       !this.#completedReasoningPartIds.has(partId)
     ) {
       this.#completedReasoningPartIds.add(partId);
@@ -2223,10 +2256,20 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (
       partType === "text" &&
       content.trim().length > 0 &&
-      Number.isFinite(completedAt) &&
+      completed &&
       !this.#completedTextPartIds.has(partId)
     ) {
       this.#completedTextPartIds.add(partId);
+      if (reasoningEcho) {
+        // Without this copy the turn may hold no answer; the empty-response
+        // correction then asks the model for one with reasoning disabled.
+        this.#emit(
+          "harness.diagnostic",
+          { code: "opencode_reasoning_echo_discarded", message: "OpenCode repeated a reasoning part as assistant text; the copy was not used as a response." },
+          { turnId },
+        );
+        return;
+      }
       this.#completedTextParts.push({
         partId,
         messageId,
@@ -2253,7 +2296,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     // and let the accepted semantic summary resolve the durable reply.
     const afterLastWorkTool = (part: { observedSourceSeq: number }) =>
       part.observedSourceSeq > this.#lastNonTerminalToolSourceSeq;
-    const eligibleText = this.#completedTextParts.filter(part => afterLastWorkTool(part) && !this.#isOutputLimited(part));
+    const eligibleText = this.#completedTextParts.filter(part => afterLastWorkTool(part) && !this.#isOutputLimited(part) && !this.#isReasoningEcho(part));
     // OpenCode exposes no prose channel, so final selection must use provider
     // structure rather than text length or content. When OpenCode reports the
     // terminal tool part, prefer prose completed afterward in that exact
@@ -2296,17 +2339,27 @@ class OpenCodeHarnessSession implements HarnessSession {
       afterResult[0]?.part ??
       null;
     if (!selected) return;
-    // A later message after the terminal call is only the closing part of the
-    // reply when the model already wrote prose after its last work tool and
-    // before that call: the person saw both, and the later message often just
-    // refers back ("Answered above"). Structure cannot tell an answer from
-    // commentary, so keep every eligible part rather than drop the answer.
-    const preface =
+    // The completion tool asks for the final response after the call, so a
+    // later message is the reply. The prose written between the last work tool
+    // and that call stays in the reply only when the later message is a short
+    // closing line that leans on it ("Answered above", "Commands above are
+    // ready"): a short line with no link of its own that points back to it, or
+    // one under half that prose's length. A later message that repeats the
+    // prose, or any other later message, is the model's own answer: keeping the
+    // earlier prose too would save a planning note or a second copy.
+    const candidatePreface =
       this.#semanticResultProviderMessageId !== null &&
       correlatedAfterResult.length === 0 &&
       uncorrelatedAfterResult[0]?.part === selected
         ? beforeResult.map(({ part }) => part)
         : [];
+    const prefaceText = candidatePreface.map((part) => part.text.trim()).join("\n\n");
+    const selectedText = selected.text.trim();
+    const normalized = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+    const repeatsPreface = normalized(selectedText) === normalized(prefaceText);
+    const pointsBack = selectedText.length <= 120 && !/\]\(|https?:\/\//.test(selectedText)
+      && /\b(above|earlier|previous|preceding)\b/i.test(selectedText);
+    const preface = !repeatsPreface && (pointsBack || selectedText.length * 2 < prefaceText.length) ? candidatePreface : [];
     const text = preface.length
       ? [...preface, selected].map((part) => part.text.trim()).filter(Boolean).join("\n\n")
       : selected.text;

@@ -4,7 +4,7 @@ import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
 import { QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "../drivers/acpx/generated-profiles.js";
-import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
+import { isDecodableAcpxVersion, isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
@@ -754,7 +754,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (
       profile.driverKind !== "acpx_runtime"
       || profile.protocolVersion !== 1
-      || profile.acpxVersion !== QUALIFIED_ACPX_VERSION
+      || !isDecodableAcpxVersion(profile.acpxVersion)
       || profile.agent !== provider.agent
       || !isSupportedAcpxProfileVersion(provider.agent, profile.agentProfileVersion)
     ) {

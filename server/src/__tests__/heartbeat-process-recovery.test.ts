@@ -1,5 +1,6 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS } from "../services/heartbeat/retries.js";
+import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -35,6 +36,7 @@ import { requestTaskRetry } from "../services/task-retry.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { currentControllerProcessStamp } from "../services/controller-process-identity.js";
+import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import fs from "node:fs/promises";
@@ -54,6 +56,7 @@ import {
 import {
   activityLog,
   agents,
+  controllerInstances,
   agentTaskSessions,
   agentRuntimeState,
   agentWakeupRequests,
@@ -512,6 +515,14 @@ const spentFailureRetryAccounting = {
   failureRetries: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   maxTurnContinuations: 0,
 };
+
+/** Spent failure budget and every server-restart continuation of the open
+ * window already used: a restart-ended run gets no further automatic run. */
+const spentRestartRetryAccounting = () => ({
+  ...spentFailureRetryAccounting,
+  serverRestarts: SERVER_RESTART_RETRY_MAX_ATTEMPTS,
+  serverRestartWindowStartedAt: new Date().toISOString(),
+});
 
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
@@ -3714,6 +3725,256 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ))).toEqual([]);
   });
 
+  // A routine deploy replaces the server: the old one drains its runs at
+  // SIGTERM (server_shutdown_interrupted), and a run whose owner died without a
+  // drain is found by the new one (process_lost). Neither is a failed attempt.
+  describe("runs ended by a server restart or replacement", () => {
+    const successorsOf = (companyId: string, runId: string) => db.select().from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+
+    /** A conversation-adapter run in progress. `alreadyRetried` makes it the
+     * second automatic retry of a chain whose real failures spent the budget. */
+    async function seedInterruptibleRun(input: { alreadyRetried: boolean; owner: "this_server" | "replaced_server";
+      accounting?: Record<string, unknown>; adapterType?: string; executionStage?: "preparing" | "dispatching";
+      controllerBootId?: string; controllerProcess?: Record<string, unknown>; leaseExpiredSeconds?: number }) {
+      const fixture = await seedRunFixture({ adapterType: input.adapterType ?? "codex_local", agentStatus: "running",
+        runtimeMode: "legacy", contextSnapshot: { wakeReason: "issue_monitor_due" } });
+      const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      await db.update(heartbeatRuns).set({
+        controllerBootId: input.owner === "this_server" ? controllerLeases.legacyControllerBootId
+          : input.controllerBootId ?? randomUUID(),
+        ...(input.controllerProcess ? { controllerProcess: input.controllerProcess } : {}),
+        controllerLeaseExpiresAt: input.owner === "this_server"
+          ? sql`clock_timestamp() + interval '1 minute'`
+          : sql`clock_timestamp() - make_interval(secs => ${input.leaseExpiredSeconds ?? 1})`,
+        executionStage: input.executionStage ?? "dispatching",
+        ...(input.alreadyRetried ? { scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2 } : {}),
+        contextSnapshot: {
+          ...(seeded!.contextSnapshot ?? {}),
+          ...(input.alreadyRetried || input.accounting ? { executionRetryAccounting: {
+            version: 1, failureRetries: input.alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0,
+            maxTurnContinuations: 0, ...input.accounting } } : {}),
+        },
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+      return fixture;
+    }
+
+    async function expectOneRestartContinuation(fixture: { companyId: string; agentId: string; runId: string; issueId: string },
+      failureRetries: number) {
+      const successors = await successorsOf(fixture.companyId, fixture.runId);
+      expect(successors).toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryReason: "server_restart",
+        scheduledRetryAttempt: 1, agentId: fixture.agentId })]);
+      const [successor] = successors;
+      // Started at once, and the failure budget is carried, never spent.
+      expect(successor!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(successor!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries, serverRestarts: 1 });
+      // The continuation still serves the original wake (a monitor check).
+      const continuation = await executionContinuation.buildExecutionContinuation({ db, companyId: fixture.companyId,
+        issueId: fixture.issueId, agentId: fixture.agentId, context: successor!.contextSnapshot ?? {}, runId: successor!.id,
+        summary: null, exposeLowTrustRaw: false });
+      expect(continuation.trigger.retriedReason).toBe("issue_monitor_due");
+      expect(await selectRecoveryActionsForIssue(fixture.issueId)).toEqual([]);
+      return successor!;
+    }
+
+    it.each([
+      { name: "a first attempt", alreadyRetried: false },
+      { name: "a run that was already the last automatic retry", alreadyRetried: true },
+    ])("continues $name that a graceful shutdown interrupted, once, on a second server too", async ({ alreadyRetried }) => {
+      const fixture = await seedInterruptibleRun({ alreadyRetried, owner: "this_server" });
+
+      const drained = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
+
+      expect(drained.interruptedRunIds).toEqual([fixture.runId]);
+      const successor = await expectOneRestartContinuation(fixture, alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0);
+      expect(drained.retryRunIds).toEqual([successor.id]);
+      // The replacement server is alive at the same time and runs its own
+      // recovery passes: they reuse the one continuation.
+      const replacement = heartbeatService(db);
+      await Promise.all([replacement.reapOrphanedRuns(), replacement.reconcileStrandedAssignedIssues(),
+        heartbeatService(db).reconcileStrandedAssignedIssues()]);
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([expect.objectContaining({ id: successor.id })]);
+    });
+
+    it.each([
+      { name: "a first attempt", alreadyRetried: false },
+      { name: "a run that was already the last automatic retry", alreadyRetried: true },
+    ])("continues $name that a new server found without its owner, once, when two servers recover it", async ({ alreadyRetried }) => {
+      const fixture = await seedInterruptibleRun({ alreadyRetried, owner: "replaced_server" });
+
+      // Two servers are alive during a replacement; both run the boot sweep.
+      await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
+
+      const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+      await expectOneRestartContinuation(fixture, alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0);
+      expect(lost!.resultJson).toMatchObject({ processLossDiagnostic: { controllerReplaced: true, retryEligible: true } });
+      await heartbeatService(db).reapOrphanedRuns();
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
+    });
+
+    it.each([
+      { name: "a first attempt", alreadyRetried: false },
+      { name: "a run that was already the last automatic retry", alreadyRetried: true },
+    ])("continues $name whose old server exited before it scheduled the continuation", async ({ alreadyRetried }) => {
+      // The old server committed the interruption, then exited while it waited
+      // for the adapter to settle: the task still names the interrupted run.
+      const fixture = await seedInterruptibleRun({ alreadyRetried, owner: "replaced_server" });
+      await db.update(heartbeatRuns).set({
+        status: "interrupted", errorCode: "server_shutdown_interrupted", signal: "SIGTERM",
+        error: "Interrupted by graceful server shutdown (SIGTERM)", finishedAt: new Date(), controllerLeaseExpiresAt: null,
+        resultJson: { stopReason: "interrupted", conversationContinuation: "continue_conversation_v1" },
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+
+      const replacement = heartbeatService(db);
+      await replacement.reapOrphanedRuns();
+      await replacement.reconcileStrandedAssignedIssues();
+
+      await expectOneRestartContinuation(fixture, alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0);
+    });
+
+    it("continues a task that an older release left without a continuation after a restart", async () => {
+      // Saved by the previous release: the process-loss verdict has no
+      // controllerReplaced field, the failure budget is spent, and nothing
+      // was scheduled. The new server picks it up on its stranded-task sweep.
+      const fixture = await seedInterruptibleRun({ alreadyRetried: true, owner: "replaced_server" });
+      await db.update(heartbeatRuns).set({
+        status: "failed", errorCode: "process_lost", error: "Process lost -- server may have restarted",
+        finishedAt: new Date(), controllerLeaseExpiresAt: null,
+        resultJson: { stopReason: "process_lost", conversationContinuation: "continue_conversation_v1",
+          processLossDiagnostic: { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers", retryEligible: false } },
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+      await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, fixture.issueId));
+
+      const reconciled = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(reconciled.escalated).toBe(0);
+      await expectOneRestartContinuation(fixture, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
+      expect((await selectRecoveryIssueById(fixture.issueId))?.status).toBe("in_progress");
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
+    });
+
+    it("stops after the restart bound in one window, says so on the run, and starts a new window later", async () => {
+      const recent = new Date(Date.now() - 10 * 60_000).toISOString();
+      const fixture = await seedInterruptibleRun({ alreadyRetried: false, owner: "this_server",
+        accounting: { serverRestarts: SERVER_RESTART_RETRY_MAX_ATTEMPTS, serverRestartWindowStartedAt: recent } });
+
+      const drained = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
+
+      expect(drained.retryRunIds).toEqual([]);
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: expect.objectContaining({ retryReason: "server_restart",
+          scheduledRetryAttempt: SERVER_RESTART_RETRY_MAX_ATTEMPTS, maxAttempts: SERVER_RESTART_RETRY_MAX_ATTEMPTS }),
+      })]));
+      // The sweeper makes the stop visible instead of retrying again.
+      const reconciled = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(reconciled.escalated).toBe(1);
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
+
+      // The same count in a window that has closed is not a loop.
+      const old = await seedInterruptibleRun({ alreadyRetried: false, owner: "this_server",
+        accounting: { serverRestarts: SERVER_RESTART_RETRY_MAX_ATTEMPTS,
+          serverRestartWindowStartedAt: new Date(Date.now() - SERVER_RESTART_RETRY_WINDOW_MS - 60_000).toISOString() } });
+      await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM", new Date(), [old.runId]);
+      expect(await successorsOf(old.companyId, old.runId)).toEqual([expect.objectContaining({
+        scheduledRetryReason: "server_restart", scheduledRetryAttempt: 1 })]);
+    });
+
+    // Production shape (staging, 2026-11-12): every run the replacement server
+    // reaped was a Runner run still preparing (no process recorded), so the
+    // reaper marked it bootstrap/providerWorkStarted=false. Those successors
+    // went to the charged transient_failure lane instead of server_restart.
+    it.each([
+      { name: "a first attempt", alreadyRetried: false },
+      { name: "a run that was already the last automatic retry", alreadyRetried: true },
+    ])("continues $name that a replaced server left preparing, in the restart lane", async ({ alreadyRetried }) => {
+      // The replaced server stamped its process on the claim. It is in another
+      // container and has no live server lease, so it is not proven alive.
+      const bootId = randomUUID();
+      const fixture = await seedInterruptibleRun({ alreadyRetried, owner: "replaced_server",
+        adapterType: "paperclip_runner", executionStage: "preparing", controllerBootId: bootId,
+        controllerProcess: { bootId, pid: 3, hostHash: "replaced-server-container",
+          processStartedAt: new Date(Date.now() - 60 * 60_000).toISOString() } });
+
+      await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
+
+      const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+      expect(lost!.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: { controllerReplaced: true, retryEligible: true } });
+      await expectOneRestartContinuation(fixture, alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0);
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
+    });
+
+    describe("while the server that owns the run is still serving", () => {
+      const oldBootId = randomUUID();
+      const oldServer = { bootId: oldBootId, pid: 3, hostHash: "old-server-container",
+        processStartedAt: new Date(Date.now() - 60 * 60_000).toISOString() };
+
+      beforeEach(async () => {
+        // The old server's own process lease is live: it is alive and serving.
+        await db.insert(controllerInstances).values({ bootId: oldBootId, processSpace: oldServer.hostHash, pid: oldServer.pid,
+          leaseExpiresAt: new Date(Date.now() + 60_000) });
+        registerControllerInstanceDb(db);
+      });
+      afterEach(async () => {
+        resetControllerInstanceLeaseForTests();
+        await db.delete(controllerInstances);
+      });
+
+      it.each(["preparing", "dispatching"] as const)(
+        "leaves a %s run whose lease lapsed with its owner, then recovers it once the owner stops", async (executionStage) => {
+          // A slow database held the owner's renewal past the 60 s lease while
+          // the new server was already running its recovery sweeps.
+          const fixture = await seedInterruptibleRun({ alreadyRetried: false, owner: "replaced_server",
+            adapterType: "paperclip_runner", executionStage, controllerBootId: oldBootId, controllerProcess: oldServer });
+
+          await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
+
+          const [kept] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+          expect(kept).toMatchObject({ status: "running", controllerBootId: oldBootId, errorCode: null });
+          expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
+
+          // The old server shut down: its process lease is stopped, so the run is lost now.
+          await db.update(controllerInstances).set({ stoppedAt: new Date() }).where(eq(controllerInstances.bootId, oldBootId));
+          await heartbeatService(db).reapOrphanedRuns();
+
+          const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+          expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+          if (executionStage === "preparing") await expectOneRestartContinuation(fixture, 0);
+        });
+
+      it("recovers the run when its live owner has not settled it within the grace", async () => {
+        const fixture = await seedInterruptibleRun({ alreadyRetried: false, owner: "replaced_server",
+          adapterType: "paperclip_runner", executionStage: "preparing", controllerBootId: oldBootId,
+          controllerProcess: oldServer, leaseExpiredSeconds: controllerLeases.LEGACY_LIVE_OWNER_SETTLE_GRACE_MS / 1000 + 1 });
+
+        await heartbeatService(db).reapOrphanedRuns();
+
+        const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+        await expectOneRestartContinuation(fixture, 0);
+      });
+    });
+
+    it("keeps the failure budget for a run that failed on its own", async () => {
+      const fixture = await seedInterruptibleRun({ alreadyRetried: true, owner: "this_server" });
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", error: "Adapter failed",
+        finishedAt: new Date(), resultJson: { conversationContinuation: "continue_conversation_v1" } })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, fixture.issueId));
+
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
+    });
+  });
+
   it("keeps an orphaned legacy run that reached adapter dispatch held for reconciliation", async () => {
     const { companyId, runId, issueId } = await seedRestartOrphanedLegacySetup("dispatching");
 
@@ -5267,8 +5528,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not reset an exhausted incident budget on server restart", async () => {
+    // A restart continues a run without spending failures, so the exhausted
+    // budget here is the server-restart bound of the open window.
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "running",
+      contextSnapshot: { executionRetryAccounting: spentRestartRetryAccounting() },
     });
     await db
       .update(heartbeatRuns)
@@ -7721,6 +7985,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           missingDisposition: "clear_next_step",
           handoffAttempt: 1,
           maxHandoffAttempts: 1,
+          // A restart-ended run is bounded by the server-restart window.
+          executionRetryAccounting: spentRestartRetryAccounting(),
         },
       })
       .where(eq(heartbeatRuns.id, runId));
@@ -7758,10 +8024,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("escalates an in_progress issue whose interrupted run has spent its transient retry budget", async () => {
-    // Three deploy restarts in a row interrupted a run and both of its
-    // bounded transient retries. The retry scheduler then reports the
-    // budget exhausted and queues nothing, and the sweeper used to skip
-    // the issue on every tick: in_progress, no run, no path, no notice.
+    // Restarts in a row interrupted a run until its server-restart bound for
+    // the window was spent. The retry scheduler then reports the budget
+    // exhausted and queues nothing, and the sweeper used to skip the issue
+    // on every tick: in_progress, no run, no path, no notice.
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -7788,6 +8054,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           taskId: issueId,
           wakeReason: "transient_failure_retry",
           retryOfRunId: originalRunId,
+          executionRetryAccounting: spentRestartRetryAccounting(),
         },
       })
       .where(eq(heartbeatRuns.id, runId));
@@ -7900,6 +8167,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId,
           taskId: issueId,
           wakeReason: "transient_failure_retry",
+          executionRetryAccounting: spentRestartRetryAccounting(),
         },
       })
       .where(eq(heartbeatRuns.id, runId));
@@ -10879,6 +11147,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId,
           taskId: issueId,
           wakeReason: "transient_failure_retry",
+          executionRetryAccounting: spentRestartRetryAccounting(),
         },
         startedAt: new Date("2026-03-19T00:00:00.000Z"),
         finishedAt,
@@ -10938,6 +11207,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId,
           taskId: issueId,
           wakeReason: "transient_failure_retry",
+          executionRetryAccounting: spentRestartRetryAccounting(),
         },
         startedAt: new Date("2026-03-19T00:00:00.000Z"),
         finishedAt,

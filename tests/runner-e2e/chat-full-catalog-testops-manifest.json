@@ -1176,6 +1176,18 @@
           "field": "expectedOutcome",
           "previous": "The response identifies the supported instance setting and operator path without granting the agent administration rights. The human journey verifies saved configuration and actual route availability. Unsupported deployment choices or a disabled gate produce clear state instead of an agent claiming a successful setting change.",
           "current": "The agent cannot change instance settings, so it leaves the setting unchanged and does not claim it turned Cases on. The reply identifies the Cases experimental setting and links the Experimental settings page where an instance admin turns it on. The person follows that link and turns Cases on. While the setting is off the Cases page is unavailable; once it is on, the saved setting persists and the Cases page opens."
+        },
+        {
+          "key": "questions-and-approvals.necessary-question",
+          "field": "expectedOutcome",
+          "previous": "The agent asks a short, necessary question for the missing product name using the supported interaction. The person can enter a free-text answer; it is saved and delivered to the right work once. The agent uses the answer in the resulting brief without making the person fill in incidental implementation settings.",
+          "current": "The agent asks a short, necessary question for the missing product name using the supported interaction. The person can enter a free-text answer; it is saved and delivered to the right work once. The answer shapes the resulting work: the agent uses the exact answer in that work's saved brief or saved deliverable without making the person fill in incidental implementation settings."
+        },
+        {
+          "key": "tasks.assignment-conflict",
+          "field": "originalQuery",
+          "previous": "Move this task to Riley now.",
+          "current": "Move the Website task to Riley now."
         }
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
@@ -10323,7 +10335,7 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Build a landing page for my new product.",
-      "expectedOutcome": "The agent asks a short, necessary question for the missing product name using the supported interaction. The person can enter a free-text answer; it is saved and delivered to the right work once. The agent uses the answer in the resulting brief without making the person fill in incidental implementation settings.",
+      "expectedOutcome": "The agent asks a short, necessary question for the missing product name using the supported interaction. The person can enter a free-text answer; it is saved and delivered to the right work once. The answer shapes the resulting work: the agent uses the exact answer in that work's saved brief or saved deliverable without making the person fill in incidental implementation settings.",
       "originalContext": "A requested site needs a product name that is absent from the brief and history.",
       "capabilities": [
         "questions-and-approvals/questions",
@@ -12980,7 +12992,7 @@
       "requiredCredentials": [],
       "externalInput": null,
       "installedSource": null,
-      "originalQuery": "Move this task to Riley now.",
+      "originalQuery": "Move the Website task to Riley now.",
       "expectedOutcome": "The agent handles the stale ownership result by rereading current state and explaining the actual assignment boundary. It does not overwrite a newer checkout, run two owners concurrently, or claim Riley has begun before accepted reassignment and normal admission.",
       "originalContext": "Morgan holds the current execution checkout; another actor changed assignment after the CEO last read the task.",
       "capabilities": [
