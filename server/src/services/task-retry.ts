@@ -3,6 +3,7 @@ import { notifyExternalConversationSettlement } from "./external-conversation-se
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
+import { userStopBoundaryAt } from "./run-cancellation.js";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { randomUUID } from "node:crypto";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
@@ -561,10 +562,13 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
     if (unadmitted) return false;
     const savedInputIds = (await selectTaskRetryInput(tx, { companyId: wake.companyId, issueId, agentId: wake.agentId,
       failedRunId: intent.sourceRunId }))?.sourceActionIds ?? [];
-    const savedInputs = savedInputIds.length ? await tx.select({ id: chatActions.id, createdAt: chatActions.createdAt })
-      .from(chatActions).where(and(eq(chatActions.companyId, wake.companyId), inArray(chatActions.id, savedInputIds))) : [];
-    if (savedInputs.length !== savedInputIds.length ||
-        savedInputs.some(input => input.createdAt > latest.finishedAt!)) return false;
+    const stopBoundary = userStopBoundaryAt(latest);
+    const savedInputs = savedInputIds.length ? await tx.select({ id: chatActions.id, authorizedAt: issueComments.createdAt })
+      .from(chatActions).innerJoin(issueComments, and(eq(issueComments.companyId, chatActions.companyId),
+        eq(issueComments.issueId, issueId), sql`${issueComments.id}::text = ${chatActions.payload}->>'commentId'`))
+      .where(and(eq(chatActions.companyId, wake.companyId), inArray(chatActions.id, savedInputIds))) : [];
+    if (!stopBoundary || savedInputs.length !== savedInputIds.length ||
+        savedInputs.some(input => input.authorizedAt > stopBoundary)) return false;
     const { chatActionId: _replaced, initiatedBy: _automatic, ...continuation } = intent;
     await notifyDeferredExecutionWork(tx, { companyId: wake.companyId, requestId: wake.id });
     const [converted] = await tx.update(agentWakeupRequests).set({ updatedAt: new Date(),
