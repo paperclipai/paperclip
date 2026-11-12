@@ -18,6 +18,7 @@ import { nativeManualAdmissionHoldsExecution } from "../../../services/native-ru
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
+import { agentRunSupersededByFreshContinuation } from "../../../agent-run-cancellation.js";
 import type { Db } from "@paperclipai/db";
 import { deliveredQueuedCommentIds, EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION, EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../../../services/queued-comment-delivery.js";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
@@ -1284,7 +1285,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               `,
         );
 
-        if (input.resumeStrandedQueue && run.runtimeMode === "native") {
+        // A run the fresh-continuation fallback replaced is settled for good: its
+        // finalization may stay terminal_failure (restart recovery ended it), and
+        // the saved input queued behind it is now the task's next turn.
+        if (input.resumeStrandedQueue && run.runtimeMode === "native" && !agentRunSupersededByFreshContinuation(run)) {
           const [finalized] = contextIssueId && run.nativeIssueId === contextIssueId
             ? await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
                 eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -1448,7 +1452,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           && issueRow.status === "blocked" && issueRow.assigneeAgentId === run.agentId) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (!handoffAssigneeAgentId && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
+        // The fallback already decided this run's continuation; a reconciliation
+        // incident would re-block the task it just released.
+        if (!handoffAssigneeAgentId && !agentRunSupersededByFreshContinuation(run)
+          && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
