@@ -152,6 +152,18 @@ fn remember_spawned_descendants(
     params: &Value,
 ) -> Result<(), &'static str> {
     let item = &params["item"];
+    if method == "item/completed" && item["type"] == "subAgentActivity" && item["kind"] == "started"
+    {
+        if params["threadId"] != root {
+            return Err("invalid_spawn_lineage");
+        }
+        let child = item["agentThreadId"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 240 && *id != root)
+            .ok_or("invalid_spawn_lineage")?;
+        remember_descendant_thread(ids, child)?;
+        return Ok(());
+    }
     if method != "item/completed"
         || item["type"] != "collabAgentToolCall"
         || item["tool"] != "spawnAgent"
@@ -6917,6 +6929,75 @@ mod notification_identity_tests {
             NotificationThread::Root
         );
     }
+    #[test]
+    fn modern_subagent_start_receipt_authorizes_only_its_child_thread() {
+        let receipt = json!({"threadId":"root", "turnId":"turn", "item":{
+            "type":"subAgentActivity", "kind":"started", "id":"activity",
+            "agentThreadId":"helper", "agentPath":"/root/restart_a2"}});
+        let mut ids = BTreeSet::new();
+        remember_spawned_descendants(&mut ids, "root", "item/completed", &receipt).unwrap();
+        assert!(ids.contains("helper"));
+        assert_eq!(
+            classify_notification_thread(
+                "turn/started",
+                "root",
+                &ids,
+                &json!({"threadId":"helper", "turn":{"id":"child-turn"}})
+            )
+            .unwrap(),
+            NotificationThread::Descendant
+        );
+        assert!(classify_notification_thread(
+            "turn/started",
+            "root",
+            &ids,
+            &json!({"threadId":"foreign", "turn":{"id":"foreign-turn"}})
+        )
+        .is_err());
+        for value in [
+            json!(null),
+            json!(7),
+            json!(""),
+            json!("root"),
+            json!("x".repeat(241)),
+        ] {
+            let mut invalid = receipt.clone();
+            invalid["item"]["agentThreadId"] = value;
+            let mut empty = BTreeSet::new();
+            assert!(
+                remember_spawned_descendants(&mut empty, "root", "item/completed", &invalid)
+                    .is_err()
+            );
+            assert!(empty.is_empty());
+        }
+        let mut foreign = receipt.clone();
+        foreign["threadId"] = json!("foreign");
+        assert!(remember_spawned_descendants(
+            &mut BTreeSet::new(),
+            "root",
+            "item/completed",
+            &foreign
+        )
+        .is_err());
+        for kind in ["interacted", "interrupted"] {
+            let mut activity = receipt.clone();
+            activity["item"]["kind"] = json!(kind);
+            let mut empty = BTreeSet::new();
+            remember_spawned_descendants(&mut empty, "root", "item/completed", &activity).unwrap();
+            assert!(empty.is_empty());
+        }
+        let mut empty = BTreeSet::new();
+        remember_spawned_descendants(&mut empty, "root", "item/started", &receipt).unwrap();
+        assert!(empty.is_empty());
+        let mut full: BTreeSet<String> = (0..MAX_DESCENDANT_THREAD_IDS)
+            .map(|n| format!("child-{n}"))
+            .collect();
+        assert_eq!(
+            remember_spawned_descendants(&mut full, "root", "item/completed", &receipt),
+            Err("provider_descendant_capacity_exhausted")
+        );
+    }
+
     #[test]
     fn spawn_receipts_require_completed_root_authority_and_preserve_capacity() {
         let receipt = json!({"threadId":"root", "turnId":"turn", "item":{
