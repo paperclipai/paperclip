@@ -387,8 +387,21 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
     expect((await fs.stat(blocked)).mode & 0o200).toBe(0o200);
     await fs.chmod(blocked, 0o700);
     expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
+    // A reopen that fails part-way (an unreadable user directory) re-seals the
+    // bundle and leaves no scratch files behind either.
+    const unreadable = path.join(target, "private");
+    await fs.mkdir(unreadable);
+    await fs.chmod(unreadable, 0o300);
+    await expect(performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "unreadable-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] })).rejects.toThrow("syncIn extract");
+    for (const dir of ["references", "references/agents"]) {
+      expect((await fs.stat(path.join(target, dir))).mode & 0o777).toBe(0o555);
+    }
+    expect((await fs.stat(unreadable)).mode & 0o777).toBe(0o300);
+    expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
 
   } finally {
+    await fs.chmod(path.join(target, "private"), 0o700).catch(() => undefined);
     for (const base of [source, target]) {
       for (const dir of ["references/agents", "references"]) await fs.chmod(path.join(base, dir), 0o700).catch(() => undefined);
     }
