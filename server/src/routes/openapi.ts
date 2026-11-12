@@ -36,6 +36,7 @@ import {
   browserUseSettingsSchema,
   browserUseViewportSchema,
   browserUseViewerSchema,
+  mcpAppToolCallSchema,
   startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema, VOICE_SESSION_STATES,
   slackToolCallSchema,
   slackSearchConfigSchema,
@@ -1441,6 +1442,13 @@ const browserUseOperations = [
   ["put", "/api/companies/{companyId}/browser-use-cloud/grants/{grantId}/settings", "Update browser credential settings", browserUseSettingsSchema],
 ] as const;
 
+// MCP Apps views in the task chat. Board only; reads follow task read access.
+const mcpAppsOperations = [
+  ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
+  ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
+  ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
+] as const;
+
 const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/agents/{id}/permission-grants",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
@@ -1488,6 +1496,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/companies/{companyId}/observability",
   "POST /api/companies/{companyId}/observability/test",
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
+  ...mcpAppsOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "POST /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/code",
 
   "GET /api/companies/{companyId}/project-repositories",
@@ -2291,6 +2300,13 @@ registry.registerPath({
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
+
+for (const [method, path, summary, body] of mcpAppsOperations) {
+  registerCurrentRoute({
+    method, path, summary, body, tags: ["MCP Apps"],
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 502: r.serverError },
+  });
+}
 
 for (const [method, path, summary, body] of browserUseOperations) {
   registerCurrentRoute({
@@ -8058,6 +8074,15 @@ registry.registerPath({
   path: "/api/companies/{companyId}/provider-traces",
   tags: ["runs"],
   summary: "List provider trace metadata for selected runs",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/assigned-work-invariant",
+  tags: ["runs"],
+  summary: "Report open agent tasks without a live run, pending start or wait on a person (board only)",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });

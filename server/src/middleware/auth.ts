@@ -23,7 +23,7 @@ import {
   rekeyCompanyIssueIdentifiers,
 } from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
+import { agentRunSupersededByFreshContinuation, agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -405,6 +405,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       if (agentRunWritesRevoked(identityRun)
         && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
         const conversation = identityRun?.contextSnapshot?.conversationMode === true;
+        if (agentRunSupersededByFreshContinuation(identityRun)) {
+          _res.status(403).json({ error: "A newer run continues this task. End the turn.", code: "agent_run_superseded" });
+          return;
+        }
         _res.status(403).json({ error: conversation ? "This conversation turn was cancelled" : "This run was cancelled",
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
         return;

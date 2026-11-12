@@ -2423,6 +2423,7 @@ export {
   createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
+  browserTracingConfigSchema,
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
@@ -2448,6 +2449,7 @@ export {
   type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
+  type BrowserTracingConfig,
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,
@@ -2965,3 +2967,4 @@ export {
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
 export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
+export * from "./mcp-apps.js";

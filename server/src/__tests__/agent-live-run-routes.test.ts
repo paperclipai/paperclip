@@ -20,6 +20,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  reportAssignedWorkInvariant: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -772,6 +773,23 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.getRunWorkspaceAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockWorkspaceOperationService.listForRun).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "workspace-one");
+  });
+
+  it("lets a board operator read the assigned-work invariant for their company only", async () => {
+    mockHeartbeatService.reportAssignedWorkInvariant.mockResolvedValue({ checked: 3, violationCount: 1, violations: { no_pending_path: 1 } });
+    const board = await request(await createApp()).get("/api/companies/company-1/assigned-work-invariant");
+    expect(board.status).toBe(200);
+    expect(board.body).toMatchObject({ checked: 3, violationCount: 1 });
+    expect(mockHeartbeatService.reportAssignedWorkInvariant).toHaveBeenCalledWith("company-1", { readCondition: expect.anything() });
+
+    mockHeartbeatService.reportAssignedWorkInvariant.mockClear();
+    const member = { type: "board", userId: "member-1", companyIds: ["company-1"], source: "session", isInstanceAdmin: false };
+    const otherCompany = await request(await createApp({}, member)).get("/api/companies/company-2/assigned-work-invariant");
+    expect(otherCompany.status).toBe(403);
+    const agent = await request(await createApp({}, { type: "agent", agentId: routeAgentId, companyId: "company-1" }))
+      .get("/api/companies/company-1/assigned-work-invariant");
+    expect(agent.status).toBe(403);
+    expect(mockHeartbeatService.reportAssignedWorkInvariant).not.toHaveBeenCalled();
   });
 
   it("caps company live run polling by default", async () => {

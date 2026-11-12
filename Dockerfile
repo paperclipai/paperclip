@@ -179,6 +179,16 @@ RUN mkdir -p /provider-pack /provider-pack-transport \
     echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
   fi \
   && chmod -R a+rX /provider-pack
+# The pack is ~2.5 GB of provider binaries that change only when a provider
+# version does, next to small files that change on every commit (the manifest
+# carries the source revision). Move the large files to their own tree, after
+# the transport archive has read the whole pack, so production can copy them
+# as a layer that stays identical between commits. Normalized mtimes keep that
+# layer's bytes identical when this stage reruns.
+RUN mkdir -p /provider-pack-large \
+  && cd /provider-pack \
+  && find . -type f -size +1048575c -exec sh -c 'mkdir -p "/provider-pack-large/$(dirname "$1")" && mv "$1" "/provider-pack-large/$1"' _ {} \; \
+  && find /provider-pack-large -exec touch -h -d @0 {} +
 
 FROM base AS production
 ARG USER_UID=1000
@@ -203,8 +213,16 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-COPY --chown=node:node --from=build /app /app
+# Installed dependencies are ~2.9 GB of /app and change only with the lockfile.
+# Copied from the deps stage as their own layer, a commit that leaves the
+# lockfile alone does not push or pull them again. The build stage writes
+# nothing under the root node_modules, so the rest of /app is copied without it.
+COPY --chown=node:node --from=deps /app/node_modules /app/node_modules
+COPY --chown=node:node --exclude=node_modules --from=build /app /app
 
+# Large provider binaries first, linked so the layer does not depend on the
+# per-commit /app layer above; then the small per-commit remainder of the pack.
+COPY --link --chown=0:0 --from=runner-provider-pack /provider-pack-large/ /opt/paperclip-runner/provider-pack/
 COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
 COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
 # Managed deployments can remap node's UID at startup. This immutable pack
