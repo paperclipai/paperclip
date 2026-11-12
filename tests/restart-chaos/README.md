@@ -1150,7 +1150,8 @@ seeded 0–60 s after that run settled (`rewake.ts`):
   scheduler's own `issue_monitor_due` wake starts the run.
 - **W2Q**: phase 1 asks one `request_human_input` question and parks. A board comment (a note to include,
   not the answer) wakes the task while the question is pending. The board answers after that run settled.
-- **W2C**: as W2, and first the board changes the agent's `adapterConfig.idleTimeoutMs`, so the next run
+- **W2C**: as W2, and first the board changes the agent's `adapterConfig.idleTimeoutMs` (sending the whole
+  `adapterConfig` with `replaceAdapterConfig: true`, as the agent settings form does), so the next run
   cannot resume the saved session. SR1 (`session-faults.ts`, #20844) is the same change while a question
   is parked; W2C is the change after a run succeeded.
 
