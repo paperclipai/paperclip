@@ -65892,7 +65892,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["person", "restart_recovery"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+  it.each(["person", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
     const f = await currentGitHubTaskRetryFixture(false);
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
@@ -65944,7 +65944,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ canRetry: true,
         nextAction: "Saved work recovered. Retry continues from it.",
         workspaceRecovery: { message: "Saved work recovered. Retry continues from it." } });
-      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_session_cleanup_quarantined" })
+        .where(eq(heartbeatRuns.id, f.runId));
+      const quarantined = await getExecutionBlocker(db, companyId, issueId);
+      expect(quarantined).toMatchObject({ canRetry: false, nextAction: "Saved work recovered.",
+        workspaceRecovery: { message: "Saved work recovered." } });
+      await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation" })
+        .where(eq(heartbeatRuns.id, f.runId));
 
       const identityLock = `chat-identity:${companyId}:${f.action.principalId}`;
       const holdLock = async (lock: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>) => {
@@ -65960,8 +65966,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       try {
         request = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
           observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry,
-          ...(initiator === "person" ? {} : { initiatedBy: initiator }) });
+          ...(initiator === "person" ? {} : { initiatedBy: "restart_recovery" as const }) });
       } finally { await releaseIdentity(); }
+      if (initiator === "restart_recovery_joined_by_person") {
+        const joined = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+          observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry });
+        expect(joined).toMatchObject({ accepted: true, requestId: request.requestId, chatActionId: request.chatActionId });
+      }
       expect(request).toMatchObject({ accepted: true, stale: false, chatActionId: expect.any(String) });
       const chatAction = async () => (await db.select().from(chatActions).where(eq(chatActions.id, request.chatActionId!)))[0];
       expect((await chatAction()).payload.sourceAuthorizationPending).toBe(true);
@@ -65977,7 +65988,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(await readAgentWakeupRequestsById(request.chatActionId!)).toHaveLength(0);
 
       await reconcileTaskChatRetryReceipts(db, { companyId, settleOnly: true });
-      if (initiator !== "person") {
+      if (initiator === "restart_recovery") {
         expect((await readAgentWakeupRequestsById(request.requestId!))[0]).toMatchObject({ status: "failed", runId: null });
         expect((await readHeartbeatRunsByCompanyId(companyId))
           .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId)).toHaveLength(0);
@@ -66005,6 +66016,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const f = await currentGitHubTaskRetryFixture(false);
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
+      await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+        status: "resolved", ownerType: "system", outcome: "blocked", cause: "native_continuation_requires_reconciliation",
+        fingerprint: `native-workspace:${f.runId}`, nextAction: "Recovered", evidence: { runId: f.runId,
+          automaticRecovery: { runId: f.runId, policy: "preserve_without_replay_v1", replay: "blocked", actionOutcome: "unknown" },
+          systemRecovery: { ...createSystemRecovery(f.runId), state: "complete", phase: "reconcile_effects", attempts: 1,
+            preservationOperationIds: [randomUUID()] },
+          workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "recovered",
+            stage: "saving_receipts", attempt: 1, requestIds: [] } } });
       const request = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
         observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry });
       const [chat] = await db.update(chatActions).set({ status: "failed",

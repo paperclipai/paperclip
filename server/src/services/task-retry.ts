@@ -3,10 +3,12 @@ import { notifyExternalConversationSettlement } from "./external-conversation-se
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
+import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { randomUUID } from "node:crypto";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
 import { createSystemRecovery, readSystemRecovery } from "./system-recovery-state.js";
@@ -510,7 +512,7 @@ async function taskHasUnadmittedChatInput(db: Db, input: { companyId: string; is
 
 async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequests.$inferSelect,
   intent: TaskRetryIntent, chat: typeof chatActions.$inferSelect) {
-  if (intent.initiatedBy || intent.canonicalIntentId || intent.queuedChatRequestId || intent.generationId !== wake.id ||
+  if (intent.canonicalIntentId || intent.queuedChatRequestId || intent.generationId !== wake.id ||
       wake.requestedByActorType !== "user" || wake.requestedByActorId !== intent.actorId ||
       !wake.idempotencyKey?.startsWith("task-retry:") || chat.status !== "failed" ||
       chat.payload.taskRetryIntentId !== wake.id) return false;
@@ -524,12 +526,33 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`)))
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
     if (latest?.id !== intent.sourceRunId) return false;
+    if (intent.initiatedBy) {
+      const [joined] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.agentId, wake.agentId),
+        eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "coalesced"),
+        isNull(agentWakeupRequests.runId), eq(agentWakeupRequests.requestedByActorType, "user"),
+        eq(agentWakeupRequests.requestedByActorId, intent.actorId),
+        sql`${agentWakeupRequests.payload}#>>'{taskRetry,canonicalIntentId}' = ${wake.id}`,
+        sql`${agentWakeupRequests.payload}#>'{taskRetry,initiatedBy}' is null`)).limit(1);
+      if (!joined) return false;
+    }
+    const [agent] = await tx.select({ status: agents.status }).from(agents).where(and(eq(agents.companyId, wake.companyId),
+      eq(agents.id, wake.agentId)));
+    if (!agent || !isAgentStatusInvokable(agent.status)) return false;
+    const recoveries = await tx.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, wake.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${intent.sourceRunId}`));
+    if (!recoveries.some(({ evidence }) => readSystemRecovery(evidence)?.state === "complete" &&
+        readWorkspaceRecovery(evidence)?.runId === intent.sourceRunId &&
+        readWorkspaceRecovery(evidence)?.status === "recovered")) return false;
+    if (!await taskRetryMutationAllowed(tx as unknown as Db, { companyId: wake.companyId, issueId,
+      actorId: intent.actorId, actorSource: intent.actorSource })) return false;
     const [chatReceipt] = await tx.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.id, chat.id)));
     if (chatReceipt && (chatReceipt.runId || !["failed", "skipped", "cancelled"].includes(chatReceipt.status))) return false;
     if (await taskHasUnadmittedChatInput(tx as unknown as Db, { companyId: wake.companyId, issueId,
       agentId: wake.agentId, failedRunId: intent.sourceRunId })) return false;
-    const { chatActionId: _replaced, ...continuation } = intent;
+    const { chatActionId: _replaced, initiatedBy: _automatic, ...continuation } = intent;
     await notifyDeferredExecutionWork(tx, { companyId: wake.companyId, requestId: wake.id });
     const [converted] = await tx.update(agentWakeupRequests).set({ updatedAt: new Date(),
       payload: { ...wake.payload, taskRetry: continuation, refusedChatRetry: { chatActionId: chat.id,

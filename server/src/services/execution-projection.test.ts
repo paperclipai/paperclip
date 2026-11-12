@@ -138,6 +138,12 @@ describe("execution truth projection", () => {
     });
     expect(source.status).toBe("failed");
     expect(action.evidence.automaticRecovery.replay).toBe("blocked");
+    if (status === "recovered") {
+      expect(projectExecution({ ...source, status: "timed_out" }, coordinator({ phase: "terminal_failure" }), [], action, now)
+        .nextAction).toBe("Saved work recovered. Retry continues from it.");
+      expect(projectExecution({ ...source, errorCode: "native_session_cleanup_quarantined" },
+        coordinator({ phase: "terminal_failure" }), [], action, now).nextAction).toBe("Saved work recovered.");
+    }
     expect(projectExecution(source, undefined, [], { ...action,
       evidence: { ...action.evidence, workspaceRecovery: { ...action.evidence.workspaceRecovery,
         runId: "5f227d75-b314-4511-bf23-9c615277e69b" } },
