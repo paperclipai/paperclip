@@ -96,6 +96,9 @@ export function recoveryActionSweepCondition() {
     // The pass returns its retry time, which schedules the company again.
     and(eq(issueRecoveryActions.status, "resolved"),
       sql`${issueRecoveryActions.evidence}#>>'{legacyWorkspaceRehome,wake}' = 'pending'`),
+    // Likewise a task continued once its workspace's writer let go.
+    and(eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}#>>'{releasedWorkspaceWriter,wake}' = 'pending'`),
   )!;
 }
 
