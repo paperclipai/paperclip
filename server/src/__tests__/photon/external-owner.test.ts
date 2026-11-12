@@ -86,6 +86,42 @@ function delivery(state: PhotonExternalState, sequence = 3, previousSequence: nu
     payload: { version: 1, binding: state.binding, sequence, previousSequence, acceptedAt: createdAt, rawFrame: raw.toString("base64") } };
 }
 describe("Photon normal external-owner handoff (controlled owner ports, not real SQL or gRPC)", () => {
+  it("recovers original custody with a fenced old lease without inventing unknown physical closure", async () => {
+    const f = fixture();
+    const descriptor = { id: f.resourceId,
+      controller: { bootId: "old", hostHash: "different-space", pid: 45678, processStartedAt: "2090-01-01T00:00:00.000Z" },
+      leaseDigest: photonHash("lease"), closed: false };
+    await f.create().prepare({ identity, config, lease: { token: "lease" }, localResourceId: f.resourceId, localResource: descriptor });
+    f.loseReply();
+    await expect(f.reconcile()).rejects.toThrow("lost enrollment reply");
+    const original = await f.read();
+    if (!original) throw new Error("Normal original intent absent");
+    expect(original.phase).toBe("enrolling");
+    f.replaceLease();
+    const replacement = f.create(new PhotonLocalResources());
+    const recovered = await replacement.reconcile({ identity, config: { ...config, intakeAfter: config.intakeAfter + 5_000 },
+      lease: { token: "next-lease" }, localResourceId: f.resourceId });
+    expect(recovered).toMatchObject({ phase: "external", binding: original.binding, handoffId: original.handoffId,
+      localResourceId: f.resourceId, localResource: descriptor,
+      businessHandoff: { sequence: null, leaseDigest: photonHash("next-lease") }, localResourceDebt: { nextAttemptAt: null } });
+    expect(recovered.localClosureConfirmed).toBeUndefined();
+    expect(recovered.joinedSequence).toBeNull();
+    expect(recovered.localResource?.closed).toBe(false);
+    expect(f.counts()).toEqual({ enrollments: 2, joins: 0 });
+    expect(f.requests[1]).toEqual(f.requests[0]);
+    let admitted = 0;
+    const event = delivery(recovered, 3, null);
+    await replacement.dispatch({ identity, lease: { token: "next-lease" }, delivery: event, admit: async () => { admitted++; } });
+    await replacement.dispatch({ identity, lease: { token: "next-lease" }, delivery: event, admit: async () => { admitted++; } });
+    expect(admitted).toBe(1);
+    const current = await f.read();
+    if (!current) throw new Error("Retained current custody absent");
+    expect(current).toMatchObject({ localResource: descriptor, localResourceDebt: { nextAttemptAt: null }, acceptedSequence: 3 });
+    expect(current.localClosureConfirmed).toBeUndefined();
+    await expect(replacement.retire(current)).rejects.toThrow("closure is unknown");
+    expect((await f.read())?.phase).toBe("retiring");
+    expect(f.requests.filter(request => request.kind === "retire")).toHaveLength(0);
+  });
   it.each(["enrolling", "joining"] as const)("recovers the original %s binding after only the authorized admission cutoff advances", async (phase) => {
     const f = fixture();
     if (phase === "enrolling") f.loseReply();

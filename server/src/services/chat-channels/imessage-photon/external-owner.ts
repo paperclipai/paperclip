@@ -123,7 +123,10 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
       || input.localResource.leaseDigest !== photonHash(lease.token) || !readControllerProcess(input.localResource.controller))) throw new Error("Photon new allocation descriptor is invalid");
     return options.store.current(identity, lease, async (state, current) => {
       if (current && current.phase !== "retired") {
-        if (!isDeepStrictEqual(current.binding, binding)) throw new Error("Photon original enrollment must finish retirement");
+        // Admission uses the current authorized endpoint cutoff. Enrollment is
+        // durable custody: retries must finish its exact original input tuple.
+        if (!isDeepStrictEqual(current.binding, { ...binding, intakeAfter: current.binding.intakeAfter }))
+          throw new Error("Photon original enrollment must finish retirement");
         if (input.localResource && current.localResourceId !== input.localResource.id)
           throw new Error("Photon retained resource must recover before another receiver allocation");
         return current;
@@ -234,8 +237,9 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     });
   }
   async function reconcile(input: PhotonExternalHandoffInput): Promise<PhotonExternalState> {
-    const { identity, lease, config } = input, binding = bindingFor(identity, config);
+    const { identity, lease, config } = input;
     let retained = await prepare(input);
+    const binding = retained.binding;
     if (retained.phase === "external") return retained;
     if (!["enrolling", "joining"].includes(retained.phase)) throw new Error("Photon receiver requires retirement reconciliation");
     if (retained.phase === "enrolling") {

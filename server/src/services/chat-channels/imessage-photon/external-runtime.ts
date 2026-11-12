@@ -109,6 +109,22 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         if (!await selected(record)) throw conflict("Photon prior external owner must retire before a replacement runtime");
         return null; // Exact current external placement uses its separate sender descriptor.
       }
+      if (prior.phase === "enrolling" || prior.phase === "joining") {
+        // Resume already owns the normal current renewable receiver lease.
+        // Finish the exact prior custody before constructing any replacement.
+        const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
+        const input = { identity, lease, config, localResourceId: prior.localResourceId };
+        const prepared = await owner.prepare(input);
+        if (prepared.phase === "enrolling") await joinConnectionEventWakeEnrollment(db);
+        await owner.reconcile(input);
+        if (!await selected(record)) throw conflict("Photon recovered handoff has no current external authority");
+        await store.current(identity, lease, async (_state, current) => {
+          if (!current || current.phase !== "external" || current.handoffId !== prior.handoffId
+            || current.localResourceId !== prior.localResourceId || !isDeepStrictEqual(current.binding, prior.binding))
+            throw conflict("Photon original receiver closure or current handoff remains held");
+        });
+        return null;
+      }
       options.notify(record.endpoint.id);
       throw conflict("Photon original handoff must recover before a replacement receiver allocation");
     }
