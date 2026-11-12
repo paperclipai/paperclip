@@ -339,7 +339,10 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     or(sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`, sql`${issueRecoveryActions.evidence}->>'sourceRunId' = ${run.id}`)))
     .orderBy(asc(issueRecoveryActions.createdAt), asc(issueRecoveryActions.id)).for("update");
   const prior = holds.find(hold => object(hold.evidence.freshContinuation).sourceRunId === run.id);
-  if (prior) return { kind: "already_continued", recoveryActionId: prior.id };
+  if (prior) {
+    await settleLateHolds(tx, { companyId, issue, run, prior, holds: holds.filter(isOwnedReconciliationHold), now });
+    return { kind: "already_continued", recoveryActionId: prior.id };
+  }
   // The holds this decision owns: reconciliation holds that still block the
   // task. Workspace restore/repair holds stay with workspace recovery, and
   // resolved history is never rewritten.
@@ -591,6 +594,36 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   logger.info({ runId: run.id, issueId: issue.id, failureCode: run.errorCode, trigger: input.trigger, delivery },
     "Unfinished run continues in a fresh run from saved work");
   return { kind: "continued", recoveryActionId: primaryId, delivery, isolation };
+}
+
+async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof issues.$inferSelect; run: typeof heartbeatRuns.$inferSelect;
+  prior: typeof issueRecoveryActions.$inferSelect; holds: Array<typeof issueRecoveryActions.$inferSelect>; now: Date }) {
+  const { companyId, issue, run, prior, holds, now } = input;
+  if (!holds.length) return;
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
+  await notifyStatusCardIssueChange(tx, companyId);
+  await notifyRoutineExecutionStatus(tx, issue.id, companyId);
+  const ownsBlock = issue.status === "blocked" && holds.some(hold => holdOwnsBlockedStatus(hold, issue, run));
+  const delivery = String(prior.evidence.continuationDelivery);
+  const followed = ["delivered", "invalidated"].includes(delivery) ? delivery : "coalesced";
+  for (const hold of holds) {
+    const { automaticRecovery, [FRESH_CONTINUATION_CHECK_KEY]: _check, ...evidence } = hold.evidence;
+    await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
+      ownerType: "system", ownerAgentId: null, ownerUserId: null, wakePolicy: null, monitorPolicy: null, nextAction: USER_TEXT,
+      resolutionNote: "continued_fresh_from_last_saved",
+      evidence: { ...evidence, ...(automaticRecovery !== undefined ? { automaticRecoveryHistory: automaticRecovery } : {}),
+        continuationDelivery: followed, coalescedIntoRecoveryActionId: prior.id,
+        ...(typeof prior.evidence.continuationRunId === "string" ? { continuationRunId: prior.evidence.continuationRunId } : {}) },
+    }).where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.id, hold.id)));
+  }
+  if (ownsBlock) {
+    await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
+      blockedOwnerNotifiedAt: null, updatedAt: now }).where(and(eq(issues.companyId, companyId), eq(issues.id, issue.id)));
+    await logActivity(tx, { companyId, actorType: "system", actorId: FRESH_CONTINUATION_ACTOR, action: "issue.updated",
+      entityType: "issue", entityId: issue.id, agentId: run.agentId, runId: run.id,
+      details: { status: "todo", previousStatus: "blocked", reason: "fresh_continuation", recoveryActionId: prior.id,
+        _previous: { status: "blocked" } } });
+  }
 }
 
 /** Records why a hold was not continued yet, and when to look again. */
