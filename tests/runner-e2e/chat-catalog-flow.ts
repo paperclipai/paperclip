@@ -6,7 +6,7 @@ import { chatNativeTimeoutEvidence } from "./chat-native-timeout-policy.js";
 import { completeNativeSlackFileConditional, dispatchNativeSlackIngress, prepareNativeSlackOtherThread, slackOtherThreadBoundaryMatches, slackNativeRunCheck } from "./chat-slack-ingress.js";
 import { runScopedCompanionSurface } from "./chat-companion-surface.js";
 import { chatQueryWithAttachments, resolveChatQueryAttachments, verifyChatQueryAttachments, type ChatQueryAttachmentReceipt } from "./chat-query-attachments.js";
-import { chatCatalogNeverStartedTerminalTaskRun, chatCatalogRunStatusAllowed, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
+import { CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS, chatCatalogNeverStartedTerminalTaskRun, chatCatalogProviderRuns, chatCatalogReassignedQueuedRun, chatCatalogRunStatusAllowed, chatCatalogSupersededQueuedRuns, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
 import { chatCatalogCaseFingerprint, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
 import { expect, type Page } from "@playwright/test";
 import { pollUntil } from "./api.js";
@@ -22,6 +22,12 @@ import { markReturningBrowser } from "./chat-returning-browser.js";
 /** The case owns product semantics; this flow owns the actual chat entry point and evidence lifecycle. */
 export async function runChatCatalogFlow(context: ChatCatalogContext) {
   const { input, scenario } = context;
+  // Cases grade provider work. A queued run retired by reassignment before it
+  // started, whose task's new assignee ran, is lifecycle: cases do not see it,
+  // while the conversation evidence and the run policy keep the raw ledger.
+  const readRuns = context.allRuns;
+  const rawRuns = () => readRuns.call(context);
+  if (typeof readRuns === "function") context.allRuns = async () => chatCatalogProviderRuns(await rawRuns(), context.issue());
   const descriptor = findChatCatalogCase(scenario.id);
   if (!descriptor) throw new Error(`No executable chat scenario: ${scenario.id}`);
   const fingerprint = chatCatalogCaseFingerprint(descriptor, normalizedChatCatalogExecution(input.execution));
@@ -46,7 +52,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
   async function conversation(persist = true) {
     await context.refreshIssue();
     const issue = context.issue();
-    const runs = await context.allRuns();
+    const runs = await rawRuns();
     const comments = issue ? await input.api.get<Array<{ id: string; body: string; authorAgentId?: string; authorUserId?: string; issueId?: string; companyId?: string; createdByRunId?: string }>>(
       `/api/issues/${issue.id}/comments?order=asc`,
     ) : [];
@@ -59,7 +65,8 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       origin: input.api.baseURL, companyId: input.fixtures.company.id, companyPrefix: input.fixtures.company.issuePrefix,
       sourceId: issue.id, leadId: input.fixtures.agent.id, comments, runs, projects, activity,
     }) : [];
-    const evidence = { issue, runs, comments, renderedLinks };
+    const evidence = { issue, runs, comments, renderedLinks,
+      supersededQueuedRunIds: chatCatalogSupersededQueuedRuns(runs, issue).map(run => run.id) };
     if (persist) await input.evidence("chat-catalog-conversation.json", evidence);
     return evidence;
   }
@@ -209,8 +216,12 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
         return Date.now() - passedAt >= 5_000;
       },
       reject: result => {
-        if (result.runs.length > implementation.expectedRunCount) return "Scenario exceeded its declared run bound";
-        if (result.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status) && !chatCatalogNeverStartedTerminalTaskRun(run, result.issue) && !chatCatalogRunStatusAllowed({ implementation,
+        if (chatCatalogProviderRuns(result.runs, result.issue).length > implementation.expectedRunCount
+          || chatCatalogSupersededQueuedRuns(result.runs, result.issue).length > CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS) return "Scenario exceeded its declared run bound";
+        // A queued run retired by reassignment before it started is graded, not rejected:
+        // the run policy admits it only once the new assignee's run exists.
+        if (result.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status) && !chatCatalogNeverStartedTerminalTaskRun(run, result.issue)
+          && !chatCatalogReassignedQueuedRun(run, result.issue) && !chatCatalogRunStatusAllowed({ implementation,
           run, companyId: input.fixtures.company.id, leadId: input.fixtures.agent.id, source: result.issue, observation }))) return "Observed provider run failed";
         if (result.runs.length && result.runs.every(run => !["queued", "running"].includes(run.status)) && result.issue?.conversationState === "waiting") settledAt ??= Date.now();
         else settledAt = undefined;
@@ -280,7 +291,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
         if (conversationUrl) await reopenConversation(input.page, conversationUrl);
         const finalConversation = await conversation();
         if (state) await refresh();
-        const runs = await context.allRuns();
+        const runs = await rawRuns();
         const runEvidence = await Promise.all(runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
         await input.evidence("chat-catalog-runs.json", runEvidence);
         await input.evidence("api-state.json", { capturePhase: failed ? "failure" : "final",

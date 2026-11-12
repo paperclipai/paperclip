@@ -7665,6 +7665,17 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  async function resolveQueuedOutgoingAssigneeRun(issue: {
+    companyId: string;
+    assigneeAgentId: string | null;
+    executionRunId?: string | null;
+  }) {
+    if (!issue.executionRunId || !issue.assigneeAgentId) return null;
+    const run = await heartbeat.getRun(issue.executionRunId);
+    return run && run.status === "queued" && run.companyId === issue.companyId &&
+      run.agentId === issue.assigneeAgentId ? run : null;
+  }
+
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueWake = typeof agentWakeupRequests.$inferSelect;
@@ -15670,7 +15681,8 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForReassignment = await resolveActiveIssueRun(existing);
+        const runToStopForReassignment = await resolveActiveIssueRun(existing) ??
+          await resolveQueuedOutgoingAssigneeRun(existing);
         // The run handing its own task to a person finishes its turn instead of
         // cancelling itself. Native and legacy alike: the reassignment clears
         // the execution lock, the native tool binding and finalizer stop acting
@@ -15708,6 +15720,7 @@ export function issueRoutes(
               "Cancelled before issue reassignment",
               {
                 errorCode: "issue_reassigned",
+                suppressImmediateRecovery: true,
                 resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
                 eventMessage: "run cancelled before issue reassignment",
                 eventPayload: { issueId: existing.id },

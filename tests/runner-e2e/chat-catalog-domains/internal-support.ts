@@ -1,4 +1,4 @@
-import { collectConversationLinks, conversationLinkLocator, markdownLinkTargets, type RenderedConversationLink } from "../chat-rendered-links.js";
+import { collectConversationLinksWithDiagnostics, conversationLinkLocator, markdownLinkTargets, type ConversationLinkDiagnostics, type RenderedConversationLink } from "../chat-rendered-links.js";
 import { expect } from "@playwright/test";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { ChatRun } from "../chat-flow.js";
@@ -17,7 +17,7 @@ export interface Entity {
 export interface InternalObservation {
   scenarioId: string; origin: string; companyId: string; leadId: string; state: Record<string, unknown>;
   tasks: Entity[]; projects: Entity[]; goals: Entity[]; comments: Entity[];
-  renderedLinkEvidence?: RenderedConversationLink[]; activity: Entity[]; annotations?: Entity[]; agents?: Entity[]; documents: Entity[]; revisions: Entity[]; reply: string; links: string[]; humanQueries: string[]; runs: ChatRun[];
+  renderedLinkEvidence?: RenderedConversationLink[]; linkDiagnostics?: ConversationLinkDiagnostics; activity: Entity[]; annotations?: Entity[]; agents?: Entity[]; documents: Entity[]; revisions: Entity[]; reply: string; links: string[]; humanQueries: string[]; runs: ChatRun[];
 }
 export function entity(state: Record<string, unknown>, key: string): Entity {
   const value = state[key];
@@ -56,10 +56,11 @@ export async function observeInternal(ctx: ChatCatalogContext, state: Record<str
   const companyActivity = await api.getRunObservation<Entity[]>(`${companyPath(ctx)}/activity?limit=1000`);
   const taskActivity = target ? await api.get<Entity[]>(`/api/issues/${target.id}/activity`) : [];
   const activity = [...new Map([...companyActivity, ...taskActivity].map(row => [row.id, row])).values()];
-  const renderedLinkEvidence = source ? await collectConversationLinks(ctx.input.page, {
+  const collected = source ? await collectConversationLinksWithDiagnostics(ctx.input.page, {
     origin: api.baseURL, companyId: fixtures.company.id, companyPrefix: fixtures.company.issuePrefix,
     sourceId: source.id, leadId: fixtures.agent.id, comments: chat, runs, projects, activity,
-  }) : [];
+  }) : { links: [] };
+  const renderedLinkEvidence = collected.links;
   const links = [...new Set(renderedLinkEvidence.map(link => link.href))];
   const documents: Entity[] = []; const revisions: Entity[] = [];
   if (target) {
@@ -71,7 +72,7 @@ export async function observeInternal(ctx: ChatCatalogContext, state: Record<str
   }
   return { scenarioId: ctx.scenario.id, origin: api.baseURL, companyId: fixtures.company.id, leadId: fixtures.agent.id,
     state, tasks: tasks.filter(row => row.id !== source?.id), projects, goals, runs, comments, activity, documents, revisions,
-    renderedLinkEvidence, humanQueries: chat.filter(row => !row.authorAgentId).map(row => row.body ?? ""), reply: replies.map(row => row.body ?? "").join("\n"), links };
+    renderedLinkEvidence, ...(collected.diagnostics ? { linkDiagnostics: collected.diagnostics } : {}), humanQueries: chat.filter(row => !row.authorAgentId).map(row => row.body ?? ""), reply: replies.map(row => row.body ?? "").join("\n"), links };
 }
 export function hasLink(o: InternalObservation, kind: "issues" | "projects" | "goals", row: Entity): boolean {
   return o.links.some(href => {

@@ -782,6 +782,7 @@ export type ProviderResourceDisposition =
   | "destroy";
 
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
+const DEFAULT_PLUGIN_SANDBOX_WORKER_RESUME_WAIT_MS = 60_000;
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
 
 const DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT = 256;
@@ -1338,6 +1339,7 @@ function createSandboxEnvironmentDriver(
     readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pluginWorkerResumeWaitMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
     orphanCleanupSpool?: SandboxOrphanCleanupSpool;
     orphanCleanupSpoolDir?: string;
@@ -1346,6 +1348,7 @@ function createSandboxEnvironmentDriver(
   const pluginWorkerManager = options.pluginWorkerManager;
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
+  const pluginWorkerResumeWaitMs = options.pluginWorkerResumeWaitMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_RESUME_WAIT_MS;
   // The buffer holds at least one orphan, so a zero or negative override never
   // drops every buffered record.
   const deferredOrphanCleanupBufferLimit = Math.max(
@@ -2702,7 +2705,9 @@ function createSandboxEnvironmentDriver(
         && !pluginWorkerManager.isRunning(pluginId)) {
         const plugin = await resolvePluginSandboxProviderDriverById({ db, pluginId, driverKey: providerKey });
         if (plugin && (plugin.plugin.status === "ready" || pluginWorkerManager.requestActivationTimeoutRecovery?.(plugin.plugin))) {
-          throw new PluginWorkerUnavailableError({ pluginId, workerStatus: pluginWorkerManager.getWorker(pluginId)?.status ?? null,
+          const deadline = Date.now() + Math.max(0, pluginWorkerResumeWaitMs);
+          while (!pluginWorkerManager.isRunning(pluginId) && Date.now() < deadline) await delay(Math.max(1, pluginWorkerReadyPollMs));
+          if (!pluginWorkerManager.isRunning(pluginId)) throw new PluginWorkerUnavailableError({ pluginId, workerStatus: pluginWorkerManager.getWorker(pluginId)?.status ?? null,
             message: `Sandbox provider "${providerKey}" is installed via plugin "${plugin.plugin.pluginKey}", but its worker is not running.` });
         }
       }
@@ -3786,6 +3791,7 @@ export function environmentRuntimeService(
     readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pluginWorkerResumeWaitMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
     orphanCleanupSpool?: SandboxOrphanCleanupSpool;
     orphanCleanupSpoolDir?: string;
@@ -3803,6 +3809,7 @@ export function environmentRuntimeService(
       readOnlyInspection: options.readOnlyInspection,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
+      pluginWorkerResumeWaitMs: options.pluginWorkerResumeWaitMs,
       deferredOrphanCleanupBufferLimit: options.deferredOrphanCleanupBufferLimit,
       orphanCleanupSpool: options.orphanCleanupSpool,
       orphanCleanupSpoolDir: options.orphanCleanupSpoolDir,

@@ -987,6 +987,10 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("tells chat to record a person's decline with resolve-from-comment whoever created the card, and keeps withdraw for its own obsolete card", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A person's explicit decline in chat (for example \"do not publish it\") answers a pending confirmation with reject, whoever created the card");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Withdraw is only for your own card that later evidence made obsolete; it never records the person's decision");
+  });
   it("tells chat to save a requested start order as a blocker on the waiting task, not only a promise to hold it", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("must not start until another task is done or approved");
     expect(AGENT_CHAT_DIRECTIVE).toContain("add the prerequisite to the waiting task's blockedByIssueIds with PATCH /api/issues/{id}, keeping its existing blockers");
@@ -1001,6 +1005,27 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
   });
 
+  // Full chat cohort 4 (onboarding.new-company): the CEO applied the missing-name rule and asked for a business name
+  // instead of sending the person to the board-only company-creation flow.
+  it("keeps the missing-name rule behind the board-only company-creation boundary", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("This name rule is for work you create yourself. It never comes before a board-only boundary");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Otherwise link [Create organization](/onboarding), which opens the new-organization wizard");
+    // Paperclip Cloud creates organizations in the Cloud portfolio; a bare /onboarding there opens the existing company's agent step.
+    expect(AGENT_CHAT_DIRECTIVE).toContain("when its response has a cloud field, this is a Paperclip Cloud stack, organizations are created in the person's Paperclip Cloud portfolio rather than in this app, so say that and do not link /onboarding");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/onboarding takes no company prefix; /<prefix>/onboarding only adds an agent to this company");
+    const nameRule = AGENT_CHAT_DIRECTIVE.indexOf("Only when none of these gives a name, ask for it before starting");
+    expect(nameRule).toBeGreaterThan(-1);
+    expect(AGENT_CHAT_DIRECTIVE.indexOf("It never comes before a board-only boundary")).toBeGreaterThan(nameRule);
+  });
+  // Full chat cohort 4 (app-permissions.ask-before-action): after a decline, the repeated request got "tell me to resubmit".
+  it("treats a repeated request after a declined approval card as an explicit retry that posts a fresh card", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the new message is an explicit retry, not an ambiguous request: make the same call again so Paperclip posts a fresh approval card");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not ask them to confirm the retry, tell them to resubmit, or treat the earlier decline as final.");
+  });
+  // Full chat cohort 4 (tasks.ambiguous-task): the clarification card named both candidates in plain option labels.
+  it("puts candidate links in a clarification card's description, which renders links", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("If you ask with a question card instead, put the candidate links in the card's description");
+  });
   it("tells chat that instruction saves keep no history, so an undo with no listed revision asks instead of reconstructing", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("Saving instructions does not record earlier versions");
     expect(AGENT_CHAT_DIRECTIVE).toContain("an empty history means no earlier text is retained");

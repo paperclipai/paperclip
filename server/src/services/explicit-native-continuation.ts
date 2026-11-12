@@ -37,6 +37,8 @@ import { historicalAdapterType, isConversationAdapter } from "./conversation-con
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds } from "./queued-comment-delivery.js";
 import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
+import { isServerReplacementInterruption } from "./server-replacement-interruption.js";
+import { normalizeAgentNameKey } from "./agent-name-key.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -781,11 +783,31 @@ async function readTaskRetryRetryAuthority(db: Db, input: {
     sourceAuthorizationId: receipt?.id ?? wake.id, evidence: {} };
 }
 
+/** A graceful server shutdown (an upgrade or restart) stopped this legacy run
+ * while it was still preparing: the bootstrap evidence proves that no provider
+ * work started. The interruption is not a failed attempt, so the user's
+ * original authorization still covers the work it admitted.
+ */
+function isShutdownInterruptedPreparation(run: typeof heartbeatRuns.$inferSelect): boolean {
+  const recovery = run.resultJson?.executionRecovery;
+  const evidence = recovery && typeof recovery === "object" && !Array.isArray(recovery)
+    ? recovery as Record<string, unknown> : null;
+  return run.status === "interrupted" && isServerReplacementInterruption(run)
+    && evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false;
+}
+
 /** Re-admit a bounded automatic retry without lending it its parent's receipt.
  * The caller holds the task lock and creates the successor in this transaction.
  * Unchanged user messages and plain task Retries are renewable; Interrupt and
  * failed-run retry intents keep their separate one-run contracts. The
  * scheduler still owns retry and cleanup policy.
+ *
+ * A failed or timed-out parent must still hold the task's claim. A parent that
+ * a graceful shutdown stopped before provider work may also find the claim
+ * released: releases without this rule refused its continuation and released
+ * the claim, leaving the task in progress with no run. Admission then restores
+ * the claim to the parent, as the shutdown path leaves it, and every other
+ * check below still applies.
  */
 export async function admitExplicitContinuationRetry(input: {
   db: Db; companyId: string; issueId: string; agentId: string;
@@ -799,9 +821,12 @@ export async function admitExplicitContinuationRetry(input: {
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, input.parentRunId),
     eq(heartbeatRuns.agentId, agentId),
   )).for("update");
-  if (!task || task.assigneeAgentId !== agentId || task.executionRunId !== input.parentRunId ||
+  const shutdownInterrupted = Boolean(parent && isShutdownInterruptedPreparation(parent));
+  const releasedClaim = Boolean(task && task.executionRunId === null && shutdownInterrupted);
+  if (!task || task.assigneeAgentId !== agentId || (task.executionRunId !== input.parentRunId && !releasedClaim) ||
       ["done", "cancelled"].includes(task.status) || !parent ||
-      (!["failed", "timed_out"].includes(parent.status) && !isAgentDirectoryPreparationWait(parent)) || !parent.finishedAt ||
+      (!["failed", "timed_out"].includes(parent.status) && !isAgentDirectoryPreparationWait(parent) && !shutdownInterrupted) ||
+      !parent.finishedAt ||
       parent.runtimeMode !== "legacy" || parent.contextSnapshot?.issueId !== issueId ||
       (parent.nativeIssueId !== null && parent.nativeIssueId !== issueId) ||
       adapterExecutionControls.has(parent.id) ||
@@ -825,6 +850,14 @@ export async function admitExplicitContinuationRetry(input: {
       inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"])),
   )).limit(1);
   if (superseding) return null;
+  const [{ name: agentName } = { name: null }] = releasedClaim
+    ? await db.select({ name: agents.name }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
+    : [];
+  const claim = (executionRunId: string | null) => db.update(issues).set(executionRunId
+    ? { executionRunId, executionAgentNameKey: normalizeAgentNameKey(agentName), executionLockedAt: input.now }
+    : { executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+  if (releasedClaim) await claim(parent.id);
   // Reuse dispatch's complete source/actor/receipt validation on the parent.
   // It proves only the parent; the new receipt below authorizes the successor.
   try {
@@ -832,7 +865,10 @@ export async function admitExplicitContinuationRetry(input: {
       context, summary: null, exposeLowTrustRaw: false });
   } catch (error) {
     if (error instanceof Error && ["continuation_user_authorization_missing",
-      "continuation_source_context_missing", "continuation_task_ownership_changed"].includes(error.message)) return null;
+      "continuation_source_context_missing", "continuation_task_ownership_changed"].includes(error.message)) {
+      if (releasedClaim) await claim(null);
+      return null;
+    }
     throw error;
   }
   const continuation = { previousRunId: parent.id, ...authority.continuation };

@@ -290,6 +290,36 @@ export async function rehydratePinnedSkillAssets(
   return { ...context, skills };
 }
 
+/**
+ * The admitted context names every skill by digest, so the Runner's copy is
+ * described without local files. Pinned skill files are rehydrated on this
+ * server now, or, when reconnecting to a live remote Runner that already holds
+ * them, only if a launch must stage them again.
+ */
+export async function prepareRuntimeContextSource(
+  db: Db,
+  binding: { companyId: string; runId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+  options: { deferUntilStaged: boolean },
+) {
+  // Defer only when preparation already checked access to every admitted skill:
+  // each one is pinned to its exact version in the run's saved selection.
+  const pinned = options.deferUntilStaged && context.skills.length > 0
+    ? await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.agentId, binding.agentId)))
+      .then(([run]) => {
+        const pins = run?.contextSnapshot?.skillVersions;
+        return Boolean(pins && typeof pins === "object" && !Array.isArray(pins)
+          && context.skills.every(skill => skill.versionId && (pins as Record<string, unknown>)[skill.key] === skill.versionId));
+      })
+    : options.deferUntilStaged;
+  let staged = pinned ? null : await rehydratePinnedSkillAssets(db, binding, context);
+  return {
+    described: staged ?? context,
+    forStaging: async () => (staged ??= await rehydratePinnedSkillAssets(db, binding, context)),
+  };
+}
+
 export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {
   const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
     (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,

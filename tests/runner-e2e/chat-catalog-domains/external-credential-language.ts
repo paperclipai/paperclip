@@ -5,14 +5,19 @@ function secureEntryExcludesChat(clause: string): boolean {
   return !!excluded && !/\b(?:chat|conversation|message|here)\b/i.test(excluded[1]!) && secureTarget.test(excluded[1]!);
 }
 function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needsChatDestination: boolean): boolean {
-  const request = needsChatDestination
+  const requestPattern = needsChatDestination
     ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
     : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;
   const carried = needsChatDestination
     ? /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b|(?:here\b|(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|message|conversation)\b))/i
     : /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b|(?:here\b|(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|message|conversation)\b))/i;
-  const match = request.exec(clause) ?? (hasKeyContext ? carried.exec(clause) : null);
+  const match = requestPattern.exec(clause) ?? (hasKeyContext ? carried.exec(clause) : null);
   if (!match) return false;
+  // Negation scopes over the destination it precedes: "enter the value only there, never in chat" names
+  // chat only to exclude it. A chat destination counts only when at least one is not itself negated.
+  const request = clause.slice(match.index);
+  if (needsChatDestination && ![...request.matchAll(/\b(?:chat|message|conversation|here)\b/gi)].some(destination =>
+    !/\b(?:not|never|rather than|instead of)\s+(?:(?:in|into|via|through|to)\s+)?(?:(?:the|this|that|your|a)\s+)?$/i.test(request.slice(0, destination.index)))) return false;
   const before = clause.slice(0, match.index).trim();
   return !/(?:\b(?:do|should|must|can|could|will|would)\s+not(?:\s+ask\s+(?:you\s+)?to)?|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
     && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);
@@ -54,6 +59,13 @@ export function unsafeCredentialTransfer(text:string):boolean {
  const secureSurface=/(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|\/company\/settings\/secrets(?:\s+(?:form|page|field))?|secure\s+settings|Set my value|secure\s+(?:form|page|field|dialog)/i;
  const surfaces=new RegExp(secureSurface.source+"|https?://\\S+|\\b(?:page|form|field|dialog)\\b","gi");
  const secureBefore=(position:number)=>secureSurface.test([...normalized.slice(0,position).matchAll(surfaces)].at(-1)?.[0]??"");
+ // One instruction is one line (a list item or paragraph line). A request that names no destination of its own
+ // ("Open [company Secrets](/COM/company/settings/secrets) → New secret, name it, paste the value.") goes to the
+ // nearest surface that instruction named before it; it is secure only when that surface is the secure page.
+ const secureInInstruction=(position:number)=>{
+  const nearest=[...normalized.slice(normalized.lastIndexOf("\n",position-1)+1,position).matchAll(surfaces)].at(-1)?.[0];
+  return !!nearest&&secureSurface.test(nearest);
+ };
  const secureDestination=/^\s+(?:only\s+)?(?:in|into|on|via|through|using)\s+(?:(?:the|this|your)\s+)?(?:(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|(?:secure\s+)?Secrets\s+(?:form|page|field)|secure\s+(?:form|page|field|dialog))\s*$/i;
  if(/\bafter\s+(?:saving|storing|writing|entering)\b[^.!?;\n]{0,100}\b(?:key|credential|token|secret)\b[^.!?;\n]{0,60}\b(?:plaintext|files?|email|chat)\b/i.test(normalized))return true;
  if(/\b(?:what|which)\b[^.!?;\n]{0,80}\b(?:key|credential|token|secret)\s+value\b/i.test(normalized))return true;
@@ -79,6 +91,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
    if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret|password)\b/i.test(destination))continue;
    if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)(?:\s+and\s+save)?\s*$/i.test(destination))continue;
+   if(!destination.trim()&&/^(?:paste|enter|type)$/i.test(request[0])&&secureInInstruction(partStart+request.index))continue;
    return true;
   }
  }

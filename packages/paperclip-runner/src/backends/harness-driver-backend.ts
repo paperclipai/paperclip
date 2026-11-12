@@ -404,6 +404,7 @@ class HarnessNativeSession implements NativeSession {
   readonly #session: HarnessSession;
   #terminal: PrpTerminalState | null = null;
   #explicitlyCancelled = false;
+  #stopRequested = false;
   #protocolIntegrityFailure: NativeSessionProtocolIntegrityError | null = null;
 
   #assertProtocolIntegrity(): void {
@@ -525,6 +526,7 @@ class HarnessNativeSession implements NativeSession {
     this.#input = { ...this.#input, identity: structuredClone(input.identity) };
     this.#terminal = null;
     this.#explicitlyCancelled = false;
+    this.#stopRequested = false;
   }
 
   async release(): Promise<DurableRecoveryIdentity | false> {
@@ -780,6 +782,7 @@ class HarnessNativeSession implements NativeSession {
 
   revokeTurnPublication() {
     this.#explicitlyCancelled = true;
+    this.#stopRequested = true;
   }
 
   settleCancelledTurn(input: { turnId: string; reason: string }) {
@@ -788,7 +791,7 @@ class HarnessNativeSession implements NativeSession {
     return this.#withProtocolIntegrity(() => this.#session.settleCancelledTurn?.(input) ?? null);
   }
 
-  cancel(input: { reason: string; signal: AbortSignal }) {
+  cancel(input: { reason: string; signal: AbortSignal; failureCleanup?: boolean }) {
     if (input.signal.aborted) {
       throw (
         input.signal.reason ?? new Error("native session cancellation aborted")
@@ -797,7 +800,8 @@ class HarnessNativeSession implements NativeSession {
     // This flag is the adapter's synchronous publication boundary. Provider
     // interruption happens afterward as passive cleanup, so a slow or broken
     // transport cannot synthesize or publish new accepted output for the turn.
-    this.revokeTurnPublication();
+    if (input.failureCleanup === true) this.#explicitlyCancelled = true;
+    else this.revokeTurnPublication();
     const interrupt = this.#session.interrupt;
     return {
       ...(this.terminalDrainTimeoutMs === undefined ? {} : { terminalDrainTimeoutMs: this.terminalDrainTimeoutMs }),
@@ -922,7 +926,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   close(input: { reason: string }) {
-    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#explicitlyCancelled });
+    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#stopRequested && this.#protocolIntegrityFailure === null });
   }
 }
 

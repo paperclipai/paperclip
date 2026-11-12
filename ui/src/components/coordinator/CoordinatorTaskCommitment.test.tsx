@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
 import { TaskChatCompactInteractionCard } from "../task-chat/TaskChatCompactInteractionCard";
-import { pendingSuggestedTasksInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import { pendingRequestConfirmationInteraction, pendingSuggestedTasksInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import { claimReviseDraftWork, getReviseDraft, resetReviseDraftsForTests, reviseDraftKey, updateReviseDraft } from "@/lib/revise-draft-store";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "../ui/tooltip";
 
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, loaded: true, userId: "viewer" }) }));
@@ -13,11 +15,14 @@ vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: any) => <a h
 const summaries = vi.hoisted(() => ({ rows: null as null | Array<Record<string, unknown>> }));
 vi.mock("@/api/issues", () => ({ issuesApi: { summaries: vi.fn(async () => summaries.rows ?? [{ id: "task-created", identifier: "PAPER-108", title: "Write the launch post", status: "todo" }]) } }));
 
+vi.mock("../task-chat/TaskChatRichInput", () => ({ TaskChatRichInput: ({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled: boolean }) => <textarea value={value} onChange={event => onChange(event.target.value)} disabled={disabled} /> }));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 let host: HTMLDivElement;
 let client: QueryClient;
 beforeEach(() => {
+  sessionStorage.clear(); resetReviseDraftsForTests();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() });
@@ -31,6 +36,33 @@ function render(interaction: typeof pendingSuggestedTasksInteraction, onAcceptIn
 }
 
 describe("Coordinator task commitment", () => {
+  it("shares a pending confirmation's revision draft and in-flight action with the inbox", async () => {
+    const interaction = pendingRequestConfirmationInteraction;
+    const target = interaction.payload.target;
+    const key = reviseDraftKey(interaction.id, target?.type === "issue_document" ? target.revisionId : null);
+    updateReviseDraft(key, { revising: true, reason: "Start with a smaller change" });
+    let finish!: () => void;
+    const reject = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    await act(() => root.render(<QueryClientProvider client={client}><TooltipProvider>
+      <ThemeProvider><TaskChatCompactInteractionCard interaction={interaction} onAcceptInteraction={vi.fn()} onRejectInteraction={reject} showPlanPreview={false} /></ThemeProvider>
+    </TooltipProvider></QueryClientProvider>));
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Start with a smaller change");
+    const field = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Use the revised scope");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(getReviseDraft(key).reason).toBe("Use the revised scope");
+    const send = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Request revisions")!;
+    await act(() => send.click());
+    expect(getReviseDraft(key).working).toBe("reject");
+    expect(claimReviseDraftWork(key, "accept")).toBe(false);
+    expect(send.disabled).toBe(true);
+    await act(() => finish());
+    expect(reject).toHaveBeenCalledExactlyOnceWith(interaction, "Use the revised scope");
+    expect(getReviseDraft(key)).toMatchObject({ revising: false, reason: "", working: null });
+  });
+
   it("does not claim creation when acceptance is still pending or failed", async () => {
     let fail!: (reason: Error) => void;
     const accept = vi.fn(() => new Promise<void>((_, reject) => { fail = reject; }));

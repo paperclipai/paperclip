@@ -482,6 +482,7 @@ function terminalFromEvent(
 async function attemptOptionalSessionCancellation(
   session: NativeSession,
   reason: string,
+  failure: unknown,
 ): Promise<{ settlement: Promise<PromiseSettledResult<void>[]> } | null> {
   if (session.cancel === undefined) return null;
   const cancellationAbort = new AbortController();
@@ -493,6 +494,7 @@ async function attemptOptionalSessionCancellation(
     cleanup = session.cancel({
       reason,
       signal: cancellationAbort.signal,
+      ...(failure instanceof NativeSessionProtocolIntegrityError ? {} : { failureCleanup: true }),
     }).cleanup;
   } catch {
     return null;
@@ -1629,6 +1631,7 @@ async function consumeTurn(
       const deferredCancellation = await attemptOptionalSessionCancellation(
         session,
         "Native session event consumption failed.",
+        error,
       );
       deferredSessionCancellationSettlement =
         deferredCancellation?.settlement ?? null;

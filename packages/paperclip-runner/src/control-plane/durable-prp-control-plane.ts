@@ -597,6 +597,34 @@ export function inspectUnclaimedBootstrapCheckpoint(
   } catch { return null; }
 }
 
+function isUnauthenticatedBootstrapState(state: StoredCoreState, expected: Partial<DurableRecoveryIdentity>): boolean {
+  const history = state.bootstrapHistory;
+  const matches = (candidate: DurableRecoveryIdentity | undefined) => candidate !== undefined
+    && (Object.keys(expected) as Array<keyof DurableRecoveryIdentity>).every(key => candidate[key] === expected[key]);
+  return !(state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
+      || !expected.runId || !matches(state.identity)
+      || history?.schema !== "paperclip.runner.bootstrap-history.v1"
+      || canonicalJson(history.originIdentity) !== canonicalJson(state.identity)
+      || history.adopted !== false
+      || state.warmTransition || state.completedWarmTransition || state.stagedRunAttachment
+      || state.connectionCount !== 0 || state.ackedSourceSeq !== 0 || state.committedEvents.length !== 0
+      || Object.values(state.tickets).some(ticket => ticket.usedAt !== null || ticket.warmTransitionId !== undefined)
+      || Object.keys(state.leases).length !== 0 || state.lastLeaseId !== null || state.lastLeaseExpiresAt !== null
+      || state.replayDeliveries !== 0 || state.duplicateCommandResults !== 0
+      || state.commands.length < 2 || state.commands[0]?.type !== "run.prepare"
+      || state.commands[1]?.type !== "session.open"
+      || state.commands.some(command => command.status !== "pending" || command.result !== null));
+}
+
+export function inspectUnauthenticatedBootstrapCheckpoint(
+  records: ReadonlyMap<string, string>, expected: Partial<DurableRecoveryIdentity>,
+): boolean {
+  try {
+    if ([...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return false;
+    return isUnauthenticatedBootstrapState(checkpointState(records).state, expected);
+  } catch { return false; }
+}
+
 export function inspectUnclaimedBootstrapState(
   contents: string, expected: DurableRecoveryIdentity, verifiedArtifact: { version: string; digest: string },
 ): ReturnType<typeof inspectUnclaimedBootstrapCheckpoint> {
@@ -649,6 +677,7 @@ export interface RunnerProcessLaunchSpec {
   environment: NodeJS.ProcessEnv;
   /** True while the launched Runner holds an authenticated connection to its control plane. */
   isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
 }
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -4742,6 +4771,7 @@ export function spawnRunner(options: {
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
   isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
   diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   for (const value of [options.maxRuntimeMs, options.maxLifetimeMs]) {
@@ -4884,7 +4914,7 @@ export function spawnRunner(options: {
         throw new Error("runner_process_termination_unconfirmed");
       }
       if (lifetimeDeadline !== undefined && lifetimeDeadline <= Date.now()) throw new Error("runner_process_lifetime_expired");
-      return spawnRunner({ ...options, ticket,
+      return spawnRunner({ ...options, ticket, refreshBootstrapTicket: undefined,
         ...(lifetimeDeadline === undefined ? {} : { maxLifetimeMs: lifetimeDeadline - Date.now() }) });
     },
   });
@@ -4892,6 +4922,7 @@ export function spawnRunner(options: {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
         ...(options.isRunnerConnected ? { isRunnerConnected: options.isRunnerConnected } : {}),
+        ...(options.refreshBootstrapTicket ? { refreshBootstrapTicket: options.refreshBootstrapTicket } : {}),
         nativeRunner: {
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,

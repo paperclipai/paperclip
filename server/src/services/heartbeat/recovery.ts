@@ -22,7 +22,7 @@ import {
   pendingCleanupMetadataObjectSql,
   recoveredOrphanFirstAttemptSql,
 } from "../environment-cleanup-state.js";
-import { currentControllerProcess } from "../controller-process-identity.js";
+import { currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -40,9 +40,10 @@ import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_S
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import {
+  LEGACY_LIVE_OWNER_SETTLE_GRACE_MS,
   legacyControllerBootId,
-  legacyControllerProvenGone,
   liveLegacyControllerExpiresAt,
+  proveLegacyController,
   revokeExpiredLegacyControllerWithState,
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
@@ -124,6 +125,7 @@ import type { environmentRuntimeService, ProviderResourceDisposition } from "../
 import type { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import { failedRunRetryBudgetSpent, type HeartbeatRetryDependencies, type createHeartbeatRetries } from "./retries.js";
+import { serverRestartBudgetSpent } from "../execution-recovery-attempt.js";
 import type { CancelRunOptions } from "./run-control.js";
 import { requestRestartInterruptedTurnRetry } from "./restart-interrupted-turn.js";
 
@@ -2532,12 +2534,27 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       }
       // The shared prover (Phase 2): a controller of another boot whose
       // recorded process is proven gone holds no lease and needs no age guard.
-      const legacyControllerGone = run.runtimeMode === "legacy" && run.controllerBootId !== legacyControllerBootId
-        && await legacyControllerProvenGone(run);
+      const legacyControllerProof = run.runtimeMode === "legacy" && run.controllerBootId !== legacyControllerBootId
+        ? await proveLegacyController(run) : null;
+      const legacyControllerGone = legacyControllerProof?.verdict === "gone";
       const legacyLease = await liveLegacyControllerExpiresAt(db, run);
       if (legacyLease && !(legacyControllerGone
         && (await settleOwnableKind(db, "legacy_controller_lease", { runIds: [run.id] })).length > 0)) {
         scope.onDeferredDeadline?.(legacyLease.getTime()); continue;
+      }
+      // The lease lapsed, but its owner is another server process that is
+      // proven alive: two servers serve together during every upgrade, and a
+      // slow database can hold a renewal past the lease. The owner stops and
+      // settles its own run (controller_lease_lost, in the uncharged
+      // preparation lane). Declaring it lost here would race that owner and
+      // charge the failure budget. Recover it only once the owner is gone, or
+      // when it has not settled the run within the grace.
+      if (!legacyLease && legacyControllerProof?.verdict === "alive" && run.controllerLeaseExpiresAt) {
+        const ownerSettlesBy = run.controllerLeaseExpiresAt.getTime() + LEGACY_LIVE_OWNER_SETTLE_GRACE_MS;
+        if (now.getTime() < ownerSettlesBy) {
+          scope.onDeferredDeadline?.(Math.min(ownerSettlesBy, Date.now() + 30_000));
+          continue;
+        }
       }
 
       // A legacy controller proves it is alive only by renewing its lease, and
@@ -2672,6 +2689,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         !!run.controllerBootId &&
         !revokedState.processPid &&
         !revokedState.processGroupId;
+      // The run's owner was another server boot: a restart or replacement
+      // ended it, not the agent's work. Its continuation uses the
+      // server-restart lane (scheduleBoundedRetryForRun), never the failure
+      // budget, and a conversation adapter continues with a fresh turn.
+      const controllerReplaced = run.runtimeMode === "legacy" && !!run.controllerBootId
+        && run.controllerBootId !== legacyControllerBootId;
+      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
       const shouldRetry =
         !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
         // Process loss spends the durable failure retry budget that
@@ -2679,11 +2703,20 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // "Shutdown, process loss, and provider failure"). Checking it here
         // keeps "retrying once" honest and lets an exhausted chain fall
         // through to the interaction continuation path below.
-        !failedRunRetryBudgetSpent(run) &&
+        // A conversation run that a restart ended draws on the server-restart
+        // bound only. Other adapters keep the failure budget: a spent one
+        // holds them for reconciliation (legacyExecutionNeedsReconciliation).
+        // A setup that a restart stopped before dispatch did no provider work,
+        // so it continues in the same lane whatever the adapter, when the row
+        // names its owner process (isReplacedPreparation).
+        !(controllerReplaced && (conversationContinuationEligible
+          || restartInterruptedBeforeDispatch && readControllerProcess(run.controllerProcess) !== null)
+          ? serverRestartBudgetSpent(run, now) : failedRunRetryBudgetSpent(run)) &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||
           restartInterruptedBeforeDispatch ||
-          monitorDispatchLostWithoutFutureWake);
+          monitorDispatchLostWithoutFutureWake ||
+          (controllerReplaced && conversationContinuationEligible));
       const baseMessage = buildProcessLossMessage(run);
       const processLossDiagnostic = buildProcessLossDiagnostic({
         run,
@@ -2691,8 +2724,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         observerStartedAtMs: performance.timeOrigin,
         checksPersistedChildLiveness,
         retryEligible: shouldRetry,
+        controllerReplaced,
       });
-      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
 
       const failureWrite = await setRunStatusFromLive(
         run.id,
