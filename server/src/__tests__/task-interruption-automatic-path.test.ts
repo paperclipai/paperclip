@@ -75,6 +75,12 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
   });
 
+  it("still offers Retry when recovery gave up and handed the hold to the board", async () => {
+    const { issue, hold } = await seedSwapEndedRun(new Date(Date.now() - 5_000));
+    await db.update(issueRecoveryActions).set({ ownerType: "board" }).where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
   it("shows a healthy task as working while the message queued during its succeeded run is delivered", async () => {
     const { companyId, agentId, issue } = await seedTask();
     const runId = randomUUID(), finishedAt = new Date(Date.now() - 3_000);
@@ -84,6 +90,7 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
       status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 2 * 60_000),
       payload: { issueId: issue.id } });
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false });
+    expect(await taskInterruptionPresentation(db, { ...issue, status: "blocked" })).toMatchObject({ state: "failed", canRetry: true });
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(heartbeatRuns.id, runId));
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true });
   });
