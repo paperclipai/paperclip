@@ -42,7 +42,7 @@ import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type Mul
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 import { ephemeralServerEnvironment } from "./ephemeral-server.js";
-import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, type ClassRHooks } from "./class-r.js";
+import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, waitForPluginActivation, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -226,6 +226,10 @@ export class ChaosSupervisor {
 
   serverLogOffset(): number {
     try { return statSync(this.paths.serverLogPath).size + this.log.writableLength; } catch { return 0; }
+  }
+
+  private serverLogSince(offset: number): string {
+    try { return readFileSync(this.paths.serverLogPath).subarray(offset).toString("utf8"); } catch { return ""; }
   }
 
   /** `extraEnvironment` is kept for every restart (e.g. the Daytona image's runnerd and provider pack paths). */
@@ -590,6 +594,9 @@ export class ChaosSupervisor {
           }
           receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases);
           if (kind === "CR4") {
+            const activation = await waitForPluginActivation({ timeoutMs: 120_000, cancelled: () => this.shuttingDown,
+              readLog: () => this.serverLogSince(receipt.serverLogOffsetAtStart) });
+            if (activation !== "activated") throw new Error(`CR4 found the replacement's plugin activation ${activation}`);
             const stall = await runPluginStall({ serverPid: replacement.pid!, holdMs, cancelled: () => this.shuttingDown,
               findWorkerWithinMs: 60_000, record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
             receipt.classR!.pluginStall = stall;

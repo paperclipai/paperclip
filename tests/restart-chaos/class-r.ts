@@ -48,6 +48,20 @@ export function isPluginStallFault(kind: string): boolean {
   return (PLUGIN_STALL_FAULT_KINDS as readonly string[]).includes(kind);
 }
 export const CR5_FIRE_WINDOW_MS: readonly [number, number] = [3_000, 8_000];
+
+export async function waitForPluginActivation(input: {
+  readLog: () => string; timeoutMs: number; cancelled: () => boolean; sleep?: (ms: number) => Promise<void>;
+}): Promise<"activated" | "failed" | "timed_out"> {
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  const deadline = Date.now() + input.timeoutMs;
+  for (;;) {
+    const log = input.readLog();
+    if (/plugin-loader: failed to activate plugin/.test(log)) return "failed";
+    if (/plugin-loader: loadAll complete/.test(log)) return "activated";
+    if (Date.now() >= deadline || input.cancelled()) return "timed_out";
+    await sleep(250);
+  }
+}
 /** The controller-outage cap (tests/runner-e2e/controller-outage.ts), as for K15. */
 export const CLASS_R_MAX_HOLD_SECONDS = 600;
 

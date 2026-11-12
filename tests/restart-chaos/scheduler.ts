@@ -107,12 +107,16 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       throw new Error(`Trigger "${trigger}" needs workload ${TRIGGER_WORKLOAD[trigger] ?? "?"} in --workloads`);
     }
   }
+  if (options.faults.includes("CR5") && !triggers.includes("time")) {
+    throw new Error("CR5 stalls the plugin at launch on the time trigger; add time to --triggers");
+  }
   const cells: Array<{ workload: WorkloadId; adapter: AdapterId; fault: TaskFaultKind; trigger: TriggerId }> = [];
   // Same cell order as before storms took triggers, so a seed keeps its plan.
   const allowed = new Map(triggers.map(trigger => [trigger, stormCellFaults(options, trigger)]));
   const faults = [...new Set([...allowed.values()].flat())];
   for (const workload of options.workloads) for (const adapter of options.adapters) for (const fault of faults) {
     for (const trigger of triggers) {
+      if (fault === "CR5" && trigger !== "time") continue;
       if (triggerFitsWorkload(trigger, workload) && allowed.get(trigger)!.includes(fault)) cells.push({ workload, adapter, fault, trigger });
     }
   }
@@ -129,7 +133,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       index,
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
-      fireAfterMs: cell.fault === "K13" || cell.fault === "K0" ? 0 : pinnedFireAfterMs(options.faultAfterMs, cell.fault === "CR5" ? rng.int(...CR5_FIRE_WINDOW_MS) : rng.int(fireMin, fireMax)),
+      fireAfterMs: cell.fault === "K13" || cell.fault === "K0" ? 0 : cell.fault === "CR5" ? rng.int(...CR5_FIRE_WINDOW_MS) : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
       holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
         : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
         : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int)

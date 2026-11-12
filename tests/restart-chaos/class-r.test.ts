@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   CR1_DEFAULT_HOLD_SECONDS, CR5_FIRE_WINDOW_MS, PROVIDER_KILL_SCRIPT, classRHoldMs, classRRedeploys, findDaytonaPluginWorker, killedPidsFromOutput,
-  parseClassROptions, providerKillCommand, runPluginStall, watchLabels, withClassRCheck, type ClassRRecord,
+  parseClassROptions, providerKillCommand, runPluginStall, waitForPluginActivation, watchLabels, withClassRCheck, type ClassRRecord,
 } from "./class-r.js";
 import { executeInWaveSandboxes } from "./daytona-runner-logs.js";
 import { parseCommand } from "./config.js";
 import { redeployWave } from "./redeploy.js";
-import { planTasks } from "./scheduler.js";
+import { planTasks, taskFaultSchedule } from "./scheduler.js";
 import { planMatrixTasks } from "./journey-matrix.js";
 import { FAULT_SIGNAL } from "./supervisor.js";
 import { withT1CrossingCheck } from "./workloads.js";
@@ -69,6 +69,24 @@ describe("class R planning", () => {
     expect(FAULT_SIGNAL.CR4).toBe("SIGKILL");
     expect(FAULT_SIGNAL.CR5).toBe("SIGSTOP");
     expect(classRRedeploys("CR4", 45_000)).toBe(false);
+  });
+  it("schedules every CR5 launch stall on the time trigger, whatever the workload's triggers", () => {
+    const launchWindow = (atMs: number) => atMs >= CR5_FIRE_WINDOW_MS[0] && atMs <= CR5_FIRE_WINDOW_MS[1];
+    const planned = planTasks({ ...options, workloads: ["T1", "B5"], faults: ["CR5"], triggers: ["tool", "time"], tasks: 8, faultAfterMs: 60_000 })
+      .filter(task => task.fault === "CR5");
+    expect(planned.length).toBe(8);
+    for (const task of planned) {
+      expect(task.trigger).toBeUndefined();
+      expect(taskFaultSchedule(task)).toEqual([{ kind: "CR5", holdMs: 45_000, atMs: task.fireAfterMs }]);
+      expect(launchWindow(task.fireAfterMs)).toBe(true);
+    }
+    const matrix = planMatrixTasks({ ...options, workloads: ["B5", "C1"], faults: ["CR5"], faultAfterMs: 60_000 }).filter(task => task.fault === "CR5");
+    expect(matrix.length).toBe(4);
+    for (const task of matrix) {
+      expect(taskFaultSchedule(task)).toEqual([{ kind: "CR5", holdMs: 45_000, atMs: task.fireAfterMs }]);
+      expect(launchWindow(task.fireAfterMs)).toBe(true);
+    }
+    expect(() => planTasks({ ...options, workloads: ["B5"], faults: ["CR5"], triggers: ["tool"] })).toThrow(/CR5 stalls the plugin at launch/);
   });
   it("draws a hold only for a range", () => {
     expect(classRHoldMs("CR1", { cr1HoldMs: [300_000, 420_000] }, () => 333_000)).toBe(333_000);
@@ -146,6 +164,16 @@ describe("CR3 stall", () => {
     expect(stall.error).toBeNull();
     expect(stall.workerPid).toBe(11);
     expect(reads).toBe(3);
+  });
+  it.each([
+    ["activated", ["starting", "plugin-loader: loadAll complete {\"succeeded\":1}"]],
+    ["failed", ["plugin-loader: failed to activate plugin", "plugin-loader: loadAll complete {\"succeeded\":0}"]],
+    ["timed_out", ["starting"]],
+  ] as const)("waits for the replacement's plugin activation before CR4 stalls it (%s)", async (outcome, lines) => {
+    let reads = 0;
+    const result = await waitForPluginActivation({ timeoutMs: outcome === "timed_out" ? 0 : 60_000, cancelled: () => false, sleep: async () => {},
+      readLog: () => lines.slice(0, ++reads).join("\n") });
+    expect(result).toBe(outcome);
   });
   it("fails when the worker could not be stopped or is missing", async () => {
     const missed = await runPluginStall({ ...base, freezer: { freeze: () => [], thaw: () => {} } });

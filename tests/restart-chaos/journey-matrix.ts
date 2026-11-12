@@ -32,7 +32,9 @@ export function matrixCells(options: Pick<WaveOptions, "workloads" | "adapters" 
   for (const workload of options.workloads) for (const adapter of options.adapters) {
     // The baseline: the same journey with no fault, so a fault cell's failure is attributable.
     if (!NO_BASELINE_WORKLOADS.includes(workload)) baselines.push({ workload, adapter, fault: "K0", trigger: "time" });
-    for (const fault of options.faults) for (const trigger of WORKLOAD_TRIGGERS[workload]) faulted.push({ workload, adapter, fault, trigger });
+    for (const fault of options.faults) {
+      for (const trigger of fault === "CR5" ? ["time" as const] : WORKLOAD_TRIGGERS[workload]) faulted.push({ workload, adapter, fault, trigger });
+    }
     // A provider message fault is armed per task in the provider shim; it has no trigger of its own.
     for (const fault of options.providerFaults ?? []) faulted.push({ workload, adapter, fault, trigger: "time" });
   }
@@ -59,7 +61,7 @@ export function planMatrixTasks(options: Pick<WaveOptions, "seed" | "workloads" 
       fault: cell.fault,
       ...(cell.trigger === "time" ? {} : { trigger: cell.trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[cell.trigger]) }),
       // `--fault-after-seconds` pins time-fired restarts, as it does outside the matrix.
-      fireAfterMs: cell.fault === "K0" || cell.fault.startsWith("PV") ? 0 : cell.trigger === "time" ? options.faultAfterMs ?? drawn : drawn,
+      fireAfterMs: cell.fault === "K0" || cell.fault.startsWith("PV") ? 0 : cell.fault !== "CR5" && cell.trigger === "time" ? options.faultAfterMs ?? drawn : drawn,
       holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs))
         : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
         : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
