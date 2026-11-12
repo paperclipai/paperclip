@@ -1001,6 +1001,25 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
   });
 
+  // Full chat cohort 4 (onboarding.new-company): the CEO applied the missing-name rule and asked for a business name
+  // instead of sending the person to the board-only company-creation flow.
+  it("keeps the missing-name rule behind the board-only company-creation boundary", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("This name rule is for work you create yourself. It never comes before a board-only boundary");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("tell the person to create it at [Create organization](/onboarding)");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/onboarding takes no company prefix; /<prefix>/onboarding only adds an agent to this company");
+    const nameRule = AGENT_CHAT_DIRECTIVE.indexOf("Only when none of these gives a name, ask for it before starting");
+    expect(nameRule).toBeGreaterThan(-1);
+    expect(AGENT_CHAT_DIRECTIVE.indexOf("It never comes before a board-only boundary")).toBeGreaterThan(nameRule);
+  });
+  // Full chat cohort 4 (app-permissions.ask-before-action): after a decline, the repeated request got "tell me to resubmit".
+  it("treats a repeated request after a declined approval card as an explicit retry that posts a fresh card", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the new message is an explicit retry, not an ambiguous request: make the same call again so Paperclip posts a fresh approval card");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not ask them to confirm the retry, tell them to resubmit, or treat the earlier decline as final.");
+  });
+  // Full chat cohort 4 (tasks.ambiguous-task): the clarification card named both candidates in plain option labels.
+  it("puts candidate links in a clarification card's description, which renders links", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("If you ask with a question card instead, put the candidate links in the card's description");
+  });
   it("tells chat that instruction saves keep no history, so an undo with no listed revision asks instead of reconstructing", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("Saving instructions does not record earlier versions");
     expect(AGENT_CHAT_DIRECTIVE).toContain("an empty history means no earlier text is retained");
