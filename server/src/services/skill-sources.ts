@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { skillSourceRetryAt } from './skill-source-retry.js';
 import path from 'node:path';
 import { folderService } from './folders.js';
-import { and, eq, getTableColumns, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { companySkillSources as sources, companySkillSourceEntries as entries, companySkills, companySkillRepositorySnapshots, projectSkillSources, projects, type Db, type SkillPackageRestoreRecipe, authUsers } from '@paperclipai/db';
 import type { CompanySkill, SkillSource, SkillSourceCreateRequest, SkillSourceDiscoveryRequest, SkillSourceSelectionRequest, SkillSourceRefreshResult, SkillSourcePreviewRequest, SkillSourceSettingsRequest, SkillSourceDisconnectRequest, SkillSourceDisconnectResult, SkillSourceBranchesQuery } from '@paperclipai/shared';
 import { normalizeAgentUrlKey, parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
@@ -116,8 +116,8 @@ export function skillSourceService(db: Db) {
   async function discover(input: SkillSourceDiscoveryRequest, context: SkillSourceContext, options?: SkillScanOptions) {
     await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
     const { skills: _files, repositoryFiles: _repositoryFiles, repositorySubset: _subset, defaultBranch: _defaultBranch, treeSha: _tree, downloadBytes: _download, scanBytes: _scan, ...result } = await scanGitHubSkills(input, context.read(input.connectionId ?? null), { ...options, retainFiles: false });
-    const canOverrideSecurity = Boolean(result.securityFindings?.some(finding => finding.overridable && !finding.accepted))
-      && await canApproveSecurityOverride(context, result.repositoryUrl);
+    // Approving and withdrawing an approval take the same permission, so report it whatever this commit flags.
+    const canOverrideSecurity = await canApproveSecurityOverride(context, result.repositoryUrl);
     return { ...result, canOverrideSecurity };
   }
   async function canApproveSecurityOverride(context: SkillSourceContext, sourceLocator: string) {
@@ -178,9 +178,14 @@ export function skillSourceService(db: Db) {
   async function recordedSecurityOverrides(companyId: string, repositoryUrl: string) {
     const repository = parseGitHubSkillRepositoryUrl(repositoryUrl)?.repositoryUrl.toLowerCase();
     if (!repository) return [];
-    const rows = await db.select({ repositoryUrl: sources.repositoryUrl, securityOverride: sources.securityOverride }).from(sources)
+    // Match the repository first; a grant can list thousands of files, so load only the matching ones.
+    const candidates = await db.select({ id: sources.id, repositoryUrl: sources.repositoryUrl }).from(sources)
       .where(and(eq(sources.companyId, companyId), isNull(sources.removedAt), sql`${sources.securityOverride} is not null`));
-    return rows.filter(row => parseGitHubSkillRepositoryUrl(row.repositoryUrl)?.repositoryUrl.toLowerCase() === repository).map(row => row.securityOverride);
+    const ids = candidates.filter(row => parseGitHubSkillRepositoryUrl(row.repositoryUrl)?.repositoryUrl.toLowerCase() === repository).map(row => row.id);
+    if (!ids.length) return [];
+    const rows = await db.select({ securityOverride: sources.securityOverride }).from(sources)
+      .where(and(eq(sources.companyId, companyId), inArray(sources.id, ids)));
+    return rows.map(row => row.securityOverride);
   }
   async function authorizeScan(source: SourceRow, scan: ScannedSkillSource, selectedPaths: string[], context: SkillSourceContext) {
     const previous = await db.select().from(entries).where(and(eq(entries.companyId, source.companyId), eq(entries.sourceId, source.id)));

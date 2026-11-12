@@ -212,7 +212,7 @@ export interface SkillSourceDiscovery {
   warnings: string[];
   /** Files left out by blocking audit findings at this commit; omitted by older servers. */
   securityFindings?: SkillSecurityFinding[];
-  /** Whether this caller may approve a security override; omitted by older servers. */
+  /** Whether this caller may approve or withdraw a security override for this repository; omitted by older servers. */
   canOverrideSecurity?: boolean;
 }
 /** Live scan metadata only. A complete event is required before selections can be imported. */

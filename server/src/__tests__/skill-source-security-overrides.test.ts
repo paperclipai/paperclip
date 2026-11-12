@@ -235,6 +235,16 @@ Do useful work.
     expect(audit?.verdict).not.toBe('fail');
   });
 
+  it('reports the override permission on a scan even when the commit flags nothing', async () => {
+    const files = { 'skills/one/SKILL.md': md('one') };
+    const base: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, first) };
+    const input = { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository' as const };
+    expect((await skillSourceService(db).discover(input, { ...base, authorizeSecurityOverride: async () => {} })).canOverrideSecurity).toBe(true);
+    expect((await skillSourceService(db).discover(input, { ...base, authorizeSecurityOverride: async () => { throw forbidden('No.'); } })).canOverrideSecurity).toBe(false);
+    expect((await skillSourceService(db).discover(input, base)).canOverrideSecurity).toBe(false);
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,

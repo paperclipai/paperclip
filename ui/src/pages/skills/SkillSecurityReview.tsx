@@ -112,10 +112,10 @@ export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commit
         ? <>{recorded.fileCount} flagged {recorded.fileCount === 1 ? 'file is' : 'files are'} trusted by an administrator at commit <span className="font-mono">{recorded.commitSha.slice(0, 7)}</span>{recorded.trustFutureUpdates ? ', including future updates' : ''}.</>
         : <>{accepted.length} flagged {accepted.length === 1 ? 'file is' : 'files are'} included under an administrator override.</>}</span>
     </p>}
-    {recorded && !value.trusted && <label className="flex items-start gap-2 text-xs" htmlFor={`${id}-revoke`}>
+    {recorded && canOverride && !value.trusted && <label className="flex items-start gap-2 text-xs" htmlFor={`${id}-revoke`}>
       <Checkbox id={`${id}-revoke`} className="mt-0.5" checked={value.revoke === true} disabled={disabled}
         onCheckedChange={checked => onChange({ ...value, revoke: checked === true })} />
-      <span>Stop trusting these files. Flagged files are left out when you save, and only a company administrator can withdraw trust.</span>
+      <span>Stop trusting these files. Flagged files are left out when you save.</span>
     </label>}
   </section>;
 }

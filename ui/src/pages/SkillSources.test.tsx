@@ -416,11 +416,32 @@ describe('GitHub skill source import', () => {
       trustFutureUpdates: true, approvedByUserId: 'admin', approvedAt: '2026-11-01T00:00:00.000Z', fileCount: 2 } };
     vi.mocked(skillSourcesApi.list).mockResolvedValue([saved]);
     vi.mocked(skillSourcesApi.select).mockImplementation(() => new Promise(() => {}));
+    vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue({ ...discovery, trackingRef: 'HEAD', packageMode: 'repository', canOverrideSecurity: true, securityFindings: [],
+      repositoryPackage: { files: [], requirements: null, error: null, warnings: [] },
+      candidates: [{ path: 'skills/main/SKILL.md', name: 'Main', description: null, fileCount: 1, error: null, warnings: [] }] });
     await mount();
     expect(document.querySelector('section[aria-label="Security review"]')?.textContent).toContain('2 flagged files are trusted');
+    // Withdrawing needs the override permission, which a scan of the saved source reports.
+    expect(document.querySelector('section[aria-label="Security review"] button[role="checkbox"][id$="-revoke"]')).toBeNull();
+    await act(async () => button('Scan for flagged files').click());
+    await flush();
     await act(async () => document.querySelector<HTMLButtonElement>('section[aria-label="Security review"] button[role="checkbox"][id$="-revoke"]')!.click());
     await act(async () => button('Save selection').click());
     expect(skillSourcesApi.select).toHaveBeenCalledWith('company-1', saved.id, expect.objectContaining({ securityOverride: null }));
+  });
+  it('does not offer to withdraw an approval to editors without the override permission', async () => {
+    context.sourceId = connectedSource.id;
+    const saved = { ...connectedSource, packageMode: 'repository' as const, entries: [], securityOverride: { commitSha: 'a'.repeat(40), reason: 'Reviewed earlier.',
+      trustFutureUpdates: true, approvedByUserId: 'admin', approvedAt: '2026-11-01T00:00:00.000Z', fileCount: 2 } };
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([saved]);
+    vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue({ ...discovery, trackingRef: 'HEAD', packageMode: 'repository', canOverrideSecurity: false, securityFindings: [],
+      repositoryPackage: { files: [], requirements: null, error: null, warnings: [] },
+      candidates: [{ path: 'skills/main/SKILL.md', name: 'Main', description: null, fileCount: 1, error: null, warnings: [] }] });
+    await mount();
+    await act(async () => button('Scan for flagged files').click());
+    await flush();
+    expect(document.querySelector('section[aria-label="Security review"]')?.textContent).toContain('2 flagged files are trusted');
+    expect(document.querySelector('section[aria-label="Security review"] button[role="checkbox"][id$="-revoke"]')).toBeNull();
   });
   it('explains that only administrators can include flagged files', async () => {
     sessionStorage.setItem('paperclip.skill-source-draft:company-1:new', JSON.stringify({ packageMode: 'repository', selectedPaths: ['skills/main/SKILL.md'],
