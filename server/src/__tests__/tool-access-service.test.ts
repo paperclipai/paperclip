@@ -6382,7 +6382,9 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(result.actions.readOnly).toEqual([
       expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
     ]);
-    expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
+    // One version probe, then the plain listing that reveals the session need.
+    expect(requests[0]).toEqual({ method: "server/discover", sessionId: null });
+    expect(requests[1]).toEqual({ method: "tools/list", sessionId: null });
     expect(
       requests.filter(({ method }) => method === "initialize").length,
     ).toBeGreaterThanOrEqual(1);
@@ -12517,7 +12519,8 @@ describeEmbeddedPostgres("tool access service", () => {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
-      application_type: "web",
+      // A localhost callback is a native client under OIDC registration rules.
+      application_type: "native",
     });
     expect(registrationBody?.client_name).toMatch(/^[A-Za-z0-9 -]+$/);
     expect(new URL(result.authorizationUrl).searchParams.get("client_id")).toBe("calendly-public-client");
@@ -12830,7 +12833,8 @@ describeEmbeddedPostgres("tool access service", () => {
         .query({ state, code: "oauth-code" });
 
       expect(callbackRes.status).toBe(200);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // Token exchange, the one-time MCP version probe, and the catalog listing.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(callbackRes.body.connection).toMatchObject({
         id: connectRes.body.connectionId,
         status: "active",
@@ -12879,7 +12883,8 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(redirectCallbackRes.headers.location).toBe(
         `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/permissions?success=1`,
       );
-      expect(fetchMock).toHaveBeenCalledTimes(6);
+      // Each of the two connections is probed once for its MCP version.
+      expect(fetchMock).toHaveBeenCalledTimes(8);
       await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
       await expect(
         db.select().from(companySecretBindings),
@@ -15107,7 +15112,8 @@ describeEmbeddedPostgres("tool access service", () => {
       actorId: "health-check",
     });
     expect(health.connection.healthStatus).toBe("ok");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Token request, the one-time MCP version probe, and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const [updated] = await db
       .select()
       .from(toolConnections)
@@ -17487,7 +17493,8 @@ describeEmbeddedPostgres("tool access service", () => {
       "mcp-key",
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The one-time MCP version probe and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock).toHaveBeenCalledWith(
       PUBLIC_MCP_FIXTURE_URL,
       expect.objectContaining({
