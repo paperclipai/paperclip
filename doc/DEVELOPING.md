@@ -462,7 +462,8 @@ Changing that file selects its consumers. Generated/untracked files and unknown
 query loaders retain their consumers conservatively. Other filesystem, process
 and network effects keep their existing fallback.
 
-For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
+One in ten CI CODEOWNER PR runs sends its job, step and outside-check timings to
+Honeycomb. For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
 operator setup, and activation requirements.
 
