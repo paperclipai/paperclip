@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions,
-  issues, nativeRunFinalizations, toolInvocations,
+  issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -787,6 +787,22 @@ suite("fresh-continuation fallback", () => {
     expect(decision.outcomeEvidence).toContain(`run ${f.runId}) was cut off`);
     expect(decision.outcomeEvidence).toContain("github.create_pull_request");
     expect(decision.outcomeEvidence).not.toMatch(adminText);
+  }, 60_000);
+
+  it.each([true, false])("relies on saved input only while it still holds an undelivered message (already taken by the cut-off run: %s)", async taken => {
+    // R2 cell t003: the cut-off run had taken the follow-up into its turn; the fallback chose saved_input,
+    // promotion settled the message as delivered, and no run followed.
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_restart_recovery_blocked" });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorType: "user",
+      authorUserId: userId, body: "Additional requirement: include FOLLOWUP-1" } as typeof issueComments.$inferInsert).returning();
+    if (taken) await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentIds: [comment!.id] } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId: f.issueId, _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id] } },
+    } as typeof agentWakeupRequests.$inferInsert);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", delivery: taken ? "recorded" : "saved_input" });
   }, 60_000);
 
   it.each([

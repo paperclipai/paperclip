@@ -8,6 +8,8 @@ import {
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
+import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { FRESH_CONTINUATION_SUPERSEDED_KEY } from "../agent-run-cancellation.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -487,9 +489,20 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Saved user input (a message or a Retry the person pressed) continues the
   // task through normal admission once nothing blocks it; a second, automatic
   // continuation would run after it.
-  const [savedInput] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+  const savedWakes = await tx.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-    eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(1);
+    eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(5);
+  // Saved input continues the task only while it still holds something the
+  // agent has not received: a message the cut-off run already took into its
+  // turn is settled as delivered when promoted, and then nothing would run.
+  let savedInput: { id: string } | undefined;
+  for (const wake of savedWakes) {
+    const commentIds = queuedCommentIdsFromWakePayload(wake.payload);
+    if (!commentIds.length || (await undeliveredLegacyUserCommentIds(tx, companyId, issue.id, run.agentId, commentIds)).length) {
+      savedInput = wake;
+      break;
+    }
+  }
   let delivery: "recorded" | "caller_owns" | "saved_input" = input.delivery === "caller_owns" ? "caller_owns"
     : savedInput ? "saved_input" : "recorded";
 
