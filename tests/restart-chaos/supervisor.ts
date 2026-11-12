@@ -80,6 +80,12 @@ export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number],
  * that serves a different instance). Pin this wave's own loopback origin so an agent's key for
  * the temporary instance is only ever sent to that instance.
  */
+export function overlapKillAfterMs(raw: string | undefined, overlapMs: number): number | null {
+  if (raw === undefined || raw === "") return null;
+  if (!/^[0-9]+$/.test(raw)) throw new Error("RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS must be a whole number of seconds");
+  return Math.min(Number(raw) * 1000, overlapMs);
+}
+
 export function waveServerUrlEnvironment(port: number): { PAPERCLIP_API_URL: string } {
   return { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` };
 }
@@ -822,8 +828,14 @@ export class ChaosSupervisor {
     this.edge.target = this.backendPort;
     this.timeline.add("k15_traffic_switched", { faultId: receipt.faultId, fromPort, toPort: this.backendPort, overlapMs });
     await swap("switched", next);
-    for (const until = Date.now() + overlapMs; Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
-    await swap("stopping", next); await this.stopper(previous, "SIGTERM");
+    const killAfterMs = overlapKillAfterMs(process.env.RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS, overlapMs);
+    for (const until = Date.now() + (killAfterMs ?? overlapMs); Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
+    await swap("stopping", next);
+    if (killAfterMs === null) await this.stopper(previous, "SIGTERM");
+    else {
+      this.timeline.add("k15_old_server_killed", { faultId: receipt.faultId, previousPid: previous.pid, afterMs: killAfterMs });
+      await this.stopper.crashForRestart(previous);
+    }
     receipt.stoppedAt = Date.now();
     this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
     await swap("stopped", next);
