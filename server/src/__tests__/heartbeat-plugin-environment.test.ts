@@ -371,7 +371,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await db.insert(environments).values([
       {
         id: sharedEnvironmentId,
-        name: "Shared Plugin Sandbox",
+        name: `Shared Plugin Sandbox ${sharedEnvironmentId}`,
         driver: "plugin",
         status: "active",
         config: {
@@ -386,7 +386,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       },
       {
         id: overrideEnvironmentId,
-        name: "Override Plugin Sandbox",
+        name: `Override Plugin Sandbox ${overrideEnvironmentId}`,
         driver: "plugin",
         status: "active",
         config: {
@@ -510,14 +510,13 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
 
     expect(sharedRun).not.toBeNull();
     expect(overrideRun).not.toBeNull();
-    await vi.waitFor(async () => {
-      const [latestShared, latestOverride] = await Promise.all([
-        heartbeat.getRun(sharedRun!.id),
-        heartbeat.getRun(overrideRun!.id),
-      ]);
-      expect(latestShared?.status).toBe("succeeded");
-      expect(latestOverride?.status).toBe("succeeded");
-    }, { timeout: 5_000 });
+    await heartbeat.drainActiveRunExecutions();
+    const [latestShared, latestOverride] = await Promise.all([
+      heartbeat.getRun(sharedRun!.id),
+      heartbeat.getRun(overrideRun!.id),
+    ]);
+    expect(latestShared?.status).toBe("succeeded");
+    expect(latestOverride?.status).toBe("succeeded");
 
     const acquireCalls = vi.mocked(workerManager.call).mock.calls
       .filter(([, method]) => method === "environmentAcquireLease");

@@ -1507,7 +1507,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                 throw error;
               }
             }
-            if (running) {
+            if (running && !(control && running.cancellationSignal === control.controller.signal)) {
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,
@@ -1523,6 +1523,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
             terminationSettled = true;
           } finally {
             if (
+              !(control && running?.cancellationSignal === control.controller.signal) &&
               (!processCancellationSettlement || terminationSettled) &&
               runningProcesses.get(run.id) === running
             ) {

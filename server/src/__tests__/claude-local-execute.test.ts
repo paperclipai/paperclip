@@ -13,6 +13,21 @@ import {
   sessionCodec,
 } from "@paperclipai/adapter-claude-local/server";
 
+function claudeFixtureCommandPath(directory: string): string {
+  return path.join(directory, process.platform === "win32" ? "claude.cmd" : "claude");
+}
+
+async function writeClaudeFixtureCommand(commandPath: string, script: string): Promise<void> {
+  if (process.platform === "win32") {
+    const scriptPath = `${commandPath}.cjs`;
+    await fs.writeFile(scriptPath, script, "utf8");
+    await fs.writeFile(commandPath, `@"${process.execPath}" "${scriptPath}" %*\r\n`, "utf8");
+  } else {
+    await fs.writeFile(commandPath, script, "utf8");
+    await fs.chmod(commandPath, 0o755);
+  }
+}
+
 async function writeFailingClaudeCommand(
   commandPath: string,
   options: { resultEvent: Record<string, unknown>; exitCode?: number },
@@ -24,8 +39,7 @@ if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); 
 console.log(${JSON.stringify(payload)});
 process.exit(${exit});
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 async function writeTextFailingClaudeCommand(
@@ -43,8 +57,7 @@ if (${JSON.stringify(options.stderr ?? "")}) {
 }
 process.exit(${exit});
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
@@ -84,9 +97,14 @@ if (capturePath) {
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "11111111-1111-4111-8111-111111111111", model: "claude-sonnet" }));
 console.log(JSON.stringify({ type: "assistant", session_id: "11111111-1111-4111-8111-111111111111", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "11111111-1111-4111-8111-111111111111", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+const os = require("node:os");
+const configDir = process.env.CLAUDE_CONFIG_DIR || path.join((process.platform === "win32" ? process.env.USERPROFILE : process.env.HOME) || os.homedir(), ".claude");
+const encodedCwd = process.cwd().replace(/[^a-zA-Z0-9-]/g, "-");
+const projectDir = path.join(configDir, "projects", encodedCwd);
+fs.mkdirSync(projectDir, { recursive: true });
+fs.writeFileSync(path.join(projectDir, "11111111-1111-4111-8111-111111111111.jsonl"), "{}\\n", "utf8");
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 async function writeHelpWithoutEffortClaudeCommand(commandPath: string): Promise<void> {
@@ -124,8 +142,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "33333
 console.log(JSON.stringify({ type: "assistant", session_id: "33333333-3333-4333-8333-333333333333", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "33333333-3333-4333-8333-333333333333", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 async function writeHelpWithEffortClaudeCommand(commandPath: string): Promise<void> {
@@ -164,8 +181,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "44444
 console.log(JSON.stringify({ type: "assistant", session_id: "44444444-4444-4444-8444-444444444444", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "44444444-4444-4444-8444-444444444444", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 type CapturePayload = {
@@ -222,8 +238,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "bbbbb
 console.log(JSON.stringify({ type: "assistant", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 async function writeAlwaysPoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
@@ -253,8 +268,7 @@ console.log(JSON.stringify({
 }));
 process.exit(1);
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
@@ -295,31 +309,42 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "22222
 console.log(JSON.stringify({ type: "assistant", session_id: "22222222-2222-4222-8222-222222222222", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "22222222-2222-4222-8222-222222222222", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeClaudeFixtureCommand(commandPath, script);
 }
 
 async function setupExecuteEnv(
   root: string,
-  options?: { commandWriter?: (commandPath: string) => Promise<void> },
+  options?: { commandWriter?: (commandPath: string) => Promise<void>; initialSessionIds?: string[] },
 ) {
   const workspace = path.join(root, "workspace");
   const binDir = path.join(root, "bin");
-  const commandPath = path.join(binDir, "claude");
+  const commandPath = claudeFixtureCommandPath(binDir);
   const capturePath = path.join(root, "capture.json");
   const statePath = path.join(root, "state.txt");
   await fs.mkdir(workspace, { recursive: true });
   await fs.mkdir(binDir, { recursive: true });
   await (options?.commandWriter ?? writeFakeClaudeCommand)(commandPath);
+  if (options?.initialSessionIds?.length) {
+    const fixtureCwd = process.platform === "win32" ? workspace : await fs.realpath(workspace);
+    const projectDir = path.join(root, ".claude", "projects", fixtureCwd.replace(/[^a-zA-Z0-9-]/g, "-"));
+    await fs.mkdir(projectDir, { recursive: true });
+    await Promise.all(options.initialSessionIds.map((sessionId) =>
+      fs.writeFile(path.join(projectDir, `${sessionId}.jsonl`), "{}\n", "utf8"),
+    ));
+  }
   const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
   const previousPath = process.env.PATH;
   process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
   process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
   return {
     workspace, commandPath, capturePath, statePath,
     restore: () => {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
     },
@@ -361,6 +386,46 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
+  it.skipIf(process.platform !== "win32")("retries a failed Windows resume only after its descendant stops", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-win-retry-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      initialSessionIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+    });
+    const scriptPath = path.join(root, "fake-claude.cjs");
+    const cmdPath = `${commandPath}.cmd`;
+    await fs.writeFile(cmdPath, `@"${process.execPath}" "${scriptPath}" %*\r\n`);
+    await fs.writeFile(scriptPath, `
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+if (process.argv.includes('--version')) { console.log('2.1.286 (Claude Code)'); process.exit(0); }
+fs.readFileSync(0, 'utf8');
+const capture = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+if (process.argv.includes('--resume')) {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  fs.writeFileSync(capture, String(child.pid));
+  console.log(JSON.stringify({type:'result', is_error:true, result:'No conversation found with session ID'}));
+  setTimeout(() => process.exit(1), 100);
+} else {
+  const pid = Number(fs.readFileSync(capture, 'utf8'));
+  let alive = true; try { process.kill(pid, 0); } catch { alive = false; }
+  fs.writeFileSync(capture, alive ? 'overlap' : 'stopped');
+  console.log(JSON.stringify({type:'result', session_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', result:'done'}));
+}
+`);
+    try {
+      const result = await execute({
+        runId: "win-resume-retry", agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", command: cmdPath, cwd: workspace, model: "claude-sonnet-4-5", env: { CLAUDE_CONFIG_DIR: path.join(root, ".claude"), PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "Do work." },
+        context: {}, onLog: async () => {},
+      });
+      expect(result.exitCode, JSON.stringify(result)).toBe(0);
+      expect(await fs.readFile(capturePath, "utf8")).toBe("stopped");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
   it("passes real assignment markdown and ordered current events once through the CLI", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-context-owner-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
@@ -492,7 +557,7 @@ describe("claude execute", () => {
       expect(zero.argv).not.toContain("--strict-mcp-config");
       expect(zero.mcpConfigPath).toBeNull();
       expect(zero.mcpConfigContents).toBeNull();
-      expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
+      expect(alpha.mcpConfigPath).toContain(path.join("agents", "agent-alpha") + path.sep);
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
@@ -542,7 +607,9 @@ describe("claude execute", () => {
 
   it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
-    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      initialSessionIds: ["11111111-1111-4111-8111-111111111111"],
+    });
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     try {
@@ -611,7 +678,9 @@ describe("claude execute", () => {
 
   it("commandNotes is empty on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-resume-"));
-    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      initialSessionIds: ["11111111-1111-4111-8111-111111111111"],
+    });
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     let capturedNotes: string[] = ["sentinel"];
@@ -640,10 +709,47 @@ describe("claude execute", () => {
     }
   });
 
+  it("checks resumed transcripts under the configured child HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-child-home-resume-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const childHome = path.join(root, "child-home");
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const fixtureCwd = process.platform === "win32" ? workspace : await fs.realpath(workspace);
+    const projectDir = path.join(childHome, ".claude", "projects", fixtureCwd.replace(/[^a-zA-Z0-9-]/g, "-"));
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(path.join(projectDir, `${sessionId}.jsonl`), "{}\n", "utf8");
+
+    try {
+      await execute({
+        runId: "run-child-home-resume",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: { HOME: childHome, ...(process.platform === "win32" ? { USERPROFILE: childHome } : {}), PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(captured.argv).toContain("--resume");
+      expect(captured.argv).toContain(sessionId);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rebuilds the combined instructions file when an unknown resumed session falls back to fresh", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-fallback-"));
     const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writeRetryThenSucceedClaudeCommand,
+      initialSessionIds: ["11111111-1111-4111-8111-111111111111"],
     });
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
@@ -832,7 +938,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
     const binDir = path.join(root, "bin");
-    const commandPath = path.join(binDir, "claude");
+    const commandPath = claudeFixtureCommandPath(binDir);
     const capturePath = path.join(root, "capture.json");
     const claudeConfigDir = path.join(root, "claude-config");
     await fs.mkdir(workspace, { recursive: true });
@@ -841,9 +947,11 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     const previousPath = process.env.PATH;
     const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
     process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 
@@ -895,6 +1003,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
       if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -908,10 +1018,11 @@ describe("claude execute", () => {
     const localWorkspace = path.join(root, "workspace");
     const remoteWorkspace = path.join(root, "sandbox-$HOME");
     const binDir = path.join(root, "bin");
-    const commandPath = path.join(binDir, "claude");
+    const commandPath = claudeFixtureCommandPath(binDir);
     const capturePath1 = path.join(remoteWorkspace, "capture-1.json");
     const claudeRoot = path.join(root, ".claude");
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     const previousPath = process.env.PATH;
 
     await fs.mkdir(localWorkspace, { recursive: true });
@@ -922,6 +1033,7 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
 
     try {
@@ -986,6 +1098,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
@@ -1061,7 +1175,8 @@ describe("claude execute", () => {
     const commands: string[] = [];
     const loggedCommands: Array<string | undefined> = [];
     try {
-      await fs.writeFile(commandPath, (await fs.readFile(commandPath, "utf8")).replace("2.1.286", "2.1.263"));
+      const scriptPath = process.platform === "win32" ? `${commandPath}.cjs` : commandPath;
+      await fs.writeFile(scriptPath, (await fs.readFile(scriptPath, "utf8")).replace("2.1.286", "2.1.263"));
       await fs.mkdir(remoteWorkspace, { recursive: true });
       if (state === "compatible") {
         await fs.mkdir(path.dirname(preparedCommand), { recursive: true });
@@ -1236,7 +1351,7 @@ describe("claude execute", () => {
   it.each(["unchanged", "added", "removed"])("resumes a stable Claude prompt bundle with %s MCP tools", async (change) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = claudeFixtureCommandPath(root);
     const capturePath1 = path.join(root, "capture-1.json");
     const capturePath2 = path.join(root, "capture-2.json");
     const instructionsPath = path.join(root, "AGENTS.md");
@@ -1246,9 +1361,11 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
     delete process.env.PAPERCLIP_INSTANCE_ID;
 
@@ -1419,6 +1536,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
       if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
@@ -1430,7 +1549,7 @@ describe("claude execute", () => {
   it("resumes across per-run instruction copies and refreshes their location", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-working-copy-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = claudeFixtureCommandPath(root);
     const capturePath = path.join(root, "capture.json");
     const skillDir = path.join(root, "skill");
     await fs.mkdir(workspace, { recursive: true });
@@ -1505,7 +1624,7 @@ describe("claude execute", () => {
   it("starts a fresh Claude session when the stable prompt bundle changes", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-reset-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = claudeFixtureCommandPath(root);
     const capturePath1 = path.join(root, "capture-before.json");
     const capturePath2 = path.join(root, "capture-after.json");
     const instructionsPath = path.join(root, "AGENTS.md");
@@ -1516,9 +1635,11 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
     delete process.env.PAPERCLIP_INSTANCE_ID;
 
@@ -1601,6 +1722,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
       if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
@@ -1612,7 +1735,7 @@ describe("claude execute", () => {
   it("classifies Claude 'out of extra usage' failures as provider quota errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = claudeFixtureCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       resultEvent: {
@@ -1626,7 +1749,9 @@ describe("claude execute", () => {
     });
 
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 22, 10, 15, 0));
 
@@ -1672,6 +1797,8 @@ describe("claude execute", () => {
       vi.useRealTimers();
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -1679,7 +1806,7 @@ describe("claude execute", () => {
   it("treats subtype=success results as successful even when the process exits nonzero", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-subtype-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = claudeFixtureCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       exitCode: 1,
@@ -1694,7 +1821,9 @@ describe("claude execute", () => {
     });
 
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
 
     try {
       const result = await execute({
@@ -1730,6 +1859,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -1737,7 +1868,7 @@ describe("claude execute", () => {
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = claudeFixtureCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       resultEvent: {
@@ -1751,7 +1882,9 @@ describe("claude execute", () => {
     });
 
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
 
     try {
       const result = await execute({
@@ -1789,6 +1922,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -1796,7 +1931,7 @@ describe("claude execute", () => {
   it("does not reclassify deterministic Claude failures (auth, max turns) as transient", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-max-turns-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = claudeFixtureCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       resultEvent: {
@@ -1809,7 +1944,9 @@ describe("claude execute", () => {
     });
 
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     process.env.HOME = root;
+    if (process.platform === "win32") process.env.USERPROFILE = root;
 
     try {
       const result = await execute({
@@ -1843,6 +1980,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -1851,6 +1990,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-msgid-"));
     const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writePoisonedMessageIdClaudeCommand,
+      initialSessionIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
     });
     const logs: string[] = [];
     try {
@@ -1943,6 +2083,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-retry-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writeAlwaysPoisonedMessageIdClaudeCommand,
+      initialSessionIds: ["aaaaaaaa-0000-4000-8000-000000000004"],
     });
     try {
       const result = await execute({
