@@ -8,7 +8,10 @@ import {
   resolveConnectionMethodServerUrl,
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
+  isSafeMcpRemoteHeaderName,
+  isSafeMcpRemoteHeaderValue,
   mcpRemoteHeaderRejectionMessage,
+  mergeHeaderRecords,
 } from "@paperclipai/shared";
 import { badRequest, unprocessable } from "../../errors.js";
 import { isPaperclipCloudConnectorStrategy } from "../paperclip-cloud-connector.js";
@@ -208,6 +211,35 @@ export function normalizeConnectionMethodConfig(
 export function projectedConnectionHeaders(
   connection: ConnectionSettings,
 ): Record<string, string> {
+  const configHeaders: Record<string, string> = {};
+  for (const [key, value] of Object.entries(asRecord(connection.config?.headers))) {
+    if (
+      typeof value === "string" &&
+      value.length > 0 &&
+      isSafeMcpRemoteHeaderName(key) &&
+      isSafeMcpRemoteHeaderValue(value)
+    ) {
+      configHeaders[key] = value;
+    }
+  }
+
+  const transportHeaders: Record<string, string> = {};
+  for (const [key, value] of Object.entries(asRecord(connection.transportConfig?.headers))) {
+    if (
+      typeof value === "string" &&
+      value.length > 0 &&
+      isSafeMcpRemoteHeaderName(key) &&
+      isSafeMcpRemoteHeaderValue(value)
+    ) {
+      transportHeaders[key] = value;
+    }
+  }
+
+  // Precedence: config.headers overrides transportConfig.headers case-insensitively.
+  // Sensitive credentials (bearer tokens, API keys) must be configured through
+  // credentialSecretRefs; custom connection headers are for safe non-sensitive headers.
+  let headers = mergeHeaderRecords(transportHeaders, configHeaders);
+
   const sourceTemplateKey =
     typeof connection.config.sourceTemplateKey === "string"
       ? connection.config.sourceTemplateKey
@@ -215,16 +247,18 @@ export function projectedConnectionHeaders(
   const app = sourceTemplateKey
     ? getConnectableAppDefinition(sourceTemplateKey)
     : null;
-  const headers: Record<string, string> = {};
   if (app) {
     const method = connectionMethodForConnection(app, connection);
     // Non-transport settings do not participate in header projection. In
     // particular, legacy connections can lack a newly introduced setting.
     if ([...(method.tenantFields ?? []), ...(method.extensionFields ?? [])].some((field) => field.transport?.location === "header")) {
-      Object.assign(headers, normalizeConnectionMethodConfig(
-        method,
-        asRecord(connection.config.methodConfig),
-      ).headers);
+      headers = mergeHeaderRecords(
+        headers,
+        normalizeConnectionMethodConfig(
+          method,
+          asRecord(connection.config.methodConfig),
+        ).headers,
+      );
     }
   }
   if (
@@ -233,7 +267,7 @@ export function projectedConnectionHeaders(
   ) {
     // GitHub excludes Actions from its default catalog. Project this on every
     // discovery and invocation so existing connections gain the toolset too.
-    headers["X-MCP-Toolsets"] = "default,actions";
+    headers = mergeHeaderRecords(headers, { "X-MCP-Toolsets": "default,actions" });
   }
   return headers;
 }

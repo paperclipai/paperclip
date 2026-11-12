@@ -6392,6 +6392,125 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe(requests.filter(({ method }) => method === "initialize").length);
   });
 
+  it("initializes Streamable HTTP servers when uninitialized tools/list returns HTTP 401", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const requests: Array<{ method: string; sessionId: string | null }> = [];
+    let sessionSequence = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: string;
+      };
+      const requestHeaders = new Headers(init?.headers);
+      requests.push({
+        method: payload.method ?? "",
+        sessionId: requestHeaders.get("mcp-session-id"),
+      });
+      if (payload.method === "initialize") {
+        sessionSequence += 1;
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "stateful-401", version: "1" },
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "mcp-session-id": `session-401-${sessionSequence}`,
+            },
+          },
+        );
+      }
+      if (payload.method === "notifications/initialized") {
+        expect(requestHeaders.get("mcp-session-id")).toBeTruthy();
+        return new Response(null, { status: 202 });
+      }
+      if (
+        payload.method === "tools/list" &&
+        !requestHeaders.get("mcp-session-id")
+      ) {
+        return new Response(
+          JSON.stringify({ message: "Session required: please initialize first" }),
+          {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          tools: [{ name: "secure_list", annotations: { readOnlyHint: true } }],
+        },
+      });
+    });
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://stateful-401.example/mcp",
+        name: "Stateful 401 MCP",
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(result.connection.config).toMatchObject({
+      mcpSessionRequired: true,
+    });
+    expect(result.actions.readOnly).toEqual([
+      expect.objectContaining({ toolName: "secure_list", riskLevel: "read" }),
+    ]);
+    expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
+    expect(
+      requests.filter(({ method }) => method === "initialize").length,
+    ).toBeGreaterThanOrEqual(1);
+    const retriedList = requests.find(
+      (r, i) => i > 0 && r.method === "tools/list",
+    );
+    expect(retriedList?.sessionId).toBe("session-401-1");
+  });
+
+  it("preserves the original response and OAuth challenge when initialization fails after HTTP 401", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    let attempts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      attempts += 1;
+      return new Response(
+        JSON.stringify({ error: "unauthorized" }),
+        {
+          status: 401,
+          headers: {
+            "content-type": "application/json",
+            "www-authenticate": 'Bearer realm="mcp-server"',
+          },
+        },
+      );
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://oauth-challenge.example.test/mcp",
+        name: "OAuth Challenge MCP",
+      });
+
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "This app needs you to sign in.",
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
   it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {
     const company = await createCompany(db);
     let currentTime = new Date("2026-08-20T12:00:00.000Z");
@@ -21167,6 +21286,65 @@ describe("projectedConnectionHeaders", () => {
     ] satisfies ProjectedConnection[]) {
       expect(projectedConnectionHeaders(connection)).toEqual({});
     }
+  });
+
+  it("projects custom headers from connection config", () => {
+    const connection = {
+      transport: "mcp_remote",
+      config: {
+        url: "https://fixture.example/mcp",
+        headers: {
+          "X-Custom-Env": "production",
+          "X-Custom-Header": "header-value",
+        },
+      },
+    } as typeof toolConnections.$inferSelect;
+    expect(projectedConnectionHeaders(connection)).toEqual({
+      "X-Custom-Env": "production",
+      "X-Custom-Header": "header-value",
+    });
+  });
+
+  it("projects custom headers from transportConfig with config precedence and case-insensitive deduplication", () => {
+    const connection = {
+      transport: "mcp_remote",
+      config: {
+        headers: {
+          "X-Workspace": "config-workspace",
+          "X-Custom-Env": "config-env",
+        },
+      },
+      transportConfig: {
+        headers: {
+          "x-workspace": "transport-workspace",
+          "x-custom-env": "transport-env",
+          "X-From-Transport": "yes",
+        },
+      },
+    } as typeof toolConnections.$inferSelect;
+    expect(projectedConnectionHeaders(connection)).toEqual({
+      "X-Workspace": "config-workspace",
+      "X-Custom-Env": "config-env",
+      "X-From-Transport": "yes",
+    });
+  });
+
+  it("filters out unsafe or forbidden headers from projection", () => {
+    const connection = {
+      transport: "mcp_remote",
+      config: {
+        headers: {
+          Host: "evil.example",
+          Connection: "close",
+          "Content-Length": "123",
+          "X-Safe-Header": "valid-value",
+          "X-Invalid-CRLF": "bad\r\nvalue",
+        },
+      },
+    } as typeof toolConnections.$inferSelect;
+    expect(projectedConnectionHeaders(connection)).toEqual({
+      "X-Safe-Header": "valid-value",
+    });
   });
 });
 

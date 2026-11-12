@@ -8,7 +8,7 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, companyMemberships, toolApplications, toolConnections } from "@paperclipai/db";
 import type { ConnectionGrantKind, ConnectToolAppResult } from "@paperclipai/shared";
-import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { getConnectableAppDefinition, mergeHeaderRecords, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError } from "../../../errors.js";
 import { deriveVercelConnectSubject, vercelGrantReference, vercelTokenRequest, VercelConnectClientError, type VercelConnectClient } from "../../vercel-connect.js";
 
@@ -223,10 +223,12 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
     const refresh = await refreshCatalog(connection.id, input.actor, {
       enableAllByDefault: true,
       skipDefaultProfileSync: true,
-      credentialHeaders: {
-        ...projectedConnectionHeaders(connection),
-        [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
-      },
+      credentialHeaders: mergeHeaderRecords(
+        projectedConnectionHeaders(connection),
+        {
+          [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
+        },
+      ),
     });
     const suggestedDefaults = recommendedDefaultsForApp(
       galleryEntry,

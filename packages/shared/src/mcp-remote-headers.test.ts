@@ -4,6 +4,7 @@ import {
   checkMcpRemoteHeaderValue,
   mcpRemoteHeaderNameFromConfigPath,
   mcpRemoteHeaderRejectionMessage,
+  mergeHeaderRecords,
 } from "./mcp-remote-headers.js";
 
 describe("checkMcpRemoteHeaderName", () => {
@@ -123,5 +124,37 @@ describe("mcpRemoteHeaderRejectionMessage", () => {
     expect(mcpRemoteHeaderRejectionMessage("Host", "forbidden")).toContain("Host");
     expect(mcpRemoteHeaderRejectionMessage("X-Api-Key", "value_control_characters"))
       .toBe('The value for "X-Api-Key" contains line breaks or control characters.');
+  });
+});
+
+
+describe("mergeHeaderRecords", () => {
+  it("merges header records case-insensitively with later records taking precedence", () => {
+    const transport = {
+      "x-workspace": "old-workspace",
+      "x-custom": "transport-value",
+      "accept-language": "en",
+    };
+    const config = {
+      "X-Workspace": "current-workspace",
+      "X-Other": "config-other",
+    };
+    const resolved = {
+      "X-Custom": "resolved-secret",
+    };
+
+    const result = mergeHeaderRecords(transport, config, resolved);
+    expect(result).toEqual({
+      "X-Workspace": "current-workspace",
+      "X-Custom": "resolved-secret",
+      "accept-language": "en",
+      "X-Other": "config-other",
+    });
+  });
+
+  it("handles null and undefined sources gracefully", () => {
+    expect(mergeHeaderRecords(undefined, { "X-Test": "1" }, null)).toEqual({
+      "X-Test": "1",
+    });
   });
 });

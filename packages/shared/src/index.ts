@@ -375,6 +375,7 @@ export {
   isSafeMcpRemoteHeaderValue,
   mcpRemoteHeaderNameFromConfigPath,
   mcpRemoteHeaderRejectionMessage,
+  mergeHeaderRecords,
   type McpRemoteHeaderCheck,
   type McpRemoteHeaderRejection,
 } from "./mcp-remote-headers.js";
