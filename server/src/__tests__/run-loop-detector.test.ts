@@ -3,19 +3,30 @@ import { describe, expect, it } from "vitest";
 import {
   detectRunLoop,
   detectRunLoops,
-  LOOP_DETECTOR_RUN_FETCH_LIMIT,
+  LOOP_DETECTOR_MAX_WINDOW_RUNS,
   LOOP_DETECTOR_THRESHOLD,
   type DetectRunLoopRecentRun,
 } from "../services/run-loop-detector.js";
 
+// By default a run's SAVED read boundary mirrors its snapshot issueId, matching
+// how the enqueue path sets scopeKind/issueId from the snapshot at creation.
+// `saved` overrides that to model coalescing drift, where the snapshot issueId
+// is rewritten after creation but the persisted columns stay on the original
+// binding.
 function run(
   id: string,
   minutesAgo: number,
   ctx: Record<string, unknown> | null,
   now: Date,
+  saved?: { scopeKind?: "company" | "issue"; issueId?: string | null },
 ): DetectRunLoopRecentRun {
+  const snapshotIssueId = typeof ctx?.issueId === "string" ? ctx.issueId : null;
+  const issueId = saved?.issueId !== undefined ? saved.issueId : snapshotIssueId;
+  const scopeKind = saved?.scopeKind ?? (issueId !== null ? "issue" : "company");
   return {
     id,
+    scopeKind,
+    issueId,
     contextSnapshot: ctx,
     createdAt: new Date(now.getTime() - minutesAgo * 60 * 1000),
   };
@@ -60,6 +71,7 @@ describe("detectRunLoop", () => {
     });
     expect(signal).not.toBeNull();
     expect(signal?.agentId).toBe("agent-1");
+    expect(signal?.scopeKind).toBe("issue");
     expect(signal?.issueId).toBe("issue-1");
     expect(signal?.wakeReason).toBe("issue_commented");
     expect(signal?.count).toBe(5);
@@ -157,6 +169,7 @@ describe("detectRunLoop", () => {
       threshold: 5,
       windowSec: 1800,
     });
+    expect(signal?.scopeKind).toBe("company");
     expect(signal?.issueId).toBeNull();
     expect(signal?.wakeReason).toBe("timer");
     expect(signal?.count).toBe(5);
@@ -259,11 +272,104 @@ describe("detectRunLoops", () => {
   });
 });
 
-describe("LOOP_DETECTOR_RUN_FETCH_LIMIT", () => {
-  it("never drops below the threshold, so a high threshold cannot silently disable detection", () => {
-    // Regression: a flat fetch limit of 50 silently disabled detection whenever
-    // the threshold exceeded 50, because the query could never return enough rows.
-    expect(LOOP_DETECTOR_RUN_FETCH_LIMIT).toBeGreaterThanOrEqual(LOOP_DETECTOR_THRESHOLD);
-    expect(LOOP_DETECTOR_RUN_FETCH_LIMIT).toBe(Math.max(50, LOOP_DETECTOR_THRESHOLD));
+describe("saved read boundary (scopeKind, issueId)", () => {
+  const NOW = new Date("2026-05-11T13:00:00.000Z");
+  const wake = "issue_commented";
+
+  it("attributes a coalesced run to its saved issue, not the mutated snapshot issue", () => {
+    // Regression for the privacy finding: cross-task coalescing can rewrite a
+    // run's snapshot issueId to a different issue. Grouping on the snapshot would
+    // publish these runs' ids/timestamps to viewers of issue-B even though the
+    // runs are bound to the private issue-A. The saved issueId keeps them on A.
+    const runs = [0, 1, 2, 3, 4].map((m, i) =>
+      run(`r${i}`, m, { issueId: "issue-B", wakeReason: wake }, NOW, {
+        scopeKind: "issue",
+        issueId: "issue-A",
+      }),
+    );
+    const signals = detectRunLoops({
+      agentId: "a",
+      recentRuns: runs,
+      now: NOW,
+      threshold: 5,
+      windowSec: 1800,
+    });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].scopeKind).toBe("issue");
+    expect(signals[0].issueId).toBe("issue-A");
+    // The mutated snapshot issue never becomes a reported boundary.
+    expect(signals.map((s) => s.issueId)).not.toContain("issue-B");
+  });
+
+  it("does not let runs bound to different saved issues cross into one group", () => {
+    // Five runs all carry snapshot issueId "issue-shared" (as if coalesced), but
+    // each is saved-bound to a distinct private issue. They must stay in five
+    // single-run groups, so none reaches the threshold.
+    const runs = [0, 1, 2, 3, 4].map((m, i) =>
+      run(`r${i}`, m, { issueId: "issue-shared", wakeReason: wake }, NOW, {
+        scopeKind: "issue",
+        issueId: `issue-${i}`,
+      }),
+    );
+    expect(
+      detectRunLoop({
+        agentId: "a",
+        recentRuns: runs,
+        now: NOW,
+        threshold: 5,
+        windowSec: 1800,
+      }),
+    ).toBeNull();
+  });
+
+  it("never widens a company-scoped run's boundary via a stale snapshot issueId", () => {
+    // A company-scoped run whose snapshot still names an issue stays company
+    // scoped (issueId null), so its signal is only company-gated downstream.
+    const runs = [0, 2, 4, 6, 8].map((m, i) =>
+      run(`r${i}`, m, { issueId: "issue-ghost", wakeReason: "timer" }, NOW, {
+        scopeKind: "company",
+        issueId: null,
+      }),
+    );
+    const signal = detectRunLoop({
+      agentId: "a",
+      recentRuns: runs,
+      now: NOW,
+      threshold: 5,
+      windowSec: 1800,
+    });
+    expect(signal?.scopeKind).toBe("company");
+    expect(signal?.issueId).toBeNull();
+    expect(signal?.count).toBe(5);
+  });
+
+  it("keeps a company-scoped group and an issue-scoped group with null issue separate", () => {
+    const companyRuns = [0, 1, 2, 3, 4].map((m, i) =>
+      run(`co-${i}`, m, { wakeReason: "timer" }, NOW, { scopeKind: "company", issueId: null }),
+    );
+    const issueNullRuns = [0, 1, 2, 3, 4].map((m, i) =>
+      run(`iss-${i}`, m, { wakeReason: "timer" }, NOW, { scopeKind: "issue", issueId: null }),
+    );
+    const signals = detectRunLoops({
+      agentId: "a",
+      recentRuns: [...companyRuns, ...issueNullRuns],
+      now: NOW,
+      threshold: 5,
+      windowSec: 1800,
+    });
+    expect(signals.map((s) => s.scopeKind).sort()).toEqual(["company", "issue"]);
+    expect(signals.every((s) => s.issueId === null)).toBe(true);
+  });
+});
+
+describe("LOOP_DETECTOR_MAX_WINDOW_RUNS", () => {
+  it("stays at or above the threshold so a high threshold cannot shrink the ceiling below one loop", () => {
+    // Regression: an earlier max(50, threshold) fetch cap was applied globally
+    // before grouping, so interleaved newer runs could push a qualifying loop
+    // out of the fetched prefix. The window predicate now bounds the fetch; this
+    // constant is only a pathological-volume ceiling and must never fall below
+    // the rows one loop needs.
+    expect(LOOP_DETECTOR_MAX_WINDOW_RUNS).toBeGreaterThanOrEqual(LOOP_DETECTOR_THRESHOLD);
+    expect(LOOP_DETECTOR_MAX_WINDOW_RUNS).toBe(Math.max(5000, LOOP_DETECTOR_THRESHOLD));
   });
 });

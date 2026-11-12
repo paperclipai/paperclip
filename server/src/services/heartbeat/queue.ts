@@ -130,7 +130,7 @@ import { isUniqueViolation } from "../../db-errors.js";
 import { publishLiveEvent } from "../live-events.js";
 import {
   detectRunLoops,
-  LOOP_DETECTOR_RUN_FETCH_LIMIT,
+  LOOP_DETECTOR_MAX_WINDOW_RUNS,
   LOOP_DETECTOR_WINDOW_SEC,
 } from "../run-loop-detector.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
@@ -2192,12 +2192,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   }
 
   // Cooldown map: at most one run_loop_suspected event per
-  // (agentId, issueId, wakeReason) per detection window. Without this, the
-  // detector re-emits on every dispatch tick once the threshold is crossed.
+  // (agentId, scopeKind, issueId, wakeReason) per detection window. Without
+  // this, the detector re-emits on every dispatch tick once the threshold is
+  // crossed. scopeKind is part of the key so a company-scoped group and an
+  // issue-scoped group that both carry a null issueId never share a cooldown.
   const lastRunLoopSignalEmittedAtMs = new Map<string, number>();
 
-  function runLoopSignalKey(agentId: string, issueId: string | null, wakeReason: string | null): string {
-    return `${agentId}|${issueId ?? ""}|${wakeReason ?? ""}`;
+  function runLoopSignalKey(
+    agentId: string,
+    scopeKind: "company" | "issue",
+    issueId: string | null,
+    wakeReason: string | null,
+  ): string {
+    return `${agentId}|${scopeKind}|${issueId ?? ""}|${wakeReason ?? ""}`;
   }
 
   async function maybeEmitRunLoopSignal(agent: typeof agents.$inferSelect) {
@@ -2207,14 +2214,23 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // heartbeat_runs has no (agentId, createdAt) index; agentId appears only in
       // heartbeat_runs_company_agent_started_idx (companyId, agentId, startedAt),
       // whose leading column is companyId. Leading with companyId lets the planner
-      // serve the `createdAt desc` + LIMIT from heartbeat_runs_company_created_at_desc_idx
+      // serve the `createdAt desc` scan from heartbeat_runs_company_created_at_desc_idx
       // (companyId, createdAt desc), bounding the scan to the rolling window instead
       // of forcing a wider scan + sort. heartbeat_runs is company-scoped, so this
       // narrows nothing semantically (agent ids are unique). See the PR verification
       // section for query-cost evidence and the dispatch-latency bound.
+      //
+      // The window predicate (not the row limit) is what bounds the result: every
+      // run in the window is counted, so unrelated newer runs can no longer push a
+      // qualifying loop's own runs past a recency-ordered cutoff. LOOP_DETECTOR_MAX_
+      // WINDOW_RUNS is only a pathological-volume ceiling and never realistically
+      // binds. scopeKind/issueId are the SAVED read boundary the detector groups by
+      // — read them here instead of contextSnapshot.issueId, which coalescing mutates.
       const recentRuns = await db
         .select({
           id: heartbeatRuns.id,
+          scopeKind: heartbeatRuns.scopeKind,
+          issueId: heartbeatRuns.issueId,
           contextSnapshot: heartbeatRuns.contextSnapshot,
           createdAt: heartbeatRuns.createdAt,
         })
@@ -2227,7 +2243,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(LOOP_DETECTOR_RUN_FETCH_LIMIT);
+        .limit(LOOP_DETECTOR_MAX_WINDOW_RUNS);
 
       // detectRunLoops is a synchronous pure function; awaiting its result is a
       // no-op in production but lets tests swap in an async seam to prove this
@@ -2253,7 +2269,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // second issue's active loop is still reported when the largest group is
       // in its cooldown window.
       for (const signal of signals) {
-        const key = runLoopSignalKey(signal.agentId, signal.issueId, signal.wakeReason);
+        const key = runLoopSignalKey(signal.agentId, signal.scopeKind, signal.issueId, signal.wakeReason);
         const lastEmittedAt = lastRunLoopSignalEmittedAtMs.get(key);
         if (lastEmittedAt !== undefined && nowMs - lastEmittedAt < signal.windowSec * 1000) {
           continue;
@@ -2263,6 +2279,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         logger.warn(
           {
             agentId: signal.agentId,
+            scopeKind: signal.scopeKind,
             issueId: signal.issueId,
             wakeReason: signal.wakeReason,
             count: signal.count,
