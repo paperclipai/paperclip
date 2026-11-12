@@ -162,10 +162,13 @@ function readInventory(value: unknown, runId: string, expected: string): Invento
   return parsed;
 }
 
+export type NativeProviderCacheReclaim = { changed: boolean; confirmed: boolean };
+
 export async function reclaimInactiveNativeProviderCache(input: {
   db: Db; companyId: string; issueId: string; runId: string; workspaceId: string;
   target: RemoteWorkspaceTarget; assertOwned: () => Promise<void>;
-}): Promise<boolean> {
+}): Promise<NativeProviderCacheReclaim> {
+  const nothing = { changed: false, confirmed: true } as const;
   await input.assertOwned();
   const [source] = await input.db.select({ run: heartbeatRuns, coordinator: nativeRunFinalizations })
     .from(heartbeatRuns).innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
@@ -175,9 +178,9 @@ export async function reclaimInactiveNativeProviderCache(input: {
   if (!source || source.run.status !== "failed" || source.run.runtimeMode !== "native"
     || (source.run.nativeIssueId ?? source.run.issueId ?? source.run.contextSnapshot?.issueId) !== input.issueId
     || source.coordinator.phase !== "terminal_failure" || source.coordinator.leaseOwner !== null
-    || record(source.coordinator.failureDetail).recoverable === true) return false;
+    || record(source.coordinator.failureDetail).recoverable === true) return nothing;
   const expected = verifiedCacheDigest(source.run, input.workspaceId, input.target);
-  if (!expected) return false;
+  if (!expected) return nothing;
   const scope = and(eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, input.issueId),
     eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.executionWorkspaceId, input.workspaceId));
   const execute = async (mode: "inventory" | "stage" | "reclaim",
@@ -200,7 +203,7 @@ export async function reclaimInactiveNativeProviderCache(input: {
       .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.id)).limit(1);
     if (!prepared) {
       const inventory = readInventory(await execute("inventory"), input.runId, expected);
-      if (!inventory.targets.length) return false;
+      if (!inventory.targets.length) return nothing;
       await input.assertOwned();
       [prepared] = await withDedicatedDbConnection(input.db, journal => journal.transaction(async tx => {
         await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
@@ -222,7 +225,7 @@ export async function reclaimInactiveNativeProviderCache(input: {
       eq(workspaceOperations.phase, "native_provider_cache_reclaim"), eq(workspaceOperations.status, "succeeded"),
       sql`${workspaceOperations.metadata}->>'preparationOperationId' = ${preparationOperationId}`,
       sql`${workspaceOperations.metadata}->>'outcome' = 'evicted'`)).limit(1);
-    if (completed) return false;
+    if (completed) return nothing;
     let staged: Staged = [];
     if (inventory.targets.some(target => target.generation.startsWith("c:"))) {
       if (prepared.metadata.staged === undefined) {
@@ -257,5 +260,5 @@ export async function reclaimInactiveNativeProviderCache(input: {
   await input.db.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
     heartbeatRunId: input.runId, executionWorkspaceId: input.workspaceId, phase: "native_provider_cache_reclaim",
     status: confirmed ? "succeeded" : "failed", startedAt, finishedAt: new Date(), metadata });
-  return changed;
+  return { changed, confirmed };
 }

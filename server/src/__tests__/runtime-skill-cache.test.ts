@@ -187,6 +187,62 @@ describe("runtime skill revision cache", () => {
     expect(await runtimeSkillCacheLockHolderExited(Buffer.from("not json"))).toBe(false);
   });
 
+  it("releases a lock whose holder ran in a deployment the platform replaced", async () => {
+    // A Railway redeploy starts the server in a new process space, so a PID
+    // proof never applies. The platform stopped the earlier deployment, which
+    // held the same exclusive volume, before it started this one.
+    const railway = { RAILWAY_PROJECT_ID: "project", RAILWAY_ENVIRONMENT_ID: "environment", RAILWAY_SERVICE_ID: "service",
+      RAILWAY_DEPLOYMENT_ID: "deployment-new", RAILWAY_VOLUME_ID: "volume", RAILWAY_VOLUME_MOUNT_PATH: "/data" };
+    for (const [key, value] of Object.entries(railway)) vi.stubEnv(key, value);
+    try {
+      const worker = { provider: "railway", projectId: "project", environmentId: "environment", serviceId: "service" };
+      const holder = { bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null,
+        deployment: { worker: { ...worker, deploymentId: "deployment-old" }, exclusiveVolume: true, volumeId: "volume" } };
+      expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder))).toBe(true);
+      // Only a replaced deployment on the same exclusive volume is proof.
+      const deployment = holder.deployment;
+      for (const changed of [{ ...deployment, worker: { ...worker, deploymentId: "deployment-new" } },
+        { ...deployment, volumeId: "another-volume" }, { ...deployment, exclusiveVolume: false },
+        { ...deployment, worker: { ...worker, serviceId: "another-service", deploymentId: "deployment-old" } }]) {
+        expect(await runtimeSkillCacheLockHolderExited(lockStamp({ ...holder, deployment: changed }))).toBe(false);
+      }
+      const { deployment: _omitted, ...withoutDeployment } = holder;
+      expect(await runtimeSkillCacheLockHolderExited(lockStamp(withoutDeployment))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps a lock held when the holder proof stalls or fails", async () => {
+    // A distinct holder per case: a still-pending proof is joined by later waits on the same holder.
+    const holder = () => ({ bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null });
+    const startedAt = Date.now();
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder()),
+      { timeoutMs: 50, prove: () => new Promise(() => {}) })).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder()),
+      { prove: async () => { throw new Error("database unavailable"); } })).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder()),
+      { prove: async () => ({ verdict: "gone", reason: "controller_stopped" }) })).toBe(true);
+  });
+
+  it("joins a stalled holder proof instead of starting another read on every timeout", async () => {
+    const holder = { bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null };
+    let settle!: (proof: { verdict: "gone"; reason: "controller_stopped" }) => void;
+    const prove = vi.fn(() => new Promise<{ verdict: "gone"; reason: "controller_stopped" }>(resolve => { settle = resolve; }));
+    for (let attempt = 0; attempt < 5; attempt++) {
+      expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder), { timeoutMs: 10, prove })).toBe(false);
+    }
+    expect(prove).toHaveBeenCalledTimes(1);
+    settle({ verdict: "gone", reason: "controller_stopped" });
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder), { timeoutMs: 1_000, prove })).toBe(true);
+    // A settled proof is not reused: the next wait asks again.
+    await new Promise(resolve => setImmediate(resolve));
+    const fresh = vi.fn(async () => ({ verdict: "alive" as const, reason: "controller_lease_held" as const }));
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder), { prove: fresh })).toBe(false);
+    expect(fresh).toHaveBeenCalledTimes(1);
+  });
+
   it("fingerprints installed content and ownership, excluding cosmetic metadata", async () => {
     const spec = runtimeSkillCacheSpec(root, skill)!;
     expect(runtimeSkillCacheSpec(root, { ...skill, name: "Renamed", updatedAt: new Date(), metadata: { ...skill.metadata, starred: true, ref: "new-branch" } })!.fingerprint).toBe(spec.fingerprint);

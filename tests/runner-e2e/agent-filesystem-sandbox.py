@@ -8,7 +8,10 @@ descendant inherits the domain, including an agent's shell commands.
 
 Usage:
   agent-filesystem-sandbox.py [--required] [--unset NAME]... [--set NAME=VALUE]...
-      --hide PATH [--hide PATH]... -- COMMAND [ARG]...
+      --hide PATH [--hide PATH]... [--expose PATH]... -- COMMAND [ARG]...
+
+An exposed path lies beneath a hidden directory and stays usable: a run sees its
+own saved session while the directory holding every run's sessions stays hidden.
 
 Without Landlock, --required exits 125 instead of running the command.
 """
@@ -46,6 +49,7 @@ def fail(message, code=125):
 def parse(argv):
     required = False
     hidden = []
+    exposed = []
     unset = []
     assignments = []
     index = 0
@@ -55,16 +59,16 @@ def parse(argv):
             command = argv[index + 1:]
             if not command:
                 fail("missing command", 2)
-            return required, hidden, unset, assignments, command
+            return required, hidden, exposed, unset, assignments, command
         if token == "--required":
             required = True
-        elif token in ("--hide", "--unset", "--set") and index + 1 < len(argv):
+        elif token in ("--hide", "--expose", "--unset", "--set") and index + 1 < len(argv):
             index += 1
             value = argv[index]
-            if token == "--hide":
+            if token in ("--hide", "--expose"):
                 if not os.path.isabs(value):
-                    fail("hidden path must be absolute: %s" % value, 2)
-                hidden.append(value)
+                    fail("%s path must be absolute: %s" % (token[2:], value), 2)
+                (hidden if token == "--hide" else exposed).append(value)
             elif token == "--unset":
                 unset.append(value)
             else:
@@ -95,7 +99,7 @@ def landlock():
     return libc, syscall
 
 
-def restrict(hidden):
+def restrict(hidden, exposed=()):
     libc, syscall = landlock()
     try:
         abi = syscall(
@@ -165,6 +169,10 @@ def restrict(hidden):
             allow(child)
 
     grant("/")
+    # Landlock does not check path traversal, so a rule on an exposed path
+    # grants it even though the hidden directory above it has no rule.
+    for path in exposed:
+        allow(path)
     if libc.prctl(ctypes.c_int(PR_SET_NO_NEW_PRIVS), ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
         raise RuntimeError("prctl(PR_SET_NO_NEW_PRIVS) failed")
     syscall(ctypes.c_long(SYS_LANDLOCK_RESTRICT_SELF), ctypes.c_long(ruleset), ctypes.c_long(0))
@@ -181,11 +189,19 @@ def restrict(hidden):
         except OSError:
             continue
         raise RuntimeError("sandbox ineffective: %s is still readable" % path)
+    for path in exposed:
+        try:
+            if os.path.isdir(path):
+                os.listdir(path)
+            else:
+                os.close(os.open(path, os.O_RDONLY | os.O_CLOEXEC))
+        except OSError as error:
+            raise RuntimeError("sandbox unusable: %s is not readable (%s)" % (path, error))
     return abi
 
 
 def main():
-    required, hidden_inputs, unset, assignments, command = parse(sys.argv[1:])
+    required, hidden_inputs, exposed_inputs, unset, assignments, command = parse(sys.argv[1:])
     hidden = []
     for path in hidden_inputs:
         # Keep paths that do not exist yet: their ancestors stay ungranted, so
@@ -194,6 +210,16 @@ def main():
         if real == "/":
             fail("refusing to hide the filesystem root", 2)
         hidden.append(real)
+    exposed = []
+    for path in exposed_inputs:
+        real = os.path.realpath(path)
+        if not os.path.exists(real):
+            fail("exposed path must exist before the sandbox starts: %s" % real, 2)
+        if not any(within(real, root) and real != root for root in hidden):
+            fail("exposed path must lie beneath a hidden directory: %s" % real, 2)
+        if any(within(root, real) for root in hidden):
+            fail("exposed path would reveal a hidden path: %s" % real, 2)
+        exposed.append(real)
     for name in unset:
         os.environ.pop(name, None)
     for name, value in assignments:
@@ -204,7 +230,7 @@ def main():
                 fail("Landlock requires Linux")
         else:
             try:
-                restrict(hidden)
+                restrict(hidden, exposed)
             except (OSError, RuntimeError) as error:
                 if required:
                     fail(str(error))

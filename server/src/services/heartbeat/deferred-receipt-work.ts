@@ -5,9 +5,9 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
-import { issueBlockersResolvedWakePayloadSql } from "../issue-dependency-wakeups.js";
+import { dependencyResolvedWakePayloadSql } from "../issue-dependency-wakeups.js";
 
-type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean };
+type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean; operatorRetry?: boolean };
 type NativeIntentOptions = DeferredExecutionScope & {
   onDeferredDeadline(at: number): void;
   onError(error: unknown): void;
@@ -21,9 +21,15 @@ export function registerDeferredReceiptWork(
     settleTaskChat(scope: DeferredExecutionScope): Promise<unknown>;
     createNativeBatch(): (scope: NativeIntentOptions) => Promise<unknown>;
     schedulingSuppressed(): Promise<boolean>;
+    subscribeRefresh?(refresh: () => void): () => void;
   },
   canRun: () => boolean,
 ) {
+  let unsubscribeRefresh: (() => void) | undefined;
+  function releaseRefresh() {
+    unsubscribeRefresh?.();
+    unsubscribeRefresh = undefined;
+  }
   function register(kind: "deferred" | "task_chat" | "native") {
     const cursors = new Map<string, string>();
     let enabled = false;
@@ -45,23 +51,28 @@ export function registerDeferredReceiptWork(
       // receipts already checked; actual wait/claim deadlines still replace.
       mergeEntry: (pending, loaded) => pending.immediate && loaded.immediate
         ? { ...loaded, dueAt: Math.min(pending.dueAt, loaded.dueAt) } : loaded,
+      priority: entry => entry.operatorRetry ? 1 : 0,
+      onStop: releaseRefresh,
       load: async scope => {
         const key = scope ? JSON.stringify({ companyId: scope.companyId, requestId: scope.requestId }) : "*";
         if (!enabled) { cursors.delete(key); return []; }
         const cursor = cursors.get(key);
-        const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+        const operatorRetry = sql`coalesce(${agentWakeupRequests.reason}, '') = 'task_retry'
+          and coalesce(${agentWakeupRequests.requestedByActorType}, '') = 'user'`;
+        const columns = { id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
           status: agentWakeupRequests.status, updatedAt: agentWakeupRequests.updatedAt,
           claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
+          operatorRetry: sql<boolean>`${operatorRetry}`,
           delayed: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
             or ${agentWakeupRequests.payload}->'executionWait' is not null`,
           interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
             where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
               and r.runtime_mode = 'legacy' and r.status = 'cancelled'
               and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text)`,
-        }).from(agentWakeupRequests).where(and(
+        };
+        const eligible = and(
           scope ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
           scope?.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
-          cursor ? gt(agentWakeupRequests.id, cursor) : undefined,
           kind === "native" ? and(
             eq(agentWakeupRequests.requestedByActorType, "system"),
             eq(agentWakeupRequests.requestedByActorId, "native-status-committer"),
@@ -75,22 +86,30 @@ export function registerDeferredReceiptWork(
               sql`jsonb_typeof(${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}') = 'array'
                 and ${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
               sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
-              issueBlockersResolvedWakePayloadSql,
+              dependencyResolvedWakePayloadSql,
               sql`exists (select 1 from heartbeat_runs r where r.company_id = ${agentWakeupRequests.companyId}
                 and r.runtime_mode = 'legacy' and r.status = 'cancelled'
                 and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text)`,
             )),
-        )).orderBy(asc(agentWakeupRequests.id)).limit(100);
+        );
+        const prioritized = kind === "deferred" && !cursor
+          ? await db.select(columns).from(agentWakeupRequests).where(and(eligible, operatorRetry))
+            .orderBy(asc(agentWakeupRequests.id)).limit(100)
+          : [];
+        const rows = await db.select(columns).from(agentWakeupRequests).where(and(eligible,
+          cursor ? gt(agentWakeupRequests.id, cursor) : undefined))
+          .orderBy(asc(agentWakeupRequests.id)).limit(100);
         const complete = rows.length < 100;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         const now = Date.now();
-        return { rows: rows.map(row => {
+        return { rows: [...prioritized, ...rows].map(row => {
           const deadline = kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
             : kind === "native" && row.error ? row.updatedAt.getTime() + 30_000
             : kind === "deferred" && row.delayed && !row.interruptedLegacy ? row.updatedAt.getTime() + 30_000
             : null;
           const immediate = deadline === null || deadline <= now;
-          return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate };
+          return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate,
+            operatorRetry: kind === "deferred" && row.operatorRetry };
         }), complete };
       },
       check: async entry => {
@@ -132,6 +151,7 @@ export function registerDeferredReceiptWork(
     }, canRun);
   }
   const workers = [register("deferred"), register("task_chat"), register("native")];
+  unsubscribeRefresh = owner.subscribeRefresh?.(() => { for (const worker of workers) worker.refresh(); });
   return { ready: Promise.all(workers.map(worker => worker.ready)),
     wake() { for (const worker of workers) worker.invalidate(); },
     async stop() { await Promise.all(workers.map(worker => worker.stop())); } };

@@ -6,6 +6,20 @@ import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
+import { readRunFailureCause, withoutSqlStatementText } from "@paperclipai/shared";
+
+/**
+ * A run row's `error` without SQL statement text. Rows saved before run errors
+ * were cleaned at settlement can still carry a Drizzle `Failed query:` statement
+ * and its parameters; every run read that passes through here drops them.
+ */
+function withoutSqlRunError<T>(value: T): T {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (typeof record.error !== "string") return value;
+  const error = withoutSqlStatementText(record.error, readRunFailureCause(record.resultJson));
+  return error === record.error ? value : { ...record, error } as T;
+}
 
 const REGISTRY_KEY = "paperclipSecretRedactions";
 // Project only the registry: run contexts can contain megabytes of prompt data.
@@ -145,12 +159,16 @@ export function createRunSecretRedactionRegistry(db: Db) {
       })));
       return runs.map((run) => {
         const disclosure = valuesByRun.get(run.id);
-        return redactRegisteredSecretValues(run, disclosure?.values ?? [], disclosure?.credentialConnectionName ?? null);
+        return redactRegisteredSecretValues(withoutSqlRunError(run), disclosure?.values ?? [], disclosure?.credentialConnectionName ?? null);
       });
+    },
+    redactorForRun: async (companyId: string, runId: string, viewerUserId: string | null = null) => {
+      const disclosure = await valuesForRun(companyId, runId, viewerUserId);
+      return <T>(value: T): T => redactRegisteredSecretValues(withoutSqlRunError(value), disclosure.values, disclosure.credentialConnectionName);
     },
     redactForRun: async <T>(companyId: string, runId: string, value: T, viewerUserId: string | null = null): Promise<T> => {
       const disclosure = await valuesForRun(companyId, runId, viewerUserId);
-      return redactRegisteredSecretValues(value, disclosure.values, disclosure.credentialConnectionName);
+      return redactRegisteredSecretValues(withoutSqlRunError(value), disclosure.values, disclosure.credentialConnectionName);
     },
     redactForIssue: async <T>(companyId: string, issueId: string, value: T): Promise<T> =>
       redactRegisteredSecretValues(value, await valuesForIssue(companyId, issueId)),

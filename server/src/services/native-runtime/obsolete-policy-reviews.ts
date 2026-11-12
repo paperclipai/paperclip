@@ -2,9 +2,9 @@ import type { ObsoletePolicyReviewScope } from "../obsolete-policy-review-notifi
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
-import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
-  approvals, issueApprovals, issueThreadInteractions, issues,
+  approvals, heartbeatRuns, issueApprovals, issueThreadInteractions, issues,
   nativeRunFinalizations, statusDecisionEffects, statusDecisions, workAssessments,
   type Db,
 } from "@paperclipai/db";
@@ -37,6 +37,8 @@ function findObsoletePolicyReviews(db: Db, options: { runIds?: string[]; scope?:
       eq(statusDecisions.issueId, issueThreadInteractions.issueId),
       eq(statusDecisions.runId, issueThreadInteractions.sourceRunId),
     ))
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, issueThreadInteractions.sourceRunId),
+      eq(heartbeatRuns.companyId, issueThreadInteractions.companyId)))
     .innerJoin(workAssessments, and(
       eq(workAssessments.id, statusDecisions.assessmentId),
       eq(workAssessments.companyId, statusDecisions.companyId),
@@ -45,7 +47,8 @@ function findObsoletePolicyReviews(db: Db, options: { runIds?: string[]; scope?:
     .where(and(
       eq(issueThreadInteractions.status, "pending"),
       eq(issueThreadInteractions.kind, "request_confirmation"),
-      isNull(issueThreadInteractions.createdByAgentId),
+      or(isNull(issueThreadInteractions.createdByAgentId),
+        eq(issueThreadInteractions.createdByAgentId, heartbeatRuns.agentId)),
       isNull(issueThreadInteractions.createdByUserId),
       eq(statusDecisions.applicationState, "applied"),
       eq(statusDecisions.reasonCode, "completion_review_required"),
@@ -97,7 +100,10 @@ async function dismissCandidates(db: Db, candidates: Awaited<ReturnType<typeof f
           eq(issueThreadInteractions.kind, interaction.kind),
           eq(issueThreadInteractions.sourceRunId, decision.runId),
           eq(issueThreadInteractions.idempotencyKey, interaction.idempotencyKey!),
-          isNull(issueThreadInteractions.createdByAgentId), isNull(issueThreadInteractions.createdByUserId),
+          interaction.createdByAgentId
+            ? eq(issueThreadInteractions.createdByAgentId, interaction.createdByAgentId)
+            : isNull(issueThreadInteractions.createdByAgentId),
+          isNull(issueThreadInteractions.createdByUserId),
         )).returning({ id: issueThreadInteractions.id });
         if (!cancelled) return;
         const terminalInteraction = await issueThreadInteractionService(tx as unknown as Db).getById(cancelled.id);

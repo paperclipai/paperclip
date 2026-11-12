@@ -95,6 +95,7 @@ describe("auth routes", () => {
       user: baseUser,
       sentryDsn: null,
       sentryEnvironment: null,
+      browserTracing: null,
     });
   });
 

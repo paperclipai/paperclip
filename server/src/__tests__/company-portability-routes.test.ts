@@ -1268,7 +1268,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
       { ...importRequest, pauseAutomations: true },
       null,
-      { mode: "agent_safe", sourceCompanyId: companyId, pauseAutomations: true, assertCanCreateAgents: expect.any(Function) },
+      { mode: "agent_safe", sourceCompanyId: companyId, actorAgentId: ceoAgentId, actorAgentCompanyId: companyId, pauseAutomations: true, assertCanCreateAgents: expect.any(Function) },
     );
   });
 

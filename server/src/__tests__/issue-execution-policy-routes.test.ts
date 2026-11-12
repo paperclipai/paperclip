@@ -1,5 +1,7 @@
 import express from "express";
 import request from "supertest";
+import { getTableName, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
@@ -51,7 +53,7 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
       permissions: null,
     }]).then(onFulfilled, onRejected),
 })));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn((_table: unknown): { where: (...args: never[]) => unknown } => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
@@ -221,7 +223,24 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation((table) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0]);
+      if (name !== "issues" && name !== "agents") return { where: mockDbSelectWhere };
+      return { where: (condition: SQL) => {
+        const ids = [...new Set(new PgDialect().sqlToQuery(condition).params
+          .filter((value): value is string => typeof value === "string" && value !== "company-1"))];
+        const rows = async () => name === "issues"
+          ? (await Promise.all(ids.map(id => mockIssueService.getById(id)))).filter(row => row && ids.includes(row.id))
+          : ids.map(id => ({ id, companyId: "company-1", permissions: null }));
+        const query = {
+          orderBy: () => query,
+          for: () => query,
+          then: (resolve: (rows: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
+            rows().then(resolve, reject),
+        };
+        return query;
+      } };
+    });
     mockDbSelectWhere.mockImplementation(() => ({
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>

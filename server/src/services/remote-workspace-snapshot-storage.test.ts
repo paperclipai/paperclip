@@ -1,4 +1,5 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,18 +7,21 @@ import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as wait } from "node:timers/promises";
 import { Readable } from "node:stream";
-import { appendFileSync, readdirSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, readdirSync, statSync, truncateSync, writeSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, createDb, executionWorkspaceSnapshots } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
+import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
+import { isStorageUnavailableError, reportStorageOutageWaitsTo, runInOwnStorageScope, sendThroughStorageOutage } from "../storage/storage-unavailable.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
+import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 
 // Pass-through, so one test can report a changed archive between the two
 // identity reads that bracket encryption.
@@ -74,6 +78,44 @@ suite("remote workspace snapshot storage", () => {
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
   });
+  it.each(["uploaded", "lost-reply"])("refuses an unreadable %s snapshot key without downloading", async state => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    if (state === "lost-reply") {
+      storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };
+      await expect(uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" })).rejects.toThrow("lost upload reply");
+      storage.putFile = put;
+    } else await uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" });
+    await fs.rm(f.archivePath);
+    const get = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("must not download"));
+    const upload = vi.spyOn(storage, "putFile");
+    const [before] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "42".repeat(32));
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" })).rejects.toThrow();
+    const [after] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    expect(after).toEqual(before);
+    expect(get).not.toHaveBeenCalled(); expect(upload).not.toHaveBeenCalled();
+  });
+  it("records where a save and a restore spend their time", async () => {
+    const f = await fixture();
+    const saveTiming = newWorkspaceSnapshotStorageTiming();
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, timing: saveTiming });
+    const step = expect.any(Number);
+    expect(saveTiming).toMatchObject({ priorAttemptCheckMs: step, encryptMs: step, digestMs: step, putMs: step, verifyMs: step,
+      bytes: ref.byteSize });
+    const restoreTiming = newWorkspaceSnapshotStorageTiming();
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: path.join(root, "timed.pcws"), timing: restoreTiming });
+    expect(restoreTiming).toMatchObject({ downloadMs: step, decryptMs: step, plaintextVerifyMs: step, publishMs: step,
+      bytes: ref.byteSize });
+  });
+
+  it("times the read-back of an earlier upload that a retried save reuses", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const retry = newWorkspaceSnapshotStorageTiming();
+    await uploadWorkspaceSnapshot({ ...f.upload, timing: retry });
+    expect(retry).toMatchObject({ verifyMs: expect.any(Number), bytes: ref.byteSize });
+    expect(retry.putMs).toBeUndefined();
+  });
+
   it("preserves multi-chunk archive bytes through encryption, authenticated readback, and cold restore", async () => {
     const content = randomBytes(3 * 1024 * 1024 + 137), f = await fixture(content);
     const verifiedArchivePath = path.join(root, "verified-large.pcws");
@@ -202,6 +244,41 @@ suite("remote workspace snapshot storage", () => {
     expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: ref.id })).toEqual(ref);
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect((row?.metadata?.uploads as unknown[]).length).toBe(1);
+  });
+  it("aborts the incomplete upload of an attempt a restart cut off once a retried save publishes", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage), incomplete = new Set<string>();
+    storage.abortIncompleteUploads = vi.fn(async (_companyId: string, key: string) => Number(incomplete.delete(key)));
+    storage.putFile = async input => { incomplete.add(input.objectKey!); throw new Error("process killed mid UploadPart"); };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("process killed mid UploadPart");
+    const [cut] = [...incomplete];
+    storage.putFile = put;
+    const ref = await uploadWorkspaceSnapshot(f.upload);
+    expect(ref.objectKey).not.toBe(cut);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledTimes(1);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledWith(f.companyId, cut, expect.anything());
+    expect(incomplete.size).toBe(0);
+    await uploadWorkspaceSnapshot(f.upload);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledTimes(1);
+  });
+  it("adopts the published save when another uploader aborts this attempt's upload", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    let release!: (error: Error) => void, started!: () => void;
+    const gate = new Promise<never>((_resolve, reject) => { release = reject; });
+    const blocked = new Promise<void>(resolve => { started = resolve; });
+    let first = true, aborted: string | null = null;
+    storage.putFile = async input => {
+      if (!first) return put(input);
+      first = false; aborted = input.objectKey!; started(); return gate;
+    };
+    storage.abortIncompleteUploads = vi.fn(async (_companyId: string, key: string) => {
+      if (key === aborted) release(Object.assign(new Error("NoSuchUpload"), { name: "NoSuchUpload" }));
+      return 1;
+    });
+    const loser = uploadWorkspaceSnapshot(f.upload);
+    await blocked;
+    const winner = await uploadWorkspaceSnapshot(f.upload);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledWith(f.companyId, aborted, expect.anything());
+    expect(await loser).toEqual(winner);
   });
   it("retains an unsuccessful operation and rejects a content-changing retry", async () => {
     const f = await fixture(); storage.putFile = async () => { throw new Error("storage unavailable"); };
@@ -388,6 +465,158 @@ suite("remote workspace snapshot storage", () => {
     await expect(loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath })).rejects.toMatchObject({ code: "EEXIST" });
     expect(await fs.readFile(targetPath, "utf8")).toBe("existing");
   });
+  // The digest and cipher passes of a save and a restore run on worker threads,
+  // so they neither wait for the server's thread nor hold it.
+  const MIB = 1024 * 1024;
+  /** Counts the bytes this thread digests, encrypts or decrypts. */
+  const serverThreadCrypto = () => {
+    const key = randomBytes(32), iv = randomBytes(12);
+    const spies = [createHash("sha256"), createCipheriv("aes-256-gcm", key, iv), createDecipheriv("aes-256-gcm", key, iv)]
+      .map(instance => vi.spyOn(Object.getPrototypeOf(instance) as { update(data: string | Uint8Array): unknown }, "update"));
+    return {
+      bytes: () => spies.reduce((total, spy) => total + spy.mock.calls.reduce((sum, [data]) => sum + data.length, 0), 0),
+      restore: () => { for (const spy of spies) spy.mockRestore(); },
+    };
+  };
+  /** Sends the save's private scratch under `root`, and finds its encrypted file once encryption has begun. */
+  const encryptionScratch = async () => {
+    const scratchRoot = path.join(root, "encrypt-scratch"); await fs.mkdir(scratchRoot);
+    const temp = vi.spyOn(os, "tmpdir").mockReturnValue(scratchRoot);
+    const started = () => vi.waitFor(async () => {
+      const file = path.join(scratchRoot, (await fs.readdir(scratchRoot))[0] ?? "missing", "archive.encrypted");
+      await fs.access(file);
+      return file;
+    }, { timeout: 30_000, interval: 5 });
+    return { scratchRoot, started, restore: () => temp.mockRestore() };
+  };
+  const storedFiles = async () => (await fs.readdir(path.join(root, "objects"), { recursive: true, withFileTypes: true })
+    .catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return []; })).filter(entry => entry.isFile());
+  const stagedPlaintext = async () => (await fs.readdir(root)).filter(name => name.startsWith(".workspace-snapshot-"));
+  const rewrap = async (ref: Awaited<ReturnType<typeof uploadWorkspaceSnapshot>>, change: Record<string, unknown>) => {
+    const wrapped = JSON.parse(await localEncryptedProvider.resolveVersion({ material: ref.key, externalRef: null }));
+    return { ...ref, key: (await localEncryptedProvider.createVersion({ value: JSON.stringify({ ...wrapped, ...change }) })).material };
+  };
+
+  it("keeps encrypting a save while the server thread is occupied by other work", async () => {
+    const f = await fixture(randomBytes(24 * MIB)), scratch = await encryptionScratch();
+    try {
+      const saving = uploadWorkspaceSnapshot(f.upload);
+      saving.catch(() => undefined);
+      const encrypted = await scratch.started();
+      // Nothing else on this thread runs until this loop ends: no timer, no
+      // I/O callback, no promise. The encrypted file has to complete anyway.
+      const complete = f.captured.byteSize + 7 + 12 + 16, deadline = Date.now() + 30_000, pause = new Int32Array(new SharedArrayBuffer(4));
+      let size = 0;
+      while ((size = statSync(encrypted).size) < complete && Date.now() < deadline) Atomics.wait(pause, 0, 0, 5);
+      expect(size).toBe(complete);
+      const ref = await saving, restored = path.join(root, "restored-after-busy.pcws");
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: restored });
+      expect((await fs.readFile(restored)).equals(await fs.readFile(f.archivePath))).toBe(true);
+    } finally { scratch.restore(); }
+  }, 90_000);
+  it.skipIf(process.platform === "win32")("answers unrelated requests while a save is being encrypted, and digests or encrypts none of it on the server thread", async () => {
+    const f = await fixture(), archivePath = path.join(root, "streamed.pcws"), scratch = await encryptionScratch();
+    // A named pipe keeps the save encrypting for exactly as long as this test
+    // feeds it, so "in progress" is a fact here and not a matter of timing.
+    execFileSync("mkfifo", [archivePath]);
+    const controller = new AbortController(), feed = await fs.open(archivePath, "r+"), onThread = serverThreadCrypto();
+    let settled = false;
+    const saving = uploadWorkspaceSnapshot({ ...f.upload, archivePath, signal: controller.signal })
+      .then(() => "saved" as const, (error: unknown) => error).finally(() => { settled = true; });
+    try {
+      const encrypted = await scratch.started();
+      await feed.write(randomBytes(4 * MIB));
+      await vi.waitFor(async () => expect((await fs.stat(encrypted)).size).toBeGreaterThanOrEqual(4 * MIB), { timeout: 30_000, interval: 5 });
+      for (let request = 0; request < 25; request++) expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: f.row.id })).toBeNull();
+      expect(settled).toBe(false);
+      expect(onThread.bytes()).toBeLessThan(64 * 1024);
+      // Cancelling stops the encryption at its next chunk and leaves nothing behind.
+      controller.abort(new Error("run cancelled"));
+      await feed.write(randomBytes(1024));
+      expect(await saving).toMatchObject({ name: "AbortError" });
+      expect(await fs.readdir(scratch.scratchRoot)).toEqual([]);
+      expect(await storedFiles()).toEqual([]);
+      const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+      expect(row?.status).toBe("pending"); expect(row?.metadata?.uploads ?? []).toEqual([]);
+    } finally { controller.abort(); await feed.close(); await saving; onThread.restore(); scratch.restore(); }
+  }, 90_000);
+  it("digests and decrypts none of a save or a restore on the server thread when the store verified the upload", async () => {
+    const f = await fixture(randomBytes(8 * MIB)), put = storage.putFile.bind(storage);
+    storage.putFile = async input => ({ ...await put(input), integrity: "server_verified_md5" });
+    const onThread = serverThreadCrypto();
+    try {
+      const ref = await uploadWorkspaceSnapshot(f.upload), restored = path.join(root, "restored-off-thread.pcws");
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: restored });
+      // Wrapping and unwrapping the data key is all that is left here.
+      expect(onThread.bytes()).toBeLessThan(64 * 1024);
+      expect((await fs.readFile(restored)).equals(await fs.readFile(f.archivePath))).toBe(true);
+    } finally { onThread.restore(); }
+  });
+  it("leaves no object behind when a save is cancelled while it is being stored", async () => {
+    const f = await fixture(randomBytes(MIB)), put = storage.putFile.bind(storage), controller = new AbortController();
+    storage.putFile = async input => { controller.abort(new Error("run cancelled")); return put(input); };
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, signal: controller.signal })).rejects.toThrow();
+    expect(await storedFiles()).toEqual([]);
+    expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: f.row.id })).toBeNull();
+  });
+  it.each(["grows", "shrinks", "is rewritten in place"])("rejects an archive that %s after its identity was read, before any upload", async change => {
+    const f = await fixture(randomBytes(2 * MIB)), put = vi.spyOn(storage, "putFile");
+    let reads = 0;
+    lstatOverride.current = async (file, real) => {
+      const stats = await real(file);
+      if (file !== f.archivePath || ++reads !== 1) return stats;
+      if (change === "grows") appendFileSync(f.archivePath, "one more byte");
+      else if (change === "shrinks") truncateSync(f.archivePath, stats.size - 1);
+      else { const archive = openSync(f.archivePath, "r+"); try { writeSync(archive, randomBytes(64), 0, 64, MIB); } finally { closeSync(archive); } }
+      return stats;
+    };
+    try { await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("archive_changed"); }
+    finally { lstatOverride.current = null; }
+    expect(put).not.toHaveBeenCalled();
+    expect(await storedFiles()).toEqual([]);
+  });
+  it.each([["truncated", "object_hash_mismatch"], ["oversized", "object_size_mismatch"]])("rejects a %s stored object and publishes nothing", async (damage, reason) => {
+    const f = await fixture(randomBytes(MIB)), ref = await uploadWorkspaceSnapshot(f.upload), objectPath = path.join(root, "objects", ref.objectKey);
+    if (damage === "truncated") await fs.truncate(objectPath, ref.byteSize - 1); else await fs.appendFile(objectPath, "x");
+    const targetPath = path.join(root, `${damage}.pcws`);
+    await expect(loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath })).rejects.toThrow(reason);
+    await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await stagedPlaintext()).toEqual([]);
+  });
+  it("rejects a stored object whose ciphertext changed even when the recorded digest was changed to match", async () => {
+    const f = await fixture(randomBytes(MIB)), ref = await uploadWorkspaceSnapshot(f.upload), objectPath = path.join(root, "objects", ref.objectKey);
+    const forged = await fs.readFile(objectPath); forged[forged.length - 40]! ^= 1;
+    await fs.writeFile(objectPath, forged);
+    const targetPath = path.join(root, "forged.pcws"), scratch = path.join(root, "forged-scratch"); await fs.mkdir(scratch);
+    await expect(loadWorkspaceSnapshotArchive({ storage, reference: { ...ref, sha256: createHash("sha256").update(forged).digest("hex") },
+      targetPath, temporaryParent: scratch })).rejects.toThrow(/authenticate/);
+    await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await stagedPlaintext()).toEqual([]); expect(await fs.readdir(scratch)).toEqual([]);
+  });
+  it("rejects an archive that decrypts but differs from the digest bound into its key, and removes the staged copy", async () => {
+    const f = await fixture(randomBytes(MIB)), ref = await uploadWorkspaceSnapshot(f.upload);
+    for (const change of [{ plaintextSha256: "0".repeat(64) }, { plaintextBytes: f.captured.byteSize + 1 }]) {
+      const targetPath = path.join(root, `unbound-${Object.keys(change)[0]}.pcws`);
+      await expect(loadWorkspaceSnapshotArchive({ storage, reference: await rewrap(ref, change), targetPath })).rejects.toThrow("plaintext_hash_mismatch");
+      await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await stagedPlaintext()).toEqual([]);
+    }
+  });
+  it("reports a damaged object before a damaged header, and a damaged header before an unusable key", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload), objectPath = path.join(root, "objects", ref.objectKey);
+    const shortKey = await rewrap(ref, { dataKey: Buffer.alloc(16, 7).toString("base64") }), targetPath = path.join(root, "ordered.pcws");
+    const load = (reference: typeof ref) => loadWorkspaceSnapshotArchive({ storage, reference, targetPath });
+    await expect(load(shortKey)).rejects.toThrow("key_invalid");
+    const damaged = await fs.readFile(objectPath); damaged[0]! ^= 1;
+    await fs.writeFile(objectPath, damaged);
+    await expect(load(shortKey)).rejects.toThrow("object_hash_mismatch");
+    await expect(load(ref)).rejects.toThrow("object_hash_mismatch");
+    const recorded = createHash("sha256").update(damaged).digest("hex");
+    await expect(load({ ...shortKey, sha256: recorded })).rejects.toThrow("ciphertext_header_invalid");
+    await expect(load({ ...ref, sha256: recorded })).rejects.toThrow("ciphertext_header_invalid");
+    await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await stagedPlaintext()).toEqual([]);
+  });
   it("does not start object retrieval for an already canceled snapshot load", async () => {
     const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
     const getObject = vi.spyOn(storage, "getObject");
@@ -431,6 +660,48 @@ suite("remote workspace snapshot storage", () => {
       await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { temp.mockRestore(); }
   });
+  it("tells the run it is waiting for storage while a save or a restore waits out an outage", async () => {
+    const f = await fixture();
+    const outage = () => withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    });
+    let puts = 0, gets = 0, restoring = false;
+    const flaky = { ...storage,
+      putFile: (input: Parameters<StorageService["putFile"]>[0]) => sendThroughStorageOutage(async () => (++puts < 2 ? outage() : storage.putFile(input))),
+      getObject: vi.fn(async (...args: Parameters<StorageService["getObject"]>) => (restoring && ++gets < 2 ? outage() : storage.getObject(...args))),
+    } as StorageService;
+    const waiting = vi.fn(), ended = vi.fn();
+    await runInOwnStorageScope(async () => {
+      reportStorageOutageWaitsTo({ waiting, ended });
+      const ref = await uploadWorkspaceSnapshot({ ...f.upload, storage: flaky });
+      restoring = true;
+      await loadWorkspaceSnapshotArchive({ storage: flaky, reference: ref, targetPath: path.join(root, "waited.pcws") });
+    });
+    expect(waiting.mock.calls.map(([wait]) => wait.purpose)).toEqual(["saving the workspace", "restoring the workspace"]);
+    expect(ended.mock.calls.map(([wait]) => [wait.purpose, wait.recovered])).toEqual([["saving the workspace", true], ["restoring the workspace", true]]);
+  }, 30_000);
+  it("keeps a storage outage as the cause when the download deadline ends its wait", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    let requested!: () => void;
+    const firstRequest = new Promise<void>(resolve => { requested = resolve; });
+    const unavailable = { ...storage, getObject: vi.fn(async () => {
+      requested();
+      return withS3FailureDiagnostics("get_object", async () => {
+        throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+      });
+    }) } as StorageService;
+    const scratch = path.join(root, "outage-scratch"); await fs.mkdir(scratch);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = loadWorkspaceSnapshotArchive({ storage: unavailable, reference: ref, targetPath: path.join(root, "outage.pcws"),
+      temporaryParent: scratch }).then(() => ({ succeeded: true }), (error: unknown) => error);
+    try {
+      await firstRequest;
+      await vi.advanceTimersByTimeAsync(300_001);
+      const outcome = await Promise.race([result, wait(2_000).then(() => ({ pending: true }))]);
+      expect(isStorageUnavailableError(outcome)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["headers", "body"])("closes a stalled S3 %s request before returning a retryable download failure", async phase => {
     const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
     const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));

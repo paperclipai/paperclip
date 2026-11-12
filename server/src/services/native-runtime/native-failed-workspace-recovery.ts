@@ -18,6 +18,8 @@ import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-fi
 import { pinFailedObservedWorkspace } from "./native-observed-workspace-preservation.js";
 import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
 import { preparedRemoteWorkspaceSource } from "../remote-workspace-lifecycle.js";
+import { releaseUnchangedRemoteWorkspaceWriterById } from "../remote-workspaces.js";
+import { isSupersededWorkspaceExport, markSupersededWorkspaceExportHold } from "./native-superseded-workspace-export.js";
 
 const reusableLeasePolicies = ["reuse_by_environment", "reuse_by_execution_workspace"];
 
@@ -102,8 +104,12 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       && (claim.kind !== "reattach_remote_runner" || (claim.remote.kind !== "plugin_task" && claim.remote.providerLeaseId === reference.providerLeaseId
         && claim.remote.remoteCwd === reference.remoteCwd)));
     if ((coordinator?.leaseOwner || (claim && coordinator?.phase === "observed")) && !ownsClaim) throw new NativeWorkspaceFinalizationBusyError();
+    // A result retired as superseded after its workspace export failed owes
+    // the same files as an exhausted copy-back: nothing else exports them, and
+    // its writer keeps the workspace until they are saved or set aside.
+    const supersededExport = Boolean(coordinator && isSupersededWorkspaceExport(coordinator));
     const exhaustedAcceptedCopyback = Boolean(coordinator?.resultId && coordinator.phase === "terminal_failure"
-      && coordinator.failureCode === "native_workspace_sync_out_retry_exhausted");
+      && coordinator.failureCode === "native_workspace_sync_out_retry_exhausted") || supersededExport;
     if (!coordinator || (coordinator.resultId && !exhaustedAcceptedCopyback
       && !(options.requireCancelledStop && stoppedAcceptedCopyback(coordinator)))
       || !(options.allowPreterminal ? ["observed", "terminal_failure"] : ["terminal_failure"]).includes(coordinator.phase)) return;
@@ -137,6 +143,12 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       )).limit(1);
       if (!accepted) return;
     }
+    // A run that ended without changing its files has nothing to keep: its
+    // workspace is handed on at the saved version it started from.
+    if (!exhaustedAcceptedCopyback && !coordinator.resultId && coordinator.phase === "terminal_failure"
+      && run.runnerProfileJson?.nativeWorkspaceSync == null
+      && await releaseUnchangedRemoteWorkspaceWriterById(tx, { companyId: run.companyId,
+        workspaceId: currentReference.workspaceId, runId: run.id })) return;
     // A stopped reusable sandbox is retained only with its exact stop receipt
     // while the workspace is still bound to this writer. Otherwise record nothing.
     if (!exhaustedAcceptedCopyback && source.status !== "active" && reusableLeasePolicies.includes(source.leasePolicy) && (!hasConfirmedSandboxStopAndRetain(source)
@@ -163,6 +175,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       [retained] = await tx.update(heartbeatRuns).set({ nativePhase: "terminal_failure", nativePhaseUpdatedAt: new Date() })
         .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId))).returning();
     }
+    if (supersededExport && retainFiles) await markSupersededWorkspaceExportHold(tx as unknown as Db, retained);
     if (retainFiles && !alreadyRetained) await logActivity(tx as unknown as Db, {
       companyId: run.companyId, actorType: "system", actorId: "native-workspace-recovery",
       action: "issue.workspace_recovery_required", entityType: "issue",

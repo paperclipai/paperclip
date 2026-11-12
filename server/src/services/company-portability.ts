@@ -1,6 +1,9 @@
+import { publishActivity, type ActivityPublication } from "./activity-log.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
-import { createAgentLifecycle } from "./agent-lifecycle.js";
+import { createAgentLifecycle, requestAgentHireInTransaction, initializeImportedAgentConfigurationInTransaction, scheduleAgentLifecycle } from "./agent-lifecycle.js";
 import { agentAppearanceSchema, agentHarnessType, paperclipRunnerProfileForHarness, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -10,6 +13,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { and, eq, inArray } from "drizzle-orm";
 import {
+  companies as companiesTable,
   builtInManagedResources,
   issueRelations,
   principalPermissionGrants,
@@ -761,6 +765,10 @@ type ImportPlanInternal = {
 type ImportMode = "board_full" | "agent_safe";
 
 type ImportBehaviorOptions = {
+  actorAgentId?: string | null;
+  actorAgentCompanyId?: string | null;
+  interactionTransaction?: boolean;
+  interactionPublications?: ActivityPublication[];
   mode?: ImportMode;
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
@@ -3575,7 +3583,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
-  const agentsLifecycle = createAgentLifecycle(db);
+  const agentsLifecycle = () => createAgentLifecycle(db);
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService(db);
   const access = accessService(db);
@@ -4268,6 +4276,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           },
         ) as Record<string, unknown>;
         const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        if (Object.hasOwn(agent.permissions ?? {}, "interactions")) {
+          delete portablePermissions.interactions;
+          warnings.push(`Agent ${slug} interaction restrictions are not copied by company packages; configure them through the interaction-permissions CLI after import.`);
+        }
         // A CEO's recorded hiring denial is a board choice, so it survives the
         // round trip even though export otherwise drops false values.
         const exportedHiringDenial = agent.role === "ceo" ? ceoHiringDenial(agent.permissions) : null;
@@ -5272,6 +5284,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     // the declared count is the only signal that distinguishes it from a
     // deliberately small bundle. Reject the fragment rather than importing it.
     assertInlineSourceComplete(input.source);
+    const origin = currentPluginInteractionOrigin();
+    const actorAgentId = origin?.agentId ?? options?.actorAgentId;
+    const actorAgentCompanyId = origin?.companyId ?? options?.actorAgentCompanyId ?? options?.sourceCompanyId;
+    if (actorAgentId && !options?.interactionTransaction) {
+      const publications: ActivityPublication[] = [];
+      const result = await db.transaction(async tx => {
+        const companyIds = [actorAgentCompanyId, input.target.mode === "existing_company" ? input.target.companyId : null]
+          .filter((id): id is string => Boolean(id));
+        await tx.select({ id: companiesTable.id }).from(companiesTable).where(inArray(companiesTable.id, companyIds)).orderBy(companiesTable.id).for("no key update");
+        return companyPortabilityService(tx as unknown as Db, storage).importBundle(input, actorUserId, {
+          ...options, actorAgentId, actorAgentCompanyId, interactionTransaction: true, interactionPublications: publications,
+        });
+      });
+      for (const publication of publications) publishActivity(publication);
+      for (const agent of result.agents) if (agent.action === "created" && agent.id) scheduleAgentLifecycle(db, agent.id);
+      return result;
+    }
     // The importing board user brings a CEO's recorded hiring denial with the
     // package; create and configuration writes never take one from input.
     // Like the permissions toggle, the denial also removes an explicit
@@ -5306,7 +5335,32 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       throw unprocessable("Safe import routes only allow create or skip actions.");
     }
 
+    const updateImportedAgent = (...args: Parameters<typeof agents.update>) => options?.interactionTransaction
+      ? initializeImportedAgentConfigurationInTransaction(db, options.interactionPublications ?? [], args[0], args[1])
+      : agents.update(...args);
     const sourceManifest = plan.source.manifest;
+    if (actorAgentId && actorAgentCompanyId) {
+      const texts: string[] = [];
+      const paths = new Set<string>();
+      if (plan.include.issues) for (const issue of sourceManifest.issues) {
+        texts.push(JSON.stringify(issue));
+        paths.add(issue.path);
+        for (const document of issue.documents ?? []) paths.add(document.path);
+      }
+      if (plan.include.agents) for (const entry of plan.preview.plan.agentPlans) {
+        if (entry.action === "skip") continue;
+        const agent = plan.selectedAgents.find(agent => agent.slug === entry.slug);
+        if (!agent) continue;
+        texts.push(JSON.stringify(agent), JSON.stringify(input.adapterOverrides?.[entry.slug] ?? {}));
+        paths.add(agent.path);
+        for (const path of Object.keys(plan.source.files)) if (path.startsWith(`agents/${entry.slug}/`)) paths.add(path);
+      }
+      for (const path of paths) {
+        const text = readPortableTextFile(plan.source.files, path);
+        if (text !== null) texts.push(text);
+      }
+      await assertAgentInteraction(db, { companyId: actorAgentCompanyId, actorAgentId, operation: "mention", texts, lock: "update" });
+    }
     const pauseAutomations = options?.pauseAutomations === true;
     const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
@@ -5725,8 +5779,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
-            if (pauseAutomations) await agentsLifecycle.pauseAgent(planAgent.existingAgentId, "import");
-            let updated = await agents.update(planAgent.existingAgentId, {
+            if (pauseAutomations) await agentsLifecycle().pauseAgent(planAgent.existingAgentId, "import");
+            let updated = await updateImportedAgent(planAgent.existingAgentId, {
               ...patch,
             });
             if (updated) updated = await applyImportedCeoHiringDenial(targetCompany.id, updated, manifestAgent.permissions) ?? updated;
@@ -5746,7 +5800,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 clearLegacyPromptTemplate: true,
                 replaceExisting: true,
               });
-              updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
+              updated = await updateImportedAgent(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
             } catch (err) {
               warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -5774,12 +5828,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          let created = await agentsLifecycle.requestHire(targetCompany.id, {
+          const requestHire = options?.interactionTransaction
+            ? (...args: Parameters<ReturnType<typeof createAgentLifecycle>["requestHire"]>) => requestAgentHireInTransaction(db, options.interactionPublications ?? [], ...args)
+            : (...args: Parameters<ReturnType<typeof createAgentLifecycle>["requestHire"]>) => agentsLifecycle().requestHire(...args);
+          let created = await requestHire(targetCompany.id, {
             ...patch,
             runner: agentRunner(patch.adapterType),
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
-          }, { createdByUserId: actorUserId });
+          }, { createdByUserId: actorUserId, createdByAgentId: actorAgentId, createdByAgentCompanyId: actorAgentCompanyId ?? undefined });
           created = await applyImportedCeoHiringDenial(targetCompany.id, created, manifestAgent.permissions) ?? created;
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
@@ -5795,7 +5852,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            created = await updateImportedAgent(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -5845,7 +5902,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : null);
           if (!managerId || managerId === agentId) continue;
           try {
-            await agents.update(agentId, { reportsTo: managerId });
+            await updateImportedAgent(agentId, { reportsTo: managerId });
           } catch {
             const managerRef =
               managerSlug
@@ -6115,7 +6172,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   : "skip_missed",
               variables: routineDefinition.variables ?? [],
             }, {
-              agentId: null,
+              agentId: actorAgentId ?? null,
+              agentCompanyId: actorAgentCompanyId ?? undefined,
               userId: actorUserId ?? null,
             });
             resultRoutines.push({
@@ -6137,7 +6195,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   cronExpression: trigger.cronExpression!,
                   timezone: trigger.timezone!,
                 }, {
-                  agentId: null,
+                  agentId: actorAgentId ?? null,
+                  agentCompanyId: actorAgentCompanyId ?? undefined,
                   userId: actorUserId ?? null,
                 });
                 continue;
@@ -6153,7 +6212,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                       : "bearer",
                   replayWindowSec: trigger.replayWindowSec ?? 300,
                 }, {
-                  agentId: null,
+                  agentId: actorAgentId ?? null,
+                  agentCompanyId: actorAgentCompanyId ?? undefined,
                   userId: actorUserId ?? null,
                 });
                 continue;
@@ -6163,7 +6223,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 label: trigger.label,
                 enabled: trigger.enabled,
               }, {
-                agentId: null,
+                agentId: actorAgentId ?? null,
+                agentCompanyId: actorAgentCompanyId ?? undefined,
                 userId: actorUserId ?? null,
               });
             }
@@ -6435,7 +6496,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // statements, turning what used to be one round-trip per row into a
         // handful per table. Empty buffers are skipped so an issues-free import
         // (e.g. routines only) issues no writes at all.
-        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows, actorAgentId, actorAgentCompanyId);
         // Imported issues are historical work, not new inbox items. Seed a
         // per-user inbox archive for the importing board user so a large import
         // (a real 1,418-task company shipped every task to the inbox) does not
@@ -6449,9 +6510,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             actorUserId,
           );
         }
-        if (commentRows.length > 0) await issues.addImportedComments(commentRows);
+        if (commentRows.length > 0) await issues.addImportedComments(commentRows, actorAgentId, actorAgentCompanyId);
         if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
-        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
+        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows, actorAgentId, actorAgentCompanyId);
         if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
 
         if (blockedByBySlug.size > 0) {

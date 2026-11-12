@@ -1,3 +1,4 @@
+import { markBudgetCancelledWorkForResume } from "./budget-resume-continuation.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -70,6 +71,8 @@ export type BudgetEnforcementScope = {
 
 export type BudgetServiceHooks = {
   cancelWorkForScope?: (scope: BudgetEnforcementScope) => Promise<void>;
+  /** Deliver budget-resume continuations; the enforcement worker calls it after Stop delivery. */
+  deliverResumeContinuations?: () => Promise<void>;
 };
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -182,6 +185,12 @@ async function resolveSummaryScopeRecord(db: Db, companyId: string, scopeType: B
   }
   if (scope.companyId !== companyId) throw notFound("Budget scope not found");
   return scope;
+}
+
+/** The display name of a budget scope, as budget incidents show it. */
+export async function budgetScopeName(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<string> {
+  const scope = await resolveScopeRecord(db, scopeType, scopeId);
+  return normalizeScopeName(scopeType, scope.name);
 }
 
 // Keep a large dashboard from filling the database pool with queued reads.
@@ -675,6 +684,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     });
   }
 
+  async function listOpenIncidents(companyId: string): Promise<BudgetIncident[]> {
+    return hydrateIncidentRows(await db
+      .select()
+      .from(budgetIncidents)
+      .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
+      .orderBy(desc(budgetIncidents.createdAt)));
+  }
+
   async function reconcileScope(companyId: string, scopeType: BudgetScopeType, scopeId: string,
     prepared?: { scope: ScopeRecord; policies: PolicyRow[]; observations: ObservedSpend[] }) {
     const scope = prepared?.scope ?? await resolveScopeRecord(db, scopeType, scopeId);
@@ -973,15 +990,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       return buildPolicySummary(row);
     },
 
+    /** The `activeIncidents` of `overview`, without the spend of every policy. */
+    openIncidents: listOpenIncidents,
+
     overview: async (companyId: string): Promise<BudgetOverview> => {
       const rows = await listPolicyRows(companyId);
       const policies = await mapBudgetReads(rows, buildPolicySummary);
-      const activeIncidentRows = await db
-        .select()
-        .from(budgetIncidents)
-        .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
-        .orderBy(desc(budgetIncidents.createdAt));
-      const activeIncidents = await hydrateIncidentRows(activeIncidentRows);
+      const activeIncidents = await listOpenIncidents(companyId);
       return {
         companyId,
         policies,
@@ -1007,6 +1022,9 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       incidentId: string,
       input: BudgetIncidentResolutionInput,
       actorUserId: string,
+      /** The resolving actor's session source, kept for the continuation Retry. */
+      actorSource?: string | null,
+      options: { activityDetails?: Record<string, unknown> } = {},
     ): Promise<BudgetIncident> => {
       const incident = await db
         .select()
@@ -1066,6 +1084,24 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         }
 
         await resumeScopeFromBudget(policy);
+        // Claim the work this stop cancelled for one continuation each, before
+        // the incident closes: a crash before here leaves the incident open,
+        // and resolving it again keeps existing claims. The continuation
+        // worker delivers each claim once its stop has settled.
+        const claimedRunIds = await markBudgetCancelledWorkForResume(db, {
+          companyId, scopeType: policy.scopeType as BudgetScopeType, scopeId: policy.scopeId,
+          incidentId: incident.id, incidentOpenedAt: incident.createdAt, actorUserId, actorSource,
+        });
+        if (claimedRunIds.length > 0) await recordActivity({
+          companyId,
+          actorType: "user",
+          actorId: actorUserId,
+          action: "budget.cancelled_work_resume_requested",
+          entityType: "budget_incident",
+          entityId: incident.id,
+          details: { scopeType: policy.scopeType, scopeId: policy.scopeId, runCount: claimedRunIds.length,
+            sampleRunIds: claimedRunIds.slice(0, 20) },
+        });
         await db
           .update(budgetIncidents)
           .set({
@@ -1100,6 +1136,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           amount: input.amount ?? null,
           scopeType: incident.scopeType,
           scopeId: incident.scopeId,
+          ...options.activityDetails,
         },
       });
 
@@ -1342,6 +1379,8 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
       tx => budgetServiceInTransaction(tx).listPolicies(companyId)),
     overview: (companyId: string) => withAccountingReadSnapshot(db, companyId,
       tx => budgetServiceInTransaction(tx).overview(companyId)),
+    openIncidents: (companyId: string) => withAccountingReadSnapshot(db, companyId,
+      tx => budgetServiceInTransaction(tx).openIncidents(companyId)),
     evaluateAdmission: (companyId: string, agentId: string | null, context?: AdmissionContext) =>
       withAccountingReadSnapshot(db, companyId, tx => budgetServiceInTransaction(tx).evaluateAdmission(companyId, agentId, context)),
     evaluateAffectedScopes: (companyId: string, agentId: string | null, projectId: string | null) =>
@@ -1355,11 +1394,12 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
     getInvocationBlock: (companyId: string, agentId: string | null, context?: AdmissionContext) =>
       withBudgetSpan("budget.admission.inspect", () => withAccountingReadSnapshot(db, companyId,
         tx => budgetServiceInTransaction(tx).getInvocationBlock(companyId, agentId, context))),
-    resolveIncident: async (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) => {
+    resolveIncident: async (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string,
+      actorSource?: string | null, options: { activityDetails?: Record<string, unknown> } = {}) => {
       const [scope] = await db.select({ scopeType: budgetIncidents.scopeType, scopeId: budgetIncidents.scopeId }).from(budgetIncidents)
         .where(and(eq(budgetIncidents.id, incidentId), eq(budgetIncidents.companyId, companyId)));
       if (!scope) throw notFound("Budget incident not found");
-      return mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId), scope);
+      return mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId, actorSource, options), scope);
     },
   };
 }

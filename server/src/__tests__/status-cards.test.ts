@@ -281,6 +281,8 @@ describeEmbeddedPostgres("status card routes", () => {
     // The person's restore route travels with the archive receipt, so an agent can link it.
     expect(archived.body).toMatchObject({ archivedAt: expect.any(String), generatingIssueId: null, href: `/${company.issuePrefix}/status/${created.body.id}` });
     expect((await request(app).get(`/api/status-cards/${created.body.id}`)).body.href).toBe(`/${company.issuePrefix}/status/${created.body.id}`);
+    // A card found by listing carries the same link, so an agent reusing it can reply with it.
+    expect((await request(app).get(`/api/companies/${company.id}/status-cards?archived=true`)).body[0]?.href).toBe(`/${company.issuePrefix}/status/${created.body.id}`);
     expect(await db.select().from(issues).where(eq(issues.id, created.body.generatingIssueId)).then((rows) => rows[0]?.status)).toBe("cancelled");
     expect((await request(app).get(`/api/companies/${company.id}/status-cards`)).body).toEqual([]);
     expect((await request(app).get(`/api/companies/${company.id}/status-cards?archived=true`)).body).toHaveLength(1);
@@ -498,6 +500,13 @@ describeEmbeddedPostgres("status card routes", () => {
     const res = await request(app).post(`/api/status-cards/${card.id}/refresh`).send({ full: true });
     expect(res.status).toBe(202);
     expect(res.body.enqueued).toBe(true);
+    // The queued refresh carries the card's page, so the requester can link it instead of waiting for the summary.
+    expect(res.body.card.href).toBe(`/${company.issuePrefix}/status/${card.id}`);
+    // Any assigned summarizer, not only the built-in one, gets the full write-back and failure contract inline.
+    const [generation] = await db.select().from(issues).where(eq(issues.id, res.body.generatingIssue.id));
+    expect(generation?.description).toContain("put the final Markdown between a `<<<SUMMARY-DRAFT>>>` line and a `<<<END-SUMMARY-DRAFT>>>` line");
+    expect(generation?.description).toContain("there is no other format to look up");
+    expect(generation?.description).toContain("comment the reason on this task and set it to blocked");
   });
 
   it("requires tasks:assign for mutations", async () => {

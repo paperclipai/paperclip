@@ -92,6 +92,9 @@ export type ChatControlRecoveryStop =
       sourceRunId: string;
     };
 
+/** Status-decision effects whose target is the native-status wake intent. */
+const NATIVE_STATUS_WAKE_EFFECT_KINDS = ["enqueue_continuation", "schedule_retry"];
+
 /** A dispatched native continuation inherits only its committed decision's
  * source run. Arbitrary payload.nativeDecisionId / context.source is not proof. */
 export async function readChatControlNativeParent(
@@ -137,7 +140,10 @@ export async function readChatControlNativeParent(
         eq(statusDecisionEffects.companyId, scope.companyId),
         eq(statusDecisionEffects.issueId, scope.issueId),
         eq(statusDecisionEffects.decisionId, statusDecisions.id),
-        eq(statusDecisionEffects.effectKind, "enqueue_continuation"),
+        // A committed continuation or failed-turn retry effect that targets
+        // this intent is its proof. Refusing the retry stranded the task
+        // with no queued work.
+        inArray(statusDecisionEffects.effectKind, NATIVE_STATUS_WAKE_EFFECT_KINDS),
         eq(statusDecisionEffects.targetType, "agent_wakeup_request"),
         eq(statusDecisionEffects.targetId, intent.id),
         eq(statusDecisionEffects.deliveryState, "delivered"),

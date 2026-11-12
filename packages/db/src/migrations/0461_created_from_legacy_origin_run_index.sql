@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "issues_company_legacy_origin_run_idx" ON "issues" USING btree ("company_id","origin_run_id") WHERE "issues"."origin_issue_id" is null and "issues"."origin_run_id" is not null;

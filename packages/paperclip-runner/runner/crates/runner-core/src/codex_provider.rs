@@ -202,6 +202,9 @@ pub(crate) enum ProviderStartupObservation {
     Failed {
         stage: ProviderStartupStage,
         child_exit: Option<ProcessExitFact>,
+        /// The provider gave no reply within the request deadline: a stalled
+        /// or frozen host, not a provider that rejected the request or exited.
+        no_reply: bool,
     },
 }
 
@@ -869,12 +872,23 @@ pub struct CodexProvider {
     quarantined: bool,
     trace: Option<ProviderTraceSink>,
     last_trace_frame_id: Option<u64>,
+    held_courtesy_responses: Option<Vec<Value>>,
+    #[cfg(test)]
+    pub(crate) sent_frame_observer: Option<Box<dyn FnMut(&Value) + Send>>,
+    #[cfg(test)]
+    pub(crate) interpretation_observer: Option<Box<dyn FnMut(&[String]) + Send>>,
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
     cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     provider_termination_receipt: Option<Value>,
     completion_contract: Option<ProviderCompletionContract>,
     permission_profile: &'static str,
     exit_drain: Option<ProviderExitDrain>,
+    /// The latest synchronous request ended because its deadline passed with
+    /// the provider still running and silent (no reply, no exit).
+    last_request_got_no_reply: bool,
+    /// The latest stdout receive returned nothing because its own timeout
+    /// passed, not because stdout closed or the reader disconnected.
+    last_receive_timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -1244,6 +1258,7 @@ impl CodexProvider {
                 let _ = observe(ProviderStartupObservation::Failed {
                     stage: ProviderStartupStage::Spawn,
                     child_exit: None,
+                    no_reply: false,
                 });
                 return Err(error);
             }
@@ -1256,6 +1271,7 @@ impl CodexProvider {
             let _ = observe(ProviderStartupObservation::Failed {
                 stage: ProviderStartupStage::SpawnReceipt,
                 child_exit,
+                no_reply: false,
             });
             return Err(error);
         }
@@ -1300,6 +1316,11 @@ impl CodexProvider {
             quarantined: false,
             trace: ProviderTraceSink::from_environment(),
             last_trace_frame_id: None,
+            held_courtesy_responses: None,
+            #[cfg(test)]
+            sent_frame_observer: None,
+            #[cfg(test)]
+            interpretation_observer: None,
             opencode_launch_profile: opencode_launch_profile.cloned(),
             cursor_cloud_launch_profile: cursor_cloud_launch_profile.cloned(),
             provider_termination_receipt: None,
@@ -1311,6 +1332,8 @@ impl CodexProvider {
             }),
             permission_profile,
             exit_drain: None,
+            last_request_got_no_reply: false,
+            last_receive_timed_out: false,
         };
         let mut stage = ProviderStartupStage::Initialize;
         let initialized_result = (|| -> Result<(), LocalRunnerError> {
@@ -1428,8 +1451,13 @@ impl CodexProvider {
             Ok(())
         })();
         if let Err(error) = initialized_result {
+            let no_reply = provider.last_request_got_no_reply;
             let child_exit = provider.retire_failed_startup();
-            let _ = observe(ProviderStartupObservation::Failed { stage, child_exit });
+            let _ = observe(ProviderStartupObservation::Failed {
+                stage,
+                child_exit,
+                no_reply,
+            });
             return Err(error);
         }
         Ok(provider)
@@ -1467,6 +1495,11 @@ impl CodexProvider {
         self.last_trace_frame_id.take()
     }
 
+    #[cfg(test)]
+    pub(crate) fn enable_trace_for_test(&mut self, trace_path: PathBuf) {
+        self.trace = Some(ProviderTraceSink::at_path(trace_path, 64 * 1024 * 1024));
+    }
+
     pub(crate) fn record_provider_trace_interpretation(
         &mut self,
         frame_id: u64,
@@ -1475,6 +1508,10 @@ impl CodexProvider {
         emitted_event_ids: Vec<String>,
         reason: &str,
     ) {
+        #[cfg(test)]
+        if let Some(observer) = self.interpretation_observer.as_mut() {
+            observer(&emitted_event_ids);
+        }
         if let Some(trace) = self.trace.as_mut() {
             trace.interpretation(
                 frame_id,
@@ -1893,6 +1930,7 @@ impl CodexProvider {
             let _ = observe(ProviderStartupObservation::Failed {
                 stage: ProviderStartupStage::Admission,
                 child_exit,
+                no_reply: false,
             });
             replacement.expected_shutdown = false;
             *self = replacement;
@@ -1910,6 +1948,7 @@ impl CodexProvider {
                 let _ = observe(ProviderStartupObservation::Failed {
                     stage: ProviderStartupStage::Admission,
                     child_exit,
+                    no_reply: false,
                 });
                 return Err(error);
             }
@@ -2493,6 +2532,38 @@ impl CodexProvider {
             ));
         }
         Ok(())
+    }
+
+    /// Provider evidence for a `turn/start` whose outcome a process loss hid.
+    /// Returns `true` only when this resumed Codex thread has no active turn
+    /// and its newest recorded turn is absent or one Paperclip already settled:
+    /// Codex records a turn in the thread before it runs anything, so the
+    /// ambiguous start never created one. Any other history, an incomplete
+    /// page, or another provider returns `false` and keeps the start ambiguous.
+    pub(crate) fn ambiguous_turn_start_never_created_a_turn(
+        &mut self,
+        settled_provider_turn_ids: &BTreeSet<String>,
+    ) -> Result<bool, LocalRunnerError> {
+        if self.config.provider != "codex" || self.active_provider_turn_id.is_some() {
+            return Ok(false);
+        }
+        let page = self.request("thread/turns/list", self.newest_turn_page_params())?;
+        Ok(newest_turn_page_proves_no_new_turn(
+            &page,
+            settled_provider_turn_ids,
+        ))
+    }
+
+    /// The first `thread/turns/list` page `read_thread` requests, narrowed to
+    /// the newest turn's metadata.
+    fn newest_turn_page_params(&self) -> Value {
+        let mut params = serde_json::Map::new();
+        params.insert("threadId".to_owned(), Value::String(self.thread_id.clone()));
+        params.insert("cursor".to_owned(), Value::Null);
+        params.insert("limit".to_owned(), Value::from(1));
+        params.insert("sortDirection".to_owned(), Value::from("desc"));
+        params.insert("itemsView".to_owned(), Value::from("notLoaded"));
+        Value::Object(params)
     }
 
     pub(crate) fn read_thread_after_recovery_goal(
@@ -3831,10 +3902,36 @@ impl CodexProvider {
         {
             return Ok(());
         }
+        if let Some(held) = self.held_courtesy_responses.as_mut() {
+            held.push(value.clone());
+            return Ok(());
+        }
         self.send_frame(value)
     }
 
+    pub(crate) fn hold_courtesy_responses(&mut self) {
+        self.held_courtesy_responses.get_or_insert_with(Vec::new);
+    }
+
+    pub(crate) fn release_courtesy_responses(&mut self, keep_holding: bool) {
+        let held = if keep_holding {
+            self.held_courtesy_responses
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        } else {
+            self.held_courtesy_responses.take().unwrap_or_default()
+        };
+        for value in held {
+            let _ = self.send_frame(&value);
+        }
+    }
+
     fn send_frame(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
+        #[cfg(test)]
+        if let Some(observer) = self.sent_frame_observer.as_mut() {
+            observer(value);
+        }
         if let Some(trace) = self.trace.as_mut() {
             let raw = serde_json::to_vec(value).unwrap_or_default();
             if let Some(frame_id) = trace.frame("client_to_provider", &raw) {
@@ -3883,6 +3980,7 @@ impl CodexProvider {
         self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
             ProviderRequestError::Rejected(LocalRunnerError::invalid("Codex request id exhausted"))
         })?;
+        self.last_request_got_no_reply = false;
         self.send_frame(&json!({"id": request_id, "method": method, "params": params}))
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
@@ -3890,6 +3988,7 @@ impl CodexProvider {
                 deadline.saturating_duration_since(std::time::Instant::now())
             });
             if remaining.is_zero() {
+                self.last_request_got_no_reply = true;
                 return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
                     format!("Provider {method} exceeded its bounded response deadline"),
                 )));
@@ -3912,6 +4011,8 @@ impl CodexProvider {
                         exit.exit_code, exit.signal
                     )
                 } else {
+                    // Only the receive's own timeout, never a closed stdout.
+                    self.last_request_got_no_reply = self.last_receive_timed_out;
                     format!("Codex {method} response timed out{diagnostic_suffix}")
                 };
                 return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
@@ -4002,10 +4103,12 @@ impl CodexProvider {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<String>, LocalRunnerError> {
+        self.last_receive_timed_out = false;
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
+                self.last_receive_timed_out = true;
                 return Ok(None);
             }
             match self.process.recv_timeout(remaining) {
@@ -4018,7 +4121,10 @@ impl CodexProvider {
                 }
                 Ok(ProcessOutput::StdoutClosed) => return Ok(None),
                 Ok(ProcessOutput::StderrClosed) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_receive_timed_out = true;
+                    return Ok(None);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
             }
         }
@@ -4975,6 +5081,35 @@ fn codex_question_response(
     Ok(json!({"answers": native}))
 }
 
+/// Codex turn statuses that mean the turn is over. `read_thread` accepts the
+/// same set plus `inProgress`.
+const ENDED_TURN_STATUSES: [&str; 4] = ["completed", "failed", "interrupted", "cancelled"];
+
+/// Whether the newest page of a thread's turn history proves that no turn
+/// exists beyond the ones Paperclip settled: the page is empty and complete,
+/// or its newest turn is a settled one with an explicit ended status. Any
+/// missing, malformed or unknown field proves nothing.
+fn newest_turn_page_proves_no_new_turn(
+    page: &Value,
+    settled_provider_turn_ids: &BTreeSet<String>,
+) -> bool {
+    let Some(turns) = page.pointer("/data").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(newest) = turns.first() else {
+        // An empty first page is the whole history only without a cursor.
+        return page.pointer("/nextCursor").is_none_or(Value::is_null);
+    };
+    newest
+        .pointer("/id")
+        .and_then(Value::as_str)
+        .is_some_and(|turn_id| settled_provider_turn_ids.contains(turn_id))
+        && newest
+            .pointer("/status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| ENDED_TURN_STATUSES.contains(&status))
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -5025,6 +5160,45 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn only_a_complete_settled_ended_history_proves_no_new_turn() {
+        let settled = BTreeSet::from(["turn-1".to_owned()]);
+        let page = |turns: Value, cursor: Value| json!({"data": turns, "nextCursor": cursor});
+        let proves = |value: Value| newest_turn_page_proves_no_new_turn(&value, &settled);
+        assert!(proves(page(json!([]), Value::Null)));
+        assert!(proves(json!({"data": []})));
+        assert!(proves(page(
+            json!([{"id": "turn-1", "status": "completed"}]),
+            Value::Null
+        )));
+        assert!(proves(page(
+            json!([{"id": "turn-1", "status": "interrupted"}]),
+            Value::Null
+        )));
+        // An incomplete page, an unsettled or in-progress turn, or a missing,
+        // null or unknown field keeps the start ambiguous.
+        assert!(!proves(page(json!([]), json!("next-page"))));
+        assert!(!proves(json!({"nextCursor": null})));
+        assert!(!proves(page(
+            json!([{"id": "turn-2", "status": "completed"}]),
+            Value::Null
+        )));
+        assert!(!proves(page(
+            json!([{"id": "turn-1", "status": "inProgress"}]),
+            Value::Null
+        )));
+        assert!(!proves(page(json!([{"id": "turn-1"}]), Value::Null)));
+        assert!(!proves(page(
+            json!([{"id": "turn-1", "status": null}]),
+            Value::Null
+        )));
+        assert!(!proves(page(
+            json!([{"id": "turn-1", "status": "paused"}]),
+            Value::Null
+        )));
+        assert!(!proves(page(json!([{"status": "completed"}]), Value::Null)));
+    }
 
     #[test]
     #[cfg(unix)]
@@ -5722,6 +5896,10 @@ done
     #[test]
     #[cfg(unix)]
     fn exited_child_reader_deadline_bounds_continuous_descendant_stdout() {
+        // The provider exits and leaves its flooding subshell orphaned until
+        // shutdown stops it. Declared first, so it is released last.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let _orphans = crate::process_lineage::host_orphans::may_orphan();
         let mut provider = completion_tail_provider_with_stdout_flood(true);
         let cwd = provider.config.cwd.clone();
         provider.start_turn("Replacement", &cwd).unwrap_err();
@@ -5832,7 +6010,9 @@ done
                         "durable spawned receipt write failed",
                     ))
                 }
-                ProviderStartupObservation::Failed { stage, child_exit } => {
+                ProviderStartupObservation::Failed {
+                    stage, child_exit, ..
+                } => {
                     failure = Some((stage, child_exit));
                     Ok(())
                 }

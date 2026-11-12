@@ -40,6 +40,12 @@ export interface RunFailureReportOptions {
    * read, as closed labels and counts; its message and stack are never copied.
    */
   nativeCloseFailure?: unknown;
+  /**
+   * The bounded retry decision for a reviewed chat setup wait. The setup path
+   * writes the failed status while `pending`, then reports again with the
+   * decision; a scheduled retry owns recovery and reports its own outcome.
+   */
+  reviewedChatRetry?: "pending" | "scheduled" | "not_scheduled";
 }
 
 export interface RunFailureException {

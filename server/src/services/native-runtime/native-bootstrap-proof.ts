@@ -35,6 +35,7 @@ const SESSION_OPEN_EVENT_TYPES = new Set([
   "session.updated",
   "session.capabilities.updated",
   "session.goal.snapshot",
+  "harness.diagnostic",
 ]);
 
 /**

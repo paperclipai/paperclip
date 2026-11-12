@@ -274,6 +274,7 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 
 export type ExecutionWorkspaceEnvironmentSource =
   | "issue"
+  | "run"
   | "agent"
   | "instance"
   | "default"

@@ -38,6 +38,8 @@ import { verifyDurableNativeHarnessBackup } from "./native-harness-backup-storag
 const KEY = "nativeHarnessFilesystemIndependence";
 const SCHEMA = "paperclip.native-harness-filesystem-independence.v1";
 const WEB_SCHEMA = "paperclip.native-harness-web-evidence.v1";
+const CODEX_WEB_PROFILE_BEFORE_AUTH_REFRESH = "6f10c4b4424e84defcdb4c7e932921d09ea73dc0f39c96e61777c8b20c5f637b";
+const CODEX_WEB_PROFILE_WITH_AUTH_REFRESH = "e5248e68685fb06ae32336d9517d7054e8aff785bdfb220b4481823a82ff8e78";
 const terminal = ["succeeded", "failed", "cancelled", "interrupted", "timed_out"];
 const sha = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const digest = (value: unknown) => nativeSha256(JSON.parse(JSON.stringify(value)));
@@ -189,10 +191,11 @@ async function assetBindings(db: Db, anchor: Run, sourceRunId: string) {
 }
 
 function matchingReceipt(value: unknown, facts: Awaited<ReturnType<typeof databaseFacts>>, input: Scope,
-  bindings: Awaited<ReturnType<typeof assetBindings>>["bindings"], controller: ControllerBinding, web?: WebBinding): Receipt | null {
+  bindings: Awaited<ReturnType<typeof assetBindings>>["bindings"], controller: ControllerBinding, web?: WebBinding,
+  factsDigest = facts.factsDigest): Receipt | null {
     const receipt = value as Receipt | undefined;
     if (receipt?.schema !== (web ? WEB_SCHEMA : SCHEMA) || receipt.selectedSessionId !== input.selectedSessionId || receipt.scopeDigest !== input.scopeDigest
-      || receipt.lastRunId !== facts.anchor.id || receipt.sourceRunId !== facts.source.id || receipt.factsDigest !== facts.factsDigest
+      || receipt.lastRunId !== facts.anchor.id || receipt.sourceRunId !== facts.source.id || receipt.factsDigest !== factsDigest
       || !/^[a-f0-9]{64}$/.test(receipt.sourceCapabilityFingerprint) || !/^[a-f0-9]{64}$/.test(receipt.localFactsDigest)
       || !Number.isFinite(Date.parse(receipt.observedAt)) || !Array.isArray(receipt.packages) || !Array.isArray(receipt.versions)) return null;
     return digest(bindings) === receipt.assetsDigest && digest(receipt.packages) === digest(bindings.packages)
@@ -384,7 +387,7 @@ async function controllerBinding(db: Db, facts: Awaited<ReturnType<typeof databa
 
 async function preserveControllerEvidence(db: Db, facts: Awaited<ReturnType<typeof databaseFacts>>, input: Scope & {
   source: OriginalHarnessVolumeCapability; storage: StorageService; signal: AbortSignal;
-}, history?: CapturedHistory, web?: CapturedWeb): Promise<ControllerBinding> {
+}, history?: CapturedHistory, web?: CapturedWeb, existing?: ControllerBinding): Promise<ControllerBinding> {
   const material = await readLegacyNativeControllerArchiveSource(facts.source);
   if (material.paths.root !== scopedRunnerdStateRoot(facts.execution)) fail();
   if (material.controller === undefined && !web) {
@@ -410,6 +413,19 @@ async function preserveControllerEvidence(db: Db, facts: Awaited<ReturnType<type
     if (captured.records.size !== checkpoint.records.size || [...captured.records].some(([key, value]) => {
       const durable = checkpoint.records.get(key); return durable === undefined || digest(JSON.parse(value)) !== digest(JSON.parse(durable));
     })) fail();
+  }
+  if (existing) {
+    if (!existing.archive || existing.archive.controllerDigest !== (material.controller === undefined ? null : sha(material.controller))
+      || existing.archive.supervisorDigest !== (material.supervisor === undefined ? null : sha(material.supervisor))) fail();
+    const current = await controllerBinding(db, facts, existing.archive, false, history?.binding, web?.binding);
+    if (digest(current) !== digest(existing)) fail();
+    const descriptor = nativeControllerEvidenceDescriptor({ companyId: input.companyId, issueId: facts.anchor.nativeIssueId!,
+      runId: facts.source.id, controllerDigest: existing.archive.controllerDigest, supervisorDigest: existing.archive.supervisorDigest,
+      purpose: "filesystem_independence", history: history?.binding.entries, historyBindingDigest: history ? digest(history.binding) : undefined,
+      ...(web ? { web: { entries: web.binding.entries, bindingDigest: digest(web.binding) } } : {}) });
+    if (!await verifyDurableNativeHarnessBackup({ db, storage: input.storage, companyId: input.companyId,
+      scopeDigest: descriptor.scopeDigest, manifestSha256: descriptor.manifestSha256, backupId: existing.archive.id, signal: input.signal })) fail();
+    return current;
   }
   const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
     eq(nativeRunFinalizations.runId, facts.source.id)));
@@ -481,8 +497,12 @@ function validWebBinding(facts: Awaited<ReturnType<typeof databaseFacts>>, web: 
     if (!web || typeof web.rootPresent !== "boolean" || typeof web.controllerAbsent !== "boolean" || !Array.isArray(web.entries)
       || !Array.isArray(web.skills) || !Array.isArray(web.excluded)
       || web.entries.length + web.excluded.length > NATIVE_CONTROLLER_WEB_LIMITS.entries
-      || web.profileDigest !== digest(webProfile(facts)) || digest(web.skills) !== digest(webSkills(facts))) return false;
+      || digest(web.skills) !== digest(webSkills(facts))) return false;
     const profiles = webProfile(facts), manifests = new Map(web.skills.map(skill => [skill.bundleDigest, skill.manifestDigest]));
+    const profileDigest = digest(profiles);
+    if (web.profileDigest !== profileDigest && !(resolveNativeHarnessPersistenceProfile(facts.execution).providerKind === "codex"
+      && profileDigest === CODEX_WEB_PROFILE_WITH_AUTH_REFRESH
+      && web.profileDigest === CODEX_WEB_PROFILE_BEFORE_AUTH_REFRESH)) return false;
     for (const [bundle, manifest] of manifests) if (!web.entries.some(entry => entry.path === `web-manifests/${bundle}.json`
       && entry.type === "file" && entry.sha256 === manifest)) return false;
     if (web.entries.some(entry => {
@@ -707,18 +727,29 @@ async function localFacts(facts: Awaited<ReturnType<typeof databaseFacts>>, asse
 async function preserveWebEvidence(db: Db, input: Scope & {
   source: OriginalHarnessVolumeCapability; storage: StorageService; signal: AbortSignal;
 }) {
-  const facts = await databaseFacts(db, input, false, true), history = await captureAuthorityHistory(db, facts, input.signal);
+  const facts = await databaseFacts(db, input, false, true);
+  const previous = facts.anchor.runnerProfileJson?.[KEY] as Receipt | undefined;
+  const previousDigest = previous == null ? null : digest(previous);
+  if (previous != null && !previous.controller?.archive) fail();
+  const history = await captureAuthorityHistory(db, facts, input.signal);
   const web = await captureWebEvidence(facts, input.signal);
-  const controller = await preserveControllerEvidence(db, facts, input, history, web), bindings = { packages: [], versions: [] };
-  const previous = facts.anchor.runnerProfileJson?.[KEY];
+  const controller = await preserveControllerEvidence(db, facts, input, history, web, previous?.controller), bindings = { packages: [], versions: [] };
   if (previous != null) {
-    if (!await hasValidNativeHarnessFilesystemIndependence(db, input)) fail();
-    return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: digest(previous) };
+    if (!/^[a-f0-9]{64}$/.test(previous.factsDigest)
+      || !matchingReceipt(previous, facts, input, bindings, controller, web.binding, previous.factsDigest)) fail();
+    if (matchingReceipt(previous, facts, input, bindings, controller, web.binding)) {
+      if (!await hasValidNativeHarnessFilesystemIndependence(db, input)) fail();
+      await assertOriginalHarnessVolumeSource(input.source); input.signal.throwIfAborted();
+      return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: previousDigest! };
+    }
   }
   const receipt: Receipt = { schema: WEB_SCHEMA, selectedSessionId: input.selectedSessionId, scopeDigest: input.scopeDigest,
     lastRunId: facts.anchor.id, sourceRunId: facts.source.id, factsDigest: facts.factsDigest,
     sourceCapabilityFingerprint: input.source.fingerprint, localFactsDigest: web.localDigest,
     assetsDigest: digest(bindings), ...bindings, controller, web: web.binding, observedAt: new Date().toISOString() };
+  const previousReceiptState = previous ? { factsDigest: previous.factsDigest, localFactsDigest: previous.localFactsDigest,
+    sourceCapabilityFingerprint: previous.sourceCapabilityFingerprint, observedAt: previous.observedAt } : null;
+  if (previousReceiptState && digest({ ...receipt, ...previousReceiptState }) !== previousDigest) fail();
   let published = receipt;
   const publications: ActivityPublication[] = [];
   await db.transaction(async transaction => {
@@ -734,14 +765,16 @@ async function preserveWebEvidence(db: Db, input: Scope & {
     const existing = current.anchor.runnerProfileJson?.[KEY];
     if (existing != null) {
       const winner = matchingReceipt(existing, current, input, bindings, currentController, web.binding);
-      if (!winner) fail(); published = winner; return;
+      if (winner) { published = winner; return; }
     }
+    if ((existing == null ? null : digest(existing)) !== previousDigest) fail();
     await tx.update(heartbeatRuns).set({ runnerProfileJson: { ...current.anchor.runnerProfileJson, [KEY]: receipt } })
       .where(and(eq(heartbeatRuns.id, current.anchor.id), eq(heartbeatRuns.companyId, input.companyId)));
     await logActivity(tx, { companyId: input.companyId, actorType: "system", actorId: "native-harness-preservation",
       action: "native_harness_filesystem_independence_verified", entityType: "heartbeat_run", entityId: current.anchor.id,
       agentId: current.anchor.agentId, runId: current.anchor.id, details: { scopeDigest: input.scopeDigest, sourceRunId: current.source.id,
-        sourceCapabilityFingerprint: receipt.sourceCapabilityFingerprint, factsDigest: receipt.factsDigest, coverage: "web_evidence" } }, publications);
+        sourceCapabilityFingerprint: receipt.sourceCapabilityFingerprint, factsDigest: receipt.factsDigest, coverage: "web_evidence",
+        ...(previousReceiptState ? { previousReceiptDigest: previousDigest, previousReceiptState } : {}) } }, publications);
   });
   for (const publication of publications) publishActivity(publication);
   return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: digest(published) };
@@ -754,17 +787,27 @@ export async function preserveNativeHarnessFilesystemIndependence(db: Db, input:
   if (input.storage.provider !== "s3") fail();
   if (input.mode === "web_evidence") return preserveWebEvidence(db, input);
   const facts = await databaseFacts(db, input, false), assets = await assetBindings(db, facts.anchor, facts.source.id);
+  const previous = facts.anchor.runnerProfileJson?.[KEY] as Receipt | undefined;
+  const previousDigest = previous == null ? null : digest(previous);
+  if (previous != null && (previous.schema !== SCHEMA || !previous.controller)) fail();
   const history = await captureAuthorityHistory(db, facts, input.signal);
-  const controller = await preserveControllerEvidence(db, facts, input, history);
+  const controller = await preserveControllerEvidence(db, facts, input, history, undefined, previous?.controller);
   const local = await localFacts(facts, assets, input.storage, db, true, input.signal, controller), localFactsDigest = local.digest;
-  const previous = facts.anchor.runnerProfileJson?.[KEY];
   if (previous != null) {
-    if (!await hasValidNativeHarnessFilesystemIndependence(db, input)) fail();
-    return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: digest(previous) };
+    if (!/^[a-f0-9]{64}$/.test(previous.factsDigest)
+      || !matchingReceipt(previous, facts, input, assets.bindings, controller, undefined, previous.factsDigest)) fail();
+    if (matchingReceipt(previous, facts, input, assets.bindings, controller)) {
+      if (!await hasValidNativeHarnessFilesystemIndependence(db, input)) fail();
+      await assertOriginalHarnessVolumeSource(input.source); input.signal.throwIfAborted();
+      return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: previousDigest! };
+    }
   }
   const receipt: Receipt = { schema: SCHEMA, selectedSessionId: input.selectedSessionId, scopeDigest: input.scopeDigest,
     lastRunId: facts.anchor.id, sourceRunId: facts.source.id, factsDigest: facts.factsDigest,
     sourceCapabilityFingerprint: input.source.fingerprint, localFactsDigest, assetsDigest: digest(assets.bindings), ...assets.bindings, controller, observedAt: new Date().toISOString() };
+  const previousReceiptState = previous ? { factsDigest: previous.factsDigest, localFactsDigest: previous.localFactsDigest,
+    sourceCapabilityFingerprint: previous.sourceCapabilityFingerprint, observedAt: previous.observedAt } : null;
+  if (previousReceiptState && digest({ ...receipt, ...previousReceiptState }) !== previousDigest) fail();
   let publishedReceipt = receipt;
   const publications: ActivityPublication[] = [];
   await db.transaction(async transaction => {
@@ -788,16 +831,16 @@ export async function preserveNativeHarnessFilesystemIndependence(db: Db, input:
     const existing = current.anchor.runnerProfileJson?.[KEY];
     if (existing != null) {
       const winner = matchingReceipt(existing, current, input, currentAssets.bindings, currentController);
-      if (!winner) fail();
-      publishedReceipt = winner;
-      return;
+      if (winner) { publishedReceipt = winner; return; }
     }
+    if ((existing == null ? null : digest(existing)) !== previousDigest) fail();
     await tx.update(heartbeatRuns).set({ runnerProfileJson: { ...current.anchor.runnerProfileJson, [KEY]: receipt } })
       .where(and(eq(heartbeatRuns.id, current.anchor.id), eq(heartbeatRuns.companyId, input.companyId)));
     await logActivity(tx, { companyId: input.companyId, actorType: "system", actorId: "native-harness-preservation",
       action: "native_harness_filesystem_independence_verified", entityType: "heartbeat_run", entityId: current.anchor.id,
       agentId: current.anchor.agentId, runId: current.anchor.id, details: { scopeDigest: input.scopeDigest,
-        sourceRunId: current.source.id, sourceCapabilityFingerprint: receipt.sourceCapabilityFingerprint, factsDigest: receipt.factsDigest } }, publications);
+        sourceRunId: current.source.id, sourceCapabilityFingerprint: receipt.sourceCapabilityFingerprint, factsDigest: receipt.factsDigest,
+        ...(previousReceiptState ? { previousReceiptDigest: previousDigest, previousReceiptState } : {}) } }, publications);
   });
   for (const publication of publications) publishActivity(publication);
   return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: digest(publishedReceipt) };

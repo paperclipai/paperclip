@@ -2952,7 +2952,7 @@ describe("native external-chat response wait", () => {
     expect(gate).toMatchObject({
       kind: "request_confirmation",
       status: "pending",
-      createdByAgentId: null,
+      createdByAgentId: fixture.agentId,
       createdByUserId: null,
     });
     await db
@@ -3629,11 +3629,19 @@ describe("native external-chat response wait", () => {
     } finally { await coordinator.stop(); vi.useRealTimers(); }
   });
 
-  it.each(["telegram", "discord"] as const)(
-    "presents the exact %s response without resolving a pre-existing native completion review",
-    async (provider) => {
+  it.each([
+    ["telegram", "agent"],
+    ["discord", "agent"],
+    ["telegram", "legacy_system"],
+  ] as const)(
+    "presents the exact %s response without resolving a pre-existing native completion review with %s provenance",
+    async (provider, provenance) => {
       const fixture = await seedWaitTurn(provider);
       const gate = await seedPriorCompletionReview(fixture);
+      if (provenance === "legacy_system") {
+        await db.update(issueThreadInteractions).set({ createdByAgentId: null })
+          .where(eq(issueThreadInteractions.id, gate.id));
+      }
       const selectedComment = await issueService(db).addComment(
         fixture.issueId,
         "Prepared exactly these files for this chat response.",
@@ -3796,9 +3804,14 @@ describe("native external-chat response wait", () => {
           approvalId: approval!.id,
         });
       } else if (kind === "agent_gate") {
+        const [otherAgent] = await db.insert(agents).values({
+          companyId: fixture.companyId,
+          name: "Unrelated review author",
+          adapterType: "process",
+        }).returning();
         await db
           .update(issueThreadInteractions)
-          .set({ createdByAgentId: fixture.agentId })
+          .set({ createdByAgentId: otherAgent!.id })
           .where(eq(issueThreadInteractions.id, gate.id));
       } else if (kind === "new_attention") {
         await db.insert(issueThreadInteractions).values({

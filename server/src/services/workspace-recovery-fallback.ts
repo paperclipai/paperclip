@@ -24,9 +24,10 @@ import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
 import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, restoreSandboxStopAfterFailedRestart, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
-import { nativeWorkspaceFinalizationBlockSchema } from "./native-runtime/preserved-native-result-finalization.js";
+import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES } from "./workspace-recovery-fallback-discovery.js";
+import { NATIVE_NO_REPLAY_HOLD_CAUSE, PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
+  isSupersededWorkspaceExportHold, retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
 import { captureReadOnlyWorkspaceArchive, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
@@ -44,7 +45,6 @@ export const RETAINED_SOURCE_FALLBACK_SCHEMA = "paperclip.retained-source-fallba
 export const SIBLING_WORKSPACE_RECOVERY_SCHEMA = "paperclip.sibling-workspace-recovery.v1" as const;
 export const RETAINED_SOURCE_QUARANTINE_PHASE = "workspace_recovery_quarantine";
 
-const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 // A check deferred for a transient reason runs again after this delay, a bounded number of times.
 const FALLBACK_RECHECK_MS = 5 * 60_000;
@@ -113,9 +113,9 @@ async function inspectFallback(db: Db, input: Source, lock: boolean, requireStop
   if (!issue || !run || !action) return refuse("source_changed");
   if (object(action.evidence.retainedSourceFallback).schema === RETAINED_SOURCE_FALLBACK_SCHEMA) return { kind: "settled" as const };
   const system = readSystemRecovery(action.evidence);
-  if (!exportCauses.includes(action.cause) || !["active", "escalated"].includes(action.status) || action.evidence.runId !== run.id
+  if (!isRetainedFileHold(action) || action.evidence.runId !== run.id
     || action.evidence.executionReconciliation || system?.state !== "exhausted" || system.sourceRunId !== run.id
-    || !isUnverifiableSourceFailure(system.failure)) return refuse("not_unverifiable_source_hold");
+    || !retainedHoldFallbackEligible(action.evidence, system)) return refuse("not_unverifiable_source_hold");
   if (run.runtimeMode !== "native" || !terminal.includes(run.status) || !run.finishedAt
     || (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) !== issue.id) return refuse("source_run_not_terminal");
   // No second executor: the source run, its controller and its finalizer have stopped.
@@ -346,17 +346,13 @@ export async function continueFromLastSavedWorkspace(input: Source & {
     // holds saved before receipts existed, a block set by this run's terminal
     // failure that nothing changed since) still names it. Otherwise a newer
     // decision owns the block: it is kept and no continuation is started.
-    const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
-    const blockedAt = issue.blockedTransitionAt?.getTime();
-    const ownsBlock = issue.status === "blocked" && (block.success
-      ? block.data.issueId === issue.id && block.data.runId === run.id
-        && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId
-      : action.evidence.workspaceFinalizationBlock === undefined && issue.lastStatusDecisionId === null && blockedAt !== undefined
-        && blockedAt >= run.finishedAt!.getTime() - 1_000 && blockedAt <= action.createdAt.getTime() + 60_000);
+    const ownsBlock = holdOwnsBlockedStatus(action, issue, run);
     const dispatchable = issue.status !== "blocked" || ownsBlock;
+    // A superseded export's files were not unverifiable: saving them kept failing.
+    const could = isSupersededWorkspaceExportHold(action.evidence) ? "could not save" : "could not verify";
     const userText = quarantine.state === "captured"
-      ? "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied."
-      : "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files could not be read.";
+      ? `Paperclip ${could} the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied.`
+      : `Paperclip ${could} the previous run's unsaved files, so the task continues from the last saved version. Those files could not be read.`;
     const evidence = { ...action.evidence, automaticRecovery: undefined, [RETAINED_SOURCE_FALLBACK_CHECK_KEY]: undefined,
       retainedSourceFallback: { ...fallback, failureCode: current.system.failure?.code ?? null, recordedAt: now.toISOString() },
       workspaceRecovery: { ...(readWorkspaceRecovery(action.evidence) ?? {}), message: userText, retryable: false },
@@ -417,7 +413,7 @@ export async function recordRetainedSourceFallbackDeferral(db: Db, input: Source
 /**
  * The recovery worker's entry for an exhausted hold: settle it when a sibling
  * saved its files, or continue from the last save when its source is refused
- * permanently. Runs under the workspace ownership lock, like any physical
+ * permanently or its stop stayed unproven through every bounded re-arm. Runs under the workspace ownership lock, like any physical
  * recovery attempt. Returns whether the hold is settled.
  */
 export async function settleExhaustedRetainedHold(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService },
@@ -425,7 +421,10 @@ export async function settleExhaustedRetainedHold(input: Source & { db: Db; envi
   const { db } = input;
   const sibling = await settleSiblingRecoveredHold(db, input);
   if (sibling === "settled") return true;
-  if (!options.fallback || !isUnverifiableSourceFailure(state.failure)) {
+  const [row] = options.fallback ? await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    eq(issueRecoveryActions.id, input.actionId))) : [];
+  if (!options.fallback || !retainedHoldFallbackEligible(row?.evidence, state)) {
     // A sibling marked recovered without a receipt that still verifies cannot
     // settle this hold. Record it so discovery does not select it again.
     if (sibling === "unverified") await recordRetainedSourceFallbackDeferral(db, input, "sibling_receipt_unverified");
@@ -453,7 +452,7 @@ export async function settleExhaustedRetainedHold(input: Source & { db: Db; envi
  */
 export async function settleSiblingRecoveredHold(db: Db, input: Source) {
   const settled = await db.transaction(async tx => {
-    const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId),
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
       eq(issues.id, input.issueId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
       eq(heartbeatRuns.id, input.runId))).for("update");
@@ -461,8 +460,14 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
       eq(issueRecoveryActions.sourceIssueId, input.issueId), eq(issueRecoveryActions.id, input.actionId))).for("update");
     if (!issue || !run || !action || action.evidence.runId !== run.id) return null;
     if (object(action.evidence.siblingWorkspaceRecovery).schema === SIBLING_WORKSPACE_RECOVERY_SCHEMA) return "already" as const;
+    // isRetainedFileHold also accepts export holds; only the no-replay cause
+    // may release the status here. An export hold leaves it to its result.
+    const noReplayHold = action.cause === NATIVE_NO_REPLAY_HOLD_CAUSE && isRetainedFileHold(action);
     const system = readSystemRecovery(action.evidence);
-    if (!["active", "escalated"].includes(action.status) || system?.state !== "exhausted" || system.sourceRunId !== run.id) return null;
+    // A no-replay hold is recorded resolved-but-blocked. It blocks the task
+    // until its run's files are saved, so a sibling's save settles it too.
+    if ((!["active", "escalated"].includes(action.status) && !noReplayHold)
+      || system?.state !== "exhausted" || system.sourceRunId !== run.id) return null;
     const receiptId = await verifiedWorkspaceRepairReceipt(tx as unknown as Db, run);
     const [receipt] = receiptId ? await tx.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
       eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.id, receiptId))) : [];
@@ -480,12 +485,26 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
       ownerType: "system", ownerAgentId: null, ownerUserId: null, nextAction: "Saved work recovered.",
       resolutionNote: "workspace_recovered_by_sibling_action", wakePolicy: null, monitorPolicy: null,
-      evidence: { ...action.evidence,
+      // With the files saved, a no-replay hold no longer blocks the task.
+      // Settling starts no turn; the run's own result decides what continues.
+      evidence: { ...action.evidence, automaticRecovery: undefined,
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: run.id, status: "recovered", stage: "saving_receipts",
           attempt: prior?.attempt ?? system.attempts, attemptLimit: prior?.attemptLimit ?? 6, requestIds: prior?.requestIds ?? [], retryable: false },
         siblingWorkspaceRecovery: { schema: SIBLING_WORKSPACE_RECOVERY_SCHEMA, receiptId, recoveryActionId: siblingActionId,
           recordedAt: now.toISOString() } },
     }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, action.id)));
+    // A no-replay hold that still owns the task's Blocked status releases it,
+    // so saved input and normal wakes continue the task. An export hold's
+    // status stays with its own result finalization. A newer decision's
+    // Blocked status is kept.
+    if (noReplayHold && holdOwnsBlockedStatus(action, issue, run)) {
+      await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await notifyRoutineExecutionStatus(tx, issue.id, input.companyId);
+    }
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
     return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
       action: "issue.workspace_recovered", entityType: "issue", entityId: issue.id, runId: run.id,

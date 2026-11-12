@@ -38,11 +38,17 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getStoredById: vi.fn(),
 }));
 
-const mockAccessService = vi.hoisted(() => ({
-  canUser: vi.fn(),
-  decide: vi.fn(),
-  hasPermission: vi.fn(),
-}));
+const mockAccessService = vi.hoisted(() => {
+  const decide = vi.fn();
+  return {
+    canUser: vi.fn(),
+    decide,
+    // The batched read asks the mocked decision once per task.
+    decideReads: async (actor: unknown, resources: unknown[]) =>
+      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
+    hasPermission: vi.fn(),
+  };
+});
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),

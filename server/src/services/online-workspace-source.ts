@@ -140,7 +140,8 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   const projectIds = new Set(selected.projectIds), physicalIssueIds = new Set(selected.issueIds), aliases = new Set<string>();
   const importedChildren: NonNullable<OnlineWorkspaceSource["importedChildren"]> = [];
   try {
-    for (const child of await inspectImportedWorkspaceSourcePaths(db, workspace)) {
+    for (const child of await inspectImportedWorkspaceSourcePaths(db, workspace,
+      [...linkedSources.values()].flatMap(proof => proof.links.map(link => link.root.path)))) {
       const identities = await workspaceSourceIdentities(workspace.companyId, child.sourcePath);
       if (identities.unownedPaths.length) return null;
       for (const id of identities.projectIds) projectIds.add(id);
@@ -168,7 +169,8 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   }
   if (!aliases.has(workspace.id) || aliases.size > 256) return null;
   const included = nodes.filter(node => aliases.has(node.row.id));
-  const registeredRoots = await Promise.all(included.flatMap(node => localWorkspaceSourcePaths(node.row)).map(physicalPath));
+  const registeredRoots = await Promise.all([...included.flatMap(node => localWorkspaceSourcePaths(node.row)),
+    ...importedChildren.map(child => child.sourcePath)].map(physicalPath));
   if ([...linkedSources.values()].some(proof => proof.links.some(link => !registeredRoots.some(root =>
     link.root.path === root || link.root.path.startsWith(root + path.sep))))) return null;
   const issueIds = [...new Set([...physicalIssueIds, ...included.map(node => node.row.sourceIssueId!)])].sort();
@@ -202,11 +204,11 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   if (recipe && (!recipe.restoredAt || recipe.contents && !recipe.contentsRestoredAt
     || recipe.restorePoint && !recipe.restorePoint.expiredAt && !recipe.restorePoint.appliedAt)) return null;
   const runs = await db.select({ id: heartbeatRuns.id, issueId: heartbeatRuns.nativeIssueId,
-    workspaceId: sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,workspaceId}'`,
-    state: sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}'` }).from(heartbeatRuns).where(and(
+    workspaceId: sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId'`,
+    state: sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state'` }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, workspace.companyId),
-    inArray(sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,workspaceId}'`, included.map(node => node.row.id)),
-    sql`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}' in ('prepared','finalized')`,
+    inArray(sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId'`, included.map(node => node.row.id)),
+    sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' in ('prepared','finalized')`,
   )).orderBy(heartbeatRuns.id);
   const runsByWorkspace = new Map<string, CompanionRun[]>();
   for (const run of runs) {
@@ -224,7 +226,7 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   }
   return { kind: "git", root: captureRoot, projectId: null, projectIds: [...projectIds].sort(), issueIds,
     workspaceIds: [...aliases].sort(), device: entry.dev, inode: entry.ino, gitSourceRoots, companions,
-    physicalRoots: included.flatMap(node => localWorkspaceSourcePaths(node.row)).sort(),
+    physicalRoots: [...new Set([...included.flatMap(node => localWorkspaceSourcePaths(node.row)), ...importedChildren.map(child => child.sourcePath)])].sort(),
     settledPreparedWorkspaceIds: settledPreparedWorkspaceIds.sort(), settledRecoveryIssueIds: [...settledRecoveryIssueIds].sort(),
     settledFinalizationRunIds: [...new Set(companions.flatMap(proof => proof.sources.map(source => source.runId)))].sort(),
     gitSourceFingerprints: included.map(node => ({ workspaceId: node.row.id, fingerprint: node.fingerprint })), importedChildren,

@@ -30,11 +30,31 @@ describe("ordinary task interruption", () => {
     await render();
     expect(container.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");
     expect(container.querySelectorAll("button")).toHaveLength(1);
+    // A stable handle for the task's own Retry, the supported path after
+    // automatic recovery stops.
+    expect(container.querySelector('[data-testid="task-execution-retry"]')?.textContent).toBe("Retry");
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
     expect(retry).toHaveBeenCalledOnce();
     expect(container.querySelector("a, details, input, textarea")).toBeNull();
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
+  it("keeps the failure visible and names the gate while a saved Retry waits on the budget", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false });
+    const notice = container.querySelector('[data-testid="task-execution-waiting"]');
+    expect(notice?.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");
+    expect(notice?.textContent).toContain("waiting for the budget to allow new work");
+    // The saved Retry starts by itself; a second Retry would only duplicate it.
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("does not report a failed attempt for a task the budget held before its first run", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false,
+      sourceRunIds: [], observedRunId: null });
+    const notice = container.querySelector('[data-testid="task-execution-waiting"]');
+    expect(notice?.textContent).toContain("This task has not started.");
+    expect(notice?.textContent).not.toContain("Couldn’t finish this attempt");
+  });
+
   it("shows persisted backoff with a usable Retry", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-20T00:00:00Z"));
     await render({ ...failed, state: "retry_scheduled", nextRetryAt: "2026-10-20T00:00:30Z" });
@@ -130,6 +150,18 @@ describe("ordinary task interruption", () => {
     await render({ ...failed, workspaceFailure, state: "working" });
     expect(container.textContent).toBe("");
   });
+  it("names a failed workspace setup command and what to change, keeping Retry", async () => {
+    const setupFailure = { step: "workspace_provision" as const, command: "bash ./scripts/provision-worktree.sh", exitCode: 127,
+      output: "bash: ./scripts/provision-worktree.sh: No such file or directory",
+      message: "The project's workspace provision command \"bash ./scripts/provision-worktree.sh\" failed with exit code 127: bash: ./scripts/provision-worktree.sh: No such file or directory" };
+    await render({ ...failed, setupFailure });
+    expect(container.textContent).toContain("Couldn’t set up the task workspace.");
+    expect(container.textContent).toContain(setupFailure.message);
+    expect(container.textContent).toContain("Fix the command in the project’s workspace settings");
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt.");
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
   it("shows why an accepted Retry is waiting and keeps another attempt available", async () => {
     const retryWait = { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." };
     await render({ ...failed, retryWait });
@@ -139,6 +171,14 @@ describe("ordinary task interruption", () => {
     expect(retry).toHaveBeenCalledOnce();
     await render({ ...failed, retryWait }, { canRetry: false });
     expect(container.textContent).toContain(retryWait.message);
+    expect(container.querySelector("button")).toBeNull();
+  });
+  it("names the budget wait alongside a provider failure while a saved Retry is held", async () => {
+    const providerFailure = { schema: "paperclip.provider-failure.v1" as const, provider: "openai", phase: "startup" as const,
+      category: "overloaded" as const, retryability: "transient" as const, message: "Provider overloaded" };
+    await render({ ...failed, providerFailure, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false });
+    expect(container.textContent).toContain("Provider overloaded");
+    expect(container.querySelector('[data-testid="task-execution-waiting"]')?.textContent).toContain("waiting for the budget to allow new work");
     expect(container.querySelector("button")).toBeNull();
   });
   it("shows an unknown provider's original explanation as text and preserves read-only access", async () => {

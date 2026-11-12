@@ -1435,11 +1435,16 @@ jobs:
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}
+          PAPERCLIP_RUNNER_E2E_SELECTED_ID: ${{ matrix.executionId }}
         run: |
+          # Agents can read any process's argv in /proc. A target that reads the
+          # selected cell from the environment keeps the case id off the command line.
+          selector=(-- --id "$PAPERCLIP_RUNNER_E2E_SELECTED_ID")
+          if grep -q PAPERCLIP_RUNNER_E2E_SELECTED_ID tests/runner-e2e/selectors.ts 2>/dev/null; then selector=(); fi
           if [ -n "$PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT" ]; then
-            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}" > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
+            pnpm test:e2e:runner "${selector[@]}" > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
           else
-            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
+            pnpm test:e2e:runner "${selector[@]}"
           fi
 
       - name: Stage bounded campaign evidence

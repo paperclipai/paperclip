@@ -25,6 +25,9 @@ export interface AgentLifecycleOperation {
   verificationFailures?: number;
   attempts: number;
   responsibleUserId?: string | null;
+  /** Why a pause started: its holds and the company's pause reason at that moment. Runs the
+   * pause stops record it, so a budget resume continues only work its own budget stopped. */
+  pauseCause?: { holds: string[]; companyPauseReason: string | null };
 }
 
 export interface AgentLifecycleRequest {
@@ -33,6 +36,7 @@ export interface AgentLifecycleRequest {
   operationId: string;
   version: number;
   phase: AgentLifecycleState;
+  environmentDriverKey?: string;
   instanceSecrets?: Record<string, string>;
 }
 export interface AgentLifecycleResult {

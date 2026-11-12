@@ -827,6 +827,10 @@ export function IssueAssigneePausedNotice({
 }) {
   if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
 
+  // Lifecycle setup is shown by the queued turn and its inline connection card.
+  // Resume changes operator holds; it cannot complete verification.
+  if (!agent.pauseReason && ["preparing", "verifying", "resuming"].includes(agent.lifecycleState ?? "")) return null;
+
   // A freshly created agent is stored as paused with pauseReason "setup" until
   // its setup finishes. That is not an operator pause, so say what is actually
   // happening and point at the real recovery path instead of "Resume agent".
@@ -6226,7 +6230,7 @@ export function IssueChatThread({
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
       clientRequestId ??= crypto.randomUUID();
-      const attempt = beginSubmission(clientRequestId);
+      const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
         await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)

@@ -1,19 +1,18 @@
 import { isRetainedWorkspaceWorkerStopProof } from "./native-runtime/native-workspace-platform-proof.js";
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { createHash } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueTreeHolds, issueTreeHoldMembers, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
-import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
-import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, legacyControllerBootId, legacyControllerProvenGone } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 import { hasVerifiedPreparationLog } from "./verified-preparation-log.js";
-import { executionStartedEventPredicate, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
+import { executionStartedEventPredicate, isPreDispatchResourceWait, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "status" | "startedAt" | "finishedAt" | "runtimeMode" |
@@ -23,6 +22,19 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "controllerBootId" | "controllerLeaseExpiresAt">;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 const EMPTY_LOG_SHA256 = createHash("sha256").digest("hex");
+
+/**
+ * An unexpired legacy controller lease means the old preparer may still be
+ * unwinding, unless the shared owner prover proves that recorded controller
+ * process gone (a drained or killed server whose replacement is now running).
+ */
+async function preparerMayStillUnwind(run: Run & { controllerProcess?: Record<string, unknown> | null }): Promise<boolean> {
+  if (!run.controllerLeaseExpiresAt || run.controllerLeaseExpiresAt <= new Date()) return false;
+  if (run.runtimeMode !== "legacy" || !run.controllerBootId || run.controllerBootId === legacyControllerBootId
+    || !run.controllerProcess) return true;
+  return !(await legacyControllerProvenGone({ runtimeMode: run.runtimeMode, controllerBootId: run.controllerBootId,
+    controllerProcess: run.controllerProcess }));
+}
 
 export async function isFailedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined) {
   return failedNativePreparation(db, run, coordinator, false);
@@ -43,7 +55,7 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
     || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
     || run.nativeIssueId || run.nativeSessionId || run.runnerProfileJson?.nativeExecutionInput != null
     || run.runnerProfileJson?.nativeWorkspaceSync != null
-    || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
+    || await preparerMayStillUnwind(run)) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
@@ -95,7 +107,8 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
-      "workspaceRestoreRecovery"].includes(key))) return false;
+      // A bounded diagnostic code; it carries no execution or replay authority.
+      "workspaceRestoreRecovery", "failureCause"].includes(key))) return false;
   return Boolean(await readFailedPreparationSettlement(db, { ...run, agentId: source.agentId }, historicalRetryAncestor));
 }
 
@@ -116,7 +129,8 @@ export function isInterruptedNativePreparationCandidate(run: Run): boolean {
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   // Restart recovery records this certificate only after revoking a preparing
   // controller. A generic process-lost error cannot establish safe replay.
-  const lostPreparation = run.status === "failed" && run.errorCode === "process_lost"
+  const lostPreparation = run.status === "failed"
+    && (run.errorCode === "process_lost" || run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE)
     && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   // Older shutdown records predate structured cancellation. Current records
   // identify unexpected system interruption without relying on an error label.
@@ -135,7 +149,7 @@ export async function isInterruptedNativePreparation(db: Db, run: Run): Promise<
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   const settled = recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   if (!isInterruptedNativePreparationCandidate(run)
-    || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()
+    || await preparerMayStillUnwind(run)
     || !settled && (!run.controllerBootId || run.controllerBootId === legacyControllerBootId)) return false;
   const [coordinator] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -261,9 +275,14 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     (run.resultJson === null || cancellation?.beforeNativeSelection === true) &&
     Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
       run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
-  const beforeReviewDispatch = isPreDispatchReviewWait(run) && !coordinator;
+  const beforeDispatch = !coordinator && (isPreDispatchReviewWait(run) ||
+    isPreDispatchResourceWait(run) && !run.runtimeModeResolvedAt && !run.nativeIssueId && !run.nativeSessionId &&
+    ["preparing", "settled"].includes(run.executionStage ?? "") &&
+    run.runnerProfileJson?.nativeExecutionInput == null && run.runnerProfileJson?.nativeWorkspaceSync == null &&
+    run.runnerProfileJson?.remoteWorkspace == null && run.resultJson?.workspaceRestoreFailure == null &&
+    !hasRequiredWorkspaceRecovery(run.resultJson));
   const unclaimedWorkspaceRetry = !coordinator && await isCancelledUnclaimedWorkspaceWaitRetry(db, run);
-  const beforeSelection = beforeReviewDispatch || unclaimedWorkspaceRetry || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+  const beforeSelection = beforeDispatch || unclaimedWorkspaceRetry || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     !run.nativeSessionId && !coordinator && claimedAdapterType(run) === "paperclip_runner" &&
     cancellation?.beforeNativeSelection === true;
   const neverClaimed = run.runtimeMode === "native" && coordinator &&
@@ -272,16 +291,16 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     !coordinator.controllerPid && !coordinator.leaseOwner && !coordinator.leaseExpiresAt &&
     !coordinator.resultId && !coordinator.failureDetail?.successorRunId;
   if (!beforeSelection && !neverClaimed) return false;
-  const settled = beforeReviewDispatch || unclaimedWorkspaceRetry || typeof run.resultJson?.startupPreparationSettledAt === "string";
+  const settled = beforeDispatch || unclaimedWorkspaceRetry || typeof run.resultJson?.startupPreparationSettledAt === "string";
   // The old preparer can still be unwinding even though the run is terminal.
-  if (!settled && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
+  if (await preparerMayStillUnwind(run)) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
   if ((!settled && leases.length === 0 && !historicalBeforeSelection) || leases.some(lease =>
-    lease.provider === "local"
+    lease.metadata?.pendingCleanupInFlight === true || (lease.provider === "local"
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
-      : !hasRemoteTerminationReceipt(lease))) return false;
+      : !hasRemoteTerminationReceipt(lease)))) return false;
   // Reject contradictory retained evidence, including a crash after a launch
   // request but before the PID callback. Provider events never certify a stop.
   return !await nativeStartupHasExecutionEvidence(db, run);
@@ -290,10 +309,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
 async function nativeStartupHasExecutionEvidence(db: Db, run: Run) {
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    or(isNotNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
-        "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
-        "provider.event", "provider.rpc_result", "tool.execution.started"])),
+    executionStartedEventPredicate(),
   )).limit(1);
   return Boolean(execution);
 }

@@ -1,3 +1,4 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { type BudgetServiceHooks } from "./budgets.js";
 
@@ -8,6 +9,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, normalizeAgentUrlKey, type Agent
 
 import { conflict, notFound, unprocessable } from "../errors.js";
 
+import { preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
 
 import {
@@ -42,7 +44,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
     getById,
 
-    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {
+    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }, options?: { actorAgentId?: string | null }) => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "pending_approval") {
@@ -54,11 +56,17 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       const updated = await db.transaction(async tx => {
-        await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
+        await assertAgentInteraction(tx, { companyId: existing.companyId, actorAgentId: options?.actorAgentId,
+          operation: "configure", targetAgentId: id, lock: "update" });
+        const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
+        if (!current) return null;
+        if (current.status === "pending_approval") throw conflict("Pending approval agent permissions cannot be changed before board approval");
+        const protectedPermissions = preserveAgentInteractionPermissions(current.permissions, permissions);
+        await notifyAttentionRetentionWork(tx, { companyId: current.companyId });
         return tx
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, { role: existing.role }),
+          permissions: normalizeAgentPermissions({ ...current.permissions, ...protectedPermissions }, { role: current.role }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

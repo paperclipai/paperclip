@@ -1,3 +1,4 @@
+import { preserveAgentInteractionPermissions } from "../../../lib/agent-interaction-permissions.js";
 import type { LifecycleEffects } from "./effects.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -13,7 +14,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
     getById,
     create: async (companyId: string, data: CreateAgentData, options?: CreateAgentOptions) => {
       if (Object.keys(data).some(key => key.startsWith("lifecycle"))) throw conflict("Lifecycle fields belong to the lifecycle module");
-      return effects.transaction(db, companyId, async (txDb) => {
+      return effects.transaction(db, companyId, async (txDb, publications) => {
         const tx = txDb;
         const setupId = options?.setupAgentId ?? (options?.setupOnly ? data.id : undefined);
         const [setup] = setupId ? await tx.select().from(agents).where(eq(agents.id, setupId)).for("update") : [];
@@ -43,6 +44,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const createdStatus=status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused";
         const values: typeof agents.$inferInsert = {
           ...prepared,
+          ...(setup ? { permissions: preserveAgentInteractionPermissions(setup.permissions, prepared.permissions) } : {}),
           createdByUserId: setup?.createdByUserId ?? options?.createdByUserId ?? null,
           lifecycleState,
           lifecycleVersion: setup ? setup.lifecycleVersion + 1 : 1,
@@ -60,6 +62,10 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           .returning()
           .then((rows) => rows[0]);
         await effects.initializeHire(txDb, created, options);
+        if (!options?.setupOnly && status !== "pending_approval" && status !== "terminated"
+          && created.budgetMonthlyCents > 0 && options?.initialBudgetPolicyUserId) {
+          await effects.setAgentBudget(txDb, publications, companyId, created.id, created.budgetMonthlyCents, options.initialBudgetPolicyUserId);
+        }
         if (!options?.setupOnly && created.status !== "pending_approval" && created.status !== "terminated") {
           await effects.recordCreation(txDb, companyId, created.id);
         }

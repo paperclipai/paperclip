@@ -30,6 +30,7 @@ import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js"
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
 import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { verifiedWorkspaceSnapshotReuse } from "../remote-workspace-snapshot-reuse-receipt.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
 const record = (v: unknown): Record<string, unknown> =>
@@ -169,7 +170,7 @@ async function preClaimFailureEvidence(db: ReplacementDb, run: typeof heartbeatR
 }
 
 /** A saved remote source is proved by its current ledger, never a controller path. */
-async function remoteWorkspaceReplacementEvidence(
+export async function remoteWorkspaceReplacementEvidence(
   db: ReplacementDb,
   run: typeof heartbeatRuns.$inferSelect,
   issueId: string,
@@ -215,11 +216,11 @@ async function remoteWorkspaceReplacementEvidence(
   const snapshotQuery = db.select().from(executionWorkspaceSnapshots).where(and(
     eq(executionWorkspaceSnapshots.companyId, run.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
     eq(executionWorkspaceSnapshots.id, reference.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
-    eq(executionWorkspaceSnapshots.epoch, reference.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
   ));
   const [snapshot] = await (lock ? snapshotQuery.for("update") : snapshotQuery);
   if (!snapshot?.sha256 || !snapshot.objectKey || !snapshot.key || !snapshot.manifestDigest || !snapshot.byteSize) return denied;
-  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+  const [operation] = snapshot.sourceRunId === run.id && snapshot.epoch === reference.epoch
+    ? await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.id, snapshot.sourceOperationId), eq(workspaceOperations.companyId, run.companyId),
     eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.heartbeatRunId, run.id),
     eq(workspaceOperations.issueId, issueId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
@@ -228,8 +229,10 @@ async function remoteWorkspaceReplacementEvidence(
     sql`${workspaceOperations.metadata}->>'epoch' = ${String(reference.epoch)}`,
     sql`${workspaceOperations.metadata}->>'snapshotId' = ${snapshot.id}`,
     sql`${workspaceOperations.metadata}->>'sha256' = ${snapshot.sha256}`,
-  ));
-  return { workspacePreserved: Boolean(operation), providerStopped };
+  )) : [];
+  const reused = operation ? null : await verifiedWorkspaceSnapshotReuse(db, {
+    companyId: run.companyId, issueId, runId: run.id, reference, snapshot });
+  return { workspacePreserved: Boolean(operation || reused), providerStopped };
 }
 
 export function nativeReplacementPending() {

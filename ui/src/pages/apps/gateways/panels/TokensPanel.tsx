@@ -8,6 +8,7 @@ import type {
   ToolMcpGatewayWithTokens,
 } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
+import { useAccountIdentity } from "@/api/companies-query";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -38,6 +39,7 @@ function defaultExpiry(): string {
 }
 
 const STATUS_CLASS: Record<TokenStatus, string> = {
+  pending: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   active: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   expiring: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   expired: "border-border bg-muted text-muted-foreground",
@@ -102,6 +104,12 @@ export function TokensPanel({
     () => [...gateway.tokens].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [gateway.tokens],
   );
+  // Only the person an agent-created token acts for can reveal it.
+  const { userId } = useAccountIdentity();
+  const pendingTokens = useMemo(
+    () => tokens.filter((token) => tokenStatus(token) === "pending" && (!token.responsibleUserId || !userId || token.responsibleUserId === userId)),
+    [tokens, userId],
+  );
   const pageCount = Math.max(1, Math.ceil(tokens.length / TOKEN_PAGE_SIZE));
   const visibleTokens = tokens.slice((historyPage - 1) * TOKEN_PAGE_SIZE, historyPage * TOKEN_PAGE_SIZE);
 
@@ -136,6 +144,28 @@ export function TokensPanel({
     onError: (error) =>
       pushToast({
         title: "Token was not issued",
+        body: describeError(error).body,
+        tone: "error",
+      }),
+  });
+
+  // Agent-created tokens get their value only when the person reveals them here.
+  const revealMutation = useMutation({
+    mutationFn: (tokenId: string) => toolsApi.revealGatewayToken(companyId, tokenId),
+    onSuccess: async (token) => {
+      setCreated(token);
+      setRevealed(true);
+      pushToast({
+        title: "Token revealed",
+        body: "Copy it now — you won’t see the full value again after leaving this page.",
+        tone: "success",
+      });
+      onTokenCreated?.(token);
+      await invalidate();
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Token was not revealed",
         body: describeError(error).body,
         tone: "error",
       }),
@@ -235,6 +265,35 @@ export function TokensPanel({
             </Button>
           </div>
         </form>
+      ) : null}
+
+      {pendingTokens.length > 0 ? (
+        <section className="space-y-2 border-y border-border py-4" aria-label="Tokens waiting to be revealed">
+          <div>
+            <div className="text-sm font-semibold text-foreground">Waiting for you to reveal</div>
+            <div className="text-xs text-muted-foreground">
+              An agent created these tokens for you. A value is generated when you reveal it and is shown only once.
+            </div>
+          </div>
+          {pendingTokens.map((token) => (
+            <div key={token.id} className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate font-medium text-foreground">{token.name}</div>
+                <div className="text-xs text-muted-foreground">
+                  {maskedTokenLabel(token)} · <ExpiryValue token={token} />
+                </div>
+              </div>
+              <Button
+                size="sm"
+                disabled={revealMutation.isPending}
+                onClick={() => revealMutation.mutate(token.id)}
+                aria-label={`Reveal token ${token.name}`}
+              >
+                Reveal token
+              </Button>
+            </div>
+          ))}
+        </section>
       ) : null}
 
       {created ? (

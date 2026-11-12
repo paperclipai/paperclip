@@ -2,10 +2,12 @@ import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, remoteRecoveryLeaseMismatch } fr
 import { readInheritedRunnerRetainedSandbox } from "../native-runtime/native-inherited-runner-retry.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
-import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS, WorkspaceBusyDeferral } from "./retries.js";
+import { WorkspaceBusyDeferral } from "./retries.js";
+import { remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
+import { NativeExecutionContext } from "../native-runtime/native-execution-context.js";
 import { resolveRemoteWorkspaceSource } from "./remote-workspace-source.js";
 import { reserveFreshPluginTaskWorkspace, stageProviderFreshWorkspace } from "../provider-fresh-workspace.js";
 import { freshWorkspaceSchema, type PluginFreshWorkspace } from "@paperclipai/plugin-sdk";
@@ -103,6 +105,7 @@ const RETAINED_SANDBOX_GONE = new RegExp(`^${NATIVE_REMOTE_RECOVERY_LEASE_MISMAT
 
 /** Prepares the workspace and environment; dispatch and terminal lease release stay with the caller. */
 export interface HeartbeatWorkspacePreparationInput {
+  signal?: AbortSignal;
   run: typeof heartbeatRuns.$inferSelect;
   agent: typeof agents.$inferSelect;
   task: {
@@ -144,6 +147,7 @@ export interface HeartbeatWorkspacePreparationInput {
     configSnapshot: WorkspaceMetadataInput["configSnapshot"];
     secretManifest: WorkspaceMetadataInput["secretManifest"];
     managedAiCredentialIdentity?: string;
+    runnerTaskResumeSessionId?: string | null;
   };
   reuse: {
     requestedShouldReuseExisting: boolean;
@@ -153,11 +157,11 @@ export interface HeartbeatWorkspacePreparationInput {
     nativeRecoveryExecutionWorkspaceId: string | null;
     persistedNativeExecutionInput: NativeExecutionInput | null;
     isDotRun: boolean;
-    runOptions: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim };
+    runOptions: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim; portablePreparationLeaseId?: string };
   };
   services: {
     workspaceWorkers?: WorkspaceWorkers;
-    envOrchestrator: Pick<ReturnType<typeof environmentRunOrchestrator>, "resolveEnvironment" | "acquireForRun" | "realizeForRun">;
+    envOrchestrator: Pick<ReturnType<typeof environmentRunOrchestrator>, "resolveEnvironment" | "acquireForRun" | "confirmWorkspaceTaskPlacement" | "realizeForRun">;
     executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "create" | "update" | "getStoredById" | "bindTaskWorkspace" | "prepareTaskRepositoriesForAdmission" | "assertTaskRepositoryPublicationAllowed" | "prepareConfiguredRepositoryCopy" | "assertTaskRepositoryRecoveryBinding">;
     workspaceOperationsSvc: Pick<ReturnType<typeof workspaceOperationService>, "createRecorder">;
     resolveWorkspaceForRun: WorkspaceResolver["resolveWorkspaceForRun"];
@@ -252,6 +256,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     appendRunEvent,
   } = input.services;
   const pluginTaskWorkspace = selectedEnvironmentForConfig?.driver === "plugin" && agent.adapterType === "paperclip_runner";
+  const restartRecovery = runOptions.nativeRestartRecovery;
+  const portablePreparationLeaseId = runOptions.portablePreparationLeaseId ??
+    (restartRecovery?.kind === "bootstrap_incomplete" ? restartRecovery.portablePreparationLeaseId : undefined);
+  if (portablePreparationLeaseId && (!pluginTaskWorkspace || controllerOnly)) {
+    throw remoteRecoveryLeaseMismatch("workspace_preparation", "environment_driver");
+  }
   for (const workspaceId of new Set([existingExecutionWorkspace?.id, reusableExistingExecutionWorkspace?.id].filter(Boolean))) {
     const [workspace] = await db.select({ metadata: executionWorkspacesTable.metadata }).from(executionWorkspacesTable)
       .where(and(eq(executionWorkspacesTable.companyId, agent.companyId), eq(executionWorkspacesTable.id, workspaceId!)));
@@ -547,12 +557,86 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           previousWorkspaceId: previousProviderWorkspaceId });
     }
   }
+  const assertAllowedEnvironment = (environment: Environment) => {
+    const allowlistDecision = evaluateExecutionAllowlist(executionPolicy, {
+      driver: environment.driver,
+      provider:
+        typeof environment.config?.provider === "string"
+          ? environment.config.provider
+          : null,
+    });
+    if (!allowlistDecision.allowed) {
+      logger.error(
+        {
+          runId: run.id,
+          issueId,
+          agentId: agent.id,
+          environmentId: environment.id,
+          deniedDriver: allowlistDecision.deniedDriver,
+          deniedProvider: allowlistDecision.deniedProvider,
+        },
+        "Execution allowlist denied the resolved environment; failing run",
+      );
+      throw new Error(allowlistDecision.reason);
+    }
+  };
+  const environmentAcquisitionInput = (
+    persistedExecutionWorkspace: Parameters<typeof envOrchestrator.acquireForRun>[0]["persistedExecutionWorkspace"],
+    projectId: string | null,
+    additionalWorkspaces: { projectId?: string | null }[] | undefined,
+  ) => ({
+    companyId: agent.companyId,
+    selectedEnvironmentId: selectedEnvironmentId ?? localEnvironment.id,
+    localEnvironmentId: localEnvironment.id,
+    adapterType: agent.adapterType,
+    adapterConfig: parseObject(agent.adapterConfig),
+    admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
+    managedAiCredentialIdentity: input.config.managedAiCredentialIdentity,
+    runnerTaskResumeSessionId: input.config.runnerTaskResumeSessionId,
+    runnerTaskProjectIds: [...new Set([projectId, ...resolvedWorkspace.runnerTaskProjectIds ?? [],
+      ...(additionalWorkspaces ?? []).map(workspace => workspace.projectId)]
+      .filter((id): id is string => Boolean(id)))],
+    recoverPluginTask: !portablePreparationLeaseId &&
+      (restartRecovery?.kind === "resume_dead_runner" || restartRecovery?.kind === "bootstrap_incomplete"),
+    issueId: issueId ?? null,
+    heartbeatRunId: run.id,
+    agentId: agent.id,
+    persistedExecutionWorkspace,
+    executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
+  });
+  const pluginRecovery = restartRecovery?.kind === "reattach_remote_runner" && restartRecovery.remote.kind === "plugin_task"
+    ? restartRecovery.remote : portablePreparationLeaseId
+      ? { kind: "plugin_task" as const, leaseId: portablePreparationLeaseId, preparation: true as const } : undefined;
+  let workspaceAcquisition: Awaited<ReturnType<typeof envOrchestrator.acquireForRun>> | undefined;
+  let workspaceAcquireStartedAtMs: number | undefined;
+  let ensureTaskWorkspace: ((taskId: string, assertOwned: () => void) => Promise<void> | undefined) | undefined;
   const pluginPrepared = controllerOnly || remoteAuthority ? null : await preparePluginWorkspace(db, input.services.workspaceWorkers, {
     companyId: agent.companyId, projectId: resolvedWorkspace.projectId, projectWorkspaceId: resolvedWorkspace.workspaceId,
     issueId, runId: run.id, agentId: agent.id, responsibleUserId,
     existingWorkspaceId: providerFresh ? providerFresh.previousWorkspaceId : reusableExistingExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
     ...(providerFresh ? { fresh: providerFresh, expectedBindingRevision: previousProviderBindingRevision } : {}),
     selectedProviderPluginId: projectExecutionWorkspacePolicy?.storageProviderPluginId ?? null,
+    environment: selectedEnvironmentForConfig,
+    acquireTaskLease: async workspace => {
+      if (!selectedEnvironmentForConfig) throw new Error("Workspace Launcher placement is unavailable");
+      assertAllowedEnvironment(selectedEnvironmentForConfig);
+      await controllerLease.assertOwned();
+      workspaceAcquireStartedAtMs = Date.now();
+      if (restartRecovery?.kind === "reattach_remote_runner" && restartRecovery.runId !== run.id)
+        throw remoteRecoveryLeaseMismatch("workspace_preparation", "run_id");
+      const acquisition = await timeWorkspace("workspace_environment_acquire", () => envOrchestrator.acquireForRun({
+        ...environmentAcquisitionInput(workspace, resolvedWorkspace.projectId, resolvedWorkspace.additionalWorkspaces),
+        ...(pluginRecovery ? { reattachRemoteLease: pluginRecovery } : {}),
+      }));
+      await controllerLease.assertOwned();
+      const placement = await envOrchestrator.confirmWorkspaceTaskPlacement(acquisition, {
+        companyId: agent.companyId, environmentId: selectedEnvironmentForConfig.id, workspaceId: workspace.id, signal: input.signal,
+      });
+      await controllerLease.assertOwned();
+      workspaceAcquisition = placement.acquisition;
+      return { leaseId: placement.acquisition.lease.id, taskLease: placement.taskLease };
+    },
+    onTaskPrepared: ensure => { ensureTaskWorkspace = ensure; },
     mode: requestedExecutionWorkspaceMode,
     strategy: resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig),
     branchMode: typeof parseObject(mergedConfig.workspaceStrategy).existingBranch === "string" ? "existing" : "create",
@@ -1056,8 +1140,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         } : {}),
       }).catch(error => {
         if (!(error instanceof RemoteWorkspaceWriterActiveError)
-          || (!error.writer.ownerFenceHeld
-            && error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS)) throw error;
+          || remoteWorkspaceHoldRefusesStart({ kind: "held", writer: error.writer })) throw error;
         throw new WorkspaceBusyDeferral({ holder: error.writer, executionWorkspaceId: error.workspaceId,
           deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
           wasIssueAssignee: input.task.wasIssueAssignee, holderEnded: error.writer.ended === true });
@@ -1292,7 +1375,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       executionTarget: null, workspaceRestoreSource: null,
     };
   }
-  const environmentAcquireStartedAtMs = Date.now();
+  const environmentAcquireStartedAtMs = workspaceAcquireStartedAtMs ?? Date.now();
   let acquiredEnvironment: Awaited<
     ReturnType<typeof envOrchestrator.acquireForRun>
   >;
@@ -1300,7 +1383,6 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     await controllerLease.assertOwned();
     const remoteRecovery = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
       ? runOptions.nativeRestartRecovery : null;
-    const pluginRecovery = remoteRecovery?.remote.kind === "plugin_task" ? remoteRecovery.remote : null;
     const sandboxRecovery = remoteRecovery && remoteRecovery.remote.kind !== "plugin_task" ? remoteRecovery.remote : null;
     const recoveryWorkspace = sandboxRecovery
       ? readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync) : null;
@@ -1331,23 +1413,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         return envOrchestrator.acquireForRun(input);
       }
     };
-    acquiredEnvironment = await timeWorkspace("workspace_environment_acquire", () => acquireRetainedOrNew({
-      companyId: agent.companyId,
-      selectedEnvironmentId: selectedEnvironmentId ?? localEnvironment.id,
-      localEnvironmentId: localEnvironment.id,
-      adapterType: agent.adapterType,
-      adapterConfig: parseObject(agent.adapterConfig),
-      admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
-      managedAiCredentialIdentity: input.config.managedAiCredentialIdentity,
-      runnerTaskProjectIds:[...new Set([executionWorkspace.projectId,...resolvedWorkspace.runnerTaskProjectIds ?? [],
-        ...(executionWorkspace.additionalWorkspaces ?? []).map(workspace=>workspace.projectId)]
-        .filter((id):id is string=>Boolean(id)))],
-      recoverPluginTask: runOptions.nativeRestartRecovery?.kind === "resume_dead_runner" || runOptions.nativeRestartRecovery?.kind === "bootstrap_incomplete",
-      issueId: issueId ?? null,
-      heartbeatRunId: run.id,
-      agentId: agent.id,
-      persistedExecutionWorkspace,
-      executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
+    if (workspaceAcquisition && workspaceAcquisition.lease.executionWorkspaceId !== persistedExecutionWorkspace?.id)
+      throw new Error("Workspace Launcher lease changed before task admission");
+    acquiredEnvironment = workspaceAcquisition ?? await timeWorkspace("workspace_environment_acquire", () => acquireRetainedOrNew({
+      ...environmentAcquisitionInput(persistedExecutionWorkspace, executionWorkspace.projectId, executionWorkspace.additionalWorkspaces),
       ...(pluginRecovery ? { reattachRemoteLease: pluginRecovery } : sandboxRecovery && (recoveryWorkspace || remoteRecoveryLocation) ? { reattachRemoteLease: {
         leaseId: (remoteRecoveryLocation ?? recoveryWorkspace)!.leaseId,
         providerLeaseId: sandboxRecovery.providerLeaseId,
@@ -1374,34 +1443,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     throw error;
   }
   const selectedEnvironment = acquiredEnvironment.environment;
-  // Defense-in-depth: re-check the actually-acquired environment against the
-  // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
-  // non-k8s) environment FAILS the run here rather than executing untrusted.
-  const allowlistDecision = evaluateExecutionAllowlist(executionPolicy, {
-    driver: selectedEnvironment.driver,
-    provider:
-      typeof selectedEnvironment.config?.provider === "string"
-        ? selectedEnvironment.config.provider
-        : null,
-  });
-  if (!allowlistDecision.allowed) {
-    logger.error(
-      {
-        runId: run.id,
-        issueId,
-        agentId: agent.id,
-        environmentId: selectedEnvironment.id,
-        deniedDriver: allowlistDecision.deniedDriver,
-        deniedProvider: allowlistDecision.deniedProvider,
-      },
-      "Execution allowlist denied the resolved environment; failing run",
-    );
-    throw new Error(allowlistDecision.reason);
-  }
+  assertAllowedEnvironment(selectedEnvironment);
   let activeEnvironmentLease = {
     environment: acquiredEnvironment.environment,
     lease: acquiredEnvironment.lease,
     leaseContext: acquiredEnvironment.leaseContext,
+    pluginTaskDescription: acquiredEnvironment.pluginTaskDescription,
   };
   const duplexObservabilityRecorder = createHostDuplexObservabilityRecorder(
     {
@@ -1440,6 +1487,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       effectiveExecutionWorkspaceMode,
       persistedExecutionWorkspace,
       runnerTaskProjectIds: resolvedWorkspace.runnerTaskProjectIds,
+      ...(input.signal ? { signal: input.signal } : {}),
       assertOwned: remoteAuthority ? assertRemotePreparationOwned : controllerLease.assertOwned,
       duplexObservabilityRecorder,
     }));
@@ -1475,6 +1523,32 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const workspaceRealization = realizationResult.workspaceRealization;
   const executionTarget = realizationResult.executionTarget;
+  if (ensureTaskWorkspace && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && executionTarget.runnerTask) {
+    if (executionTarget.leaseId !== acquiredEnvironment.lease.id) throw new Error("Workspace Launcher lease changed before task admission");
+    const ensure = ensureTaskWorkspace;
+    const runnerTask = executionTarget.runnerTask;
+    executionTarget.runnerTask = (operation, options) => {
+      const kind = parseObject(operation).kind;
+      if (kind === "prepare" || kind === "resume") {
+        if (!options?.expectedTaskId) throw new Error("Workspace Launcher task identity unavailable");
+        input.signal?.throwIfAborted();
+        const assertOwned = () => {
+          input.signal?.throwIfAborted();
+          const context = options.executionContext;
+          if (context !== undefined) {
+            if (!(context instanceof NativeExecutionContext)) throw new Error("native_execution_context_unavailable");
+            context.assertScope({ companyId: agent.companyId, agentId: agent.id, runId: run.id });
+          }
+        };
+        const preparation = ensure(options.expectedTaskId, assertOwned);
+        if (preparation) return preparation.then(() => {
+          assertOwned();
+          return runnerTask(operation, options);
+        });
+      }
+      return runnerTask(operation, options);
+    };
+  }
   if (remoteAuthority && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId, issueId,

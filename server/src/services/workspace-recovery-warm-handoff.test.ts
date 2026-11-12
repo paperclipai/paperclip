@@ -29,6 +29,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 import { useWorkspaceRecoveryFixture, action, connectionString, db, failedWarmSource, replaceFixtureState, root, run, seed, warmHandoffSource } from "./__tests__/workspace-recovery-fixture.js";
@@ -141,6 +142,80 @@ describe("automatic retained workspace recovery", () => {
     expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
       .toMatchObject({ status: "verified" });
   }, 30_000);
+
+  // Regression: a native run resumed a warm sandbox and was interrupted before
+  // provider work. The restore hold stopped that sandbox and changed its lease
+  // to retain_on_failure. Recovery saved the files, but nothing returned the
+  // lease to reuse, so the next run paid a new sandbox and a full realize.
+  it.each([
+    ["the hold recorded its original policy", "current", "reuse_by_environment"],
+    // Old-saved/new-resumed: a previous release wrote the marker without the
+    // original policy. The reuse scope that only a reusable acquisition writes
+    // still proves it.
+    ["an older release saved the hold over a scoped reusable lease", "legacy_scoped", "reuse_by_environment"],
+    ["an older release saved the hold without reuse proof", "legacy_unscoped", "retain_on_failure"],
+  ] as const)("returns a settled restore hold to warm reuse when %s", async (_label, marker, policy) => {
+    const f = await warmHandoffSource(1);
+    const [held] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(held).toMatchObject({ leasePolicy: "retain_on_failure", status: "released" });
+    expect(held.metadata?.workspaceRestoreRecovery).toMatchObject({ schema: "paperclip.workspace-restore-recovery.v1", runId: f.runId });
+    if (marker !== "current") {
+      const { originalLeasePolicy: _original, ...legacyMarker } = held.metadata!.workspaceRestoreRecovery as Record<string, unknown>;
+      await db.update(environmentLeases).set({ metadata: { ...held.metadata, workspaceRestoreRecovery: legacyMarker,
+        ...(marker === "legacy_scoped" ? { reusableSandboxLease: { version: 1, companyId: f.companyId } } : {}) } })
+        .where(eq(environmentLeases.id, f.lease.id));
+    }
+    expect(await legacyShutdownWorkspaceResourceProtected(db, held)).toBe(true);
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    const [settled] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(settled).toMatchObject({ leasePolicy: policy, status: "released", cleanupStatus: "success",
+      providerLeaseId: f.providerLeaseId });
+    expect(settled.metadata?.remoteExecutionTermination).toMatchObject({ state: "stopped" });
+    if (policy === "reuse_by_environment") {
+      expect(settled.metadata?.workspaceRestoreRecovery).toBeUndefined();
+      expect(settled.metadata?.workspaceRestoreRecoverySettled).toMatchObject({ runId: f.runId, actionId: f.actionId,
+        restoredLeasePolicy: "reuse_by_environment" });
+      expect(await legacyShutdownWorkspaceResourceProtected(db, settled)).toBe(false);
+      expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
+        .toMatchObject({ status: "verified" });
+    } else {
+      expect(settled.metadata?.workspaceRestoreRecovery).toMatchObject({ runId: f.runId });
+      expect(await legacyShutdownWorkspaceResourceProtected(db, settled)).toBe(true);
+    }
+  }, 30_000);
+
+  it.each([1, 2])("recovers saved work after %s warm handoffs that began with another task in the same workspace", async hops => {
+    const f = await warmHandoffSource(hops, undefined, { firstOwnerInSharedWorkspace: true });
+    const [first] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.priorLeaseId));
+    expect(first).toMatchObject({ issueId: f.firstOwnerIssueId, executionWorkspaceId: f.executionWorkspaceId, status: "expired" });
+    expect(new Set([f.firstOwnerIssueId, f.issueId, f.executionWorkspaceId]).size).toBe(3);
+    await recoverRetainedWorkspace(f.input);
+    const state = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(state.failure?.code ?? null).toBeNull();
+    expect(state.state).toBe("complete");
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    expect(await readFile(path.join(f.host, "after-warm-stop.txt"), "utf8")).toBe("stopped turn work\n");
+  }, 30_000);
+
+  it.each(["lease_task", "unshared_workspace", "other_workspace"])(
+    "keeps a cross-task predecessor fenced unless its own records prove the shared workspace: %s", async fault => {
+      const f = await warmHandoffSource(1, undefined, { firstOwnerInSharedWorkspace: true });
+      const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated task" }).returning();
+      if (fault === "lease_task") await db.update(environmentLeases).set({ issueId: other.id }).where(eq(environmentLeases.id, f.priorLeaseId));
+      if (fault === "unshared_workspace") await db.update(environmentLeases).set({ executionWorkspaceId: null })
+        .where(eq(environmentLeases.id, f.priorLeaseId));
+      if (fault === "other_workspace") {
+        const [otherWorkspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, mode: "isolated_workspace",
+          strategyType: "test", name: "Other workspace" }).returning();
+        await db.update(environmentLeases).set({ issueId: f.issueId, executionWorkspaceId: otherWorkspace.id })
+          .where(eq(environmentLeases.id, f.priorLeaseId));
+      }
+      expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
+        .toMatchObject({ status: "blocked", failureCode: "allocation_ownership_ambiguous" });
+      await expect(readFile(path.join(f.host, "after-warm-stop.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    }, 30_000);
 
   it.each(["active", "active_run", "active_control", "foreign_company", "environment", "workspace", "task", "agent", "unfinalized", "owner", "missing_proof", "conflicting_proof", "dangling_proof", "extra_history"])(
     "keeps ambiguous warm source history fenced: %s", async fault => {

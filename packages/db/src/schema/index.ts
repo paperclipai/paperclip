@@ -22,6 +22,7 @@ export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { budgetResumeClaims } from "./budget_resume_claims.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
@@ -189,6 +190,7 @@ export {
   toolGatewaySessions,
   connectionTokenIssuances,
   toolInvocations,
+  toolMcpAppViews,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,
@@ -220,6 +222,7 @@ export { runIdentityContexts } from "./run_identity_contexts.js";
 export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
 export { resourceLifecycleEvents } from "./resource_lifecycle_events.js";
 export { pluginLifecycleAcknowledgments } from "./plugin_lifecycle_acknowledgments.js";
+export { pluginLifecycleResourceCursors } from "./plugin_lifecycle_resource_cursors.js";
 
 export { toolActionDeliveries } from "./tool_action_deliveries.js";
 export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";

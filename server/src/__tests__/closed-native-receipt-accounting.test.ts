@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, environmentLeases, environments,
+  agentWakeupRequests, agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, environmentLeases, environments,
   heartbeatRunEvents, heartbeatRuns, issues,
   activityLog, completionContracts, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
@@ -286,6 +286,40 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await accountRunCost(db, f.run.id)).toBe(true);
     await flushBudgetEvaluationWork(db);
     expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  // Chaos wave s9802 t02: a follow-up run refused by a quarantined cleanup
+  // before any launch carried its predecessor's runner identity. Its debt
+  // waited ten minutes, then settled as unknown unpriced usage, and the
+  // blocking policy paused the company and held the board's Retry.
+  it.each([
+    { label: "settles at once without a charge", inherited: true, ownStart: false },
+    { label: "keeps the debt pending for its own recorded runner start", inherited: true, ownStart: true },
+    { label: "keeps the debt pending for an identity it did not record as inherited", inherited: false, ownStart: false },
+  ])("$label: a run that only carries its predecessor's runner identity", async ({ inherited, ownStart }) => {
+    const f = await fixture({ unpricedUsagePolicy: "block", processPid: 11356, failureCode: "native_session_cleanup_quarantined" });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+    if (ownStart) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId,
+      seq: 1, eventType: "native.process_start_requested", stream: "system" });
+    await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined",
+      runnerProfileJson: inherited ? { inheritedProcessIdentityRunId: randomUUID() } : {},
+      usageJson: { accountingReceiptSourceId: f.sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false,
+        accountingReceiptUnavailable: true, accountingReceiptSourceFences: {},
+        ledgerScope: { issueId: f.issue.id, projectId: null, billingCode: null } } })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    const settled = await accountRunCost(db, f.run.id);
+    if (!inherited || ownStart) {
+      expect(settled).toBe(false);
+      expect((await f.readRun()).costAccountingPending).toBe(true);
+      return;
+    }
+    expect(settled).toBe(true);
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    expect(await f.charges()).toEqual([]);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await f.block()).toBeNull();
   });
 
   it("keeps the debt pending while the provider process identity is still recorded", async () => {
@@ -595,14 +629,27 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
-  it("does not count an empty fence map as restart evidence for a timed-out closure", async () => {
+  // G1 wave s9802 (runs bf9ea6b4, c2e222a2, aa2c9f03, f64f9f46): a restart
+  // cancelled these runs, and recovery verified each local process stopped.
+  // The stop proof counted only for failed runs, so each cancelled run held its
+  // task's Retry for the full 10-minute closure bound.
+  it.each(["cancelled", "timed_out", "interrupted"] as const)("settles a %s run once its local stop is verified", async status => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ status, errorCode: "issue_terminalized" }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    const run = await f.readRun();
+    expect(run.costAccountingPending).toBe(false);
+    expect(run.usageJson).not.toHaveProperty("accountingClosureTimedOut");
+  });
+
+  it("records a timed-out closure with an empty fence map without blocking", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
     await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingReceiptSourceFences":{}}'::jsonb` })
       .where(eq(heartbeatRuns.id, f.run.id));
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
-    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+    expect(await f.block()).toBeNull();
   });
 
   it("keeps waiting for the bound when the provider process was never verified stopped", async () => {
@@ -655,21 +702,27 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(next!).toBeGreaterThan(Date.now());
   });
 
-  it("keeps a settled capture failure under the blocking unpriced-usage policy", async () => {
+  // Accounting is never a company gate (plan decision 1): a charge accounting
+  // settled without its receipt is recorded and shown in Costs, but it never
+  // trips the blocking unpriced-usage policy.
+  it("records a settled capture failure without tripping the blocking unpriced-usage policy", async () => {
     const f = await fixture({ unpricedUsagePolicy: "block" });
     await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model" });
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
-    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    expect(await f.block()).toBeNull();
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
   });
 
-  it("keeps a capture failure after a receipt-source handoff under the blocking policy", async () => {
+  it("records a capture failure after a receipt-source handoff without blocking", async () => {
     const f = await fixture({ unpricedUsagePolicy: "block" });
     await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model",
       accountingReceiptSourceFences: { [f.sourceId]: 2 } });
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
-    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+    expect(await f.block()).toBeNull();
   });
 
   it("settles a capture failure at no less than its observed live price", async () => {
@@ -716,12 +769,12 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await readCostAccountingWork(db, Date.now())).nextRunAt).toBeNull();
   });
 
-  it("stops blocking once a complete late receipt accounts for a timed-out closure", async () => {
+  it("prices a timed-out closure from a complete late receipt, never blocking", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
-    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+    expect(await f.block()).toBeNull();
     await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
       companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 6,
       receivedAt: new Date().toISOString(),
@@ -795,7 +848,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
-  it("keeps the blocking policy for a timed-out closure whose only recovery was an ordinary same-run retry", async () => {
+  it("records a timed-out closure whose only recovery was an ordinary same-run retry without blocking", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
     await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
@@ -803,15 +856,31 @@ const support = await getEmbeddedPostgresTestSupport();
       payload: { restartKind: "hot", trigger: "same_run_retry", runnerDisposition: "reattach_remote_runner" } });
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
-    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+    expect(await f.block()).toBeNull();
   });
 
-  it("keeps the blocking policy for a timed-out closure with no restart evidence, since the run may still spend", async () => {
+  // G1 wave s9802: the timed-out closure's unpriced charge hard-stopped the
+  // company and cancelled an accepted board Retry. Its exposure is recorded;
+  // it never holds the company.
+  it("records a timed-out closure with no restart evidence without holding the company", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    // The board's accepted Retry, saved while the run's accounting was open.
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "task_retry", status: "deferred_issue_execution", requestedByActorType: "user",
+      updatedAt: new Date(), payload: { issueId: f.issue.id, taskRetry: { sourceRunId: f.run.id },
+        executionWait: { reason: "execution_settling", message: "Retry is waiting for the previous execution to stop." } } }).returning();
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
-    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+    expect((await f.readRun()).usageJson).toMatchObject({ accountingClosureTimedOut: true });
+    expect(await f.block()).toBeNull();
+    // The cleared hold re-dispatches it: still saved, never cancelled, and due now.
+    const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.id));
+    expect(promoted.status).toBe("deferred_issue_execution");
+    expect(promoted.updatedAt.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
+    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { issueId: null, projectId: null })).toBeNull();
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
   });
 
   it("keeps the debt pending while native recovery can still produce a result", async () => {

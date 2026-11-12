@@ -294,7 +294,7 @@ function preserveWorkspaceMetadataForPatch(
     }
     if (patch.metadata !== undefined) {
       nextPatch.metadata = { ...nextPatch.metadata };
-      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderDestinationRef", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
+      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderPreparationPlacement", "workspaceProviderDestinationRef", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
         if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
         else delete nextPatch.metadata[key];
       }
@@ -1241,6 +1241,11 @@ function toExecutionWorkspace(
   runtimeServices: WorkspaceRuntimeService[] = [],
   deliveryState: ExecutionWorkspaceDeliveryState = "unknown",
 ): ExecutionWorkspace {
+  let metadata = row.metadata ?? null;
+  if (metadata?.workspaceProviderPreparationPlacement !== undefined) {
+    metadata = { ...metadata };
+    delete metadata.workspaceProviderPreparationPlacement;
+  }
   return {
     id: row.id,
     companyId: row.companyId,
@@ -1265,7 +1270,7 @@ function toExecutionWorkspace(
     cleanupEligibleAt: row.cleanupEligibleAt ?? null,
     cleanupReason: row.cleanupReason ?? null,
     config: readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null),
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    metadata,
     runtimeServices,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1499,6 +1504,45 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
     if (status !== undefined) return status !== "succeeded" && !noWorkFailures.has(run.id);
     return finalization.phase === "terminal_failure" && finalization.resultId !== null;
   });
+}
+
+/**
+ * Clears a task's binding to a relative's execution workspace that an older
+ * release created, so its next run realizes its own workspace from the project
+ * base. The relative and the shared workspace are never changed. Does nothing
+ * while another run of the task (other than `runId`) is running or its earlier
+ * run still owns workspace finalization or recovery. Runs inside the caller's
+ * transaction; returns whether the binding was released.
+ */
+export async function releaseAncestorWorkspaceBinding(tx: DbTransaction, input: { companyId: string; issueId: string; runId?: string }) {
+  const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+  if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
+  if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
+    return false;
+  }
+  const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), input.runId ? ne(heartbeatRuns.id, input.runId) : undefined,
+    or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+      sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
+    eq(heartbeatRuns.status, "running"),
+  )).limit(1);
+  if (holder) return false;
+  if (await hasPendingTaskWorkspaceRecovery(tx, { companyId: input.companyId, issueId: input.issueId, excludeRunId: input.runId })) return false;
+  const selection = task.workspaceSelection;
+  await notifyStatusCardIssueChange(tx, task.companyId);
+  await tx.update(issues).set({
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    // Without a project workspace the old settings described the relative's
+    // task files; the project's defaults apply instead, as for a top-level task.
+    executionWorkspaceSettings: task.projectWorkspaceId
+      ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
+      : null,
+    ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
+    workspaceBindingRevision: task.workspaceBindingRevision + 1,
+    updatedAt: new Date(),
+  }).where(eq(issues.id, task.id));
+  return true;
 }
 
 // Compaction trash older than this belongs to no compaction in progress: the
@@ -1746,36 +1790,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .from(issues).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, issues.executionWorkspaceId))
       .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
     if (!candidate || candidate.sourceIssueId === input.issueId) return false;
-    return db.transaction(async tx => {
-      const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
-      if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
-      if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
-        return false;
-      }
-      const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
-        or(eq(heartbeatRuns.nativeIssueId, input.issueId),
-          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
-        eq(heartbeatRuns.status, "running"),
-      )).limit(1);
-      if (holder) return false;
-      if (await hasPendingTaskWorkspaceRecovery(tx, { ...input, excludeRunId: input.runId })) return false;
-      const selection = task.workspaceSelection;
-      await notifyStatusCardIssueChange(tx, task.companyId);
-      await tx.update(issues).set({
-        executionWorkspaceId: null,
-        executionWorkspacePreference: null,
-        // Without a project workspace the old settings described the relative's
-        // task files; the project's defaults apply instead, as for a top-level task.
-        executionWorkspaceSettings: task.projectWorkspaceId
-          ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
-          : null,
-        ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
-        workspaceBindingRevision: task.workspaceBindingRevision + 1,
-        updatedAt: new Date(),
-      }).where(eq(issues.id, task.id));
-      return true;
-    });
+    return db.transaction(tx => releaseAncestorWorkspaceBinding(tx, input));
   }
 
   async function bindTaskWorkspace(companyId: string, issueId: string, workspaceId: string, patch: TaskWorkspaceBindingPatch = {}) {
@@ -2754,10 +2769,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
     if (filters?.readCondition) conditions.push(filters.readCondition);
+    if (filters?.ids) conditions.push(inArray(executionWorkspaces.id, filters.ids));
     if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
     if (filters?.projectWorkspaceId) {
       conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
@@ -3044,6 +3061,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     }, pagination?: { limit: number; cursor?: string }) => {
       const conditions = buildListConditions(companyId, filters);
       if (pagination?.cursor) conditions.push(gt(executionWorkspaces.id, pagination.cursor));

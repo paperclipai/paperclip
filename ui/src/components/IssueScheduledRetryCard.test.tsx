@@ -232,6 +232,17 @@ describe("IssueScheduledRetryCard", () => {
     });
   });
 
+  it("explains when there was no scheduled retry left to start", async () => {
+    const message = "No scheduled retry is waiting for this task.";
+    retryNowMock.mockResolvedValue({ outcome: "no_scheduled_retry", message, scheduledRetry: null });
+    renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />);
+    act(() => { getRetryNowButton()!.click(); });
+    await waitForUi(() => {
+      expect(getCard()?.textContent).toContain(message);
+      expect(getCard()?.textContent).not.toContain("run starting");
+    });
+  });
+
   it("renders an inline error band on backend failure", async () => {
     retryNowMock.mockRejectedValue(new Error("Server error"));
     renderWithProviders(

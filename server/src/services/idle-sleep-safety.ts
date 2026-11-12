@@ -17,7 +17,7 @@ import { sql, type SQLWrapper } from "drizzle-orm";
 import { createIdleSleepDiagnostics, type IdleSleepDiagnosticSink, type IdleSleepDiagnostics } from "./idle-sleep-diagnostics.js";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
-import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
+import { pendingBudgetRunCancellationExistsQuery } from "./heartbeat/budget-cancellation.js";
 import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
 import { passiveIdleConversation } from "./conversation-idle-proof.js";
 import { idleChatHistoryChecks } from "./chat-channels/idle-history-proof.js";
@@ -443,7 +443,7 @@ export async function readIdleSleepSafety(
         });
       checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()}`));
-      checks.push(workCheck("heartbeat_runs.budget_cancellation", sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`));
+      checks.push(workCheck("heartbeat_runs.budget_cancellation", pendingBudgetRunCancellationExistsQuery()));
       checks.push(workCheck("native_response_presentation", nativeResponsePresentationPendingQuery()));
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.
