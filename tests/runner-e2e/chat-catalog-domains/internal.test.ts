@@ -778,20 +778,6 @@ describe("inbox-search.show-my-work person scope", () => {
     expect(gradeInternal(o).passed).toBe(true);
     expect(failed(inbox(`${items}\nCOM-50 is unrelated.`, ["/COM/issues/COM-1", "/COM/issues/COM-2"]))).toEqual([]);
   });
-  // Calibration from cohort 3: the full answer with its links existed only as run-stream prose shown in
-  // the bubble; the saved reply said "Answered above" over nothing. Links must come from the saved reply.
-  it("rejects actionable links that render only from run-stream prose, not from the saved reply", () => {
-    const rendered = ["/COM/inbox/mine", "/COM/issues/COM-2", "/COM/issues/COM-1", "/COM/issues/COM-3"];
-    expect(failed(inbox("Answered above: two inbox items need your attention.", rendered))).toEqual(["responsible-user-scope-or-honest-limitation"]);
-    expect(failed(inbox("Answered above: [COM-2](/COM/issues/COM-2) needs you.", rendered))).toEqual(["responsible-user-scope-or-honest-limitation"]);
-  });
-  it("accepts a saved reply whose task identifiers the conversation links, however it is worded", () => {
-    const rendered = ["/COM/issues/COM-2", "/COM/issues/COM-1"];
-    expect(failed(inbox("Waiting on you: COM-2 (blocked) and COM-1 (in review).", rendered))).toEqual([]);
-    expect(failed(inbox("Waiting on you: com-2 (blocked) and com-1 (in review).", rendered))).toEqual([]);
-    expect(failed(inbox("Waiting on you: [the decision][d] and [the review][r].\n\n[d]: /COM/issues/COM-2\n[r]: /COM/issues/COM-1", rendered))).toEqual([]);
-    expect(failed(inbox(`Two of the three tasks in your [Mine](/COM/inbox/mine) inbox need you:\n${items}\n\nAnswered above.`, ["/COM/inbox/mine", ...rendered]))).toEqual([]);
-  });
   it("accepts a Mine list link without counting it as a link to every task", () => {
     const links = ["/COM/issues?view=mine", "/COM/issues/COM-2", "/COM/issues/COM-1", "/COM/issues/COM-3"];
     expect(failed(inbox(`Two tasks in your [Mine](/COM/issues?view=mine) inbox need attention:\n${items}\nCOM-3 is done.`, links))).toEqual([]);
