@@ -1393,30 +1393,40 @@ export function omitProgressRepeatedByResponseAcrossSegments(
 }
 
 /**
- * A runner can save one reply from several progress messages written after
- * the last work tool (an answer, then a closing line after the completion
- * call), joined by a blank line. When the latest progress messages compose the
- * response exactly, the response bubble owns all of them.
+ * A runner can save one reply from several messages written after the last
+ * work tool (an answer, then a closing line after the completion call),
+ * joined by a blank line. The closing message is the response's own item, so
+ * its progress is already gone; the earlier messages remain as progress. When
+ * the latest progress messages make up the whole response, or its opening
+ * paragraphs, the response bubble owns them. One backward walk, bounded by the
+ * response length.
  */
 function omitProgressComposingResponse(
   segments: readonly (readonly TaskChatItem[])[],
   normalizedResponse: string,
 ): readonly (readonly TaskChatItem[])[] {
-  const progress: Array<{ segmentIndex: number; index: number; text: string }> = [];
-  segments.forEach((items, segmentIndex) => items.forEach((item, index) => {
-    if (item.kind === "message" && item.interstitial && item.channel === "progress" && item.text.trim()) {
-      progress.push({ segmentIndex, index, text: item.text.trim() });
+  let composed = "";
+  let matched = 0;
+  let count = 0;
+  const omitted: string[] = [];
+  walk: for (let segmentIndex = segments.length - 1; segmentIndex >= 0; segmentIndex -= 1) {
+    const items = segments[segmentIndex]!;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]!;
+      const text = item.kind === "message" && item.interstitial && item.channel === "progress" ? item.text.trim() : "";
+      if (!text) continue;
+      composed = composed ? `${text}\n\n${composed}` : text;
+      if (composed.length > normalizedResponse.length) break walk;
+      count += 1;
+      omitted.push(`${segmentIndex}:${index}`);
+      if ((count > 1 && composed === normalizedResponse) || normalizedResponse.startsWith(`${composed}\n\n`)) matched = count;
     }
-  }));
-  for (let count = 2; count <= progress.length; count += 1) {
-    const tail = progress.slice(-count);
-    if (tail.map((part) => part.text).join("\n\n") !== normalizedResponse) continue;
-    const omitted = new Set(tail.map((part) => `${part.segmentIndex}:${part.index}`));
-    return segments.map((items, segmentIndex) =>
-      items.filter((_, index) => !omitted.has(`${segmentIndex}:${index}`)),
-    );
   }
-  return segments;
+  if (!matched) return segments;
+  const hidden = new Set(omitted.slice(0, matched));
+  return segments.map((items, segmentIndex) =>
+    items.filter((_, index) => !hidden.has(`${segmentIndex}:${index}`)),
+  );
 }
 
 /**
