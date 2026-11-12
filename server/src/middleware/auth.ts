@@ -28,6 +28,7 @@ import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
+import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
 import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
@@ -210,6 +211,7 @@ async function auditAgentKeyMissingResponsibleUser(
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
+  localAgentProcessBoundary?: LocalAgentProcessBoundary | null;
 }
 
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
@@ -218,6 +220,9 @@ const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
+  const localBoundary = opts.deploymentMode === "local_trusted"
+    ? opts.localAgentProcessBoundary === undefined ? localAgentProcessBoundary() : opts.localAgentProcessBoundary
+    : null;
   const authenticate: RequestHandler = async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -302,6 +307,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           next();
           return;
         }
+      }
+      if (req.actor.source === "local_implicit"
+        && !(await localBoundary?.grantsImplicitBoard(req.socket))) {
+        req.actor = { type: "none", source: "none" };
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
