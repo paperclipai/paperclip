@@ -97,7 +97,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await writeFile(join(base, "saved-work.txt"), "Original saved work");
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id));
     const thread = { id: threadId, cwd: base, turns: [{ id: providerTurnId, status: "interrupted",
-      items: [{ type: "dynamicToolCall", tool: "get_task_context", status: "failed" }] }] };
+      items: [{ type: "dynamicToolCall", id: "call-read", tool: "get_task_context", status: "failed" }] }] };
     return { run, root, files, thread, event, launch, companyId, issueId, agentId, id };
   }
 
@@ -146,7 +146,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
   });
 
-  it.runIf(process.platform === "win32").each(["automatic", "automatic_orphan", "retry"])("continues once through the real %s path", async mode => {
+  it.runIf(process.platform === "win32").each(["automatic", "automatic_orphan", "automatic_unproven_read", "retry"])("continues once through the real %s path", async mode => {
     const base = await mkdtemp(join(tmpdir(), "pc-win-continue-")), old = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
     const reader = vi.spyOn(runner, "readStoppedCodexThread");
@@ -173,6 +173,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         evidence: { runId: f.id, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
           nativeFailureBlock: { runId: f.id, statusVersion: task.statusVersion } }, nextAction: "Verify the stopped execution." });
       if (mode.startsWith("automatic")) {
+        // The failed read emitted its real start event without an invocation receipt.
+        await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.id, agentId: f.agentId,
+          eventType: "tool.execution.started", payload: { schema: "paperclip.tool.execution.v1", transport: "dynamic",
+            name: "get_task_context", executionId: mode === "automatic_unproven_read" ? "call-unsaved" : "call-read" } });
         const options = { verifyStoppedSession: (run: typeof heartbeatRuns.$inferSelect) => verifyStoppedNativeSessionForAutomaticReplacement(db, run) };
         await reconcileSafeNativeReplacements(db, new Date(), options);
         await reconcileSafeNativeReplacements(db, new Date(), options);
@@ -187,8 +191,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       if (orphan) expect(() => process.kill(orphan!.pids[0], 0)).toThrow();
       const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         mode.startsWith("automatic") ? eq(heartbeatRuns.retryOfRunId, f.id) : eq(heartbeatRuns.status, "queued")));
-      expect(successors).toHaveLength(1);
-      expect(successors[0].status).not.toBe("running");
+      if (mode === "automatic_unproven_read") {
+        expect(successors).toHaveLength(0);
+        const [finalization] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.id));
+        expect(finalization.failureDetail?.replacementDenied).toBeTruthy();
+      } else {
+        expect(successors).toHaveLength(1);
+        expect(successors[0].status).not.toBe("running");
+      }
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.id)))[0].resultJson).toEqual({ savedMaterial: "Original evidence" });
       expect(await readFile(join(base, "saved-work.txt"), "utf8")).toBe("Original saved work");
       for (const [name, value] of Object.entries(f.files)) expect(await readFile(join(f.root, name), "utf8")).toBe(JSON.stringify(value));

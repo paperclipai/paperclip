@@ -5,15 +5,16 @@ import path from "node:path";
 import { proveClosedReadOnlyCodexThread, readStoppedCodexThread } from "./stopped-conversation.js";
 
 const binding = { threadId: "thread-1", turnId: "turn-1", cwd: "C:\\work\\task" };
-const read = (tool = "get_task_context") => ({ type: "dynamicToolCall", tool, status: "failed" });
+const read = (tool = "get_task_context", id?: string) => ({ type: "dynamicToolCall", tool, status: "failed", ...(id ? { id } : {}) });
 const thread = (items: unknown[] = [read()]) => ({ id: binding.threadId, cwd: binding.cwd,
   turns: [{ id: binding.turnId, status: "interrupted", items }] });
 const allowed = new Set(["get_task_context", "list_assigned_skills"]);
 
 describe("closed read-only Codex conversation", () => {
   it("proves an interrupted turn whose reads failed without dispatching work", () => {
-    expect(proveClosedReadOnlyCodexThread(thread([{ type: "userMessage" }, read(), read("list_assigned_skills")]), binding, allowed))
-      .toEqual({ threadId: binding.threadId, turnId: binding.turnId, readOperations: ["get_task_context", "list_assigned_skills"] });
+    expect(proveClosedReadOnlyCodexThread(thread([{ type: "userMessage" }, read(undefined, "call-1"), read("list_assigned_skills")]), binding, allowed))
+      .toEqual({ threadId: binding.threadId, turnId: binding.turnId, readOperations: ["get_task_context", "list_assigned_skills"],
+        readCalls: [{ id: "call-1", tool: "get_task_context" }] });
   });
   it.each(["commandExecution", "fileChange", "mcpToolCall", "collabAgentToolCall", "futureItem"])(
     "refuses native or unknown execution authority: %s", type => {

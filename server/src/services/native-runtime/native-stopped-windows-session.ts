@@ -172,5 +172,6 @@ export async function proveStoppedWindowsReadOnlySession(input: {
   return { evidence: { schema: "paperclip.stopped_windows_read_only_conversation.v1", runId: owner.id,
     runnerInstanceId: owner.runnerInstanceId, nativeSessionId: owner.nativeSessionId, processPid: process.processPid,
     processStartedAt: process.processStartedAt, providerPids: [...pids].filter(pid => pid !== process.processPid),
-    threadId, providerTurnId: turnId, readOperations: proof.readOperations, stateFingerprint: snapshot.fingerprint }, unchanged };
+    threadId, providerTurnId: turnId, readOperations: proof.readOperations,
+    readToolCalls: proof.readCalls.map(call => ({ executionId: call.id, name: call.tool })), stateFingerprint: snapshot.fingerprint }, unchanged };
 }

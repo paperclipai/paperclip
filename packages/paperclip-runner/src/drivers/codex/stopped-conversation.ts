@@ -10,7 +10,11 @@ const record = (value: unknown): Record<string, unknown> =>
 const canonicalCwd = (value: string) => /^[a-z]:[\\/]/i.test(value)
   ? path.win32.resolve(value).toLowerCase() : path.resolve(value);
 export type StoppedCodexBinding = { threadId: string; turnId: string; cwd: string };
-export type ClosedReadOnlyCodexThread = { threadId: string; turnId: string; readOperations: string[] };
+export type ClosedReadOnlyCodexThread = {
+  threadId: string; turnId: string; readOperations: string[];
+  /** Saved read calls by provider item id, which is the runner's tool executionId. */
+  readCalls: { id: string; tool: string }[];
+};
 
 /** A terminal read-only thread has no native tool process or unknown mutation to replay. */
 export function proveClosedReadOnlyCodexThread(
@@ -23,6 +27,7 @@ export function proveClosedReadOnlyCodexThread(
   const turns = thread.turns.map(record);
   if (turns.at(-1)?.id !== binding.turnId || turns.at(-1)?.status !== "interrupted") return null;
   const reads = new Set<string>();
+  const readCalls: { id: string; tool: string }[] = [];
   const turnIds = new Set<string>();
   for (const turn of turns) {
     if (typeof turn.id !== "string" || !turn.id || turnIds.has(turn.id) ||
@@ -34,9 +39,10 @@ export function proveClosedReadOnlyCodexThread(
       if (item.type !== "dynamicToolCall" || typeof item.tool !== "string" || !readOperations.has(item.tool) ||
           !["completed", "failed"].includes(String(item.status))) return null;
       reads.add(item.tool);
+      if (typeof item.id === "string" && item.id) readCalls.push({ id: item.id, tool: item.tool });
     }
   }
-  return { threadId: binding.threadId, turnId: binding.turnId, readOperations: [...reads].sort() };
+  return { threadId: binding.threadId, turnId: binding.turnId, readOperations: [...reads].sort(), readCalls };
 }
 
 export type CodexSourceFile = { path: string; facts: string };
