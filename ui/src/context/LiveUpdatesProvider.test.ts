@@ -250,9 +250,10 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
     client.clear();
   });
-  // Chat eval cohort 5 (cases.case-history, tasks.ambiguous-task): finalization saved the reply 70ms after the
-  // run's terminal status was published and logged no comment_added; the open chat never fetched it.
-  it("fetches the open chat's saved comments when a run's reply is committed after its terminal status", () => {
+  // Chat eval cohorts 5 and 5b (cases.case-history, tasks.ambiguous-task): finalization saved the reply after the run's
+  // terminal status, logged no comment_added, then settled the chat with issue.updated. The open chat never fetched the
+  // reply; the run's transcript events no longer reach a page once the run has ended.
+  it("fetches the open chat's saved comments when its conversation is updated, and not for other tasks", () => {
     const client = new QueryClient();
     client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
     client.setQueryData(queryKeys.companies.list("user-1"), { companies: [{ id: "company-1", issuePrefix: "PAP" }], unauthorized: false });
@@ -261,18 +262,15 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     client.setQueryData(queryKeys.agentChats.detail("company-1", "user-1", "agent-1"), chat);
     client.setQueryData(queryKeys.issues.detail("chat-1"), chat);
     const invalidate = vi.spyOn(client, "invalidateQueries");
-    vi.stubGlobal("document", { visibilityState: "visible", hasFocus: () => true });
-    const deliver = (payload: Record<string, unknown>) => __liveUpdatesTestUtils.handleLiveEvent(client, "company-1", "/PAP/chats/agent-1",
-      { id: 1, companyId: "company-1", type: "heartbeat.run.event", createdAt: "2026-11-12T06:57:46Z", payload } as never,
-      () => null, { cooldownHits: new Map<string, number[]>(), suppressUntil: 0, observedRunOutcomes: new Set<string>() }, { userId: "user-1", agentId: null });
-    const commentInvalidations = () => invalidate.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKeys.issues.comments("chat-1")));
-    deliver({ runId: "run-1", agentId: "agent-1", issueId: "chat-1", eventType: "item.delta" });
-    expect(commentInvalidations()).toHaveLength(0);
-    deliver({ runId: "run-2", agentId: "agent-2", issueId: "other-task", eventType: "run.presentation.resolved" });
-    expect(commentInvalidations()).toHaveLength(0);
-    deliver({ runId: "run-1", agentId: "agent-1", issueId: "chat-1", eventType: "run.presentation.resolved" });
-    expect(commentInvalidations()).toHaveLength(1);
-    vi.unstubAllGlobals();
+    const deliver = (path: string, entityId: string, action: string) => __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1",
+      { entityType: "issue", entityId, action }, { userId: "user-1", agentId: null }, { pathname: path, isForegrounded: true });
+    const commentInvalidations = (ref: string) => invalidate.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKeys.issues.comments(ref))).length;
+    deliver("/PAP/chats/agent-1", "other-task", "issue.updated");
+    expect(commentInvalidations("other-task")).toBe(0);
+    deliver("/PAP/issues/PAP-9", "chat-1", "issue.updated");
+    expect(commentInvalidations("chat-1")).toBe(0);
+    deliver("/PAP/chats/agent-1", "chat-1", "issue.updated");
+    expect(commentInvalidations("chat-1")).toBe(1);
     client.clear();
   });
   it.each(["ai_connection.default_changed", "ai_connection.reconnected", "connection_grant.revoked"])(

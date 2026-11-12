@@ -656,29 +656,6 @@ function invalidateVisibleIssueRunQueries(
   return true;
 }
 
-/**
- * Run finalization can save a turn's reply after the run's terminal status was
- * published, and that commit logs no comment_added. Its only notice is the
- * run.presentation.resolved commit signal, so fetch the open conversation's
- * saved comments when it arrives. Other run events never refetch history.
- */
-function invalidateVisibleIssueCommittedReply(
-  queryClient: QueryClient,
-  pathname: string,
-  payload: Record<string, unknown>,
-  options?: VisibleRouteOptions,
-): boolean {
-  if (readString(payload.eventType) !== "run.presentation.resolved") return false;
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
-  if (!context) return false;
-  const issueId = readString(payload.issueId);
-  if (issueId ? !context.issueRefs.has(issueId) : !runEventMatchesVisibleIssue(context, payload)) return false;
-  for (const issueRef of context.issueRefs) {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
-  }
-  return true;
-}
-
 interface RunLiveStatusPatch {
   runId: string;
   agentId: string | null;
@@ -1743,6 +1720,15 @@ function invalidateActivityQueries(
           },
         });
       }
+      // Run finalization can save a turn's reply after the run's terminal
+      // status was published, without a comment_added activity. It then
+      // settles the conversation, which logs issue.updated, so the open
+      // conversation fetches its saved comments on that update.
+      const visibleConversation = !!options?.pathname && action === "issue.updated"
+        && (() => {
+          const context = resolveVisibleIssueRouteContext(queryClient, options.pathname!, { isForegrounded: options.isForegrounded });
+          return !!context?.conversation && context.issueRefs.has(entityId);
+        })();
       for (const ref of issueRefs) {
         const invalidationOptions =
           selfCommentActivity ||
@@ -1752,7 +1738,7 @@ function invalidateActivityQueries(
             : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
-        if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
+        if (action === "issue.comment_added" || action === "issue.conversation_session_started" || visibleConversation) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
         }
         if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
@@ -2193,7 +2179,6 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.event") {
-    invalidateVisibleIssueCommittedReply(queryClient, pathname, payload);
     return;
   }
 
@@ -2353,7 +2338,6 @@ export const __liveUpdatesTestUtils = {
   invalidateHeartbeatQueries,
   invalidateHeartbeatProgressQueries,
   invalidateVisibleIssueRunQueries,
-  invalidateVisibleIssueCommittedReply,
   readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,
   canUseLiveSession,
