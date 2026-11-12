@@ -320,6 +320,11 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
                 ?? await settleStopOnlyCleanup(db, pending, { attemptId: ownership.token }));
           if (!settled || !hasRemoteTerminationReceipt(settled))
             throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
+          // The provider confirmed the sandbox is gone: its files cannot be read.
+          if ((settled.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined)?.state === "destroyed") {
+            sourceUnavailable = true;
+            continue;
+          }
           stoppedLease = settled;
         }
         const target = await resolveEnvironmentExecutionTarget({ db, companyId: input.companyId, adapterType: "paperclip_runner",

@@ -21462,7 +21462,7 @@ describe("runnerd provider runtime wiring", () => {
       "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_unproven", "interrupted_bootstrap_unopened_other_run",
       "interrupted_bootstrap_unopened_active_turn", "interrupted_bootstrap_unprepared", "interrupted_bootstrap_unprepared_unproven",
       "interrupted_bootstrap_unprepared_other_run", "interrupted_bootstrap_unprepared_suspended", "interrupted_bootstrap_unprepared_backup",
-      "interrupted_bootstrap_unprepared_unrecorded", "interrupted_bootstrap_unprepared_connected"]
+      "interrupted_bootstrap_unprepared_unrecorded", "interrupted_bootstrap_unprepared_connected", "interrupted_bootstrap_connected_checkpoint_proven"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
     ...["interrupted_bootstrap_unlaunched", "interrupted_bootstrap_unlaunched_marker", "interrupted_bootstrap_unlaunched_backup",
       "interrupted_bootstrap_unlaunched_archived", "interrupted_bootstrap_unlaunched_nested_state"]
@@ -21544,10 +21544,12 @@ describe("runnerd provider runtime wiring", () => {
         exitCode: 1, timedOut: false, stdout: "", stderr: "" };
       if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unprepared")
         && command.args[1].includes("codex-provider-state.json")) return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
-      if (command.args?.[2] === "paperclip-runner-recovery-identity" && scenario === "interrupted_bootstrap_unprepared_unrecorded") return {
+      if (command.args?.[2] === "paperclip-runner-recovery-identity" && ["interrupted_bootstrap_unprepared_unrecorded",
+        "interrupted_bootstrap_connected_checkpoint_proven"].includes(scenario)) return {
         exitCode: 0, timedOut: false, stderr: "",
         stdout: "exitednonce\n4242\n2026-11-12T00:32:10.725Z\nrunner-new-in-retained-workspace\nlinux:abcd-1234:100\n" };
-      if (command.args?.[2] === "paperclip-runner-recovery-check" && scenario === "interrupted_bootstrap_unprepared_unrecorded") return {
+      if (command.args?.[2] === "paperclip-runner-recovery-check" && ["interrupted_bootstrap_unprepared_unrecorded",
+        "interrupted_bootstrap_connected_checkpoint_proven"].includes(scenario)) return {
         exitCode: 45, timedOut: false, stdout: "", stderr: "" };
       if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unopened")
         && command.args[1].includes("codex-provider-state.json") && !command.args[1].includes("runner-state.json")) return {
@@ -21563,8 +21565,10 @@ describe("runnerd provider runtime wiring", () => {
           lifecycle: scenario.startsWith("interrupted_bootstrap_unopened") || scenario.endsWith("_suspended") ? "suspended"
             : scenario.startsWith("interrupted_bootstrap_unprepared") ? "connecting" : "ready",
           outbox: [], pendingTerminalDelivery: null,
-          ...(scenario.startsWith("interrupted_bootstrap_unprepared") ? { lastControllerCommandSeq: 0, reconnectCount: 0,
-            processedCommands: {}, lastConnectionProtocolVersion: scenario.endsWith("_connected") ? 2 : null,
+          ...(scenario.startsWith("interrupted_bootstrap_unprepared") || scenario === "interrupted_bootstrap_connected_checkpoint_proven"
+            ? { lastControllerCommandSeq: scenario === "interrupted_bootstrap_connected_checkpoint_proven" ? 2 : 0, reconnectCount: 0,
+            processedCommands: {}, lastConnectionProtocolVersion: scenario.endsWith("_connected")
+              || scenario === "interrupted_bootstrap_connected_checkpoint_proven" ? 2 : null,
             environmentLeaseId: "lease-resumed", turnId: `turn-${execution.binding.runId}`, itemId: `item-${execution.binding.runId}` } : {}) })).toString("base64"),
       };
       if (command.args?.[1]?.includes("base64")) return {
@@ -21572,6 +21576,10 @@ describe("runnerd provider runtime wiring", () => {
       };
       return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
     });
+    const controllerProof = vi.spyOn(runnerCheckpoint, "nativeRunnerCheckpointRemoteBootstrapEvidence")
+      .mockResolvedValue(scenario === "interrupted_bootstrap_connected_checkpoint_proven"
+        ? { proof: "session_opened_without_turn", runnerInstanceId: "runner-new-in-retained-workspace" } : null);
+    onTestFinished(() => controllerProof.mockRestore());
     const runtimeContext = nativeRuntimeContextFixture();
     const executionWithContext = homeMode === "preconfigured"
       ? { ...execution, schema: "paperclip.native-execution-input.v7" as const,
@@ -21686,7 +21694,7 @@ describe("runnerd provider runtime wiring", () => {
       noteRemoteBootstrapRestartProven(execution.binding.runId, "stopped");
     }
     if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_unopened" || scenario === "interrupted_bootstrap_unprepared"
-      || scenario === "interrupted_bootstrap_unprepared_unrecorded") {
+      || scenario === "interrupted_bootstrap_unprepared_unrecorded" || scenario === "interrupted_bootstrap_connected_checkpoint_proven") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
       const siblings = await readdir(dirname(sessionRoot));
       expect(siblings.filter(name => name.startsWith(`${basename(sessionRoot)}.bootstrap-restart-`))).toHaveLength(1);
