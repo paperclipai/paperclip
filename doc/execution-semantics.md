@@ -2495,6 +2495,12 @@ is handed over, never paused.
   - A marker write delays a legacy renewal by at most 1 second. A legacy lease
     lasts 60 seconds and is renewed every 10 seconds.
 
+  The `run-start-handover` notification is part of the marker write's own
+  transaction, so it is delivered when that transaction commits. Every step of
+  the serialized write path runs on that one connection under the statement
+  timeout. A busy shared pool can therefore neither lapse the marker nor delay
+  a release.
+
   If marker renewals fail for longer than the lease, the old server starts runs
   again once. The first renewal that succeeds afterwards announces the marker,
   and the old server yields again. Each resume therefore needs at least 15

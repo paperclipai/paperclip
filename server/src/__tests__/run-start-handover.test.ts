@@ -235,6 +235,28 @@ suite("run start hand-over between an old and a new server during a deploy overl
     expect(await dispatch(next, run)).toBe(true);
   });
 
+  it("a busy shared pool on the replacement neither lapses its marker nor holds up its release", async () => {
+    const old = await bootServer("old");
+    await old.handover.begin();
+    const next = await bootServer("new", { maxConnections: 1 });
+    await next.handover.begin();
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
+
+    // The replacement's shared pool stays busy for longer than the lease.
+    const busy = next.db.execute(sql`select pg_sleep(${(timing.ttlMs * 3) / 1000})`).then(() => undefined);
+    await new Promise(resolve => setTimeout(resolve, timing.ttlMs * 1.5));
+    expect(await marker(next)).toMatchObject({ live: true });
+    expect(old.resumed).not.toHaveBeenCalled();
+
+    const started = Date.now();
+    await next.handover.release();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(await marker(next)).toMatchObject({ live: null });
+    // The release's notification is delivered with its commit, not behind the busy pool.
+    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 1_000 });
+    await busy;
+  });
+
   it("an older server that outlives the lease TTL keeps leaving starts to the renewing replacement", async () => {
     const old = await bootServer("old");
     await old.handover.begin();

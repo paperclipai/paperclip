@@ -1,6 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
 import { controllerLeaseDb, type Db } from "@paperclipai/db";
-import { publishDatabaseWorkHint } from "@paperclipai/db/work-signals";
+import { publishDatabaseWorkHint, signalDatabaseWork } from "@paperclipai/db/work-signals";
 import { logger } from "../middleware/logger.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "./controller-process-identity.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -110,17 +110,20 @@ export function createRunStartHandover(input: {
   let reading: Promise<void> | null = null;
   let readRequested = false;
   let lastSkipHintAt = Number.NEGATIVE_INFINITY;
+  let hinting: Promise<void> | null = null;
 
-  /** One statement under a statement timeout, so a slow database cancels it instead of holding a pool connection. */
-  function bounded<T>(statement: SQL, timeoutMs: number, pool: Db = db): Promise<T[]> {
+  /**
+   * One statement under a statement timeout, so a slow database cancels it instead of holding a pool connection.
+   * With `announce`, the marker-change notification is part of the same transaction on the same connection: it is
+   * delivered on commit, and nothing in the write path waits on another pool.
+   */
+  function bounded<T>(statement: SQL, timeoutMs: number, pool: Db = db, announce = false): Promise<T[]> {
     return pool.transaction(async tx => {
       await tx.execute(sql`select set_config('statement_timeout', ${String(timeoutMs)}, true)`);
+      if (announce) await signalDatabaseWork(tx, DELIVERY_QUEUES.runStartHandover);
       return await tx.execute(statement) as unknown as T[];
     });
   }
-
-  const announce = () => publishDatabaseWorkHint(db, DELIVERY_QUEUES.runStartHandover)
-    .catch(error => logger.warn({ err: error }, "run start hand-over notification failed"));
 
   const serialize = (work: () => Promise<void>) => {
     const next = writes.then(work);
@@ -128,7 +131,7 @@ export function createRunStartHandover(input: {
     return writes;
   };
 
-  async function writeLease() {
+  async function writeLease(announce: boolean) {
     const [row] = await bounded<{ olderMayServe: boolean }>(sql`
       insert into controller_instances (boot_id, process_space, pid, lease_expires_at, dispatching_at, dispatch_lease_expires_at)
       values (${bootId}, ${input.processSpace ?? currentProcessSpaceHash()}, ${input.pid ?? process.pid}, now(), now(),
@@ -141,17 +144,16 @@ export function createRunStartHandover(input: {
         where older.epoch < controller_instances.epoch and older.boot_id <> ${bootId}
           and older.stopped_at is null and older.fenced_at is null
           and older.lease_expires_at > now() - ${interval(t.olderBootWindowMs)}) as "olderMayServe"`, t.writeStatementTimeoutMs,
-      controllerLeaseDb(db));
+      controllerLeaseDb(db), announce);
     return row ?? null;
   }
 
   async function clearLease() {
     await bounded(sql`update controller_instances set dispatch_lease_expires_at = null
-      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs, controllerLeaseDb(db));
+      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs, controllerLeaseDb(db), true);
     // Only a clear that succeeded ends the marker; a failed one is retried by the next release or renewal.
     leaseHeld = false;
     markerMayBeLive = false;
-    await announce();
   }
 
   /** Set, renew, or clear the marker to match whether this server can start runs now. */
@@ -168,7 +170,8 @@ export function createRunStartHandover(input: {
       lastWriteAt = Date.now();
       markerMayBeLive = true;
       let row: Awaited<ReturnType<typeof writeLease>>;
-      try { row = await writeLease(); }
+      // A first or regained marker tells the older server in the same transaction.
+      try { row = await writeLease(!leaseHeld); }
       catch (error) {
         // Unconfirmed: the next successful write counts as regained and tells the older server again.
         leaseHeld = false;
@@ -179,7 +182,6 @@ export function createRunStartHandover(input: {
       // No older server left to hand over from: the lease lapses without further writes.
       olderMayServe = row?.olderMayServe ?? false;
       if (regained) {
-        await announce();
         if (olderMayServe) logger.info("this server now starts runs; an older server still serving leaves new run starts to it");
       }
     }).finally(reportHandingOver);
@@ -244,10 +246,13 @@ export function createRunStartHandover(input: {
   /** Runs this server skips stay queued; wake the replacement's dispatch so they do not wait for a sweep. */
   function skipHint(force = false) {
     const now = Date.now();
-    if (!force && now - lastSkipHintAt < t.skipHintMinMs) return;
+    // Best effort and single flight: a busy pool delays one hint, never a queue of them (the replacement's own
+    // queued-run redrive still covers a lost hint).
+    if (hinting || (!force && now - lastSkipHintAt < t.skipHintMinMs)) return;
     lastSkipHintAt = now;
-    void publishDatabaseWorkHint(db, DELIVERY_QUEUES.queuedRunDispatch)
-      .catch(error => logger.warn({ err: error }, "queued run dispatch hint for the newer server failed"));
+    hinting = publishDatabaseWorkHint(db, DELIVERY_QUEUES.queuedRunDispatch)
+      .catch(error => logger.warn({ err: error }, "queued run dispatch hint for the newer server failed"))
+      .finally(() => { hinting = null; });
   }
 
   function nextDeadline(): number | null {
@@ -337,7 +342,8 @@ export function createRunStartHandover(input: {
       stopDrainExpiry();
       yieldingTo = null;
       await worker.stop();
-      await reading;
+      // A pending read or best-effort hint is not awaited: on the shared pool it could wait behind slow work,
+      // and it settles (or fails) when the pool answers or closes. Neither can change the marker.
     },
   };
 }
