@@ -29,7 +29,7 @@ import { buildNativeExecutionInput } from "../native-runtime/native-execution-in
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
+import { createAdapterRuntimeToolAccess, revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
 
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
@@ -752,6 +752,20 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       expect(await finalizations()).toMatchObject([{ status: "failed" }]);
       expectCleanup(input);
     } finally { record.mockRestore(); }
+  });
+
+  it("names the built-in runtime MCP servers with identifier-safe names", async () => {
+    const previous = { apiUrl: process.env.PAPERCLIP_API_URL, jwtSecret: process.env.PAPERCLIP_AGENT_JWT_SECRET };
+    vi.stubEnv("PAPERCLIP_API_URL", "http://127.0.0.1:3100");
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "runtime-execution-test-secret");
+    onTestFinished(() => { vi.stubEnv("PAPERCLIP_API_URL", previous.apiUrl); vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", previous.jwtSecret); });
+    vi.mocked(createAdapterRuntimeToolAccess).mockReturnValueOnce({ mcpEndpoint: "http://127.0.0.1:3100/mcp/runtime-tools", bearerToken: "runtime-tools-token" } as unknown as ReturnType<typeof createAdapterRuntimeToolAccess>);
+    const { input, adapter } = await fixture();
+    Object.assign(adapter, { supportsLocalAgentJwt: true, runtimeToolDelivery: "native_mcp" });
+    await executeHeartbeatRuntime(db, input);
+    const servers = adapter.execute.mock.calls[0]![0].runtimeMcp!.getServers();
+    expect(servers.map(server => server.connectionId)).toEqual(["paperclip-project-tools", "paperclip-runtime-tools"]);
+    for (const server of servers) expect(server.name).toMatch(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
   });
 
   it("runs instruction cleanup even when gateway revocation fails", async () => {

@@ -14,6 +14,7 @@ import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-wor
 import { environmentService } from "../environments.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
+import { PROJECT_TOOLS_MCP_SERVER_NAME, RUNTIME_TOOLS_MCP_SERVER_NAME } from "../mcp-tool-names.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { drainRunPreparationPhases, measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
@@ -832,14 +833,14 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         adapter.runtimeToolDelivery ?? "invocation_context";
       if (runtimeTools && runtimeToolDelivery === "native_mcp") {
         runtimeMcpServers.unshift({
-          name: "Paperclip connections",
+          name: RUNTIME_TOOLS_MCP_SERVER_NAME,
           url: runtimeTools.mcpEndpoint,
           token: runtimeTools.bearerToken,
           connectionId: "paperclip-runtime-tools",
         });
       }
       if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
-        runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+        runtimeMcpServers.unshift({ name: PROJECT_TOOLS_MCP_SERVER_NAME, url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
           token: authToken, connectionId: "paperclip-project-tools" });
       }
       const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
