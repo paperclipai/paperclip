@@ -461,6 +461,10 @@ class HarnessNativeSession implements NativeSession {
     return structuredClone(this.#input.identity);
   }
 
+  downloadAttachment(grant: Parameters<NonNullable<NativeSession["downloadAttachment"]>>[0]) {
+    return this.#session.downloadAttachment?.(grant) ?? Promise.resolve(null);
+  }
+
   async capabilities() {
     const negotiated = this.#session.turnControlCapabilities?.();
     return {
