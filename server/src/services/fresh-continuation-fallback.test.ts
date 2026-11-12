@@ -10,12 +10,13 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./ex
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
-  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS,
+  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
 import { currentProcessSpaceHash } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "../middleware/agent-run-authentication.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "./execution-recovery-attempt.js";
@@ -288,6 +289,46 @@ suite("fresh-continuation fallback", () => {
     }, { timeout: 20_000, interval: 100 });
   }, 60_000);
 
+  // The Retry banner never shows while Paperclip is continuing the task itself.
+  it("presents a task whose continuation is recorded or scheduled as continuing, with no Retry", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_restart_recovery_blocked" });
+    const presentation = async () => {
+      const task = await issue(f.issueId);
+      return taskInterruptionPresentation(db, { id: task.id, companyId, status: task.status,
+        assigneeAgentId: task.assigneeAgentId, projectId: task.projectId });
+    };
+    // A scheduled check (exact recovery still has its chance): a timed wait, no Retry.
+    await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! },
+      { kind: "exact_recovery_pending", reason: "native_finalizer_active", retryAt: new Date(Date.now() + 60_000) });
+    expect(await presentation()).toMatchObject({ state: "retry_scheduled", canRetry: false });
+    // Recorded, not yet started: continuing, no Retry.
+    await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} - 'freshContinuationCheck'` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    expect(await presentation()).toMatchObject({ state: "working", canRetry: false });
+  }, 60_000);
+
+  it("never starts a second run when a person's Retry already continued the task", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    // A person's Retry started a run before the continuation was delivered.
+    const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: f.issueId, nativeIssueId: f.issueId,
+      status: "queued", contextSnapshot: { issueId: f.issueId, wakeReason: "task_retry" } }).returning();
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, f.issueId))).toHaveLength(2);
+    expect((await pendingRecord(f.issueId))!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: retry!.id });
+  }, 60_000);
+
+  it("starts no run for a task that finished while its continuation was pending", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(0);
+    expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("invalidated");
+  }, 60_000);
+
   // Crash between writes: the decision committed, the process died before any
   // run was created. Nothing is lost: the next delivery pass starts it.
   it("delivers a committed continuation after a crash before its run was created", async () => {
@@ -435,6 +476,56 @@ suite("fresh-continuation fallback", () => {
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued" });
+  }, 60_000);
+
+  /** A saved-work (workspace) recovery generation on the run's hold, as workspace recovery records it. */
+  async function savedWorkRecovery(f: { runId: string; actionId: string | null }, state: "awaiting_evidence" | "running") {
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    await db.update(issueRecoveryActions).set({ evidence: { ...hold!.evidence,
+      systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, phase: "reconcile_effects", state,
+        sourceRunId: f.runId, attempts: 1, retriesUsed: 0, revision: 2, failure: null, intentId: null, deadlineAt: null,
+        nextAttemptAt: null, firstFailureAt: null, freshAttemptRunId: null, providerCooldownAt: null,
+        attemptId: randomUUID(), generationId: randomUUID(), preservationOperationIds: [] } } })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+  }
+
+  it("bounds a saved-work recovery that is waiting with no progress, on a scheduled deadline", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "server_shutdown_interrupted", status: "interrupted" });
+    await savedWorkRecovery(f, "awaiting_evidence");
+    // The held-run scan selects it: exact recovery keeps its first chance.
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 0 });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(hold!.evidence.freshContinuationCheck).toMatchObject({ kind: "exact_recovery_pending", reason: "saved_work_recovery_running" });
+    // With no other event, the worker is scheduled for the next check.
+    expect(await nextFreshContinuationCheckAt(db)).toBe((hold!.evidence.freshContinuationCheck as { nextCheckAt: number }).nextCheckAt);
+    // No progress by the bound: the task continues fresh in a new root, and the
+    // preempted recovery is no longer scheduled (its hold carries the decision),
+    // so a late result cannot reach the new workspace.
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000);
+    await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuationCheck,nextCheckAt}', to_jsonb(${Date.now() - 1_000}::bigint))` }).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+    const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(settled!.evidence).toMatchObject({ executionReconciliation: { runId: f.runId },
+      freshContinuation: { isolation: "fresh_isolated_workspace" } });
+  }, 60_000);
+
+  it("lets a running saved-work recovery that keeps advancing use its own budget", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "server_shutdown_interrupted", status: "interrupted" });
+    await savedWorkRecovery(f, "running");
+    const first = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" });
+    await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, first);
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PROGRESS_BOUND_MS + 1_000);
+    // The recovery advanced (a new attempt) since the last check: it keeps going past 15 minutes.
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(Date.now() + 1_000),
+      evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{systemRecovery,attempts}', '2'::jsonb)` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "exact_recovery_pending", reason: "saved_work_recovery_running" });
+    // Its 30-minute budget is the cap.
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS + 1_000);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
   }, 60_000);
 
   it("bounds every exact-recovery wait, here a controller lease that never lapses", async () => {

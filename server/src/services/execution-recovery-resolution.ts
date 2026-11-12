@@ -400,6 +400,23 @@ export async function deliverReconciledExecutions(
           .where(pendingDecision);
         continue;
       }
+      // A fresh continuation is the task's next run only while nothing else
+      // started one: a person's Retry or saved input that ran since it was
+      // recorded already continues the task, so it is never a second run.
+      const fresh = action.evidence.freshContinuation as { recordedAt?: unknown } | undefined;
+      if (fresh && typeof fresh.recordedAt === "string") {
+        const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text <> ${decision.runId}`,
+          or(eq(heartbeatRuns.nativeIssueId, task.id), eq(heartbeatRuns.issueId, task.id),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}::text`),
+          sql`${heartbeatRuns.createdAt} >= ${fresh.recordedAt}::timestamptz`)).limit(1);
+        if (newer) {
+          await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+            { continuationDelivery: "delivered", continuationRunId: newer.id, continuationSupersededByRun: true })}::jsonb` })
+            .where(pendingDecision);
+          continue;
+        }
+      }
       const run = await wake(action.returnOwnerAgentId, {
         source: "automation",
         triggerDetail: "system",

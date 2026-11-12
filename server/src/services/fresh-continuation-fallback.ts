@@ -72,6 +72,8 @@ const PERSON_RECHECK_MS = 60 * 60_000;
 export const FRESH_CONTINUATION_PENDING_BOUND_MS = 10 * 60_000;
 /** Longer cap while the exact-recovery owner shows progress (a new event or a renewed lease). */
 export const FRESH_CONTINUATION_PROGRESS_BOUND_MS = 15 * 60_000;
+/** Saved-work recovery that is running and advancing keeps its own budget. */
+export const FRESH_CONTINUATION_SAVED_WORK_BOUND_MS = 30 * 60_000;
 const EXACT_RECOVERY_RECHECK_MS = 60_000;
 
 /**
@@ -132,7 +134,7 @@ export type FreshContinuationResult =
   | { kind: "dependency_wait" }
   | { kind: "person_owned"; reason: string }
   | { kind: "backoff"; retryAt: Date }
-  | { kind: "exact_recovery_pending"; reason: string; retryAt: Date; progressAt?: number }
+  | { kind: "exact_recovery_pending"; reason: string; retryAt: Date; progressAt?: number; savedWorkSignature?: string }
   | { kind: "not_applicable"; reason: string };
 
 type Input = {
@@ -344,16 +346,27 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const pendingMarker = holds.map(hold => object(hold.evidence[FRESH_CONTINUATION_CHECK_KEY]))
     .filter(check => check.kind === "exact_recovery_pending" && typeof check.firstPendingAt === "number")
     .sort((a, b) => Number(a.firstPendingAt) - Number(b.firstPendingAt))[0];
+  // Saved-work recovery shows progress when its generation advances (revision
+  // or attempt) or its hold is updated; the run and coordinator when they
+  // emit output, renew a lease or update.
+  const savedWork = holds.map(hold => readSystemRecovery(hold.evidence)).filter(recovery => recovery !== null);
   const progressAt = Math.max(run.updatedAt?.getTime() ?? 0, run.lastOutputAt?.getTime() ?? 0,
-    coordinator?.updatedAt?.getTime() ?? 0, coordinator?.leaseExpiresAt?.getTime() ?? 0);
+    coordinator?.updatedAt?.getTime() ?? 0, coordinator?.leaseExpiresAt?.getTime() ?? 0,
+    ...holds.filter(hold => readSystemRecovery(hold.evidence)).map(hold => hold.updatedAt.getTime()));
+  const savedWorkSignature = savedWork.map(recovery => `${recovery!.generationId}:${recovery!.revision}:${recovery!.attempts}:${recovery!.state}`)
+    .sort().join("|");
   const waitedMs = pendingMarker ? now.getTime() - Number(pendingMarker.firstPendingAt) : 0;
-  const progressing = Boolean(pendingMarker && typeof pendingMarker.progressAt === "number" && progressAt > pendingMarker.progressAt);
-  const waitBounded = waitedMs >= FRESH_CONTINUATION_PROGRESS_BOUND_MS
-    || (waitedMs >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing);
+  const progressing = Boolean(pendingMarker && ((typeof pendingMarker.progressAt === "number" && progressAt > pendingMarker.progressAt)
+    || (typeof pendingMarker.savedWorkSignature === "string" && savedWorkSignature !== pendingMarker.savedWorkSignature)));
+  // Saved-work recovery that is running and advancing keeps its own 30-minute
+  // budget: it may still rescue unsaved files. Anything idle gets the normal bound.
+  const savedWorkAdvancing = progressing && savedWork.some(recovery => recovery!.state === "running");
+  const waitBounded = savedWorkAdvancing ? waitedMs >= FRESH_CONTINUATION_SAVED_WORK_BOUND_MS
+    : waitedMs >= FRESH_CONTINUATION_PROGRESS_BOUND_MS || (waitedMs >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing);
   // Rechecks back off 1, 2, 3, 4 minutes, so the bound is reached on time.
   const step = Math.min(4, (typeof pendingMarker?.checks === "number" ? pendingMarker.checks : 0) + 1) * EXACT_RECOVERY_RECHECK_MS;
   const pending = (reason: string, retryAt: Date): FreshContinuationResult | null => waitBounded ? null
-    : { kind: "exact_recovery_pending", reason, progressAt,
+    : { kind: "exact_recovery_pending", reason, progressAt, savedWorkSignature,
       retryAt: new Date(Math.min(retryAt.getTime(), now.getTime() + step)) };
 
   // (a) Something already follows this run: a newer run of the task, a linked
@@ -526,7 +539,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
         evidence: { ...evidence, executionReconciliation: reconciliation, freshContinuationSettlement: settlement,
           ...(automaticRecovery !== undefined ? { automaticRecoveryHistory: automaticRecovery } : {}),
           ...(primary ? { freshContinuation, continuationDelivery }
-            : { continuationDelivery: "invalidated", coalescedIntoRecoveryActionId: ownerHold.id }) },
+            : { continuationDelivery: "coalesced", coalescedIntoRecoveryActionId: ownerHold.id }) },
       }).where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.id, hold.id)));
     }
   } else {
@@ -589,7 +602,8 @@ export async function recordFreshContinuationCheck(db: Db, input: { companyId: s
     ? (same && typeof prior.firstPendingAt === "number" ? prior.firstPendingAt : now.getTime()) : null;
   const marker = { kind: result.kind, reason: "reason" in result ? result.reason : null, checks, checkedAt: now.getTime(), nextCheckAt,
     ...(firstPendingAt !== null ? { firstPendingAt,
-      progressAt: result.kind === "exact_recovery_pending" ? result.progressAt ?? null : null } : {}) };
+      progressAt: result.kind === "exact_recovery_pending" ? result.progressAt ?? null : null,
+      savedWorkSignature: result.kind === "exact_recovery_pending" ? result.savedWorkSignature ?? null : null } : {}) };
   await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence}
     || jsonb_build_object(${FRESH_CONTINUATION_CHECK_KEY}::text, ${JSON.stringify(marker)}::jsonb)` }).where(and(
     eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));
@@ -630,8 +644,10 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
           sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('complete', 'exhausted')`),
         options.includeActive ? and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
           eq(issueRecoveryActions.kind, "active_run_watchdog")) : undefined,
+        // Saved-work recovery still under way: checked so its bound is reached
+        // (exact recovery keeps its first chance inside the fallback).
+        sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')`,
       ),
-      sql`coalesce(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}', '') not in ('scheduled', 'running', 'awaiting_evidence')`,
       isNull(issueRecoveryActions.ownerUserId),
       sql`${issues.status} not in ('done', 'cancelled')`,
       sql`${issues.assigneeAgentId} is not null`,
