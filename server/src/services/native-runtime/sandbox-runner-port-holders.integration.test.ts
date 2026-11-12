@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -57,11 +57,19 @@ describeEmbeddedPostgres("a sandbox Runner port held by another session's Runner
     const directory = join(input.runtimeRoot, "sessions", input.session, "runner");
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, "runner-process.identity"),
-      `holdernonce\n${holder.pid}\n${new Date().toISOString()}\n${runnerInstanceId}\n`);
+      `holdernonce\n${holder.pid}\n${new Date().toISOString()}\n${runnerInstanceId}\n${await processFingerprint(holder.pid!)}`);
     await writeFile(join(directory, "runner-state.json"), JSON.stringify({ runnerInstanceId, runId: input.runId,
       lifecycle: input.lifecycle ?? "ready", outbox: input.outbox ?? [], pendingTerminalDelivery: null,
       pendingProviderCleanup: input.pendingProviderCleanup ?? null, warmTransition: null }));
     return holder;
+  }
+
+  async function processFingerprint(pid: number) {
+    if (process.platform !== "linux") return "";
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    const ticks = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[19];
+    const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    return `linux:${boot}:${ticks}\n`;
   }
 
   async function exited(holder: ChildProcess) {
