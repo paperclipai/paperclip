@@ -157,6 +157,46 @@ describe("Codex app-server Codex driver", () => {
     await recovered.close({ reason: "fixture complete" });
   });
 
+  it.each(["active", "terminal"])("keeps repeated capacity recovery spent across a %s checkpoint", async (checkpointAt) => {
+    const capacity = { code: "semantic_tool_receipt_limit_recovered", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-repeated-capacity", normalizedSessionId: "session-repeated-capacity", workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Finish the request." } });
+    first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "interrupted", error: capacity, items: [] } });
+    await collectUntilTerminal(original.events());
+    expect(nativeRestartInterruptedTurnId({ ...await original.snapshot(), semanticResult: null })).toBe("turn-1");
+    first.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await original.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    let checkpoint = await original.snapshot();
+    if (checkpointAt === "terminal") {
+      first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "interrupted", error: capacity, items: [] } });
+      await collectUntilTerminal(original.events());
+      checkpoint = await original.snapshot();
+      expect(checkpoint.dispositionOnlyRecoveryConsumed).toBe(true);
+      expect(nativeRestartInterruptedTurnId({ ...checkpoint, semanticResult: null })).toBeNull();
+    }
+    await original.close({ reason: "controller disconnected" });
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [
+      { id: "turn-1", status: "interrupted", error: capacity, items: [] },
+      { id: "turn-2", status: "interrupted", error: capacity, items: [] },
+    ] } };
+    const recovery = await driver.recoverSession!(checkpoint);
+    expect(recovery.recovered).toBe(true);
+    const recovered = recovery.session!;
+    try {
+      const restored = await recovered.snapshot();
+      expect(restored).toMatchObject({ activeTurnId: null, dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-2" });
+      expect(nativeRestartInterruptedTurnId({ ...restored, semanticResult: null })).toBeNull();
+      await expect(recovered.startTurn({ message: { role: "user", text: "Again." }, continuation: true })).rejects.toThrow();
+    } finally {
+      await recovered.close({ reason: "fixture complete" });
+    }
+  });
+
   it.each(["agent", "plan", "ask"])("retains native Cursor %s mode through checkpoint and recovery", async (mode) => {
     const identity = cursorProviderIdentity(mode);
     const first = new FakeCodexTransport("thread-1", "provider-session-1", identity);
