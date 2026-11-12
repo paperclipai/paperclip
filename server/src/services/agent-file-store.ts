@@ -237,33 +237,34 @@ export function agentFileStore(db: Db) {
     },
     read: (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) =>
       locked(companyId, agentId, actor, false, (_tx, _agent, root) => readAgentFile(root, instructionPath(relative))),
-    rename: (input: { companyId: string; agentId: string; path: string; renameTo: string; bytes: Buffer; baseHash: string }, actor: AuthorizationActor) =>
+    rename: (input: { companyId: string; agentId: string; path: string; renameTo: string; bytes: Buffer; baseHash: string | null }, actor: AuthorizationActor) =>
       locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound, onRollback) => {
         const source = agentFilePath(input.path);
         const target = agentFilePath(input.renameTo);
         if (source === target) throw unprocessable("Choose a different file name");
         instructionBytes(input.bytes);
         const previous = await inspectAgentFile(root, source);
-        if (!previous || previous.hash !== input.baseHash) {
+        const isRoot = deriveBundleState(agent).entryFile === source;
+        if ((!previous && !isRoot) || (previous?.hash ?? null) !== input.baseHash) {
           throw conflict("This file changed since it was read. Reload before renaming.", { code: "AGENT_FILE_CONFLICT", path: source, currentHash: previous?.hash ?? null });
         }
-        if (!previous.bytes) throw unprocessable("This file is too large to rename in the editor");
+        if (previous && !previous.bytes) throw unprocessable("This file is too large to rename in the editor");
         const snapshot = await scanAgentFiles(root);
         if ([...snapshot.entries].some(name => name.toLowerCase() === target.toLowerCase())) throw conflict("A file with this name already exists");
         const newEntries = target.split("/").map((_part, i, parts) => parts.slice(0, i + 1).join("/")).filter(name => !snapshot.entries.has(name)).length;
-        assertDirectorySize(snapshot.size - previous.size + input.bytes.length, snapshot.entries.size - 1 + newEntries);
+        assertDirectorySize(snapshot.size - (previous?.size ?? 0) + input.bytes.length, snapshot.entries.size - (previous ? 1 : 0) + newEntries);
         await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: bound.type === "agent" ? bound.agentId : null,
           operation: "mention", texts: [input.bytes.toString("utf8")] });
         const sourcePath = await assertInstructionPathSafe(root, source);
         const targetPath = await assertInstructionPathSafe(root, target);
         onRollback(async () => {
-          await materializeInstructionBytes(root, source, previous.bytes!);
+          if (previous?.bytes) await materializeInstructionBytes(root, source, previous.bytes);
           await fs.rm(targetPath, { force: true });
           await invalidateAgentFileProjection(root);
         });
         await materializeInstructionBytes(root, target, input.bytes);
-        await fs.unlink(sourcePath);
-        if (deriveBundleState(agent).entryFile === source) {
+        if (previous) await fs.unlink(sourcePath);
+        if (isRoot) {
           await tx.update(agents).set({ adapterConfig: { ...agent.adapterConfig, instructionsBundleMode: "managed",
             instructionsRootPath: root, instructionsEntryFile: target, instructionsFilePath: path.join(root, target) }, updatedAt: new Date() })
             .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));

@@ -393,6 +393,18 @@ describe("PromptsTab instruction editor", () => {
     expect(mockAgentsApi.deleteInstructionsFile).not.toHaveBeenCalled();
   });
 
+  it("persists the new configured name when renaming a missing root", async () => {
+    await renderPromptsTab(makeBundle("AGENTS.md", []), {});
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Rename AGENTS.md"]')!.click());
+    await act(() => setNativeValue(container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!, "ROOT"));
+    await waitFor(() => expect(saveAction).toEqual(expect.any(Function)));
+    await act(async () => { saveAction?.(); });
+    await waitFor(() => expect(mockAgentsApi.renameInstructionsFile).toHaveBeenCalledWith("agent-1", {
+      path: "AGENTS.md", renameTo: "ROOT.md", content: "", baseHash: null,
+    }, "company-1"));
+    expect(mockAgentsApi.saveInstructionsFile).not.toHaveBeenCalled();
+  });
+
   it("retains the draft when the server rejects a stale rename", async () => {
     const summary = makeSummary("AGENTS.md", "AGENTS.md");
     await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original", { contentHash: "a".repeat(64) }) });

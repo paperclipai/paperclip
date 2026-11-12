@@ -2279,9 +2279,9 @@ export function PromptsTab({
           const latest = await agentsApi.instructionsBundle(agent.id, companyId);
           const sourceHash = draftBaseHashRef.current ?? selectedFileDetail?.contentHash;
           if (selectedFileExists && !sourceHash) throw new Error("Reload this file before renaming; your draft is retained.");
-          const copied = selectedFileExists
+          const copied = selectedFileExists || selectedOrEntryFile === currentEntryFile
             ? await agentsApi.renameInstructionsFile(agent.id, {
-                path: selectedOrEntryFile, renameTo: renamedFilePath, content: displayValue, baseHash: sourceHash!,
+                path: selectedOrEntryFile, renameTo: renamedFilePath, content: displayValue, baseHash: selectedFileExists ? sourceHash! : null,
               }, companyId)
             : await agentsApi.saveInstructionsFile(agent.id, { path: renamedFilePath, content: displayValue, baseHash: null }, companyId);
           queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, renamedFilePath), copied);

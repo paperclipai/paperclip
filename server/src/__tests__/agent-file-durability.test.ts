@@ -99,6 +99,15 @@ describe("durable agent file authority", () => {
     expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toBeNull();
   });
 
+  it("creates a renamed missing root without replacing a concurrently created source", async () => {
+    await store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("New root"), baseHash: null }, actor());
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBe("ROOT.md");
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toEqual(Buffer.from("New root"));
+    await expect(store().rename({ companyId, agentId, path: "ROOT.md", renameTo: "OTHER.md", bytes: Buffer.from("Stale draft"), baseHash: null }, actor())).rejects.toMatchObject({ status: 409 });
+    expect(await store().read(companyId, agentId, "OTHER.md", actor())).toBeNull();
+  });
+
   it("rejects a rename that waits behind a concurrent source edit", async () => {
     await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Original"), baseHash: null }, actor());
     let enter!: () => void, release!: () => void;
