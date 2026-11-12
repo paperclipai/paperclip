@@ -7,9 +7,20 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { FileDigestRequest } from "../storage/file-crypto-pool.js";
 import { FILE_PART_CONCURRENCY, THROTTLED_PART_ATTEMPTS, putS3MultipartFile } from "../storage/s3-multipart.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
+
+const digests = vi.hoisted(() => ({ onRequest: undefined as undefined | ((request: FileDigestRequest) => void) }));
+
+vi.mock("../storage/file-crypto-pool.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../storage/file-crypto-pool.js")>();
+  return { ...actual, digestFileOffThread: (request: FileDigestRequest, signal?: AbortSignal) => {
+    digests.onRequest?.(request);
+    return actual.digestFileOffThread(request, signal);
+  } };
+});
 
 const partBytes = 8 * 1024 * 1024;
 
@@ -88,7 +99,15 @@ describe("file-backed S3 multipart uploads under a request-rate limit", () => {
     const source = await sourceFile(16);
     const client = new S3Client({ region: "us-east-1" });
     const attempts = new Map<number, number>();
-    let laterActive = 0, laterPeak = 0;
+    let firstRoundLeft = FILE_PART_CONCURRENCY, laterClaimed = 0, laterActive = 0, laterPeak = 0;
+    let release = () => {};
+    let held = new Promise<void>(resolve => { release = resolve; });
+    const releaseOnceEveryClaimedPartIsSending = () => {
+      if (firstRoundLeft || !laterActive || laterActive < laterClaimed) return;
+      release();
+      held = new Promise<void>(resolve => { release = resolve; });
+    };
+    digests.onRequest = request => { if ((request.start ?? 0) >= FILE_PART_CONCURRENCY * partBytes) laterClaimed++; };
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
       if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
@@ -96,11 +115,16 @@ describe("file-backed S3 multipart uploads under a request-rate limit", () => {
         const number = command.input.PartNumber!;
         attempts.set(number, (attempts.get(number) ?? 0) + 1);
         await drain(command.input.Body);
-        if (number <= FILE_PART_CONCURRENCY && attempts.get(number) === 1) throw slowDown();
-        if (number > FILE_PART_CONCURRENCY) {
+        if (number <= FILE_PART_CONCURRENCY) {
+          if (attempts.get(number) === 1) throw slowDown();
+          firstRoundLeft--;
+          setImmediate(releaseOnceEveryClaimedPartIsSending);
+        } else {
           laterActive++; laterPeak = Math.max(laterPeak, laterActive);
-          await new Promise(resolve => setTimeout(resolve, 20));
-          laterActive--;
+          const sending = held;
+          releaseOnceEveryClaimedPartIsSending();
+          await sending;
+          laterActive--; laterClaimed--;
         }
         return { ETag: `part-${number}` };
       }
@@ -113,7 +137,7 @@ describe("file-backed S3 multipart uploads under a request-rate limit", () => {
       expect([...attempts.keys()].sort((a, b) => a - b)).toEqual([...Array(16).keys()].map(n => n + 1));
       // Eight simultaneous throttles are one round: four slots remain, not one.
       expect(laterPeak).toBe(FILE_PART_CONCURRENCY / 2);
-    } finally { random.mockRestore(); send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
+    } finally { digests.onRequest = undefined; random.mockRestore(); send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
   });
 
   it("stops after a bounded number of throttled attempts and aborts once", async () => {
