@@ -305,8 +305,9 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   const securityFindings = discovery?.securityFindings;
   const overridableFiles = useMemo(() => overridableSecurityFiles(securityFindings), [securityFindings]);
   const securityOverride = discovery?.canOverrideSecurity ? skillSecurityOverrideRequest(securityTrust, discovery.commitSha, overridableFiles) : null;
+  const revokeSecurityOverride = Boolean(source?.securityOverride) && securityTrust.revoke === true && !securityOverride;
   const save = useMutation({ mutationFn: () => source
-    ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, packageMode, selectedPaths: [...selected], excludedFolders, connectionId: sourceConnectionId, ...(securityOverride ? { securityOverride } : {}) })
+    ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, packageMode, selectedPaths: [...selected], excludedFolders, connectionId: sourceConnectionId, ...(securityOverride ? { securityOverride } : revokeSecurityOverride ? { securityOverride: null } : {}) })
     : skillSourcesApi.create(companyId, { repositoryUrl: discovery!.repositoryUrl, trackingRef: discovery!.trackingRef, commitSha: discovery!.commitSha, packageMode, connectionId, selectedPaths: [...selected], excludedFolders, ...(securityOverride ? { securityOverride } : {}) }),
     onSuccess: async result => { sessionStorage.removeItem(draftKey); await onSaved(result); },
   });

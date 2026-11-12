@@ -1,6 +1,6 @@
 import { useId, useMemo } from 'react';
 import { ShieldAlert, ShieldCheck } from 'lucide-react';
-import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverridePathBytes, type SkillSecurityFinding, type SkillSecurityOverrideRequest, type SkillSourceSecurityOverride } from '@paperclipai/shared';
+import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverridePathBytes, type SkillSecurityFinding, type SkillSecurityOverrideRequest, type SkillSourceSecurityOverrideSummary } from '@paperclipai/shared';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -8,9 +8,11 @@ export interface SkillSecurityTrust {
   trusted: boolean;
   reason: string;
   trustFutureUpdates: boolean;
+  /** Withdraw the saved approval when no new one replaces it. */
+  revoke?: boolean;
 }
 
-export const emptySkillSecurityTrust: SkillSecurityTrust = { trusted: false, reason: '', trustFutureUpdates: false };
+export const emptySkillSecurityTrust: SkillSecurityTrust = { trusted: false, reason: '', trustFutureUpdates: false, revoke: false };
 const MIN_REASON_LENGTH = 10;
 const NO_FINDINGS: SkillSecurityFinding[] = [];
 
@@ -52,7 +54,7 @@ export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commit
   value: SkillSecurityTrust;
   onChange: (value: SkillSecurityTrust) => void;
   disabled?: boolean;
-  recorded?: SkillSourceSecurityOverride | null;
+  recorded?: SkillSourceSecurityOverrideSummary | null;
 }) {
   const id = useId();
   // A scan can report thousands of findings. Derive the groups and their rows once per scan,
@@ -107,8 +109,13 @@ export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commit
     {(accepted.length > 0 || recorded) && <p className="flex items-start gap-2 text-xs text-muted-foreground">
       <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
       <span>{recorded
-        ? <>{recorded.files.length} flagged {recorded.files.length === 1 ? 'file is' : 'files are'} trusted by an administrator at commit <span className="font-mono">{recorded.commitSha.slice(0, 7)}</span>{recorded.trustFutureUpdates ? ', including future updates' : ''}.</>
+        ? <>{recorded.fileCount} flagged {recorded.fileCount === 1 ? 'file is' : 'files are'} trusted by an administrator at commit <span className="font-mono">{recorded.commitSha.slice(0, 7)}</span>{recorded.trustFutureUpdates ? ', including future updates' : ''}.</>
         : <>{accepted.length} flagged {accepted.length === 1 ? 'file is' : 'files are'} included under an administrator override.</>}</span>
     </p>}
+    {recorded && !value.trusted && <label className="flex items-start gap-2 text-xs" htmlFor={`${id}-revoke`}>
+      <Checkbox id={`${id}-revoke`} className="mt-0.5" checked={value.revoke === true} disabled={disabled}
+        onCheckedChange={checked => onChange({ ...value, revoke: checked === true })} />
+      <span>Stop trusting these files. Flagged files are left out when you save, and only a company administrator can withdraw trust.</span>
+    </label>}
   </section>;
 }

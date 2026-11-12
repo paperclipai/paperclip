@@ -266,8 +266,9 @@ approval covers the exact file bytes at that commit; later commits need a new re
 unless the admin opted in to trusting those paths in future updates. Each approval,
 and each later commit an opt-in covers, is written to the activity log with the
 approver, files, hashes, and reason. Agents and unattended refreshes can apply a
-recorded approval but never create one. Trust allows importing the files only; it
-does not grant scripts any execution rights. Company skill policy can restrict the
+recorded approval but never create one. An administrator can withdraw a saved
+approval from the source; later updates then leave the flagged files out. Trust
+allows importing the files only; it does not grant scripts any execution rights. Company skill policy can restrict the
 `skills.override_security` action further; legacy broad skill grants do not cover it.
 Authored and unproven legacy versions retain an independent recovery copy. Unused Git
 packages with an exact restore recipe may expire; later use requires access to that

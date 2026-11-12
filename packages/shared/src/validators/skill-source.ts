@@ -46,7 +46,7 @@ export const skillSourceSelectionSchema = z.object({
   selectedPaths: z.array(repoPath).max(10000),
   excludedFolders: z.array(repoPath).max(10000),
   connectionId: z.string().uuid().nullable().optional(),
-  securityOverride: skillSecurityOverrideSchema.optional(),
+  securityOverride: skillSecurityOverrideSchema.nullable().optional(),
 });
 export const skillSourceSettingsSchema = z.object({
   revision: z.number().int().nonnegative(),

@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { skillSourceRetryAt } from './skill-source-retry.js';
 import path from 'node:path';
 import { folderService } from './folders.js';
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, isNull, lt, or, sql } from 'drizzle-orm';
 import { companySkillSources as sources, companySkillSourceEntries as entries, companySkills, companySkillRepositorySnapshots, projectSkillSources, projects, type Db, type SkillPackageRestoreRecipe, authUsers } from '@paperclipai/db';
 import type { CompanySkill, SkillSource, SkillSourceCreateRequest, SkillSourceDiscoveryRequest, SkillSourceSelectionRequest, SkillSourceRefreshResult, SkillSourcePreviewRequest, SkillSourceSettingsRequest, SkillSourceDisconnectRequest, SkillSourceDisconnectResult, SkillSourceBranchesQuery } from '@paperclipai/shared';
 import { normalizeAgentUrlKey, parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
@@ -17,8 +17,8 @@ import { companySkillService, parseSkillImportSourceInput } from './company-skil
 import { scanGitHubSkillsWithPackageFallback as scanGitHubSkills, previewGitHubSkillFile, type GitHubRead, type ScannedSkillSource, type SkillScanOptions } from './github-skill-source.js';
 import { skillAccessService } from './skill-access.js';
 import { skillSnapshotHash } from './skill-snapshot.js';
-import { recordedSecurityOverride, verifySecurityOverride } from './skill-security-overrides.js';
-import type { SkillSecurityOverrideRequest, SkillSourceSecurityOverride } from '@paperclipai/shared';
+import { recordedSecurityOverride, skillRelativeToRepositoryPath, verifySecurityOverride } from './skill-security-overrides.js';
+import type { SkillSecurityOverrideRequest, SkillSourceSecurityOverride, SkillSourceSecurityOverrideSummary } from '@paperclipai/shared';
 
 type PreparedPackages = Map<string, { id: string; restore: SkillPackageRestoreRecipe }>;
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -71,9 +71,23 @@ export function skillSourceService(db: Db) {
     if (!source || source.removedAt) throw notFound('Skill source not found.');
     return source;
   }
+  /** The source row with only a summary of its saved approval, which can list thousands of files. */
+  async function summaryRow(companyId: string, id: string, database: Db | Tx = db) {
+    const { securityOverride: _override, ...columns } = getTableColumns(sources);
+    const [source] = await database.select({ ...columns, securityOverride: sql<SkillSourceSecurityOverrideSummary | null>`case when ${sources.securityOverride} is null then null
+      else (${sources.securityOverride} - 'files') || jsonb_build_object('fileCount', jsonb_array_length(${sources.securityOverride} -> 'files')) end` })
+      .from(sources).where(scope(companyId, id));
+    if (!source || source.removedAt) throw notFound('Skill source not found.');
+    return source;
+  }
+  /** The full saved approval, for scans that must apply it. */
+  async function savedSecurityOverride(companyId: string, id: string) {
+    const [source] = await db.select({ securityOverride: sources.securityOverride }).from(sources).where(scope(companyId, id));
+    return source?.securityOverride ?? null;
+  }
   async function detail(companyId: string, id: string, database: Db | Tx = db): Promise<SkillSource> {
     await skillAccessService(database as Db).assertSource(companyId, id);
-    const { leaseToken, leaseExpiresAt, createdAt: _created, removedAt: _removed, refreshUserId: _user, refreshAgentId: _agent, refreshLocalTrusted: _local, refreshGrantId: _grant, failureCount: _failures, nextSyncAt: _next, lastScanTreeSha: _tree, automaticBudgetBytes: _bytes, automaticBudgetAt: _budgetAt, ...source } = await row(companyId, id, database);
+    const { leaseToken, leaseExpiresAt, createdAt: _created, removedAt: _removed, refreshUserId: _user, refreshAgentId: _agent, refreshLocalTrusted: _local, refreshGrantId: _grant, failureCount: _failures, nextSyncAt: _next, lastScanTreeSha: _tree, automaticBudgetBytes: _bytes, automaticBudgetAt: _budgetAt, ...source } = await summaryRow(companyId, id, database);
     const permitted = await skillAccessService(database as Db).projectIds(companyId, id);
     const associated = await database.select({ id: projects.id, name: projects.name, visibility: projects.visibility, active: projectSkillSources.active })
       .from(projectSkillSources).innerJoin(projects, eq(projects.id, projectSkillSources.projectId))
@@ -112,11 +126,15 @@ export function skillSourceService(db: Db) {
     catch (error) { if (error instanceof Error && 'status' in error && (error.status === 403 || error.status === 401)) return false; throw error; }
   }
   async function approveSecurityOverride(context: SkillSourceContext, sourceLocator: string, request: SkillSecurityOverrideRequest) {
+    await authorizeSecurityOverrideChange(context, sourceLocator);
+    return request;
+  }
+  /** Approving and withdrawing an approval both take the administrator's override permission. */
+  async function authorizeSecurityOverrideChange(context: SkillSourceContext, sourceLocator: string) {
     if (!context.authorizeSecurityOverride) {
       throw forbidden('Only company administrators can include files that the security check flagged.', { code: 'skill_security_override_denied' });
     }
     await context.authorizeSecurityOverride({ sourceType: 'git', sourceLocator });
-    return request;
   }
   /** Records who approved which files at which commit, and why. */
   async function auditSecurityOverride(tx: Tx, sourceId: string, recorded: SkillSourceSecurityOverride, context: SkillSourceContext) {
@@ -126,18 +144,31 @@ export function skillSourceService(db: Db) {
     });
   }
   /** A recorded override that carried over to a later commit through the future-updates opt-in. */
-  async function auditCarriedSecurityOverride(tx: Tx, sourceId: string, stored: SkillSourceSecurityOverride | null, scan: ScannedSkillSource, context: SkillSourceContext) {
+  async function auditCarriedSecurityOverride(tx: Tx, sourceId: string, stored: SkillSourceSecurityOverride | null, scan: ScannedSkillSource, selectedPaths: string[], context: SkillSourceContext) {
     if (!stored || stored.commitSha.toLowerCase() === scan.commitSha.toLowerCase()) return;
     const approvedPaths = new Set(stored.files.map(file => file.path));
-    const findings = scan.securityFindings ?? [];
-    // A file that still has a blocking finding stays out of the package, so its approval was not applied.
-    const blockedPaths = new Set(findings.filter(finding => !finding.accepted).map(finding => finding.path));
-    const files = findings.filter(finding => finding.accepted && approvedPaths.has(finding.path) && !blockedPaths.has(finding.path));
+    const published = publishedRepositoryPaths(scan, selectedPaths);
+    const files = (scan.securityFindings ?? []).filter(finding => finding.accepted && approvedPaths.has(finding.path) && published.has(finding.path));
     if (!files.length) return;
     await context.audit(tx, sourceId, 'company.skill_source_security_override_applied', {
       commit: scan.commitSha, approvedCommit: stored.commitSha, approvedByUserId: stored.approvedByUserId, reason: stored.reason,
       files: files.map(file => ({ path: file.path, code: file.code, sha256: file.sha256 })),
     });
+  }
+  /** Repository paths of the files `publish` installs: the repository package, or the files of selected error-free skills. */
+  function publishedRepositoryPaths(scan: ScannedSkillSource, selectedPaths: string[]) {
+    if ((scan.packageMode ?? 'skills') === 'repository') {
+      const installs = scan.skills.some(candidate => selectedPaths.includes(candidate.path) && !candidate.error);
+      return new Set(installs ? scan.repositoryFiles?.map(file => file.path) : []);
+    }
+    const selected = new Set(selectedPaths);
+    const paths = new Set<string>();
+    for (const candidate of scan.skills) {
+      if (!selected.has(candidate.path) || candidate.error) continue;
+      const toRepositoryPath = skillRelativeToRepositoryPath(path.posix.dirname(candidate.path));
+      for (const file of candidate.files) paths.add(file.path === 'SKILL.md' ? candidate.path : toRepositoryPath(file.path));
+    }
+    return paths;
   }
   async function preview(companyId: string, input: SkillSourcePreviewRequest, context: SkillSourceContext) {
     await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
@@ -326,6 +357,9 @@ export function skillSourceService(db: Db) {
     if (selection) await authorizeSelection(source, selection.selectedPaths, context);
     if (selection && selection.revision !== source.revision) throw conflict('This source changed. Reload before saving your selection.');
     const override = selection?.securityOverride ? await approveSecurityOverride(context, source.repositoryUrl, selection.securityOverride) : null;
+    // Withdrawing the saved approval stops it from carrying into this and later commits.
+    const revoke = selection?.securityOverride === null && Boolean(source.securityOverride);
+    if (revoke) await authorizeSecurityOverrideChange(context, source.repositoryUrl);
     const token = randomUUID();
     const [leased] = await db.transaction(async tx => {
       if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
@@ -366,9 +400,9 @@ export function skillSourceService(db: Db) {
       if (options.automatic) await reserveAutomaticSkillWork(db, source, token, options.now ?? new Date());
       // A new approval pins the scan to the reviewed commit and replaces the recorded one, so the
       // published files always match the approval that is saved. A recorded one applies on its own terms.
-      const scan = staged && !override ? staged
+      const scan = staged && !override && !revoke ? staged
         : await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef, packageMode, ...(override ? { commitSha: override.commitSha } : {}) },
-          reader, { signal: options.signal, securityOverrides: [override ?? source.securityOverride] });
+          reader, { signal: options.signal, securityOverrides: [override ?? (revoke ? null : source.securityOverride)] });
       if (override) verifySecurityOverride(override, scan);
       const recorded = override ? recordedSecurityOverride(override, scan.securityFindings ?? [], context.actor.userId ?? null) : null;
       if (options.automatic) await settleAutomaticSkillWork(db, companyId, id, token,
@@ -404,7 +438,11 @@ export function skillSourceService(db: Db) {
         if (recorded) {
           await tx.update(sources).set({ securityOverride: recorded }).where(scope(companyId, id));
           await auditSecurityOverride(tx, id, recorded, context);
-        } else await auditCarriedSecurityOverride(tx, id, locked.securityOverride ?? null, scan, context);
+        } else if (revoke) {
+          await tx.update(sources).set({ securityOverride: null }).where(scope(companyId, id));
+          await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
+            approvedCommit: locked.securityOverride?.commitSha ?? null, fileCount: locked.securityOverride?.files.length ?? 0 });
+        } else await auditCarriedSecurityOverride(tx, id, locked.securityOverride ?? null, scan, selectedPaths, context);
         const result = await publish(tx, locked, scan, selectedPaths, selection?.excludedFolders ?? source.excludedFolders, context, Boolean(selection), prepared);
         if (selection || scan.connectionId !== undefined) await tx.update(sources).set({ ...(selection ? { enabled: true } : {}), connectionId: scan.connectionId ?? connectionId,
           ...(source.refreshGrantId === null && reader.grantId ? { refreshGrantId: reader.grantId } : {}),
@@ -564,7 +602,7 @@ export function skillSourceService(db: Db) {
       // Re-scan with the source's package layout and its recorded override, if any.
       scan = await scanGitHubSkills({ repositoryUrl, trackingRef: scan.trackingRef, commitSha: scan.commitSha,
         packageMode: existing.packageMode === 'repository' || existing.accessScope === 'projects' ? 'repository' : scan.packageMode }, read,
-      { securityOverrides: [existing.securityOverride] });
+      { securityOverrides: [existing.securityOverride ? await savedSecurityOverride(companyId, existing.id) : null] });
     }
     const selectedPaths = scan.candidates.filter(candidate =>
       (!prefix || candidate.path === prefix || candidate.path.startsWith(`${prefix}/`)) &&
@@ -577,5 +615,5 @@ export function skillSourceService(db: Db) {
     const imported = await Promise.all(result.source.entries.filter(entry => selectedPaths.includes(entry.path) && entry.skillId && !entry.error).map(entry => skills.getById(companyId, entry.skillId!)));
     return { imported: imported.filter((skill): skill is CompanySkill => Boolean(skill)), warnings: result.warnings };
   }
-  return { list, detail, sourceForSkill, discover, preview, create, refresh, branches, settings, disconnect, importFromUrl };
+  return { list, detail, sourceForSkill, savedSecurityOverride, discover, preview, create, refresh, branches, settings, disconnect, importFromUrl };
 }

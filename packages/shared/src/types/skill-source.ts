@@ -46,6 +46,10 @@ export interface SkillSourceSecurityOverride {
   approvedByUserId: string | null;
   approvedAt: string;
 }
+/** What a source response shows about its saved approval. The approved files stay on the server. */
+export interface SkillSourceSecurityOverrideSummary extends Omit<SkillSourceSecurityOverride, 'files'> {
+  fileCount: number;
+}
 export interface SkillRepositoryPackage {
   files: SkillPackageFile[];
   requirements: string | null;
@@ -148,7 +152,7 @@ export interface SkillSource {
   lastScanCommit: string | null;
   lastError: string | null;
   repairAction?: 'connection' | 'branch' | 'retry' | null;
-  securityOverride?: SkillSourceSecurityOverride | null;
+  securityOverride?: SkillSourceSecurityOverrideSummary | null;
   entries: SkillSourceEntry[];
 }
 export interface SkillSourceSettingsRequest {
@@ -243,7 +247,8 @@ export interface SkillSourceSelectionRequest {
   selectedPaths: string[];
   excludedFolders: string[];
   connectionId?: string | null;
-  securityOverride?: SkillSecurityOverrideRequest;
+  /** A new approval replaces the saved one; null withdraws the saved approval. */
+  securityOverride?: SkillSecurityOverrideRequest | null;
 }
 export interface SkillSourceRefreshResult {
   source: SkillSource;
