@@ -6822,6 +6822,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#core = core;
     this.#followCommittedEvents(core);
+    if (this.options.adoptExistingRunner) {
+      const withdrawn = core.withdrawUndeliveredTerminalTail();
+      if (withdrawn.length > 0) {
+        this.#diagnostic(`withdrew ${withdrawn.join(", ")} queued by an earlier attempt before reattaching the live runner`);
+      }
+    }
     this.#carriedCommandCount = core.store.state.commands.length;
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
@@ -7962,6 +7968,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : this.#core?.getCommand(commandId),
       runnerHasExited: () => this.#runnerHasExited(),
       failureCode: () => this.#startupComplete ? "provider_transport_failed" : this.#startupFailureCode,
+      answeredProgressAt: () => {
+        const core = this.#core;
+        if (core === null) return null;
+        const commands = core.store.state.commands;
+        const target = commandId === undefined ? commands.find(candidate => candidate.type === type) : core.getCommand(commandId);
+        if (target === undefined) return null;
+        let progressAt: number | null = null;
+        for (const command of commands) {
+          if (command.controllerSeq > target.controllerSeq || command.status !== "pending") continue;
+          const at = core.queuedCommandResultProgressAt(command.commandId);
+          if (at !== null && (progressAt === null || at > progressAt)) progressAt = at;
+        }
+        return progressAt;
+      },
       describeStall: () => this.#core === null ? null : describeRunnerCommandStall({
         commands: this.#core.store.state.commands,
         commandId: commandId ?? this.#core.store.state.commands.find(candidate => candidate.type === type)?.commandId,
@@ -9602,6 +9622,8 @@ export class RunnerStallLedger {
 }
 
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
+const RUNNER_ANSWERED_RESULT_STALL_MS = 30_000;
+
 export async function waitForRunnerCommand(input: {
   type: string;
   deadline: number;
@@ -9615,9 +9637,14 @@ export async function waitForRunnerCommand(input: {
   failureCode: () => string;
   /** Bounded, content-free evidence of what the command waited behind. */
   describeStall?: () => string | null;
+  answeredProgressAt?: () => number | null;
 }): Promise<void> {
   const now = () => input.clock ? input.clock.now() : Date.now();
-  while (now() < input.deadline) {
+  const answeredAndAdvancing = () => {
+    const progressAt = input.answeredProgressAt?.() ?? null;
+    return progressAt !== null && Date.now() - progressAt < RUNNER_ANSWERED_RESULT_STALL_MS;
+  };
+  for (;;) {
     input.throwIfFailed();
     if (input.abortOnClose && input.isClosed()) {
       throw new Error(`runnerd transport closed while waiting for ${input.type}`);
@@ -9637,6 +9664,7 @@ export async function waitForRunnerCommand(input: {
     if (await input.runnerHasExited()) {
       throw new Error(`runnerd exited while waiting for ${input.type}`);
     }
+    if (now() >= input.deadline && !answeredAndAdvancing()) break;
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
   }
   let stall: string | null = null;

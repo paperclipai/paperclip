@@ -2098,6 +2098,8 @@ export class DurablePrpControlPlane {
    * in-flight and failed dispatches remain. */
   #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
+  #queuedCommandResults = new Map<string, { count: number; queuedAt: number }>();
+  #inboundFrameSettledAt = 0;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -2675,6 +2677,25 @@ export class DurablePrpControlPlane {
    * source for a later run.attach. Repeating the same write is idempotent;
    * changing an established seed fails closed.
    */
+  queuedCommandResultProgressAt(commandId: string): number | null {
+    const queued = this.#queuedCommandResults.get(commandId);
+    return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
+  }
+
+  withdrawUndeliveredTerminalTail(): string[] {
+    if (this.#store.state.warmTransition) return [];
+    const withdrawn: string[] = [];
+    const commands = this.#store.state.commands;
+    for (let last = commands.at(-1); last !== undefined && last.status === "pending"
+      && this.#isTerminalLifecycleCommand(last); last = commands.at(-1)) {
+      commands.pop();
+      delete this.#store.state.commandDeliveryCounts[last.commandId];
+      withdrawn.push(last.type);
+    }
+    if (withdrawn.length > 0) this.#store.save();
+    return withdrawn;
+  }
+
   persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
@@ -3091,11 +3112,25 @@ export class DurablePrpControlPlane {
           undecryptedFrames += 1;
           frame = { raw: value };
         }
+        const answeredCommandId = "decrypted" in frame && frame.decrypted.kind === "command_result"
+          ? (frame.decrypted.payload as Record<string, unknown> | undefined)?.commandId : undefined;
+        const queuedResult = typeof answeredCommandId === "string" ? answeredCommandId : null;
+        if (queuedResult !== null) {
+          const queued = this.#queuedCommandResults.get(queuedResult);
+          this.#queuedCommandResults.set(queuedResult, { count: (queued?.count ?? 0) + 1, queuedAt: queued?.queuedAt ?? Date.now() });
+        }
         processing = processing
           .then(() => "raw" in frame
             ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
             : this.#handleDecryptedFrame(connection, frame.decrypted))
-          .catch(() => connection.close());
+          .catch(() => connection.close())
+          .finally(() => {
+            this.#inboundFrameSettledAt = Date.now();
+            if (queuedResult === null) return;
+            const queued = this.#queuedCommandResults.get(queuedResult);
+            if (queued !== undefined && queued.count > 1) queued.count -= 1;
+            else this.#queuedCommandResults.delete(queuedResult);
+          });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
