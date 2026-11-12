@@ -79,7 +79,7 @@ import * as cloudConnectors from "../../services/paperclip-cloud-connector.js";
 import * as photonExternalRuntime from "../../services/chat-channels/imessage-photon/external-runtime.js";
 import * as photonOwnedClients from "../../services/photon/owned-client.js";
 import { PHOTON_EXTERNAL_STATE, photonStateFor } from "../../services/chat-channels/imessage-photon/external-store.js";
-import { readPhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
+import { photonHash, readPhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
 
 // The fixture always builds a message event. Its declared return type is the wider LiveEvent.
 const photonEvent = (...args: Parameters<typeof livePhotonEvent>) =>
@@ -136,7 +136,7 @@ describe("iMessage Photon channel control plane", () => {
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldKey;
   });
-  async function setup(shared = false) {
+  async function setup(shared = false, ownershipOptions: Pick<NonNullable<Parameters<typeof chatChannelService>[1]>, "renewDiscordGatewayLease"> = {}) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
       userId = randomUUID();
@@ -274,6 +274,7 @@ describe("iMessage Photon channel control plane", () => {
     const makeService = () => {
       const service = chatChannelService(db, {
         runtime,
+        ...ownershipOptions,
         publicBaseUrl: "https://paperclip.example",
         heartbeat: { wakeup },
         storage,
@@ -691,7 +692,8 @@ describe("iMessage Photon channel control plane", () => {
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
   }, 30_000);
-  it.each(["enrolling", "joining"] as const)("resumes normal Photon configuration with its original %s custody and the new admission cutoff", async (phase) => {
+  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false) {
+    const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
       signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
@@ -735,7 +737,7 @@ describe("iMessage Photon channel control plane", () => {
       if (!retained) throw new Error("Normal staged enrollment absent");
       return { binding: retained.binding };
     });
-    const t = await setup(); endpointId = t.endpoint.id; companyId = t.companyId;
+    const t = await setup(false, { renewDiscordGatewayLease: renew }); endpointId = t.endpoint.id; companyId = t.companyId;
     await t.start(); await t.qualify();
     const enrollmentErrors: unknown[] = [];
     const eventCoordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
@@ -787,6 +789,22 @@ describe("iMessage Photon channel control plane", () => {
     expect(recovered).toMatchObject({ phase: "external", identity: original.identity, binding: original.binding, handoffId: original.handoffId });
     expect(requests).toHaveLength(1);
     expect(requests[0].enrollment).toMatchObject({ intakeAfter: original.binding.intakeAfter, handoffId: original.handoffId });
+    if (!recovered) throw new Error("Normal recovered custody absent");
+    const receiverLeases = () => db.select().from(chatEndpointLeases).where(and(
+      eq(chatEndpointLeases.companyId, t.companyId), eq(chatEndpointLeases.endpointId, t.endpoint.id),
+      eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")));
+    if (observeIdleRenewal) {
+      const renewalsAfterResume = renew.mock.calls.length;
+      const idleLeaseBefore = await receiverLeases();
+      // The unchanged normal 15-second TTL renews every 5 seconds. Real DB and
+      // timer ownership remain active; no manually invoked callback or fake time.
+      await new Promise(resolve => setTimeout(resolve, 5_100));
+      const idleLeaseAfter = await receiverLeases();
+      expect(renew.mock.calls.length - renewalsAfterResume,
+        "settled Cloud resume must stop the normal renewable receiver owner").toBe(0);
+      expect(idleLeaseBefore).toEqual([]);
+      expect(idleLeaseAfter).toEqual([]);
+    }
     // Match the existing managed external fixture: each useful allocation owns
     // its distinct controlled client; provider receipts stay on the same port.
     const usefulClients: { client: GrpcAdvancedIMessage; joined: boolean; methods: string[];
@@ -820,14 +838,75 @@ describe("iMessage Photon channel control plane", () => {
       usefulClients.push(row);
       return row.client;
     });
+    // Same pinned protobuf framing pattern as external-owner.test.ts, decoded
+    // by the real SDK. Enter the registered Cloud ingress, not onPhotonEvent:
+    // its ordinary runtimeFor/lease acquisition and finally release stay real.
+    const varint = (input: number): Buffer => {
+      let value = BigInt(input); const bytes: number[] = [];
+      do { const byte = Number(value & 127n); value >>= 7n; bytes.push(byte | (value ? 128 : 0)); } while (value);
+      return Buffer.from(bytes);
+    };
+    const integer = (field: number, value: number) => Buffer.concat([varint(field * 8), varint(value)]);
+    const field = (number: number, value: Buffer | string) => {
+      const bytes = typeof value === "string" ? Buffer.from(value) : value;
+      return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
+    };
+    const timestamp = (at: number) => Buffer.concat([integer(1, Math.floor(at / 1000)), integer(2, (at % 1000) * 1_000_000)]);
+    const packet = (sequence: number, previousSequence: number | null, occurredAt: number) => {
+      const sender = Buffer.concat([field(1, "+15555550101"), integer(2, 1)]);
+      const message = Buffer.concat([field(1, `idle-lease-message-${sequence}`), field(2, field(1, "Fresh normal Cloud admission")),
+        field(10, timestamp(occurredAt)), field(20, sender), field(92, t.f.chat.guid)]);
+      const change = Buffer.concat([field(1, t.f.chat.guid), field(2, timestamp(occurredAt)), field(10, field(1, message))]);
+      const rawFrame = Buffer.concat([integer(1, sequence), field(10, change)]).toString("base64");
+      const acceptedAt = new Date().toISOString();
+      return { id: `photon_${photonHash([recovered.binding.bindingId, sequence])}`, event: "message.received", createdAt: acceptedAt,
+        installationId: recovered.binding.bindingId, bindingIds: [recovered.binding.bindingId], payload: { photonEvent: {
+          version: 1, binding: recovered.binding, sequence, previousSequence, acceptedAt, rawFrame } } };
+    };
     const wakeups = t.wakeup.mock.calls.length;
-    await t.deliver({ ...photonEvent(3), occurredAt: new Date(cutoff - 1) });
+    const previous = recovered.acceptedSequence;
+    const oldInput = packet((previous ?? 0) + 1, previous, cutoff - 1);
+    await photonExternalRuntime.dispatchPhotonCloudEvent(db, oldInput);
     expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
     expect(usefulClients).toHaveLength(0);
-    await t.deliver({ ...photonEvent(4), occurredAt: new Date(cutoff) });
+    expect(await receiverLeases()).toEqual([]);
+    const freshInput = packet((previous ?? 0) + 2, (previous ?? 0) + 1, cutoff);
+    const getChat = t.f.client.chats.get.getMockImplementation();
+    if (!getChat) throw new Error("Existing controlled provider lookup absent");
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let usefulEntered = false;
+    t.f.client.chats.get.mockImplementation(async (...args) => {
+      expect(await receiverLeases()).toHaveLength(1);
+      usefulEntered = true;
+      await held;
+      return getChat(...args);
+    });
+    const admitted = photonExternalRuntime.dispatchPhotonCloudEvent(db, freshInput);
+    const observed = admitted.then(() => ({ error: null }), error => ({ error }));
+    try {
+      await vi.waitFor(() => expect(usefulEntered).toBe(true));
+      if (observeIdleRenewal) {
+        const renewalsDuringUseful = renew.mock.calls.length;
+        await new Promise(resolve => setTimeout(resolve, 5_100));
+        expect(renew.mock.calls.length).toBeGreaterThan(renewalsDuringUseful);
+        expect(await receiverLeases()).toHaveLength(1);
+      }
+    } finally { release(); }
+    expect((await observed).error).toBeNull();
+    await t.service.processPendingDeliveries();
     expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
-    await t.deliver({ ...photonEvent(4), occurredAt: new Date(cutoff) });
+    expect(await receiverLeases()).toEqual([]);
+    await photonExternalRuntime.dispatchPhotonCloudEvent(db, freshInput);
     expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    expect(await receiverLeases()).toEqual([]);
+    const afterAdmission = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(afterAdmission).toMatchObject({ acceptedSequence: (previous ?? 0) + 2, pending: null, binding: original.binding });
+    if (observeIdleRenewal) {
+      const renewalsAfterDelivery = renew.mock.calls.length;
+      await new Promise(resolve => setTimeout(resolve, 5_100));
+      expect(renew.mock.calls.length).toBe(renewalsAfterDelivery);
+    }
     const currentAdapter = t.service.runtime.get(t.endpoint.id)?.getProviderAdapter();
     if (!(currentAdapter instanceof PhotonChatAdapter)) throw new Error("Current normal Photon adapter absent");
     await currentAdapter.drainUsefulClient();
@@ -838,7 +917,11 @@ describe("iMessage Photon channel control plane", () => {
       expect(row.joined).toBe(true);
       expect(row.close).toHaveBeenCalledTimes(1);
     }
-  }, 30_000);
+  }
+  it.each(["enrolling", "joining"] as const)("resumes normal Photon configuration with its original %s custody and the new admission cutoff",
+    phase => resumeOriginalHandoff(phase), 30_000);
+  it("releases idle Cloud-resume ownership and reacquires it for normal authorized delivery",
+    () => resumeOriginalHandoff("enrolling", true), 30_000);
   it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
     const t = await setup();
     await t.start();
