@@ -343,7 +343,7 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
         && (reason !== "cleanup_quarantined" || !input.cleanupSettling), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
-  const queuedDuringRun = Boolean(wait && run.finishedAt && wait.requestedAt.getTime() <= run.finishedAt.getTime()
+  const queuedDuringRun = Boolean(wait && run.status === "succeeded" && run.finishedAt && wait.requestedAt.getTime() <= run.finishedAt.getTime()
     && now - run.finishedAt.getTime() < QUEUED_INPUT_DISPATCH_GRACE_MS);
   if (wait && (wait.requestedAt.getTime() > now - 10_000 || queuedDuringRun) && system?.state !== "exhausted")
     return { ...base, state: "working" };
