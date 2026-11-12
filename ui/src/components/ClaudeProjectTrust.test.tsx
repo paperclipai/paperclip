@@ -115,3 +115,21 @@ it("keeps selection lookup work linear for hundreds of agents with saved grants"
     const sent=vi.mocked(projectsApi.setClaudeProjectTrust).mock.calls.at(-1)?.[2];expect(sent).toHaveLength(100);expect(sent).toContain("agent-499");expect(sent).not.toContain("agent-99");expect(selectionReads).toBeLessThanOrEqual(800);
   }finally{await act(async()=>root.unmount());client.clear();host.remove();vi.clearAllMocks();}
 });
+
+it("stops new selections at the server's 100-agent limit and says so", async () => {
+  const candidates=Array.from({length:150},(_,index)=>({id:`agent-${index}`,name:`Agent ${index}`,adapterType:"claude_local"}));
+  vi.mocked(projectsApi.getClaudeProjectTrust).mockResolvedValue({agentIds:candidates.slice(0,99).map(agent=>agent.id)});
+  vi.mocked(agentsApi.list).mockResolvedValue(candidates as never);
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const host=document.createElement("div");document.body.append(host);const root=createRoot(host);const settle=()=>new Promise(resolve=>setTimeout(resolve,20));
+  try {
+    await act(async()=>{root.render(<QueryClientProvider client={client}><ClaudeProjectTrust companyId="company" projectId="project" workspace={workspace} disabled={false} onSaved={()=>{}} /></QueryClientProvider>);await settle();});await act(async()=>{await settle();});
+    const checks=()=>[...host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')];
+    expect(checks()[100]!.disabled).toBe(false);
+    await act(async()=>checks()[99]!.click());
+    expect(host.textContent).toContain("up to 100 agents per workspace (100 selected)");
+    expect(checks()[100]!.disabled).toBe(true);
+    expect(checks()[0]!.disabled).toBe(false);
+    await act(async()=>checks()[0]!.click());
+    expect(checks()[100]!.disabled).toBe(false);
+  }finally{await act(async()=>root.unmount());client.clear();host.remove();vi.clearAllMocks();}
+});

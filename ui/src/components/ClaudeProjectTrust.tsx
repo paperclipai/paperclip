@@ -9,6 +9,9 @@ import type { ProjectWorkspace } from "@paperclipai/shared";
 import { describeError } from "../api/errors";
 import { QueryErrorState, useQueryView } from "./QueryView";
 
+/** The server accepts at most this many trusted agents per workspace. */
+export const MAX_CLAUDE_TRUSTED_AGENTS = 100;
+
 type ClaudeProjectTrustProps = {
   companyId: string; projectId: string; workspace: ProjectWorkspace; disabled: boolean; onSaved: () => void;
 };
@@ -34,6 +37,7 @@ function ClaudeProjectTrustForm({ companyId, projectId, workspace, disabled, onS
   const [selected, setSelected] = useState<string[]>([]);
   const selectedIds = useMemo(() => new Set(selected), [selected]);
   useEffect(() => { if (trust.data) setSelected(trust.data.agentIds); }, [trust.data]);
+  const atLimit = selected.length >= MAX_CLAUDE_TRUSTED_AGENTS;
   const save = useMutation({
     mutationFn: () => projectsApi.setClaudeProjectTrust(projectId, workspaceId, selected, new Date(workspace.updatedAt).toISOString(), {
       sourceType: workspace.sourceType, cwd: workspace.cwd, repoUrl: workspace.repoUrl, repoRef: workspace.repoRef,
@@ -48,9 +52,14 @@ function ClaudeProjectTrustForm({ companyId, projectId, workspace, disabled, onS
     <p className="text-sm text-muted-foreground">Trust is granted to an agent identity independently of its current harness or pool. It is checked only for supported Claude runs. Profile import and session retention belong in the Claude execution configuration's Advanced settings.</p>
     {trustView.kind === "error" ? <QueryErrorState size="inline" error={trustView.error} onRetry={trustView.retry} /> : null}
     {agentsView.kind === "error" ? <QueryErrorState size="inline" error={agentsView.error} onRetry={agentsView.retry} /> : null}
+    {agents.data && agents.data.length > MAX_CLAUDE_TRUSTED_AGENTS
+      ? <p className="text-sm text-muted-foreground">
+        {`You can trust up to ${MAX_CLAUDE_TRUSTED_AGENTS} agents per workspace (${selected.length} selected).`}
+      </p>
+      : null}
     {agents.data?.map((agent) =>
       <label className="flex items-center gap-2 text-sm" key={agent.id}>
-        <Checkbox disabled={disabled} checked={selectedIds.has(agent.id)} onCheckedChange={(checked) => setSelected((current) =>
+        <Checkbox disabled={disabled || (atLimit && !selectedIds.has(agent.id))} checked={selectedIds.has(agent.id)} onCheckedChange={(checked) => setSelected((current) =>
           checked === true ? [...new Set([...current, agent.id])] : current.filter((id) => id !== agent.id))} />
         {agent.name}
       </label>)}
