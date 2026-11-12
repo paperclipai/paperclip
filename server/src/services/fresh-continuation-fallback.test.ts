@@ -387,6 +387,8 @@ suite("fresh-continuation fallback", () => {
       const note = freshContinuationNote({ runId: randomUUID(), unverified, workspace: "restored_last_save" });
       if (unverified.length) expect(note).toContain("first check whether it took effect");
       expect(note).toContain("do it again and continue the task");
+      // It does not contradict "do not repeat completed actions": it scopes itself to unknown outcomes.
+      expect(note).toContain("Completed actions with recorded results are still not repeated");
       expect(note).toContain("request it through the normal approval step");
       expect(note).not.toMatch(/operator|recover its result|execution state|authorize rerunning/i);
     }

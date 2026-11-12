@@ -205,7 +205,8 @@ export function freshContinuationNote(input: { runId: string; unverified: string
     : "This run starts from the task's saved workspace.";
   // How to proceed. Nobody has to restore the previous attempt: the agent
   // checks, redoes what is missing, and asks only through the normal approval.
-  const guidance = "If an action did not take effect, or repeating it is safe, do it again and continue the task. "
+  const guidance = "Completed actions with recorded results are still not repeated; this applies only to the actions above, whose outcome is unknown. "
+    + "If an action did not take effect, or repeating it is safe, do it again and continue the task. "
     + "If repeating it would be a governed or irreversible action, request it through the normal approval step. "
     + "Nothing about the previous attempt needs to be restored before you continue.";
   return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files} ${actions} ${guidance}`;
