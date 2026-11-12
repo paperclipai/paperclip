@@ -161,6 +161,48 @@ describe("shared usage cache", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  it("never lets a timed-out check call the provider or publish after a newer check backs off", async () => {
+    const cache = createAiConnectionUsageCache({ probeTimeoutMs: 20 });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(status(429, { "retry-after": "120" }));
+    let releaseCredential!: (value: string) => void;
+    const delayedCredential = new Promise<string>((resolve) => { releaseCredential = resolve; });
+    // Mirrors the service probe: wait for the credential, then check the deadline, then call the provider.
+    const probe = (credential: () => Promise<string>) => async (signal: AbortSignal) => {
+      const value = await credential();
+      signal.throwIfAborted();
+      const { usage, retryAfterMs } = await probeAiConnectionUsageDetailed(metadata, value, { request, signal });
+      return { usage: { ...identity, ...usage } as AiConnectionUsage, retryAfterMs };
+    };
+
+    await expect(cache.observe("key", probe(() => delayedCredential))).rejects.toThrow(/timed out/);
+    const throttled = await cache.observe("key", probe(async () => "fixture-token"));
+    expect(throttled.errorCode).toBe("rate_limited");
+    expect(request).toHaveBeenCalledTimes(1);
+
+    releaseCredential("fixture-token");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(cache.peek("key")).toBe(throttled);
+  });
+
+  it("aborts an expired provider request and drops its late result", async () => {
+    const cache = createAiConnectionUsageCache({ probeTimeoutMs: 20 });
+    let requestSignal: AbortSignal | undefined;
+    let respond!: () => void;
+    const request = vi.fn<typeof fetch>((_input, init) => {
+      requestSignal = init?.signal ?? undefined;
+      return new Promise<Response>((resolve) => { respond = () => resolve(ok()); });
+    });
+    await expect(cache.observe("key", async (signal) => {
+      const { usage, retryAfterMs } = await probeAiConnectionUsageDetailed(metadata, "fixture-token", { request, signal });
+      return { usage: { ...identity, ...usage } as AiConnectionUsage, retryAfterMs };
+    })).rejects.toThrow(/timed out/);
+    expect(requestSignal?.aborted).toBe(true);
+    respond();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(cache.peek("key")).toBeUndefined();
+  });
+
   it("stays bounded by evicting the oldest credentials", async () => {
     const cache = createAiConnectionUsageCache({ maxEntries: 3 });
     const probe = async () => ({ usage: { ...identity, ...metadata, status: "ok", checkedAt: new Date().toISOString(), source: "x", planType: null, limits: [], overage: null } as AiConnectionUsage, retryAfterMs: null });

@@ -266,9 +266,11 @@ export function aiConnectionService(db: Db) {
       return { ...identity, ...await probeAiConnectionUsage(metadata, "") };
     }
     // Authorization above runs on every call; only the provider check is shared.
-    return aiConnectionUsageCache.observe(await usageCacheKey(companyId, row.grant), async () => {
+    return aiConnectionUsageCache.observe(await usageCacheKey(companyId, row.grant), async (signal) => {
       const value = await credential(row);
-      const { usage, retryAfterMs } = await probeAiConnectionUsageDetailed(metadata, value);
+      // The credential wait may outlast the check's deadline; never probe after it.
+      signal.throwIfAborted();
+      const { usage, retryAfterMs } = await probeAiConnectionUsageDetailed(metadata, value, { signal });
       return { usage: { ...identity, ...usage }, retryAfterMs };
     });
   }
