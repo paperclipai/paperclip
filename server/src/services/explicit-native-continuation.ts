@@ -1,4 +1,5 @@
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { canSelectFreshWorkspace, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
@@ -35,6 +36,7 @@ import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds } from "./queued-comment-delivery.js";
+import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -111,6 +113,7 @@ export async function undeliveredLegacyUserCommentIds(
     sql`not coalesce(${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.errorCode} = 'workspace_busy'
       and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'workspace_wait'
       and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb, false)`,
+    sql`not coalesce(${agentDirectoryPreparationWaitPredicate()}, false)`,
     or(...commentIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
@@ -141,6 +144,7 @@ export async function admitExplicitNativeContinuation(input: {
   /** Internal delivery of an unconsumed, user-authored saved queue entry. */
   queuedCommentRequestId?: string;
   durableChatRequest?: DurableChatWakeupRequest;
+  interactionPayload?: unknown;
   dryRun?: boolean;
   onBlocked?: (reason: string, message: string) => void;
 }): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string; taskRetryRequestId?: string; queuedCommentInterruptId?: string; readiness?: ContinuationReadiness } | null> {
@@ -149,7 +153,12 @@ export async function admitExplicitNativeContinuation(input: {
   if (input.actorType !== "user" || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
-  if (!retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId && (!commentId || !z.string().guid().safeParse(commentId).success ||
+  const decisionResponse = !retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId &&
+    !input.queuedCommentRequestId && !commentId && input.reason === "issue_commented" && input.interactionPayload
+    ? await readQueuedInteractionResponse(db, companyId, issueId, input.interactionPayload) : null;
+  const decided = decisionResponse && decisionResponse.comment.authorType === "user" &&
+    decisionResponse.comment.authorUserId === actorId && !decisionResponse.toolActionOutcome ? decisionResponse : null;
+  if (!retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId && !decided && (!commentId || !z.string().guid().safeParse(commentId).success ||
       !isUserCommentContinuationReason(input.reason))) return null;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -172,7 +181,7 @@ export async function admitExplicitNativeContinuation(input: {
     sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt'->>'actorId' = ${actorId}`,
   )) : [];
   const response = interruptQueue
-    ? await readQueuedInteractionResponse(db, companyId, issueId, interruptQueue.payload) : null;
+    ? await readQueuedInteractionResponse(db, companyId, issueId, interruptQueue.payload) : decided;
   const queuedInterrupt = Boolean(interruptQueue && (response || (commentId &&
     queuedCommentIdsFromWakePayload(interruptQueue.payload).includes(commentId))));
   if (input.queuedCommentInterruptId && !queuedInterrupt) return null;
@@ -306,6 +315,9 @@ export async function admitExplicitNativeContinuation(input: {
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
     eq(issueThreadInteractions.status, "pending"),
     activeIssueInteractionCondition({ responsibleUserId: actorId }),
+    taskRetry ? sql`not (${issueThreadInteractions.kind} in ('ask_user_questions', 'connection_intent')
+      and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])
+      and coalesce(${issueThreadInteractions.payload} #>> '{target,type}', '') <> 'issue_document')` : undefined,
   )).limit(1);
   const [pendingApproval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
     eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, companyId),
@@ -404,6 +416,16 @@ export async function admitExplicitNativeContinuation(input: {
           actionId: action.id, operationIds: recovery.preservationOperationIds });
       const repairedTerminal = completedResult && coordinator.phase === "terminal_failure"
         && await hasVerifiedWorkspaceRepair(db, run);
+      // A Retry of this run whose files are saved applies the accepted result
+      // it already has, never a new agent turn. Saved files can be verified
+      // before their recovery attempt settles, so wait for that attempt too.
+      // The wait ends when preserved-result finalization coalesces this intent
+      // (resumeTaskRetry or the recovery sweep). Records that do not prove an
+      // applicable result (Stop, newer run, other owner) keep today's turn.
+      if (repairedTerminal && taskRetry?.sourceRunId === run.id && taskRetry.strategy === "evaluate"
+        && await canResumePreservedResultFinalization(db, companyId, run.id,
+          ["scheduled", "running", "awaiting_evidence"].includes(recovery?.state ?? "") ? "pending" : "ready"))
+        return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled)) {
         // Nothing finishes the saved result while a stopped copyback owner is
         // unverified. The run's live retained recovery records that hold; name
@@ -580,7 +602,7 @@ export async function admitExplicitNativeContinuation(input: {
     // holds can describe the same failed run; each hold must permit the reuse.
     const sourceRunIds = new Set(freshCandidates.map(candidate => candidate.run.id));
     const only = sourceRunIds.size === 1 && freshCandidates.every(candidate => !candidate.remote) ? freshCandidates[0]! : null;
-    let retained: { id: string; cwd: string } | null = null;
+    let retained: { id: string; cwd: string | null } | null = null;
     const gitProbes = new Map<string, Promise<boolean>>();
     for (const candidate of only ? freshCandidates : []) {
       const checked = await retainedIssueWorkspaceForRetry(db, { companyId, issueId, agentId,
@@ -779,7 +801,7 @@ export async function admitExplicitContinuationRetry(input: {
   )).for("update");
   if (!task || task.assigneeAgentId !== agentId || task.executionRunId !== input.parentRunId ||
       ["done", "cancelled"].includes(task.status) || !parent ||
-      !["failed", "timed_out"].includes(parent.status) || !parent.finishedAt ||
+      (!["failed", "timed_out"].includes(parent.status) && !isAgentDirectoryPreparationWait(parent)) || !parent.finishedAt ||
       parent.runtimeMode !== "legacy" || parent.contextSnapshot?.issueId !== issueId ||
       (parent.nativeIssueId !== null && parent.nativeIssueId !== issueId) ||
       adapterExecutionControls.has(parent.id) ||

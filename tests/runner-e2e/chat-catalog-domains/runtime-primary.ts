@@ -1,7 +1,7 @@
 import { expect } from "@playwright/test";
 import { checks, type Entity } from "./internal-support.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
-import { probeAgentPermission, waitForReply, remainingIdentityObservationBudget } from "./identity-support.js";
+import { probeAgentPermission, waitForReply, waitForTurnReplyLinks, remainingIdentityObservationBudget } from "./identity-support.js";
 import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime, openRuntimeAgentProfile, verifyRuntimeResult, agentLink, type RuntimeAgent } from "./runtime-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 interface Primary { companyId: string; userId: string; primaryAgentId: string | null }
@@ -39,6 +39,20 @@ export function gradePrimary(value: unknown) {
     "The reply links Morgan's profile, and the person reaches the primary control by clicking that rendered link.");
   return c.result();
 }
+/** The settled Chat landing, checked clause by clause so a failure names which part changed and its values. */
+export function settledReadyChatChecks(input: { currentIssueId?: string; sourceId: string; companyId: string; userId: string; workerId: string; leadId: string;
+  primary: Primary; chats: Entity[]; chatCountBefore: unknown; runs: Array<{ id: string; agentId?: string | null; status?: string }>; nativeRunId: string }) {
+  const { primary, chats, runs } = input;
+  return [
+    { id: "same-conversation-open", passed: input.currentIssueId === input.sourceId, detail: `open conversation ${input.currentIssueId ?? "none"}, expected ${input.sourceId}` },
+    { id: "primary-readback", passed: primary.companyId === input.companyId && primary.userId === input.userId && primary.primaryAgentId === input.workerId,
+      detail: `primary ${primary.primaryAgentId ?? "none"} for user ${primary.userId} in ${primary.companyId}, expected ${input.workerId}` },
+    { id: "chat-count-unchanged", passed: chats.length === input.chatCountBefore && chats.filter(row => row.id === input.sourceId).length === 1,
+      detail: `${chats.length} chats (${chats.filter(row => row.id === input.sourceId).length} of them the source), expected ${String(input.chatCountBefore)} with the source once` },
+    { id: "no-extra-run", passed: runs.length === 1 && runs[0]?.id === input.nativeRunId && runs[0].agentId === input.leadId && runs[0].status === "succeeded",
+      detail: `runs ${runs.map(run => `${run.id}:${run.agentId}:${run.status}`).join(",") || "none"}, expected only ${input.nativeRunId} succeeded` },
+  ];
+}
 export async function verifyReadyPrimaryChat(ctx: ChatCatalogContext, state: Record<string, unknown>, value: unknown) {
   const o = runtimeObservation(value); const before = state.primaryBefore as Primary; const worker = state.worker as RuntimeAgent;
   const sourceId = state.sourceBeforeNavigation; const nativeIds = state.nativeIdsBeforeNavigation;
@@ -69,10 +83,12 @@ export async function verifyReadyPrimaryChat(ctx: ChatCatalogContext, state: Rec
   const primary = await ctx.input.api.get<Primary>(endpoint(o.companyId), { timeout: budget() }); budget();
   const chats = await ctx.input.api.get<Entity[]>(`/api/companies/${o.companyId}/chats`, { timeout: budget() }); budget();
   const runs = await ctx.allRuns(); budget();
-  if (ctx.issue()?.id !== sourceId || primary.companyId !== o.companyId || primary.userId !== before.userId || primary.primaryAgentId !== worker.id
-    || chats.length !== state.chatCountBeforeNavigation || chats.filter(row => row.id === sourceId).length !== 1
-    || runs.length !== 1 || runs[0]?.id !== nativeIds[0] || runs[0].agentId !== o.leadId || runs[0].status !== "succeeded")
-    throw new Error("Settled Chat changed the primary preference, conversation or native work");
+  const failed = settledReadyChatChecks({ currentIssueId: ctx.issue()?.id, sourceId, companyId: o.companyId, userId: before.userId, workerId: worker.id, leadId: o.leadId,
+    primary, chats, chatCountBefore: state.chatCountBeforeNavigation, runs, nativeRunId: nativeIds[0] }).filter(check => !check.passed);
+  if (failed.length) {
+    await ctx.input.evidence("chat-primary-ready-conversation-failure.json", { failed, primary, chatIds: chats.map(row => row.id), runs: runs.map(run => ({ id: run.id, agentId: run.agentId, status: run.status })) });
+    throw new Error(`Settled Chat failed ${failed.map(check => `${check.id} (${check.detail})`).join("; ")}`);
+  }
   state.reopenedRecentAgent = o.leadId; state.runsAfterNavigation = runs.length; state.chatCountAfterNavigation = chats.length;
   await ctx.input.evidence("chat-primary-ready-conversation.json", { companyId: o.companyId, agentId: o.leadId, sourceId, userId: before.userId,
     primaryAgentId: primary.primaryAgentId, originalNativeIds: nativeIds, chatCount: chats.length, composerReady: true, originalConversationVisible: true, noExtraWork: true }); budget();
@@ -89,7 +105,7 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
   return { worker, primaryBefore, otherCompany, otherPersonBefore: await personPrimary(person, ctx.input.fixtures.company.id),
     otherCompanyBefore: await ctx.input.api.get<Primary>(endpoint(otherCompany.id)) };
 }, gradePrimary, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.runtime-primary.v3",
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.runtime-primary.v5",
   sourceFiles: ["chat-catalog-domains/runtime-primary.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/agents.yaml"],
   async act(ctx, state) {
     remainingIdentityObservationBudget(ctx);
@@ -98,6 +114,8 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
     const worker = state.worker as RuntimeAgent;
     state.beforeHumanPrimary = (await ctx.input.api.get<Primary>(endpoint(ctx.input.fixtures.company.id))).primaryAgentId;
     state.agentWriteStatus = await probeAgentPermission(ctx, endpoint(ctx.input.fixtures.company.id), "PUT", { primaryAgentId: worker.id });
+    // The run is recorded finished before its reply is saved and rendered; read the reply's links only once it is on the page.
+    await waitForTurnReplyLinks(ctx);
     const o = await observeRuntime(ctx, state);
     const source = ctx.input.page.url();
     const href = agentLink(o, worker);

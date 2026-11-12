@@ -64,7 +64,11 @@ const diagnosticNativeFixture = vi.hoisted(() => ({
 }));
 vi.mock("../native-runtime/native-codex-runner.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../native-runtime/native-codex-runner.js")>();
-  return { ...actual, resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary() };
+  return {
+    ...actual,
+    resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary(),
+    resolvePaperclipRunnerBinaryAsync: async () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinaryAsync(),
+  };
 });
 vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
@@ -1395,6 +1399,33 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     if (retried) {
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         providerFailure: { provider: "sandbox", phase: "startup", category: "overloaded", httpStatus: 502, retryability: "transient" } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  // Staging run f41857b6: the Daytona create was still pending at the
+  // acquisition deadline, so the worker returned the cleanup envelope with a
+  // create-phase diagnostic and no provider status.
+  const daytonaLeaseTimeout = (elapsedMs: number) => new JsonRpcCallError({ code: -32000,
+    message: "Daytona lease acquisition timed out; allocation cleanup is pending",
+    data: { schema: "paperclip/environment-creation-cleanup/v1",
+      cleanup: { providerLeaseId: "paperclip-create-05f81d77", companyId: "company", environmentId: "environment",
+        runId: "f41857b6", attemptId: "05f81d77", accountFingerprint: "a".repeat(64),
+        labels: { "paperclip-provider": "daytona", "paperclip-create-attempt": "05f81d77" } },
+      acquisitionDiagnostic: { phase: "create", elapsedMs, budgetMs: 300_000, providerState: "creating" } } });
+
+  it.each(["fresh", "started", "early_failure"] as const)("routes a %s sandbox create that timed out through bounded bootstrap recovery", async scenario => {
+    const f = await fixture();
+    const error = await acquireThroughOrchestrator(daytonaLeaseTimeout(scenario === "early_failure" ? 100 : 300_004));
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    const retried = scenario === "fresh";
+    expect(failed).toMatchObject({ status: "failed", errorCode: retried ? "environment_provider_unavailable" : "setup_failed" });
+    expect(failed.error).toContain("Daytona lease acquisition timed out");
+    if (retried) {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        providerFailure: { provider: "sandbox", phase: "startup", category: "timeout", retryability: "transient" } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });

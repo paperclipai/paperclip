@@ -1,4 +1,5 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
+import type { DiskFullFaultKind, DiskFullRecord } from "./disk-full-faults.js";
 import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage, ProviderRestartKind } from "./provider-faults.js";
 import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
 import type { RepeatedRestartRecord, RestartStep } from "./repeated-restarts.js";
@@ -11,8 +12,11 @@ import type { TimeFaultRecord } from "./time-faults.js";
  * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
  * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
  * MS1–MS3 (two servers, one database, multi-server.ts): a second server beside the first.
+ * CR1–CR6 (staging class R, class-r.ts): a long-held redeploy, a provider-only kill in the sandbox, a plugin RPC stall
+ * mid-tool (CR3), right after a K1 restart while the run reattaches (CR4), while the run launches (CR5), or while the
+ * replacement activates the plugin at boot (CR6).
  */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3", "CR1", "CR2", "CR3", "CR4", "CR5", "CR6"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /** The shortest seeded K4 outage (scheduler.ts K4_HOLD_RANGE_MS), also the K4 hold after a provider fault. */
 export const K4_MIN_HOLD_MS = 120_000;
@@ -20,16 +24,21 @@ export const K4_MIN_HOLD_MS = 120_000;
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
  * PV1–PV3 (provider message faults, provider-faults.ts) restart nothing: the task's rule is armed in the Codex shim.
  * "K0" is a `--matrix` baseline cell: the same journey with no fault.
+ * SR1 (session faults, session-faults.ts) restarts nothing: the board replaces the saved session before answering.
+ * DF1 (disk-full-faults.ts) restarts nothing either: the task's final workspace saves find the sandbox disk full.
  */
-export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
+export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskFullFaultKind | import("./session-faults.js").SessionFaultKind;
 
 /**
  * G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave).
  * Q1: a saved question (question-handoff.ts). Q2, Q3: journeys.ts.
  * L1: high-output, high-accounting run for database contention (contention.ts).
  * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
+ * T1: a 100-second shell tool in the agent's workspace, so a fault lands while the remote Runner runs a tool (staging class R).
+ * H2: the agent's own last step hands the task to the person who created it, in review (staging class H).
+ * W2, W2Q, W2C: the same task woken again 0–60 s after its run succeeded (rewake.ts), many tasks on one agent.
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "F1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C", "H2"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -58,6 +67,11 @@ export interface WaveOptions {
   pollMs: number;
   /** `--env daytona`: the immutable runner image (registry/repository@sha256:…). */
   daytonaImage?: string;
+  /** `--daytona-pack-mismatch <image@sha256:…>`: sandboxes start from this
+   * image while the controller keeps `daytonaImage`'s runnerd and provider pack,
+   * so the sandbox's preinstalled pack does not match and every fresh sandbox
+   * takes the provider-pack upload and admission path (staging run 3f317172). */
+  daytonaSandboxImage?: string;
   /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
   daytonaCpu?: number;
   /** `--daytona-reuse-lease`: the chaos environment keeps its sandboxes between turns (a per-turn run stops and keeps its sandbox). */
@@ -68,6 +82,33 @@ export interface WaveOptions {
   daytonaInherit?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
+  /** `--k15-hold-seconds`: the seeded K15 outage range (redeploy.ts); absent restarts at once. With `--k15-overlap-seconds`, the overlap range. */
+  k15HoldMs?: [number, number];
+  /** `--k15-overlap-seconds`: a K15 boots the next deploy beside the old server and SIGTERMs the old one after the seeded overlap (redeploy.ts). */
+  k15Overlap?: boolean;
+  /** `--k15-fresh-home`: each deploy generation gets a new, empty instance home and no volume (redeploy.ts). */
+  k15FreshHome?: boolean;
+  ephemeralServer?: boolean;
+  runnerBindFault?: boolean;
+  /** `--faults K0`: cells with no fault, for workloads whose shape is the fault (W2, W2Q, W2C). */
+  baseline?: boolean;
+  /**
+   * `--fail-recovery-step <point>[:<nth>]` (recovery-step-faults.ts): once the wave's first restart fault fired, the
+   * nth hit of that crash point in the replacement throws its step's own error, once.
+   */
+  failRecoveryStep?: string;
+  /** `--long-turn-minutes`: every task's first turn does this much real tool work before its workload (long-turn.ts). */
+  longTurnMinutes?: number;
+  /** `--sandbox-watch-seconds`: on Daytona, capture every wave sandbox on this clock (daytona-runner-logs.ts class R probe). */
+  sandboxWatchMs?: number;
+  /** `--cr1-hold-seconds`: the CR1 outage range (class-r.ts); absent on a CR1 wave means 360 s. */
+  cr1HoldMs?: [number, number];
+  /** `--cr2-hold-seconds`: a K15 outage around CR2's provider kill; absent or 0 keeps the controller up. */
+  cr2HoldMs?: [number, number];
+  /** `--cr3-stall-seconds`: how long CR3–CR6 stop the Daytona plugin worker; absent means 45 s. */
+  cr3StallMs?: [number, number];
+  /** `--tm1-hold-seconds`: the seeded TM1 stall range (time-faults-config.ts); absent uses 95–150 s. */
+  tm1HoldMs?: [number, number];
   faultAfterMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the
@@ -112,6 +153,10 @@ export interface WaveOptions {
   workspaceGitUrl?: string;
   /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
   providerFaults?: ProviderFaultKind[];
+  /** Sandbox disk-full faults from `--faults` (DF1); see disk-full-faults.ts. */
+  diskFullFaults?: DiskFullFaultKind[];
+  /** Session faults from `--faults` (SR1); see session-faults.ts. */
+  sessionFaults?: Array<import("./session-faults.js").SessionFaultKind>;
   providerFaultMessage?: ProviderMessage;
   /** `--provider-fault-message S1=interrupt_ack,...`: a workload's own message, over `providerFaultMessage`. */
   providerFaultMessageByWorkload?: Partial<Record<WorkloadId, ProviderMessage>>;
@@ -173,6 +218,8 @@ export interface TaskPlan {
   providerFault?: ProviderFaultRule;
   /** RR1–RR3: the seeded restarts after the first kill. */
   restartSteps?: RestartStep[];
+  /** `--long-turn-minutes`: the first turn's tool work before the workload (long-turn.ts). */
+  longTurnMinutes?: number;
 }
 
 export interface ScheduledFault {
@@ -288,12 +335,16 @@ export interface FaultReceipt {
   upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
   /** K15: the deploy generation, emulated host name and deployment id before and after. */
   redeploy?: ReturnType<typeof import("./redeploy.js").redeployReceipt>;
+  /** `--fail-recovery-step`: the step armed (fail mode) when this fault's replacement started. */
+  recoveryStep?: { spec: string; token: string };
   /** TM1–TM3: what was frozen and which rows were aged. */
   timeFault?: TimeFaultRecord;
   /** RR1–RR3: every stop and replacement of the sequence, the first kill included. */
   repeatedRestart?: RepeatedRestartRecord;
   /** MS1–MS3: the second server and what happened to the first. */
   multiServer?: import("./multi-server.js").MultiServerRecord;
+  /** CR1–CR6: the provider kill or plugin stall and the sandbox captures taken around the fault (class-r.ts). */
+  classR?: import("./class-r.js").ClassRRecord;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
@@ -316,7 +367,7 @@ export interface OracleArtifacts {
   approvals?: Array<{ id: string; status: string; title: string | null }>;
   /** G1 and H1: the board's actions and what the observer saw around them. */
   governance?: GovernanceRecord;
-  /** Q1: the saved question and the task's runs. */
+  /** Q1, Q4: the saved questions and the task's runs. */
   question?: QuestionArtifacts;
   /** PV1–PV3: the shim's log lines for this task. */
   providerFaultEvents?: ProviderFaultEvent[];
@@ -324,6 +375,23 @@ export interface OracleArtifacts {
   contention?: import("./contention.js").ContentionEvidence;
   /** Q2, Q3: what the board did and what the task, its runs and the harness's app saw. */
   journey?: import("./journeys.js").JourneyArtifacts;
+  /** W2, W2Q, W2C: the re-wake and the task's runs (rewake.ts). */
+  rewake?: import("./rewake.js").RewakeArtifacts;
+  /** `--long-turn-minutes`: the task's runs, for the harness's own long-turn evidence (long-turn.ts). */
+  runs?: import("./rewake.js").RewakeArtifacts["runs"];
+  /** H2: who owns the task at rest, and how its runs ended. */
+  handoff?: HandoffArtifacts;
+}
+
+/** H2: the task's owner and execution state at rest, and each run's terminal state. */
+export interface HandoffArtifacts {
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  createdByUserId: string | null;
+  executionBlocker: boolean;
+  activeRecoveryAction: boolean;
+  /** Null when the run history could not be read: the run checks then fail. */
+  runs: Array<{ id: string; status: string; errorCode: string | null }> | null;
 }
 
 /** What the board did for a governance task (G1, H1), and what the observer saw. */
@@ -408,12 +476,16 @@ export interface TaskRecord {
   governance?: GovernanceRecord;
   /** K14 waves: the build serving when the task launched. */
   serverBuildAtLaunch?: "upgrade_from" | "current";
-  /** Q1: the saved question and the board's answer. */
+  /** Q1, Q4: the saved questions and the board's answers. */
   question?: QuestionRecord;
   /** Q2, Q3: the board's journey actions (journey-driver.ts). */
   journey?: import("./journeys.js").JourneyRecord;
+  /** W2, W2Q, W2C: the first run, the board's wake and the run that served it (rewake.ts). */
+  rewake?: import("./rewake.js").RewakeRecord;
   /** PV with `--provider-fault-restart`: when the shim logged the task's fault (arms the `provider` trigger). */
   providerFaultAppliedAt?: number;
+  /** DF1: when the fault was armed and cleared, and what the board showed at the disk-full rest. */
+  diskFull?: DiskFullRecord;
 }
 
 export interface TaskGrade {
@@ -421,7 +493,7 @@ export interface TaskGrade {
   crossingFaults: string[];
   rules: Record<RuleId, RuleResult>;
   T: OracleResult;
-  /** Universal checks U1–U4 (universal.ts); absent on grades written before them. */
+  /** Universal checks U1–U5 (universal.ts); absent on grades written before them. */
   universal?: import("./universal.js").UniversalGrade;
   pass: boolean;
   signature: string | null;

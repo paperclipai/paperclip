@@ -61,7 +61,7 @@ GET /api/companies/{companyId}/projects
 GET /api/projects/{projectId}
 ```
 
-Returns project details including workspaces and the project-owned `environmentId`.
+Returns project details including workspaces.
 
 ### Create Project
 
@@ -84,9 +84,11 @@ POST /api/companies/{companyId}/projects
 
 Notes:
 
-- `environmentId` optionally selects the project environment. When omitted, creation
-  saves the creator's effective default. The saved choice does not change when the
-  creator or instance default changes later.
+- `environmentId` optionally selects the project's workspace storage: the storage
+  that this environment uses. When omitted, storage follows the creator's effective
+  default environment. If that default is unavailable and only one storage owner is
+  available, the project uses that owner. The project does not save the environment,
+  and it does not change where runs execute.
 - `expectedStorageProviderPluginId` optionally guards the observed storage owner.
   Use `GET /api/companies/{companyId}/project-environments` to discover compatible
   groups and the creator's default. Unknown or changed storage is rejected.
@@ -103,11 +105,9 @@ PATCH /api/projects/{projectId}
 }
 ```
 
-`environmentId` can be updated independently of workspace/isolation policy. Set it
-to an available compatible environment ID, or `null` to inherit agent/instance
-defaults. The update affects only this project. An incompatible or unavailable
-environment returns `409`; company access is required. Existing plugin-owned data
-cannot be moved to another storage owner through this field.
+Workspace storage is fixed at creation. A change of
+`executionWorkspacePolicy.storageProviderPluginId` returns `409`
+(`project_storage_locked`). Runs use the agent's environment, not a project setting.
 
 ## Project Workspaces
 

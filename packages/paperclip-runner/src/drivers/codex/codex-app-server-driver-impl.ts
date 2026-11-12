@@ -20,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, isRunnerResumeStateUnavailable, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -45,6 +45,7 @@ import {
   codexCommandEnvironment,
   createIsolatedCodexAppServerArgs,
   codexNetworkAccess,
+  usesExternalRunnerSandbox,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
 } from "./codex-security-config.js";
@@ -74,9 +75,23 @@ const DRIVER_KIND = "codex_app_server";
 const DRIVER_VERSION = "codex-v2";
 
 interface BootstrapCancellation {
-  close(): Promise<void>;
+  /** `keepRunner` detaches this controller from a durable Runner exactly as a
+   * server restart does: no turn stop, no suspend, no signal. The Runner and
+   * its in-flight turn stay for the same run's next reattachment. Only the
+   * first close decides. */
+  close(keepRunner?: boolean): Promise<void>;
   detach(): void;
   wait<T>(operation: Promise<T>): Promise<T>;
+}
+
+/** A recovery failure that says nothing about the Runner's identity or state:
+ * a command or transport timed out or was lost. Any identity or authority
+ * refusal, even one that also mentions a timeout, is not transient. */
+export function isTransientRunnerRecoveryFailure(error: unknown): boolean {
+  if (error instanceof NativeSessionProtocolIntegrityError) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  if (/mismatch|different|identity|authority|integrity|incompatible/i.test(message)) return false;
+  return /provider_transport_failed|PRP command \S+ timed out|runnerd transport closed while waiting/.test(message);
 }
 
 function bootstrapCancellation(
@@ -84,8 +99,10 @@ function bootstrapCancellation(
   signal: AbortSignal | undefined,
 ): BootstrapCancellation {
   let closePromise: Promise<void> | null = null;
-  const close = (): Promise<void> => {
-    closePromise ??= transport.close();
+  const close = (keepRunner = false): Promise<void> => {
+    closePromise ??= keepRunner && transport.detachControllerForRestart
+      ? transport.detachControllerForRestart()
+      : transport.close();
     return closePromise;
   };
   let rejectAborted!: (reason: unknown) => void;
@@ -125,6 +142,18 @@ function bootstrapCancellation(
       return result;
     },
   };
+}
+
+
+/** A saved turn or runtime request whose outcome is unknown. A crash can save a
+ * turn's terminal record before clearing its active marker; that turn finished
+ * and is not in flight. */
+function persistedSessionInFlight(snapshot: PersistedHarnessSession): boolean {
+  const activeTurnIsTerminal = (snapshot.terminalTurns ?? []).some(
+    (terminal) => terminal.turnId === snapshot.activeTurnId,
+  );
+  return (Boolean(snapshot.activeTurnId) && !activeTurnIsTerminal)
+    || Boolean(snapshot.pendingRuntimeRequests?.length);
 }
 
 export class CodexAppServerDriver implements HarnessDriver {
@@ -360,6 +389,11 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (input.signal?.aborted) input.signal.throwIfAborted();
+      // The controller may retry this bootstrap on the same run only when the
+      // failed runner is proven gone; record that proof on the failure.
+      if (error && typeof error === "object" && transport.runnerExitConfirmed?.() === true) {
+        Object.defineProperty(error, "runnerExitConfirmed", { value: true, enumerable: false });
+      }
       if (error instanceof CodexRpcError && (this.#options.driverIdentity?.kind ?? DRIVER_KIND) === DRIVER_KIND) {
         const providerFailure = codexProviderFailure(error, "startup", this.#options.environment);
         if (providerFailure) Object.defineProperty(error, "providerFailure", { value: providerFailure, enumerable: false });
@@ -411,14 +445,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       this.#options.workingDirectoryAuthority === "remote_runner" &&
       remoteRunnerWorkingDirectoryMoved(snapshot.workingDirectory, this.#options.environment)
     ) {
-      // A crash can save a turn's terminal record before clearing its active
-      // marker; that turn finished and is not in flight.
-      const activeTurnIsTerminal = (snapshot.terminalTurns ?? []).some(
-        (terminal) => terminal.turnId === snapshot.activeTurnId,
-      );
-      const inFlight = (Boolean(snapshot.activeTurnId) && !activeTurnIsTerminal)
-        || Boolean(snapshot.pendingRuntimeRequests?.length);
-      return inFlight
+      return persistedSessionInFlight(snapshot)
         ? {
             recovered: false,
             reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
@@ -442,6 +469,12 @@ export class CodexAppServerDriver implements HarnessDriver {
         activeTurnId: snapshot.activeTurnId,
       },
     });
+    // A recovery whose Runner command timed out or lost its transport detaches
+    // from the Runner, as a restart does, for the same run's next
+    // reattachment: the Runner may still own an in-flight turn, and stopping
+    // or killing it loses the turn. An abort (a Stop or the recovery
+    // deadline), identity refusals, other recovery failures and protocol
+    // integrity faults still close and stop it.
     const cancellation = bootstrapCancellation(transport, options.signal);
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
@@ -761,14 +794,23 @@ export class CodexAppServerDriver implements HarnessDriver {
         session,
       };
     } catch (error) {
-      await cancellation.close().catch(() => {});
+      await cancellation.close(isTransientRunnerRecoveryFailure(error)).catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
-      const failureClass = runnerRecoveryFailureClass(error);
+      // A Runner with no saved control-plane state for this session can never
+      // resume it here. With nothing in flight, the runtime's recovery policy
+      // decides, as for a moved workspace root. An in-flight session keeps the
+      // unclassified failure.
+      const classified = runnerRecoveryFailureClass(error);
+      const resumeStateUnavailable = !classified && isRunnerResumeStateUnavailable(error)
+        && !persistedSessionInFlight(snapshot);
+      const failureClass = classified ?? (resumeStateUnavailable ? PROVIDER_STATE_INCOMPATIBLE : undefined);
       return {
         recovered: false,
         reason: redactCodexDiagnostic(String(error)),
         ...(failureClass ? { failureClass } : {}),
+        ...(resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
+        ...(transport.runnerExitConfirmed?.() === true ? { runnerExitConfirmed: true as const } : {}),
       };
     } finally {
       cancellation.detach();
@@ -1002,7 +1044,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         sandbox: {
           permissionProfile: boundedCodexValue(configuredPermissionProfile),
           legacyPolicy: boundedCodexValue(response.sandbox ?? null),
-          rootAccess: "none",
+          rootAccess: usesExternalRunnerSandbox(this.#options.environment ?? {}) ? (requestedMode === "plan" ? "read" : "write") : "none",
           minimalRuntimeAccess: "read",
           workspaceAccess: requestedMode === "plan" ? "read" : "write",
           networkAccess: codexNetworkAccess(this.#options.environment),

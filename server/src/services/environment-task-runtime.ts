@@ -258,7 +258,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   if (operation.kind === "submit" || operation.kind === "copilot_metadata") {
     // No ticket, headers, environment values, or launch paths belong in metadata.
     const marked = await db.update(environmentLeases).set({
-      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
+      metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection') || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
@@ -279,8 +279,18 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(savedIdentity)}::jsonb`)).returning({id:environmentLeases.id});
     if (marked.length !== 1) throw new Error("Plugin warm task attachment lost authority");
   }
+  async function recordTaskStop(result: Extract<ReturnType<typeof parseEnvironmentTaskResult>, {kind:"status" | "copilot_metadata"}>) {
+    await db.update(environmentLeases).set({
+      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true,
+        runnerTaskSessionRetained: result.kind === "status" && result.sessionStateAvailable === true,
+        ...(result.kind === "status" && result.preparationStopped === true ? { runnerTaskPreparationStopped: true } : {}) })}::jsonb`,
+    }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+      eq(environmentLeases.providerLeaseId, taskId)));
+  }
   try {
-    const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true && metadata.runnerTaskSessionRetained !== true;
+    const admissionRejection = metadata.runnerTaskAdmissionRejection as { taskId?: unknown } | undefined;
+    const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true &&
+      metadata.runnerTaskSessionRetained !== true && admissionRejection?.taskId !== taskId;
     if (operation.kind === "describe" && (metadata.runnerTaskReused === true || stoppedWithoutSession)) {
       const state = parseEnvironmentTaskResult({kind:"status"}, taskId, await callWorker("environmentTask", {
         driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
@@ -289,8 +299,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       }));
       if (state.kind === "status" && state.executionStopped === true &&
           (metadata.runnerTaskReused === true || state.sessionStateAvailable !== true)) {
-        await executeEnvironmentTask(db, workers, {...input, operation:{kind:"status"}});
-        await executeEnvironmentTask(db, workers, {...input, operation:{kind:"complete"}});
+        await recordTaskStop(state);
+        await executeEnvironmentTask(db, workers, {...input, expectedTaskId:taskId, operation:{kind:"complete"}});
         // Preserve the predecessor's stop proof for checkpoint authorization.
         if (typeof metadata.runnerTaskPreviousLeaseId === "string") await db.update(environmentLeases).set({
           metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({runnerTaskExecutionStopped:true,
@@ -408,6 +418,20 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
+    if (operation.kind === "submit" && parsed.kind === "admission_rejected") {
+      const recorded = await db.update(environmentLeases).set({
+        metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskIdentity') || ${JSON.stringify({
+          runnerTaskAdmissionRejection: { taskId, reason: parsed.reason },
+          runnerTaskDispatched: false, runnerTaskExecutionStopped: true, runnerTaskSessionRetained: false,
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.providerLeaseId, taskId),
+        sql`${environmentLeases.metadata}->>'runnerTaskDispatched' = 'true'`,
+        sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(operation.runner)}::jsonb`,
+      )).returning({ id: environmentLeases.id });
+      if (recorded.length !== 1) throw new Error("Plugin Runner admission receipt is stale");
+      return parsed;
+    }
     if (stoppedSourceCheckpoint && parsed.kind === "state" && isSettledReadyRunnerState(parsed.state)) {
       parsed.state = { ...parsed.state, lifecycle: "suspended" };
     }
@@ -450,12 +474,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       }
     }
     if ((parsed.kind === "status" || parsed.kind === "copilot_metadata") && parsed.executionStopped === true) {
-      await db.update(environmentLeases).set({
-        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true,
-          runnerTaskSessionRetained: parsed.kind === "status" && parsed.sessionStateAvailable === true,
-          ...(parsed.kind === "status" && parsed.preparationStopped === true ? { runnerTaskPreparationStopped: true } : {}) })}::jsonb`,
-      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
-        eq(environmentLeases.providerLeaseId, taskId)));
+      await recordTaskStop(parsed);
     }
     if (operation.kind === "complete") {
       if (freshWorkspace && metadata.runnerTaskExecutionStopped === true)

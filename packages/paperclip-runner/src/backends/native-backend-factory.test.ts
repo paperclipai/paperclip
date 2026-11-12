@@ -32,7 +32,7 @@ import {
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
-import { PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
+import { NativeRunnerResumeStateUnavailableError, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
 import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
@@ -453,6 +453,71 @@ describe("native backend factory", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  // Staging class P ("PRP provider resume state is unavailable"): the previous
+  // run's result was accepted but its harness backup failed to save, and its
+  // per-turn sandbox was destroyed. The follow-up's new sandbox holds no Runner
+  // control-plane state for the saved session, so every resume reads the same
+  // empty state. That failure was untyped, so a governed-wait or same-session
+  // checkpoint ended in a generic interruption, and each new message resumed
+  // the same session and failed again.
+  describe("a Runner that has no saved state for the session", () => {
+    function statelessRecovery(input: NativeExecutionInputV1) {
+      const transport = new FakeCodexTransport();
+      transport.rejectMethods.set("initialize", new NativeRunnerResumeStateUnavailableError());
+      const backend = createNativeSessionBackend(input, {
+        codexTransportFactory: () => transport,
+        environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+      });
+      const snapshot = {
+        schema: "paperclip.native-session.v1", backendKind: "codex_app_server", driverKind: "codex_app_server",
+        sessionId: transport.threadId, providerSessionId: transport.providerSessionId, workingDirectory: WORKSPACE,
+        identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+        activeTurnId: null, terminalTurns: [], pendingRuntimeRequests: [], lastCursor: null,
+      };
+      return { backend, snapshot };
+    }
+
+    it.each([
+      ["Codex", execution()],
+      ["OpenCode", opencodeExecution()],
+      ["ACPX Claude", acpxExecution("claude")],
+    ])("reports a %s session with nothing in flight as provider state incompatible", async (_label, input) => {
+      const { backend, snapshot } = statelessRecovery(input);
+      await expect(backend.recoverSession!(snapshot as never, { signal: new AbortController().signal }))
+        .resolves.toEqual({
+          recovered: false,
+          reason: expect.stringContaining("PRP provider resume state is unavailable"),
+          failureClass: PROVIDER_STATE_INCOMPATIBLE,
+          resumeStateUnavailable: true,
+        });
+    });
+
+    it("carries the transport's proof that a Runner exited before answering session.open", async () => {
+      const { snapshot } = statelessRecovery(execution());
+      const exited = new FakeCodexTransport();
+      exited.rejectMethods.set("initialize", new Error("runnerd exited while waiting for session.open"));
+      Object.assign(exited, { runnerExitConfirmed: () => true });
+      const proven = createNativeSessionBackend(execution(), {
+        codexTransportFactory: () => exited,
+        environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+      });
+      await expect(proven.recoverSession!(snapshot as never, { signal: new AbortController().signal }))
+        .resolves.toMatchObject({ recovered: false, reason: expect.stringContaining("runnerd exited while waiting for session.open"),
+          runnerExitConfirmed: true });
+    });
+
+    it.each([
+      ["an active turn", { activeTurnId: "turn-in-flight" }],
+      ["a pending runtime request", { pendingRuntimeRequests: [{ requestId: "request-1" }] }],
+    ])("leaves a session that holds %s unclassified", async (_label, inFlight) => {
+      const { backend, snapshot } = statelessRecovery(acpxExecution("claude"));
+      const recovered = await backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal });
+      expect(recovered).toMatchObject({ recovered: false, reason: expect.stringContaining("PRP provider resume state is unavailable") });
+      expect(recovered).not.toHaveProperty("failureClass");
+      expect(recovered).not.toHaveProperty("resumeStateUnavailable");
+    });
+  });
+
   it("names the agent generically when a remote Claude session opens outside its workspace", async () => {
     const { factory, backend } = movedRootRecovery(acpxExecution("claude"));
     const failure = await backend.openSession({
@@ -701,7 +766,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "acpx_runtime",
-      version: "0.13.1",
+      version: "0.22.0",
       capabilities: {
         resume: true,
         interruption: true,
@@ -725,7 +790,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
         capabilities: {
           steering: false,
           resume: true,
@@ -751,7 +816,7 @@ describe("native backend factory", () => {
     const backend = createNativeSessionBackend(input, {
       codexTransportFactory: () => { throw new Error("descriptor must not launch the transport"); },
     });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["claude" as const])(
@@ -763,7 +828,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
       });
     },
   );
@@ -774,7 +839,7 @@ describe("native backend factory", () => {
     const profile = resolveQualifiedAcpxProfile("pi", "custom/explicit-test-model");
     Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, piThinkingLevel: "low", profile });
     const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {

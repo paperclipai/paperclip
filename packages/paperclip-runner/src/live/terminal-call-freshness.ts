@@ -38,8 +38,12 @@ type Command = { type: string; payload: Record<string, unknown> };
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-type TerminalCallScope = { terminalSourceEventId?: string | null; turnId?: string | null };
-type ToolCallState = { name: string; returned: boolean; seen: boolean };
+type TerminalCallScope = {
+  terminalSourceEventId?: string | null;
+  turnId?: string | null;
+  refusals?: ReadonlyMap<string, readonly string[]>;
+};
+type ToolCallState = { name: string; returned: boolean; seen: boolean; named: boolean };
 
 /** Names of calls that returned before the terminal call but that the agent had not yet seen. */
 export function unseenReturnedToolCalls(
@@ -47,7 +51,12 @@ export function unseenReturnedToolCalls(
   commands: readonly Command[],
   input: TerminalCallScope,
 ): string[] {
-  return callNames(earlierToolCalls(events, commands, input), call => call.returned && !call.seen);
+  return callNames(unseenReturnedCalls(events, commands, input));
+}
+
+function unseenReturnedCalls(events: readonly CommittedEvent[], commands: readonly Command[], input: TerminalCallScope) {
+  return [...earlierToolCalls(events, commands, input)]
+    .filter(([, call]) => call.returned && !call.seen && !call.named);
 }
 
 /**
@@ -62,11 +71,11 @@ export function pendingEarlierToolCalls(
   commands: readonly Command[],
   input: TerminalCallScope,
 ): string[] {
-  return callNames(earlierToolCalls(events, commands, input), call => !call.returned && !call.seen);
+  return callNames([...earlierToolCalls(events, commands, input)].filter(([, call]) => !call.returned && !call.seen));
 }
 
-function callNames(calls: Map<string, ToolCallState>, keep: (call: ToolCallState) => boolean): string[] {
-  return [...new Set([...calls.values()].filter(call => keep(call) && !TERMINAL_OPERATIONS.has(call.name)).map(call => call.name))];
+function callNames(calls: [string, ToolCallState][]): string[] {
+  return [...new Set(calls.filter(([, call]) => !TERMINAL_OPERATIONS.has(call.name)).map(([, call]) => call.name))];
 }
 
 function earlierToolCalls(
@@ -90,8 +99,14 @@ function earlierToolCalls(
     if ((type === "tool.execution.started" || type === "tool.execution.completed") && payload.transport === "dynamic") {
       const id = typeof payload.executionId === "string" ? payload.executionId : null;
       if (!id) continue;
-      const call = calls.get(id) ?? { name: typeof payload.name === "string" ? payload.name : "tool", returned: false, seen: false };
-      if (type === "tool.execution.completed") call.seen = true;
+      const call = calls.get(id) ?? { name: typeof payload.name === "string" ? payload.name : "tool", returned: false, seen: false, named: false };
+      if (type === "tool.execution.completed") {
+        call.seen = true;
+        for (const named of input.refusals?.get(id) ?? []) {
+          const earlier = calls.get(named);
+          if (earlier) earlier.named = true;
+        }
+      }
       calls.set(id, call);
       continue;
     }
@@ -118,14 +133,15 @@ export async function settleEarlierToolCalls(
   read: () => { events: readonly CommittedEvent[]; commands: readonly Command[] } | null,
   input: TerminalCallScope,
   options: { timeoutMs?: number; pollMs?: number } = {},
-): Promise<{ unseen: string[]; pending: string[] } | null> {
+): Promise<{ unseen: string[]; unseenCallIds: string[]; pending: string[] } | null> {
   const deadline = Date.now() + (options.timeoutMs ?? TERMINAL_CALL_SETTLE_TIMEOUT_MS);
   for (;;) {
     const state = read();
     if (!state) return null;
     const pending = pendingEarlierToolCalls(state.events, state.commands, input);
     if (pending.length === 0 || Date.now() >= deadline) {
-      return { unseen: unseenReturnedToolCalls(state.events, state.commands, input), pending };
+      const unseen = unseenReturnedCalls(state.events, state.commands, input);
+      return { unseen: callNames(unseen), unseenCallIds: unseen.filter(([, call]) => !TERMINAL_OPERATIONS.has(call.name)).map(([id]) => id), pending };
     }
     await new Promise(resolve => setTimeout(resolve, options.pollMs ?? 50));
   }

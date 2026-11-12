@@ -31,7 +31,8 @@ const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   releaseRestoreSourcesForEnvironmentDelete: vi.fn(async () => 0),
 }));
 const mockCloseWarmNativeSessionsForEnvironment = vi.hoisted(() =>
-  vi.fn(async () => ({ closed: 0, busy: 0, failed: 0 })),
+  vi.fn(async (): Promise<{ closed: number; busy: number; failed: number; failures: Array<Record<string, unknown>> }> =>
+    ({ closed: 0, busy: 0, failed: 0, failures: [] })),
 );
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null })),
@@ -359,6 +360,7 @@ describe("environment routes", () => {
       closed: 0,
       busy: 0,
       failed: 0,
+      failures: [],
     });
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
@@ -1526,6 +1528,24 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.list).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["get", "/api/companies/company-1/environments/capabilities"],
+    ["post", "/api/companies/company-1/environments"],
+    ["post", "/api/environments/env-1/probe"],
+    ["patch", "/api/environments/env-1"],
+    ["delete", "/api/environments/env-1"],
+    ["get", "/api/environments/env-1/leases"],
+  ] as const)("gives an agent denied %s %s the final environment settings guidance", async (method, path) => {
+    const app = createApp({ type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_key", runId: "run-1" });
+    const res = await request(app)[method](path).send(method === "post" && path.endsWith("/environments") ? { name: "Agent computer", driver: "local", config: {} } : {});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(res.body.remediation).toContain("this denial is final");
+    expect(res.body.remediation).toContain("Execution environments are board-only throughout");
+    expect(res.body.remediation).toContain("[Open environment settings](/<prefix>/company/settings/instance/environments)");
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+  });
+
   it("rejects agent detail reads for instance-scoped environments", async () => {
     mockEnvironmentService.getById.mockResolvedValue(createEnvironment());
     mockAgentService.getById.mockResolvedValue({
@@ -1679,7 +1699,7 @@ describe("environment routes", () => {
       });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("board operators");
+    expect(res.body.error).toBe("Board access required");
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
@@ -1805,11 +1825,31 @@ describe("environment routes", () => {
     ).toHaveBeenCalledExactlyOnceWith({
       environmentId: "env-1",
       reason: "environment deleted",
+      forceStopUnsettled: true,
+      db: expect.anything(),
     });
     expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith(
       "env-1",
     );
     expect(res.body.destroyedReusableSandboxLeaseCount).toBe(2);
+  });
+
+  it("names the warm runner session that could not be stopped and why", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({ reusableSandboxLeaseCount: 1 }));
+    const failure = { runId: "run-parked", issueId: "issue-1", environmentId: "env-1", providerLeaseId: "sandbox-1",
+      reason: "close failed: native_session_close_unrecoverable: runner did not durably suspend; forced Runner stop failed: handoff unconfirmed" };
+    mockCloseWarmNativeSessionsForEnvironment.mockResolvedValue({ closed: 0, busy: 0, failed: 1, failures: [failure] });
+    const app = createApp(localBoardActor("admin-1"));
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain(`run run-parked: ${failure.reason}`);
+    expect(res.body.details.nativeRunnerSessions.failures).toEqual([failure]);
+    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
   });
 
   it("keeps rejecting a consented delete when a non-lease blocker remains", async () => {
@@ -2577,7 +2617,7 @@ describe("environment routes", () => {
     });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("board operators");
+    expect(res.body.error).toBe("Board access required");
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 

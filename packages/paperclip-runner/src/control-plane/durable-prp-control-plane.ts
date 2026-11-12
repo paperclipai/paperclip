@@ -105,6 +105,7 @@ const commandTypes = new Set([
   "interaction.receipt",
   "semantic_tool.result",
   "external_provider.operation",
+  "runner.attachment.download",
   "session.snapshot",
   "session.goal.get",
   "session.goal.set",
@@ -646,6 +647,8 @@ export interface RunnerProcessLaunchSpec {
   args: readonly string[];
   cwd: string;
   environment: NodeJS.ProcessEnv;
+  /** True while the launched Runner holds an authenticated connection to its control plane. */
+  isRunnerConnected?: () => boolean;
 }
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -1653,6 +1656,8 @@ class DurableCoreStore {
   #writeRevision = 0;
   #externallyPersisted = false;
   revision = 0;
+  /** Called after the stored state is replaced or saved. */
+  onChange: (() => void) | null = null;
   #pendingEvent: {
     buildCandidate: (state: StoredCoreState) => StoredCoreState | null;
     isCurrentOwner: () => boolean;
@@ -1714,6 +1719,7 @@ class DurableCoreStore {
     this.#state.checkpointEventPolicy = "control-v1";
     this.#externallyPersisted = true;
     this.revision += 1;
+    this.onChange?.();
   }
 
   save(): void {
@@ -1732,6 +1738,7 @@ class DurableCoreStore {
       this.#state = candidate;
       if (pending && withEvent) pending.committed = true;
       this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       this.#writeIndeterminate = true;
       throw error;
@@ -1757,6 +1764,7 @@ class DurableCoreStore {
         this.#state = candidate;
         ++this.#writeRevision;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
         return true;
       }
       await withStagedPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`, (temporary) => {
@@ -1768,6 +1776,7 @@ class DurableCoreStore {
         ++this.#writeRevision;
         pending.committed = true;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
       });
       // Explicit authority commits do not absorb pending events. On conflict,
       // leave the event unacknowledged for replay instead of rewriting in a loop.
@@ -1801,6 +1810,7 @@ class DurableCoreStore {
       }
       this.#state = candidate;
       if (checkpointRequired) this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
@@ -2091,6 +2101,7 @@ export class DurablePrpControlPlane {
   #persistenceTail = Promise.resolve();
   #sendQueues = new Map<AuthorityConnection, Promise<void>>();
   #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
+  #readableStateListeners = new Set<() => void>();
 
   constructor(options: DurablePrpControlPlaneOptions) {
     if (
@@ -2111,6 +2122,7 @@ export class DurablePrpControlPlane {
       options.stateDirectory,
       options.identity,
     );
+    this.#store.onChange = () => this.#readableStateChanged();
     if (this.#store.state.checkpointEventPolicy === "control-v1") {
       this.#recoveredCursor = { runId: options.identity.runId, sourceSeq: this.#store.state.ackedSourceSeq };
     }
@@ -2141,6 +2153,31 @@ export class DurablePrpControlPlane {
 
   get store(): DurablePrpControlPlaneStore {
     return this.#publishedStore ?? this.#store;
+  }
+
+  /**
+   * Tell a reader of `store` that what it can see may have changed: an event
+   * or command was committed, or a saved checkpoint released the events that
+   * were waiting for it. This is a hint, and it can arrive partway through the
+   * change, so the reader must look at the state in a later task. Returns the
+   * function that removes the listener.
+   */
+  onReadableStateChange(listener: () => void): () => void {
+    this.#readableStateListeners.add(listener);
+    return () => {
+      this.#readableStateListeners.delete(listener);
+    };
+  }
+
+  #readableStateChanged(): void {
+    for (const listener of this.#readableStateListeners) {
+      // A reader can never fail the commit that woke it.
+      try {
+        listener();
+      } catch {
+        // The reader owns its own failure handling.
+      }
+    }
   }
 
   #capturePublishedState(snapshot: DurablePrpCheckpoint): StoredCoreState {
@@ -2227,6 +2264,7 @@ export class DurablePrpControlPlane {
         this.#publishedState = published;
         this.#persistedRevision = revision;
         this.#checkpointPersistenceFailed = false;
+        this.#readableStateChanged();
       } catch (error) {
         this.#checkpointPersistenceFailed = true;
         throw error;
@@ -2430,6 +2468,10 @@ export class DurablePrpControlPlane {
     const connections = [...this.#connections];
     this.#connections.clear();
     for (const connection of connections) connection.close();
+  }
+
+  activeRunnerProtocolVersion(): number | null {
+    return this.#eventOwner?.lease?.protocolVersion ?? null;
   }
 
   activeRunnerConnectionCount(): number {
@@ -2880,9 +2922,11 @@ export class DurablePrpControlPlane {
     }
     const controllerSeq = this.#store.state.commands.length + 1;
     const command: DurableRecoveryCoreCommand = {
-      schema: type === "external_provider.operation" ? "paperclip.prp.command.v3" : type.startsWith("session.goal.")
-        ? "paperclip.prp.command.v2"
-        : "paperclip.prp.command.v1",
+      schema: type === "external_provider.operation" || type === "runner.attachment.download"
+        ? "paperclip.prp.command.v3"
+        : type.startsWith("session.goal.")
+          ? "paperclip.prp.command.v2"
+          : "paperclip.prp.command.v1",
       commandId:
         commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
       controllerSeq,
@@ -3795,6 +3839,7 @@ export class DurablePrpControlPlane {
       const cursor = Math.max(this.#store.state.ackedSourceSeq, pending.acknowledgedSourceSeq);
       this.#store.state.ackedSourceSeq = cursor;
       this.#recoveredCursor = { runId: this.#identity.runId, sourceSeq: cursor };
+      this.#readableStateChanged();
     }
     connection.pendingChallenge = null;
     connection.lease = lease;
@@ -4696,6 +4741,7 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  isRunnerConnected?: () => boolean;
   diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   for (const value of [options.maxRuntimeMs, options.maxLifetimeMs]) {
@@ -4845,6 +4891,7 @@ export function spawnRunner(options: {
   if (options.processLauncher !== undefined) {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
+        ...(options.isRunnerConnected ? { isRunnerConnected: options.isRunnerConnected } : {}),
         nativeRunner: {
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,

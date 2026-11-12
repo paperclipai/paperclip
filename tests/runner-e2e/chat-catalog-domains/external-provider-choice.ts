@@ -13,6 +13,9 @@ import {
 import { waitForReply } from "./identity-support.js";
 import { collectRunEvents } from "../run-observations.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+/** The setup page's sign-in control: "Continue to Notion" on a new draft, "Finish with Notion" when the page resumes
+ * a draft the agent already created (ConnectionSetupFlow), or the generic sign-in step. The button has no test id. */
+export const NOTION_SIGN_IN_CONTROL = /Continue to (?:Notion|sign in)|Finish with Notion|Sign in to Notion/;
 interface Gallery {
   apps: AppDefinition[];
   credentialSources: {
@@ -285,7 +288,7 @@ export const providerChoiceExternalCases = [
     gradeProviderChoice,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.provider-choice.structural.v2",
+      oracleVersion: "paperclip.chat-catalog.provider-choice.structural.v3",
       sourceFiles: [
         "chat-catalog-domains/external-provider-choice.ts",
         "run-observations.ts",
@@ -375,7 +378,7 @@ export const providerChoiceExternalCases = [
         await expect(
           surface
             .getByRole("button", {
-              name: /Continue to (?:Notion|sign in)|Sign in to Notion/,
+              name: NOTION_SIGN_IN_CONTROL,
             })
             .first(),
         ).toBeVisible();

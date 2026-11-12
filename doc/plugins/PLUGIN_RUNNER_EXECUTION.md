@@ -172,6 +172,18 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
+Before creating a fresh workspace for an admitted Retry, Core may send the
+original task-owned workspace's `prepare` request with `verifyExisting: true`.
+Core sends verification through `workspaceOperation` with a 10-second
+deadline and a 12-second RPC timeout.
+The provider must verify a completed checkout without creating or fetching
+one and return `prepared` with `created: false`. Core checks prior writer
+settlement and continues normal preparation on the retained workspace after
+verification. A missing or unconfirmed checkout leaves the fresh retry
+fallback in place. Local workspaces use the same ownership and writer
+checks with Core's existing local Git verification.
+
 A storage provider can declare `workspaceProvider.finalizationVersion: 1`.
 Core then sends `workspaceOperation` with `operation.kind: "finalize"`, the retained
 binding, lifecycle generation, and originating `runId` and `agentId`. The operation
@@ -251,6 +263,32 @@ Provider upgrades, activation, company re-enablement, and finalization settlemen
 wake cleanup transactionally. No table, independent timer, or background scan of
 all remote PR refs is required.
 
+### Asynchronous workspace preparation
+
+A provider can implement `onWorkspacePrepare` alongside `onWorkspaceOperation`.
+Core calls the optional method with `phase: "submit"` and a short submission
+deadline. A provider that cannot prepare asynchronously returns
+`{ kind: "unsupported" }` before starting work, so Core can use the original
+operation. Otherwise the provider returns the completed result or a
+`{ kind: "pending", deadline }` receipt. The provider sets and enforces that
+operation deadline. Core holds the workspace lifecycle lock during preparation
+and rejects offers beyond the previous synchronous RPC budget before polling.
+It honors accepted deadlines as supplied. Replayed submission must not duplicate
+an active prepare.
+
+Core sends `phase: "poll"` with the same operation identity and the deadline
+from the receipt. The provider returns the same receipt while work is pending
+and the usual scoped `prepared` result after success. Core rejects late results
+and stops polling when the deadline expires. Each submission and poll has a
+short transport bound independent of the operation deadline. A provider can
+keep reporting pending while it restores recovery snapshots, under the same
+deadline.
+
+Each invocation has its own scoped host access. Complete scoped host calls
+inside the submit or poll that owns them. Detached work can use a remote
+operation already authorized by that invocation. It cannot reuse the
+invocation to call host services after the reply.
+
 ### Workspace operation failures
 
 Core separates a failed `workspaceOperation` call by what it knows about the
@@ -264,7 +302,7 @@ outcome:
 | The provider threw any other error | `Workspace storage provider reported a failure; retry the same workspace` | Unchanged setup failure. |
 
 To report a reason, throw `PluginWorkspaceOperationError` from
-`onWorkspaceOperation`, or any error with an own `workspaceFailureReason`
+`onWorkspaceOperation` or `onWorkspacePrepare`, or any error with an own `workspaceFailureReason`
 property. The reason must come from `WORKSPACE_OPERATION_FAILURE_REASONS`:
 
 | Reason | Retrying the same workspace can help |
@@ -336,13 +374,60 @@ not authorize new work or file access through that lease.
 Temporary credential homes are not needed after the originating run ends.
 An explicit reset to a different normalized session can retire a warm owner
 whose close failed only because it could not prove checkpoint suspension. Core
-requires the exact lease-bound task's `executionStopped: true` receipt, a
-successful `complete` handoff, and settled Core tool results first. It then
-collects stopped instruction files before it releases the in-memory owner. The old checkpoint remains evidence;
-it is not reused by the new session. A failed handoff, failed file collection,
-unsettled Core tool result, other close error, or continuation of the same
-session still blocks replacement.
+requires the exact lease-bound task's `executionStopped: true` receipt and a
+successful `complete` handoff first. When the close left them unproven, the new
+run requests them itself: one confirmed `stop` (not resent once confirmed),
+the credential snapshot, then `complete`. A warm owner without a task needs its
+Runner's own durable suspension instead. Unsettled Core tool results do not
+block this reset: a governed-wait park leaves one by design, its run is already
+terminal, its provider is stopped, and the new session never replays it. Core
+then collects stopped instruction files before it releases the in-memory owner.
+With that task receipt, any close error qualifies, including a controller
+journal drain that outlived the close grace: the old journal lives in the
+discarded session's own state root. The old checkpoint remains evidence; it is
+not reused by the new session. A handoff that still fails, failed file
+collection, another close error from an owner without a task, or continuation
+of the same session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
+
+Deleting an environment (with consent to destroy its reusable sandboxes) closes its
+idle warm owners first. An idle owner whose close cannot settle is retired the same
+way: one confirmed `stop`, the credential snapshot, `complete`, then instruction
+collection. An owner whose sandbox lease already carries a `destroyed` termination
+receipt has no process left to stop, so Core releases it without contacting the
+sandbox. Only then are the environment's sandboxes destroyed, through the usual
+workspace-export and restore-source guards. When an owner still cannot be retired,
+the delete returns 409 and names each run and the close and stop errors. Idle-timeout,
+restart and sleep sweeps do not force a stop. They log the exact close error for each
+owner instead of a count.
+
+When retiring the previous owner stays unproven anyway (any close failure,
+on any of the paths a new run uses to retire it: instruction preparation,
+configuration change, session reset, or a prior-owner fence on a resumed
+sandbox), the new run has done no provider work. It fails with the typed
+pre-provider error `native_predecessor_retirement_unproven` instead of a
+provider failure. The owner stays registered for its own sandbox, so no run
+on that sandbox launches over it. The heartbeat then:
+
+- marks this run's reusable lease on that sandbox `replaceBeforeReuse`, so the
+  next acquisition creates a fresh sandbox and hands the old one to the
+  cleanup sweep. That replacement uses the same rule as a failed resume: a
+  clean, committed workspace save and a verified harness backup. Without them
+  the next acquisition resumes the sandbox as before;
+- after the run ends, hands its prepared workspace on at the saved version
+  only through the shared unchanged-files proof (no runner command, workspace
+  operation such as a provisioning command, execution event or result).
+  Without that proof the workspace stays dirty and is preserved as today, and
+  the run rests with Retry;
+- re-queues the run in the uncharged `interrupted_preparation` lane instead of
+  a native reconciliation hold. A run that answered a task interaction keeps
+  its own wake in that lane, so the retry still carries the answer.
+
+A run on a different sandbox forgets the unretired owner instead of replaying
+its rejected close. A previous run parked on a durable governed interaction
+leaves its question's tool input unanswered by design. Once its Runner's
+sandbox lease has ended elsewhere, that committed park settles the input for
+retirement.
 
 Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
 that sequence confirms the stop and completes the same task, Core does not also
