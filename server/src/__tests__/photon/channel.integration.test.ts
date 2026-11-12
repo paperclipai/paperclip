@@ -882,6 +882,8 @@ describe("iMessage Photon channel control plane", () => {
   }
   it("hands a settled local Photon receiver to Cloud after normal online enrollment without restart",
     () => onlinePhotonEnrollment(), 30_000);
+  it("keeps the normal online Photon handoff hint after its activity write rolls back",
+    () => onlinePhotonEnrollment(true), 30_000);
   async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");

@@ -1,6 +1,5 @@
 import { registerPhotonRemovalOwner, createPhotonRemovalDelegate } from "./chat-channels/imessage-photon/company-retirement.js";
-import { createPhotonExternalRuntimeOwner, stagePhotonExternalConfiguration } from "./chat-channels/imessage-photon/external-runtime.js";
-import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "./paperclip-cloud-connector.js";
+import { createPhotonConnectorAccess, createPhotonExternalRuntimeOwner, stagePhotonExternalConfiguration } from "./chat-channels/imessage-photon/external-runtime.js";
 import { retrySlackFormAcknowledgement } from "./chat-channels/slack/form-retry.js";
 import { createSlackFormConnectorAccess, registerSlackFormWorkOwner, reconcilePendingSlackFormWork, stageSlackFormOwnerConfiguration } from "./chat-channels/slack/form-owner.js";
 import { createSlackFormDeliveryOwner } from "./chat-channels/slack/form-delivery.js";
@@ -910,10 +909,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { admitDiscordRootMention, discordRootThreadPending, reconcileDiscordRootThread, promoteDiscordRootReceipt } = createDiscordRootThreads(db, { ensureDiscordGatewayRuntimeIsCurrent, withCredentialMutationLease, runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization, processMessage, redactError, scheduleConversationDrain, lifecycleRuntimeFence, runtimeFor, DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS, discordRootThreadTransportBarrier: () => options.discordRootThreadTransportBarrier?.() ?? Promise.resolve() });
   const { handleDiscordGatewayEvent } = createDiscordGatewayEvents(db, { ensureDiscordGatewayRuntimeIsCurrent, discordGatewayRuntimeIsCurrent, runtimeCallbackRecord, runtimeCallbackEndpoint, applyProviderLifecycleEffect, runtimeGeneration, discordGatewayEventBarrier: (event) => options.discordGatewayEventBarrier?.(event) ?? Promise.resolve() });
   const { handlePhotonFailure, handlePhotonEvent, retiredLocalFailure } = createPhotonEvents(db, { runtimeCallbackRecord, runtimeCallbackEndpoint, invalidateRuntime, ownsRetiringRuntime: (id, context) => context.endpointRuntime !== undefined && runtimeContexts.get(context.endpointRuntime) === context && runtime.isRetiringEndpoint(id, context.endpointRuntime), ensurePrincipal, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications, questionResponses, redactError, renewDiscordGatewayOwnershipForMessageAdmission, handleSdkMessage });
-  const photonConnectorConfig = paperclipCloudConnectorConfigFromEnv();
-  const photonConnector = photonConnectorConfig ? createPaperclipCloudConnector({ config: photonConnectorConfig }) : undefined;
+  const photonConnector = createPhotonConnectorAccess();
   const photonExternalRuntimeOwner = createPhotonExternalRuntimeOwner(db, {
-    broker: () => photonConnector,
+    broker: photonConnector,
     withReceiverLease: (record, work) => withReceiverLease(record.endpoint, runtimeContextForRecord(record), ownership => work({ token: ownership.token })),
     endpointRecord, runtimeFor, context: instance => runtimeContexts.get(instance),
     ownership: id => discordGatewayOwnerships.get(id), currentRuntime: id => runtime.get(id),
@@ -1252,7 +1250,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const record = await endpointRecord(id);
       if (!record) return "owned";
       try {
-        if (record.endpoint.provider === "imessage-photon" && photonConnector) {
+        if (record.endpoint.provider === "imessage-photon" && photonConnector()) {
           await photonExternalRuntimeOwner.reconcile(id);
           // A retained inactive owner may have just finished retirement. It is
           // settled work, not authority to construct another receiver runtime.

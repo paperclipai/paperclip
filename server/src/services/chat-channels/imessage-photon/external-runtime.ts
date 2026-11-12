@@ -1,3 +1,4 @@
+import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "../../paperclip-cloud-connector.js";
 import { joinConnectionEventWakeEnrollment } from "../../connection-event-wake.js";
 import { isDeepStrictEqual } from "node:util";
 import type { ConnectionManagementContext } from "../../connection-management.js";
@@ -18,6 +19,24 @@ import { photonResourceProcessEnded } from "./resource-process.js";
 import { readPhotonExternalState, parsePhotonExternalDelivery, photonHash, type PhotonExternalIdentity, type PhotonResourceDescriptor } from "./external-contract.js";
 import { currentControllerProcess, UNKNOWN_PROCESS_SPACE } from "../../controller-process-identity.js";
 import { randomUUID, createHash } from "node:crypto";
+
+/** Resolve normal online enrollment only when this owner has admitted work.
+ * Keep the same connector while its full normal configuration is unchanged. */
+export function createPhotonConnectorAccess() {
+  let configured: {
+    config: NonNullable<ReturnType<typeof paperclipCloudConnectorConfigFromEnv>>;
+    connector: ReturnType<typeof createPaperclipCloudConnector>;
+  } | undefined;
+  return () => {
+    let config: ReturnType<typeof paperclipCloudConnectorConfigFromEnv>;
+    try { config = paperclipCloudConnectorConfigFromEnv(); }
+    catch (error) { configured = undefined; throw error; }
+    if (!config) { configured = undefined; return undefined; }
+    if (!configured || !isDeepStrictEqual(configured.config, config))
+      configured = { config, connector: createPaperclipCloudConnector({ config }) };
+    return configured.connector;
+  };
+}
 
 export type PhotonCloudDelivery = { id: string; event: string; createdAt: string; installationId: string | null; bindingIds: readonly string[]; payload: Record<string, unknown> };
 export type PhotonRuntimeAllocation = { readonly kind: "receiver" | "sender"; readonly resourceId: string; readonly handoffId: string; readonly identity: Readonly<PhotonExternalIdentity>; readonly descriptor: Readonly<PhotonResourceDescriptor>; readonly context: RuntimeContext };
