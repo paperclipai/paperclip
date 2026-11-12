@@ -1,11 +1,14 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
-import { assets, runnerApiResponseReservations, type Db } from "@paperclipai/db";
+import { activityLog, assets, runnerApiResponseReservations, type Db } from "@paperclipai/db";
 import type { StorageService } from "../../storage/types.js";
 import { logger } from "../../middleware/logger.js";
 import { incrementToolRuntimeMetricCounter } from "../tool-runtime-metrics.js";
 import { RUNNER_API_RESPONSE_DEADLINE_MS } from "./runner-api-response-limits.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+export const CAPTURE_EVICTION_MIN_AGE_MS = 60 * 60_000;
+export const RUNNER_API_CAPTURE_RETENTION_ACTOR = "api-response-retention";
 const EVICTION_PAGE_SIZE = 200;
 const PENDING_DELETE_BATCH_SIZE = 50;
 export const STALE_CAPTURE_RESERVATION_MS = 2 * RUNNER_API_RESPONSE_DEADLINE_MS;
@@ -15,6 +18,10 @@ export const RUNNER_API_CAPTURE_DELETE_FAILURE_METRIC = "runner_api_capture_dele
 
 function activeRunStatusList() {
   return sql.join(ACTIVE_RUN_STATUSES.map(status => sql`${status}`), sql`, `);
+}
+
+function terminalRunStatusList() {
+  return sql.join(TERMINAL_RUN_STATUSES.map(status => sql`${status}`), sql`, `);
 }
 
 export async function runnerApiCaptureUsageBytes(tx: Db, companyId: string): Promise<number> {
@@ -46,14 +53,17 @@ export async function markRunnerApiCaptureEvictions(tx: Db, companyId: string, n
     ));
   let pendingBytes = Number(pending?.bytes ?? 0);
   while (reclaimedBytes + pendingBytes < neededBytes) {
-    const candidates = await tx.select({ id: assets.id, objectKey: assets.objectKey, byteSize: assets.byteSize }).from(assets).where(and(
+    const candidates = await tx.select({ id: assets.id, objectKey: assets.objectKey, byteSize: assets.byteSize,
+      runId: sql<string | null>`(select capture.run_id from runner_api_response_reservations capture
+        where capture.asset_id = "assets"."id" and capture.run_id is not null limit 1)` }).from(assets).where(and(
       eq(assets.companyId, companyId),
+      lt(assets.createdAt, new Date(now.getTime() - CAPTURE_EVICTION_MIN_AGE_MS)),
       sql`(${assets.objectKey} like ${`${companyId}/runner-api/%`}
         or exists (select 1 from runner_api_response_reservations capture
           where capture.asset_id = ${assets.id} and capture.company_id = ${companyId}))`,
       sql`not exists (select 1 from runner_api_response_reservations capture
         join heartbeat_runs run on run.id = capture.run_id
-        where capture.asset_id = ${assets.id} and run.status in (${activeRunStatusList()}))`,
+        where capture.asset_id = ${assets.id} and run.status not in (${terminalRunStatusList()}))`,
       sql`not exists (select 1 from issue_attachments link where link.asset_id = ${assets.id})`,
       sql`not exists (select 1 from case_attachments link where link.asset_id = ${assets.id})`,
       sql`not exists (select 1 from company_logos link where link.asset_id = ${assets.id})`,
@@ -68,6 +78,11 @@ export async function markRunnerApiCaptureEvictions(tx: Db, companyId: string, n
       await tx.delete(assets).where(and(eq(assets.companyId, companyId), inArray(assets.id, chosen.map(candidate => candidate.id))));
       await tx.insert(runnerApiResponseReservations).values(chosen.map(candidate => ({
         companyId, runId: null, assetId: null, reservedBytes: candidate.byteSize, pendingDeleteObjectKey: candidate.objectKey,
+      })));
+      await tx.insert(activityLog).values(chosen.map(candidate => ({
+        companyId, actorType: "system", actorId: RUNNER_API_CAPTURE_RETENTION_ACTOR, action: "asset.evicted",
+        entityType: "asset", entityId: candidate.id, runId: candidate.runId,
+        details: { source: "runner.call_api", reason: "company_capture_storage_full", byteSize: candidate.byteSize, runId: candidate.runId },
       })));
     }
     if (candidates.length < EVICTION_PAGE_SIZE) break;

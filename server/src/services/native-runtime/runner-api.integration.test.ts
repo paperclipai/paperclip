@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { and, eq, isNotNull } from "drizzle-orm";
-import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, issueAttachments, cases, caseAttachments, companyLogos, toolRuntimeMetricCounters, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
+import { agents, agentApiKeys, agentWakeupRequests, activityLog, assets, authUsers, issueAttachments, cases, caseAttachments, companyLogos, toolRuntimeMetricCounters, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeSetupReadiness from "./setup-readiness.js";
@@ -1210,6 +1210,31 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(uploadSignal).toBeInstanceOf(AbortSignal);
     expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).length).toBe(before);
     expect((await server.storage.headObject(fixture.companyId, objectKey)).exists).toBe(false);
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([]);
+  });
+
+  it("evicts only expired snapshots of finished runs and records each eviction", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const finishedRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: finishedRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "cancelled", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const [recent] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/recent-finished`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES * 1.5,
+      sha256: "recent-finished", createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 5 * 60_000) }).returning();
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: finishedRunId, assetId: recent.id, reservedBytes: recent.byteSize });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    expect(await call()).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.id, recent.id)))).toHaveLength(1);
+    await server.db.update(assets).set({ createdAt: new Date(Date.now() - 2 * 3_600_000) }).where(eq(assets.id, recent.id));
+    expect(await call()).toMatchObject({ ok: true });
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.id, recent.id)))).toHaveLength(0);
+    expect(await server.db.select().from(activityLog).where(and(eq(activityLog.companyId, fixture.companyId), eq(activityLog.action, "asset.evicted")))).toEqual([
+      expect.objectContaining({ actorType: "system", entityType: "asset", entityId: recent.id, runId: finishedRunId }),
+    ]);
   });
 
   it("releases stale reservations left by interrupted captures of finished runs", async () => {

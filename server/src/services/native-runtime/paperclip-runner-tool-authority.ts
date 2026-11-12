@@ -1512,20 +1512,15 @@ export class PaperclipRunnerToolAuthority {
           const [held] = await tx.select({ id: runnerApiResponseReservations.id }).from(runnerApiResponseReservations).where(and(
             eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId),
             isNull(runnerApiResponseReservations.assetId))).for("update");
-          if (!held) throw new RunnerApiCaptureReservationReclaimedError();
+          if (!held) {
+            await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: null,
+              reservedBytes: saved.byteSize, pendingDeleteObjectKey: saved.objectKey });
+            return null;
+          }
           const asset = await assetService(tx as unknown as Db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId });
           await tx.update(runnerApiResponseReservations).set({ assetId: asset.id, reservedBytes: asset.byteSize }).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId)));
           return asset;
         }).catch(async error => {
-          if (error instanceof RunnerApiCaptureReservationReclaimedError) {
-            const removed = await storage.deleteObject(this.binding.companyId, saved.objectKey, { allVersions: true }).then(() => true, () => false);
-            if (!removed) {
-              await this.db.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: null,
-                reservedBytes: saved.byteSize, pendingDeleteObjectKey: saved.objectKey }).catch(() => undefined);
-            }
-            storageAttempted = false;
-            throw error;
-          }
           // A failed commit acknowledgement can still leave a committed
           // asset. A locking read waits out that transaction before proving
           // the reservation is unlinked and safe to compensate.
@@ -1538,6 +1533,11 @@ export class PaperclipRunnerToolAuthority {
           }
           throw error;
         });
+        if (!asset) {
+          storageAttempted = false;
+          await finishPendingRunnerApiCaptureDeletes(this.db, storage, this.binding.companyId);
+          throw new RunnerApiCaptureReservationReclaimedError();
+        }
         const activity = await persistActivity(this.db, { companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId, issueId: this.binding.issueId, action: "asset.created", entityType: "asset", entityId: asset.id, details: { source, byteSize: saved.byteSize } });
         publishActivity(activity.publication);
         return { artifactId: asset.id, url: `/api/assets/${asset.id}/content`, contentType, byteSize: saved.byteSize, sha256: saved.sha256 };
