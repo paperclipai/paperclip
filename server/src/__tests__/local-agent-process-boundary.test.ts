@@ -205,3 +205,28 @@ describe("process lookups under connection bursts", () => {
     }
   });
 });
+
+describe("process lookups for a mixed batch", () => {
+  it("keeps an identified agent process refused when another connection in the batch cannot be identified", async () => {
+    const inspector: LocalProcessInspector = {
+      async findPeerPids(sockets) {
+        return sockets.map((socket) => socket.remotePort === 1001 ? "unsupported" : 2002);
+      },
+      async ancestries(pids) {
+        return new Map(pids.map((pid) => [pid, [{
+          pid, ppid: 1, executable: "/usr/bin/agent", environment: new Map([["PAPERCLIP_RUN_ID", "run-1"]]),
+        }]]));
+      },
+      async ancestorPids(pid) {
+        return [pid];
+      },
+    };
+    const boundary = createLocalAgentProcessBoundary({ inspector, serverEnvironment: {} });
+    const hidden = { remoteAddress: "127.0.0.1", remotePort: 1001, localAddress: "127.0.0.1", localPort: 3100 };
+    const agent = { remoteAddress: "127.0.0.1", remotePort: 1002, localAddress: "127.0.0.1", localPort: 3100 };
+    const [hiddenResult, agentResult] = await Promise.all([boundary.classify(hidden), boundary.classify(agent)]);
+    expect(hiddenResult).toBe("unsupported");
+    expect(agentResult).toBe("agent_run");
+    expect(await boundary.grantsImplicitBoard(agent)).toBe(false);
+  });
+});

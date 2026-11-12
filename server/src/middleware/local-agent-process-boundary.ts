@@ -38,7 +38,7 @@ export interface LocalProcessInfo {
 }
 
 export interface LocalProcessInspector {
-  findPeerPids(sockets: readonly LocalPeerEndpoints[]): Promise<(number | null)[] | "unsupported">;
+  findPeerPids(sockets: readonly LocalPeerEndpoints[]): Promise<(number | null | "unsupported")[] | "unsupported">;
   ancestries(pids: readonly number[], stopAt: ReadonlySet<number>): Promise<Map<number, LocalProcessInfo[] | null>>;
   ancestorPids(pid: number): Promise<number[] | null>;
 }
@@ -192,8 +192,10 @@ const linuxInspector: LocalProcessInspector = {
         }
       }
     }
-    if (unreadable && inodes.some((inode) => inode && !owners.has(`socket:[${inode}]`))) return "unsupported";
-    return inodes.map((inode) => inode ? owners.get(`socket:[${inode}]`) ?? null : null);
+    return inodes.map((inode) => {
+      if (!inode) return null;
+      return owners.get(`socket:[${inode}]`) ?? (unreadable ? "unsupported" : null);
+    });
   },
   async ancestorPids(pid) {
     const pids: number[] = [];
@@ -266,14 +268,10 @@ const darwinInspector: LocalProcessInspector = {
   async findPeerPids(sockets) {
     const output = await runCommand("netstat", ["-anv", "-p", "tcp"]);
     if (output === null) return "unsupported";
-    const pids: (number | null)[] = [];
-    for (const socket of sockets) {
+    return sockets.map((socket) => {
       const { peer, server } = endpoints(socket);
-      const pid = findPeerPidInDarwinNetstat(output, peer, server);
-      if (pid === "unsupported") return "unsupported";
-      pids.push(pid);
-    }
-    return pids;
+      return findPeerPidInDarwinNetstat(output, peer, server);
+    });
   },
   async ancestorPids(pid) {
     const parents = await darwinParentTable();
@@ -358,9 +356,10 @@ export function createLocalAgentProcessBoundary(options: LocalAgentProcessBounda
     const peerPids = await inspector.findPeerPids(sockets);
     if (peerPids === "unsupported") return sockets.map(() => "unsupported");
     const stopAt = await stopSet();
-    const outside = [...new Set(peerPids.filter((pid): pid is number => pid !== null && !stopAt.has(pid)))];
+    const outside = [...new Set(peerPids.filter((pid): pid is number => typeof pid === "number" && !stopAt.has(pid)))];
     const chains = outside.length ? await inspector.ancestries(outside, stopAt) : new Map<number, LocalProcessInfo[] | null>();
-    return peerPids.map((pid) => {
+    return peerPids.map((pid): LocalPeerClassification => {
+      if (pid === "unsupported") return "unsupported";
       if (pid === null) return "agent_run";
       if (stopAt.has(pid)) return "operator";
       const chain = chains.get(pid);
