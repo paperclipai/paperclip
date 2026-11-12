@@ -44,11 +44,11 @@ const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(O
 // The only replaced service is the external environment-task/Launcher edge.
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
 describeEmbeddedPostgres("plugin Runner eviction through the Core execution entry", () => {
-  let finishCase: (() => Promise<void>) | undefined;
+  let currentCase: { teardown?: () => Promise<void> } | undefined;
   afterEach(async () => {
-    const finish = finishCase;
-    finishCase = undefined;
-    await finish?.();
+    const finished = currentCase;
+    currentCase = undefined;
+    await finished?.teardown?.();
   });
   const environment = nativeRestartFixture();
   const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
@@ -69,6 +69,8 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
   nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "after inspection", "bare unavailable", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).flatMap(mode =>
     (["retired", "abrupt"] as const).map(exit => [harness, mode, exit] as const)))])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
+    const thisCase: { teardown?: () => Promise<void> } = {};
+    currentCase = thisCase;
     const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
     const denied = mode.startsWith("missing") || mode.endsWith("state");
     const unavailableResume = mode === "after inspection" || mode === "bare unavailable";
@@ -154,7 +156,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
     let handle: RunnerProcessHandle | undefined, submissions = 0, cleaning = false, sourceReadRequests = 0, sourceReadResponses = 0;
     let pendingFollowup: Promise<unknown> | undefined;
-    finishCase = async () => {
+    thisCase.teardown = async () => {
       cleaning = true;
       const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), ...[...hosts.values()].map(host => host.close())]);
       for (const socket of sockets) socket.terminate(); websocket.close();
