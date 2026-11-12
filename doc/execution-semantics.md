@@ -1877,14 +1877,18 @@ during the grace period so that a process started then (for example by a
 SIGTERM handler) also gets SIGTERM and the rest of the grace period, then sends
 SIGKILL to what is left. The start time is read again before each signal, so a
 reused PID is never signalled. A dead leader's session or group matches only
-members that started before the leader was seen gone. The server and its
+members that started no later than the latest member in the process table
+where the leader was first seen gone; this bound uses kernel start times only,
+not `/proc/uptime`, which in a container can report a different clock. The
+server and its
 ancestors (and their sessions and groups), and processes of registered local
 services, are excluded; server-managed runtime services also start without
-`PAPERCLIP_*` variables. Known limit: sampling is not event-driven, so a
-process that clears its environment and whose run-owned parent and session or
-group leader all exit within one sampling interval is not found, nor is a
-process that changes user. Closing that gap needs a kernel containment such as
-a delegated cgroup. Other platforms keep the process-group stop only.
+`PAPERCLIP_*` variables. Known limit: lineage is sampled, not event-driven. A
+descendant can still survive if it clears its inherited environment and
+detaches through a double fork that starts and finishes between two samples.
+Closing that gap needs kernel containment (a delegated cgroup). A process that
+changes user is also not found. Other platforms keep the process-group stop
+only.
 
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.

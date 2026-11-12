@@ -3,7 +3,9 @@ import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-c
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
 import { flushBudgetEvaluationWork } from "../budgets.js";
 import { NativeSessionCloseUnrecoverableError, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -456,6 +458,48 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.services.persistRunProcessMetadata).toHaveBeenCalledWith(expect.any(String),
       expect.objectContaining({ pid: 4242, targetKind: expected }));
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "stops a cleared-environment child whose CLI exits while its spawn metadata is written", async () => {
+    const { input, adapter, run } = await fixture();
+    const isLive = (pid: number) => {
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        const state = stat.slice(stat.lastIndexOf(")") + 2)[0];
+        return state !== "Z" && state !== "X";
+      } catch {
+        return false;
+      }
+    };
+    // The CLI waits for a line, starts a child that clears its environment
+    // (so it has no run marker) in the CLI's session, then exits.
+    const cli = spawn("/bin/sh", ["-c", "read go; env -i /bin/sleep 60 </dev/null >/dev/null 2>&1 & echo $!; exit 0"], {
+      detached: true, stdio: ["pipe", "pipe", "ignore"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PAPERCLIP_RUN_ID: run.id },
+    });
+    let childPid = 0;
+    onTestFinished(() => {
+      for (const pid of [childPid, cli.pid ?? 0]) if (pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    });
+    const exited = new Promise<void>(resolve => cli.once("exit", () => resolve()));
+    const output = new Promise<string>(resolve => { let out = ""; cli.stdout!.on("data", chunk => { out += chunk; }); cli.stdout!.once("end", () => resolve(out)); });
+    // The metadata write is slow: the CLI exits before it finishes.
+    vi.mocked(input.services.persistRunProcessMetadata).mockImplementationOnce(async () => {
+      cli.stdin!.end("go\n");
+      await exited;
+      childPid = Number.parseInt((await output).trim(), 10);
+      return null;
+    });
+    adapter.execute.mockImplementationOnce(async ctx => {
+      await ctx.onSpawn?.({ pid: cli.pid!, processGroupId: cli.pid!, startedAt: new Date().toISOString() });
+      expect(childPid).toBeGreaterThan(1);
+      expect(isLive(childPid)).toBe(true);
+      return { exitCode: 0, signal: null, timedOut: false, provider: "test" };
+    });
+    await executeHeartbeatRuntime(db, input).catch(() => undefined);
+    expect(adapter.execute).toHaveBeenCalledOnce();
+    expect(childPid).toBeGreaterThan(1);
+    expect(isLive(childPid)).toBe(false);
+  }, 20_000);
 
   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {
     const { input, adapter, run } = await fixture();
