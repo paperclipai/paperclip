@@ -2682,18 +2682,20 @@ export class DurablePrpControlPlane {
     return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
   }
 
-  withdrawUndeliveredTerminalTail(): string[] {
+  withdrawUndeliveredTerminalCommands(): string[] {
     if (this.#store.state.warmTransition) return [];
-    const withdrawn: string[] = [];
     const commands = this.#store.state.commands;
-    for (let last = commands.at(-1); last !== undefined && last.status === "pending"
-      && this.#isTerminalLifecycleCommand(last); last = commands.at(-1)) {
-      commands.pop();
-      delete this.#store.state.commandDeliveryCounts[last.commandId];
-      withdrawn.push(last.type);
-    }
-    if (withdrawn.length > 0) this.#store.save();
-    return withdrawn;
+    const firstPending = commands.findIndex((command) => command.status === "pending");
+    if (firstPending < 0) return [];
+    const suffix = commands.slice(firstPending);
+    const kept = suffix.filter((command) => !this.#isTerminalLifecycleCommand(command));
+    if (kept.length === suffix.length) return [];
+    const withdrawn = suffix.filter((command) => this.#isTerminalLifecycleCommand(command));
+    for (const command of withdrawn) delete this.#store.state.commandDeliveryCounts[command.commandId];
+    kept.forEach((command, index) => { command.controllerSeq = firstPending + index + 1; });
+    commands.splice(firstPending, suffix.length, ...kept);
+    this.#store.save();
+    return withdrawn.map((command) => command.type);
   }
 
   persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
@@ -2971,14 +2973,18 @@ export class DurablePrpControlPlane {
       }
     }
     const controllerSeq = this.#store.state.commands.length + 1;
+    const sequenceId = `command_prp_${controllerSeq.toString().padStart(8, "0")}`;
+    let generatedId = sequenceId;
+    for (let reuse = 1; this.#store.state.commands.some((candidate) => candidate.commandId === generatedId); reuse += 1) {
+      generatedId = `${sequenceId}_${reuse}`;
+    }
     const command: DurableRecoveryCoreCommand = {
       schema: type === "external_provider.operation" || type === "runner.attachment.download"
         ? "paperclip.prp.command.v3"
         : type.startsWith("session.goal.")
           ? "paperclip.prp.command.v2"
           : "paperclip.prp.command.v1",
-      commandId:
-        commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
+      commandId: commandId ?? generatedId,
       controllerSeq,
       type,
       issuedAt: new Date().toISOString(),

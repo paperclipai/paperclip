@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
-import { createCapabilityRunnerdCodexTransport, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { createCapabilityRunnerdCodexTransport, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
-type Carried = "late-tool-result" | "close-path-suspend" | "event-backlog";
+type Carried = "late-tool-result" | "close-path-suspend" | "suspend-then-tool-result" | "event-backlog";
 
 const BACKLOG = 400;
 const taskTool = { name: "get_task_context", description: "Read current task", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
@@ -44,10 +44,11 @@ async function reattachWithCarriedCommands(carried: Carried) {
     turnId: "turn-reattach-carried",
     itemId: "item-reattach-carried",
   };
+  const toolCall = carried === "late-tool-result" || carried === "suspend-then-tool-result";
   const options = {
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, ...(carried === "late-tool-result" ? ["--emit-tool-call"] : carried === "event-backlog"
+    codexArgs: fakeCodexArgs(stateDirectory, ...(toolCall ? ["--emit-tool-call"] : carried === "event-backlog"
       ? ["--hold-turn", "--held-output", "--held-output-count", String(BACKLOG), "--held-output-release-file", join(stateDirectory, "release-output")] : [])),
     stateDirectory,
     prpIdentity: identity,
@@ -63,25 +64,44 @@ async function reattachWithCarriedCommands(carried: Carried) {
   try {
     const opened = (await first.transport.request("thread/start", {
       cwd: tmpdir(),
-      dynamicTools: carried === "late-tool-result" ? [taskTool] : [],
+      dynamicTools: toolCall ? [taskTool] : [],
     })).thread as { id: string; sessionId: string };
     runnerPid = first.evidence().runnerPid;
     const runnerStartedAt = first.transport.processInfo!().startedAt;
     if (carried === "event-backlog") {
       await first.transport.request("turn/start", { input: [{ type: "text", text: "Keep working" }] });
     }
-    if (carried === "late-tool-result") {
+    if (toolCall) {
       await first.transport.request("turn/start", { input: [{ type: "text", text: "Read current task" }] });
       await vi.waitFor(() => expect(lateTool).toHaveBeenCalledOnce(), { timeout: 5_000 });
     }
     await first.detachControllerForRestart();
     expect(() => process.kill(runnerPid!, 0)).not.toThrow();
-    if (carried === "late-tool-result") {
+    if (toolCall) {
       finishTool({ success: true, contentItems: [{ type: "inputText", text: "task context" }] });
       await vi.waitFor(async () => {
         const saved = JSON.parse(await readFile(controlPlaneStatePath, "utf8")) as { commands: Array<{ type: string; status: string }> };
         expect(saved.commands.at(-1)).toMatchObject({ type: "semantic_tool.result", status: "pending" });
       }, { timeout: 5_000 });
+      if (carried === "suspend-then-tool-result") {
+        const saved = JSON.parse(await readFile(controlPlaneStatePath, "utf8")) as { commands: Array<Record<string, unknown>> };
+        const result = saved.commands.pop()!;
+        for (const type of ["runner.drain", "runner.suspend"]) {
+          const controllerSeq = saved.commands.length + 1;
+          saved.commands.push({
+            schema: "paperclip.prp.command.v1",
+            commandId: `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
+            controllerSeq,
+            type,
+            issuedAt: new Date().toISOString(),
+            payload: {},
+            status: "pending",
+            result: null,
+          });
+        }
+        saved.commands.push({ ...result, controllerSeq: saved.commands.length + 1 });
+        await writeFile(controlPlaneStatePath, JSON.stringify(saved), { mode: 0o600 });
+      }
     } else if (carried === "event-backlog") {
       await writeFile(join(stateDirectory, "release-output"), "release");
       await new Promise(resolveWait => setTimeout(resolveWait, 3_000));
@@ -109,7 +129,7 @@ async function reattachWithCarriedCommands(carried: Carried) {
       onAccountingEvent: async () => {
         if (carried === "event-backlog") await new Promise(resolveWait => setTimeout(resolveWait, 100));
       },
-      resumeDynamicTools: carried === "late-tool-result" ? [taskTool] : [],
+      resumeDynamicTools: toolCall ? [taskTool] : [],
       resumeProviderSession: { driverSessionId: opened.id, providerSessionId: opened.sessionId },
       runnerProcessLauncher: () => {
         throw new Error("duplicate runner spawn attempted");
@@ -135,11 +155,11 @@ async function reattachWithCarriedCommands(carried: Carried) {
     );
     expect(() => process.kill(runnerPid!, 0)).not.toThrow();
     const commands = authority!.store.state.commands;
-    if (carried === "late-tool-result") {
+    expect(commands.map(command => command.controllerSeq)).toEqual(commands.map((_command, index) => index + 1));
+    expect(commands.some(command => command.type === "runner.suspend")).toBe(false);
+    if (toolCall) {
       expect(commands.filter(command => command.type === "semantic_tool.result")).toMatchObject([{ status: "completed" }]);
       expect(redispatched).not.toHaveBeenCalled();
-    } else {
-      expect(commands.some(command => command.type === "runner.suspend" && command.status === "completed")).toBe(false);
     }
   } finally {
     await adopted?.transport.close().catch(() => undefined);
@@ -156,6 +176,7 @@ async function reattachWithCarriedCommands(carried: Carried) {
 it.each([
   ["a tool result its predecessor queued after the restart", "late-tool-result"],
   ["a runner.suspend left by an earlier attempt's close path", "close-path-suspend"],
+  ["a runner.suspend with a tool result queued after it", "suspend-then-tool-result"],
   ["an event backlog ahead of its recovery snapshot result", "event-backlog"],
 ] as const)("reattaches a live runner past %s", async (_label, carried) => {
   await reattachWithCarriedCommands(carried);
@@ -199,4 +220,33 @@ it("times out when the runner's queued answer stops advancing", async () => {
     failureCode: () => "provider_transport_failed",
     answeredProgressAt: () => Date.now() - 31_000,
   })).rejects.toThrow("provider_transport_failed: PRP command session.snapshot timed out");
+});
+
+it("leaves later barriers that share an admission deadline their time after an answered barrier ran past it", async () => {
+  const clock = new RunnerStallLedger();
+  const deadline = clock.now() + 20;
+  let progressAt = Date.now();
+  const drain = pendingCommand();
+  const snapshot = pendingCommand();
+  const advancing = setInterval(() => { progressAt = Date.now(); }, 5);
+  setTimeout(() => { drain.status = "completed"; }, 150);
+  const wait = (type: string, command: { status: string }, answered: () => number | null) => waitForRunnerCommand({
+    type,
+    deadline,
+    clock,
+    abortOnClose: false,
+    isClosed: () => false,
+    throwIfFailed: () => undefined,
+    command: () => command,
+    runnerHasExited: async () => false,
+    failureCode: () => "provider_transport_failed",
+    answeredProgressAt: answered,
+  });
+  try {
+    await expect(wait("runner.drain", drain, () => progressAt)).resolves.toBeUndefined();
+  } finally {
+    clearInterval(advancing);
+  }
+  setTimeout(() => { snapshot.status = "completed"; }, 50);
+  await expect(wait("session.snapshot", snapshot, () => null)).resolves.toBeUndefined();
 });
