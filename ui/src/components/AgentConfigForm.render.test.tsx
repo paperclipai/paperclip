@@ -1069,14 +1069,14 @@ describe("AgentConfigForm environment selector", () => {
     let save: (() => void) | null = null;
     const binding = {mode:"responsible_user",provider:"openai",method:"subscription"} as const;
     const result = await renderForm([], {adapterType:"codex_local",adapterConfig:{engine:"cli",model:"saved-codex-model",search:false},runtimeConfig:{aiConnection:binding}}, {showAdapterTypeField:true,onSaveActionChange:action=>{save=action;}}); roots.push(result.root);
-    await clickByText(result.container, "Advanced");
+    await clickByText(result.container, "Advanced Run Policy");
     expect(result.container.querySelector('[aria-label="Enable search"]')).not.toBeNull();
     await clickElement(result.container.querySelector('[aria-label="Enable search"]'));
     for (const choice of ["claude_local","codex_local"]) {
       await clickElement(result.container.querySelector('[aria-label="Harness"]'));
       const option=document.querySelector(`[role="option"][data-value="${choice}"]`);expect(option).toBeTruthy();await clickElement(option);
     }
-    if (!result.container.querySelector('[aria-label="Enable search"]')) await clickByText(result.container, "Advanced");
+    if (!result.container.querySelector('[aria-label="Enable search"]')) await clickByText(result.container, "Advanced Run Policy");
     expect(result.container.querySelector('[aria-label="Enable search"]')?.getAttribute("aria-checked")).toBe("true");
     expect(save).toBeTypeOf("function");await act(async()=>save!());
     expect(result.onSave).toHaveBeenCalledWith({adapterConfig:expect.objectContaining({model:"saved-codex-model",search:true})});
