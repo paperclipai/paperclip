@@ -36,7 +36,7 @@ describePostgres("plugin activation after a worker initialize timeout", () => {
   });
   afterAll(async () => { await database?.cleanup(); });
 
-  async function setup(startOutcomes: Array<"timeout" | "crash" | "ok">) {
+  async function setup(startOutcomes: Array<"timeout" | "crash" | "ok">, beforeRecoveredStart?: (pluginId: string) => Promise<void>) {
     const image = bundledImageFixture();
     roots.push(image.root);
     const options = {
@@ -59,6 +59,7 @@ describePostgres("plugin activation after a worker initialize timeout", () => {
         if (outcome === "timeout") throw initializeTimeout(pluginId);
         throw new Error(`Worker initialize failed for "${pluginId}": worker exited with code 1`);
       }
+      if (startWorker.mock.calls.length > 1) await beforeRecoveredStart?.(pluginId);
       handle = { status: "running" };
       running = true;
     });
@@ -102,6 +103,18 @@ describePostgres("plugin activation after a worker initialize timeout", () => {
     expect(loader.requestActivationTimeoutRecovery({ id: row.id, status: "error", lastError: `${PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX} after 2 retries` })).toBe(true);
     await loader.stopActivationTimeoutRecovery();
     expect(startWorker).toHaveBeenCalledOnce();
+    expect((await registry.getById(row.id))!.status).toBe("disabled");
+  });
+
+  it("stops a recovered worker when an operator disabled the plugin during its activation", async () => {
+    let disable: ((pluginId: string) => Promise<void>) | undefined;
+    const { loader, registry, row, startWorker, isRunning } = await setup(["timeout", "ok"], async pluginId => { await disable?.(pluginId); });
+    disable = async pluginId => { await registry.updateStatus(pluginId, { status: "disabled" }); };
+    await loader.loadAll();
+    await vi.waitFor(() => expect(startWorker).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+    await vi.waitFor(() => expect(isRunning()).toBe(false), { timeout: 5_000 });
+    await loader.stopActivationTimeoutRecovery();
+    expect(isRunning()).toBe(false);
     expect((await registry.getById(row.id))!.status).toBe("disabled");
   });
 

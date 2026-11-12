@@ -1227,6 +1227,16 @@ export function pluginLoader(
     while (activeActivationRecoveries.size > 0) await Promise.allSettled([...activeActivationRecoveries]);
   }
 
+  async function activateForRecovery(plugin: PluginRecord, activationTimeoutRetry: number) {
+    const result = await activatePlugin(plugin, { markErrorOnFailure: true, activationTimeoutRetry });
+    if (!result.success) return;
+    const latest = (await registry.getById(plugin.id)) as PluginRecord | null;
+    if (latest?.status === "ready" && !shuttingDown) return;
+    log.info({ pluginId: plugin.id, pluginKey: plugin.pluginKey, status: latest?.status ?? null },
+      "plugin-loader: stopping a recovered plugin that an operator changed during its activation");
+    await teardownPluginRuntime(plugin.id, plugin.pluginKey);
+  }
+
   async function discardFailedWorkerHandle(pluginId: string) {
     const handle = runtimeServices?.workerManager.getWorker(pluginId);
     if (!handle || (handle.status !== "crashed" && handle.status !== "stopped")) return;
@@ -2219,7 +2229,7 @@ export function pluginLoader(
           log.info({ pluginId: plugin.id, pluginKey: flipped.pluginKey },
             "plugin-loader: re-activating a plugin errored by activation timeouts on demand");
           await discardFailedWorkerHandle(plugin.id);
-          await activatePlugin(flipped, { markErrorOnFailure: true, activationTimeoutRetry: activationTimeoutRetryDelaysMs.length });
+          await activateForRecovery(flipped, activationTimeoutRetryDelaysMs.length);
         } finally { attempt.inFlight = false; }
       }, "plugin-loader: on-demand re-activation failed", plugin.id);
       return true;
@@ -2627,7 +2637,7 @@ export function pluginLoader(
             const current = (await registry.getById(pluginId)) as PluginRecord | null;
             if (shuttingDown || !current || current.status !== "ready" || workerManager.isRunning(pluginId)) return;
             await discardFailedWorkerHandle(pluginId);
-            await activatePlugin(current, { markErrorOnFailure: true, activationTimeoutRetry: timeoutRetry + 1 });
+            await activateForRecovery(current, timeoutRetry + 1);
           }, "plugin-loader: timed-out activation retry failed", pluginId);
         });
       } else if (options.markErrorOnFailure) {
