@@ -9669,7 +9669,9 @@ export async function waitForRunnerCommand(input: {
   const completeExtended = () => {
     input.clock?.credit(Math.max(0, now() - input.deadline) + RUNNER_POST_STOP_GRACE_MS);
   };
+  let observed = false;
   while (now() < input.deadline || answeredAndAdvancing()) {
+    observed = true;
     if (now() >= input.deadline) extended = true;
     input.throwIfFailed();
     if (input.abortOnClose && input.isClosed()) {
@@ -9684,8 +9686,8 @@ export async function waitForRunnerCommand(input: {
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
   }
-  if (extended && settled()) {
-    completeExtended();
+  if (observed && settled()) {
+    if (extended) completeExtended();
     return;
   }
   let stall: string | null = null;

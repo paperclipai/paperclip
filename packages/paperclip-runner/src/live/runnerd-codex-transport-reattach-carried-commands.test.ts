@@ -250,3 +250,30 @@ it("leaves later barriers that share an admission deadline their time after an a
   setTimeout(() => { snapshot.status = "completed"; }, 50);
   await expect(wait("session.snapshot", snapshot, () => null)).resolves.toBeUndefined();
 });
+
+it("completes a command whose answer arrives during the last sleep before its deadline", async () => {
+  vi.useFakeTimers();
+  try {
+    const command = pendingCommand();
+    const deadline = Date.now() + 25;
+    const waited = waitForRunnerCommand({
+      type: "runner.drain",
+      deadline,
+      abortOnClose: false,
+      isClosed: () => false,
+      throwIfFailed: () => undefined,
+      command: () => command,
+      runnerHasExited: async () => false,
+      failureCode: () => "provider_transport_failed",
+      answeredProgressAt: () => null,
+    });
+    const outcome = waited.then(() => "completed", (error: unknown) => String(error));
+    await vi.advanceTimersByTimeAsync(20);
+    command.status = "completed";
+    await vi.advanceTimersByTimeAsync(10);
+    expect(Date.now()).toBeGreaterThanOrEqual(deadline);
+    await expect(outcome).resolves.toBe("completed");
+  } finally {
+    vi.useRealTimers();
+  }
+});
