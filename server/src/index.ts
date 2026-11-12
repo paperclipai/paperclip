@@ -168,6 +168,7 @@ import {
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
+  expirePendingInteractionsOnClosedIssues,
   routineService,
   toolAccessService,
   workspaceOperationService,
@@ -1195,6 +1196,18 @@ async function startServerWithDatabaseTeardown(
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of built-in agents failed");
+    }));
+
+  // Expire pending cards that older code paths left on done or cancelled
+  // issues (PAP-749). Idempotent, once per start, never on a timer.
+  void trackIdleWork(expirePendingInteractionsOnClosedIssues(db as any)
+    .then((result) => {
+      if (result.expired > 0 || result.failed > 0) {
+        logger.warn(result, "expired pending interactions on closed issues");
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup sweep of pending interactions on closed issues failed");
     }));
 
   // Force the instance onto the Kubernetes sandbox provider when configured via

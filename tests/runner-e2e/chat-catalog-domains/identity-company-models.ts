@@ -7,7 +7,7 @@ import type { PromptInjectionPreventionSettings, PromptInjectionTestResult } fro
 import type { FastResponseSettings, FastResponseTestResult } from "../../../packages/shared/src/fast-response.js";
 import type { CostSummary } from "../../../packages/shared/src/types/cost.js";
 import { checks } from "./internal-support.js";
-import { followRenderedLink, identityDefinition, identityObservation, observeIdentity, probeAgentPermission } from "./identity-support.js";
+import { followRenderedLink, identityDefinition, identityObservation, observeIdentity, probeAgentPermission, waitForTurnReplyLinks } from "./identity-support.js";
 import type { Locator } from "@playwright/test";
 
 export const requestedAuxiliaryServiceModel = "deepseek/deepseek-v4.1-flash-1017";
@@ -125,7 +125,7 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
   } catch (error) { const prior = fastExperiments.get(ctx); if (prior !== undefined) { await ctx.input.api.patch("/api/instance/settings/experimental", { enableFastResponses: prior }); fastExperiments.delete(ctx); } throw error; }
 }, gradeCompanyModel, {
   sourceFiles: sources, authentication: "human-session", requiredCredentials: ["OPENROUTER_API_KEY"], attemptTimeoutMs: 420_000,
-  ...(spec.id === "companies.fast-responses" ? { oracleVersion: "paperclip.chat-catalog.identity.fast-responses.v2" } : {}),
+  ...(spec.id === "companies.fast-responses" ? { oracleVersion: "paperclip.chat-catalog.identity.fast-responses.v3" } : {}),
   async act(ctx, state) {
     await waitForCompanySettingsTurn(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`; const source = ctx.input.page.url();
     state.afterReplyEnabled = (await ctx.input.api.get<{ settings: Settings }>(`${root}/${spec.path}`)).settings.enabled;
@@ -134,6 +134,8 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
     state.agentTestStatus = await probeAgentPermission(ctx, `${root}/${spec.path}/test`, "POST", {});
     const section = spec.path === "decision-model" ? ctx.input.page.locator('section[aria-labelledby="decision-model-heading"]') : ctx.input.page.getByRole("region", { name: spec.section, exact: true });
     if (spec.path === "fast-response") {
+      // The run is recorded finished before its reply is saved and rendered; read the reply's links only once it is on the page.
+      await waitForTurnReplyLinks(ctx);
       const o = await observeIdentity(ctx, state);
       const href = await openServiceControlFromReply(ctx, o.links, o.origin, () => section);
       state.replyLinkedControlHref = href ?? null;

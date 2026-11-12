@@ -1,3 +1,8 @@
+import express from "express";
+import request from "supertest";
+import {
+  createRunnerAttachmentGrant, RUNNER_ATTACHMENT_DOWNLOAD_PATH, runnerAttachmentDownloadRoutes,
+} from "./runner-attachment-download.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -948,6 +953,36 @@ describe("native runner file handoff", () => {
       workspaceRelativePath: ".paperclip-inbound/remote-fixture/content", unavailableReason: null })]);
     await supported.cleanup();
     expect(remoteCleanup).toHaveBeenCalledOnce();
+
+    stageRemoteAttachment.mockClear();
+    const binding = { companyId, issueId, runId, agentId, workspaceRoot: "/remote/workspace", executionTargetKind: "remote" as const };
+    const env = { PAPERCLIP_AGENT_JWT_SECRET: randomUUID() };
+    const app = express();
+    app.use(runnerAttachmentDownloadRoutes(db, storage, env));
+    const downloadRemoteAttachment = vi.fn(async (source: Parameters<typeof createRunnerAttachmentGrant>[1]) => {
+      const grant = createRunnerAttachmentGrant(binding, source, "test-turn", "https://tenant.example/file", env);
+      const response = await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH)
+        .set("Authorization", `Bearer ${grant.token}`).expect(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.body).toEqual(body);
+      const forged = createRunnerAttachmentGrant({ ...binding, companyId: randomUUID() }, source, "test-turn", grant.url, env);
+      await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH).set("Authorization", `Bearer ${forged.token}`).expect(404);
+      const expired = createRunnerAttachmentGrant(binding, source, "test-turn", grant.url, env, Date.now() - 31_000);
+      await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH).set("Authorization", `Bearer ${expired.token}`).expect(404);
+      await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH).expect(404);
+      return "/run/attachment-downloads/fixture.txt";
+    });
+    const downloaded = await stageNativeRunnerWakeAttachments({ db, binding, storage, stageRemoteAttachment, downloadRemoteAttachment });
+    expect(downloadRemoteAttachment).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "wake", attachmentId: attachment.id }));
+    expect(downloaded.attachments[0]).toMatchObject({ runnerLocalPath: "/run/attachment-downloads/fixture.txt", unavailableReason: null });
+    expect(stageRemoteAttachment).not.toHaveBeenCalled();
+    await downloaded.cleanup();
+
+    const fallback = await stageNativeRunnerWakeAttachments({
+      db, binding, storage, stageRemoteAttachment, downloadRemoteAttachment: async () => null,
+    });
+    expect(fallback.attachments[0]).toMatchObject({ workspaceRelativePath: ".paperclip-inbound/remote-fixture/content" });
+    await fallback.cleanup();
 
     stageRemoteAttachment.mockClear();
     await expect(stageNativeRunnerWakeAttachments({

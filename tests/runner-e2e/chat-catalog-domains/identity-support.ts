@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
+import type { ChatRun } from "../chat-flow.js";
 import { observeInternal, type Entity, type InternalObservation } from "./internal-support.js";
 
 export interface IdentityObservation extends InternalObservation {
@@ -61,6 +62,15 @@ export async function waitForReply(ctx: ChatCatalogContext, observationDeadlineA
     load: async () => { await ctx.refreshIssue(); return { issue: ctx.issue(), runs: await ctx.allRuns() }; },
     accept: ({ issue, runs }) => (observationDeadlineAt === undefined || Date.now() < observationDeadlineAt) && issue?.conversationState === "waiting" && runs.length === 1 && runs.every(run => run.status === "succeeded"),
     reject: ({ runs }) => runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Initial response failed" : undefined });
+}
+/** Before reading a finished turn's reply links: wait (bounded) for each finished source run's saved reply and its render. */
+export async function waitForTurnReplyLinks(ctx: ChatCatalogContext) {
+  const { waitForSavedTurnReplyRender } = await import("../chat-rendered-links.js");
+  const source = ctx.issue(); if (!source?.id) return "unsaved" as const;
+  const runIds = (await ctx.allRuns()).filter(run => run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded"
+    && ((run as ChatRun & { nativeIssueId?: string }).nativeIssueId ?? run.contextSnapshot?.issueId) === source.id).map(run => run.id);
+  return waitForSavedTurnReplyRender(ctx.input.page, { leadId: ctx.input.fixtures.agent.id, runIds,
+    comments: () => ctx.input.api.get(`/api/issues/${source.id}/comments?order=asc`) });
 }
 export async function identityWorker(ctx: ChatCatalogContext, name = "Morgan") {
   const { api, execution, fixtures, workspacePath, nonce } = ctx.input;

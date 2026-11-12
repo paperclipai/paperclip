@@ -1,5 +1,5 @@
 {
-  "id": "635a0f35-1771-4645-9c97-ab01fb8b08d5",
+  "id": "ac25715a-74c6-4988-8525-63ad14781c74",
   "prevId": "c06d4653-b3df-4e3e-bbf9-6de9b37cf806",
   "version": "7",
   "dialect": "postgresql",
@@ -1414,6 +1414,34 @@
           ],
           "isUnique": false,
           "where": "\"activity_log\".\"actor_type\" = 'user' AND \"activity_log\".\"entity_type\" = 'issue'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activity_log_company_handled_for_created_idx": {
+          "name": "activity_log_company_handled_for_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"details\" ->> 'handledForUserId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"activity_log\".\"details\" ->> 'handledForUserId') IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16340,6 +16368,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "default_decision_owner_user_id": {
+          "name": "default_decision_owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "budget_owner_user_id": {
+          "name": "budget_owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "require_board_approval_for_new_agents": {
           "name": "require_board_approval_for_new_agents",
           "type": "boolean",
@@ -16353,12 +16393,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
@@ -36241,6 +36275,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -51046,6 +51086,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "decision_owner_user_id": {
+          "name": "decision_owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "target_date": {
           "name": "target_date",
           "type": "date",
@@ -51096,12 +51142,6 @@
         },
         "execution_workspace_policy": {
           "name": "execution_workspace_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

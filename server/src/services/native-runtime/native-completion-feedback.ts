@@ -40,6 +40,8 @@ const repositoryYieldCorrection = 'This task has a saved repository preparation 
 // control plane is reachable now. Ask once per run to re-check with fresh
 // Paperclip calls instead of resting the task blocked on a past stall.
 const paperclipServiceRecheckCorrection = "Paperclip answered this report, so its control plane is reachable now. Paperclip tool calls that did not return earlier were most likely delayed by a Paperclip restart or pause, and their results may have arrived since. Do not report this as a blocker. Re-read the current Paperclip state (for example read_document) before writing again; when a write is still needed, repeat it with the same idempotencyKey so it cannot apply twice. Then continue the task and report its real outcome. Report blocked only if a fresh Paperclip call fails now.";
+const configuredReviewStageCorrection =
+  "This task has a configured review stage with its own reviewer. Do not request a separate review. Report done once the work is complete and verified, without listing that review as remaining work or an attention request; Paperclip then starts the configured review, and the task stays in review until that reviewer decides.";
 const PAPERCLIP_SERVICE_RECHECK_LIMIT = 1_000;
 const paperclipServiceRechecked = new Set<string>();
 
@@ -184,6 +186,14 @@ export async function nativeCompletionFeedback(
       signals.verification.some((entry) => entry.status === "failed") && "verification.failed",
       signals.actionableAttentionRequests.length > 0 && "attentionRequests.actionable",
     ].filter(Boolean).join(", ") : "";
+    if (result.completionClaim.objectiveSatisfied &&
+        result.completionClaim.criteria.every(entry => entry.status === "satisfied") &&
+        !signals.verification.some(entry => entry.status === "failed") &&
+        signals.actionableAttentionRequests.every(request => request.kind === "review") &&
+        issue.executionState?.status !== "pending" && !isConversation(issue) &&
+        completionReviewStageEntry(issue, run.agentId).kind === "starts") {
+      throw new Error(configuredReviewStageCorrection);
+    }
     throw new Error(
       "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created." +
       (failedActionChat ? ` Rejection fields: ${rejectionReasons}.` + " This chat turn may finish with a truthful report of the failed approved action; that does not mean the external action succeeded. Keep the failure, observed state, and unresolved work explicit in the summary. Verify the observed state factually. Use not_run with a truthful reason only for a check that could not run or complete because its dependency was unavailable. Do not change a failed check to passed or hide incomplete work. Do not automatically replay the action or request approval again to force success; report the outcome and let the user decide whether to retry." : ""),
@@ -389,12 +399,12 @@ export async function nativeCompletionFeedback(
   // Only a review of finished work belongs to the configured stage; a review
   // needed before the work can continue keeps its own request path.
   const workFinished = result.completionClaim.objectiveSatisfied &&
-    !result.completionClaim.remainingWork.some(work => work.blocksCompletion);
+    result.completionClaim.criteria.every(entry => entry.status === "satisfied");
   if (reviewStage && workFinished && result.reportedWorkDisposition === "needs_review" &&
       (signals.actionableAttentionRequests.length === 0 ||
         signals.actionableAttentionRequests.some(request => request.kind === "review"))) {
     throw new Error(
-      "This task has a configured review stage with its own reviewer. Do not request a separate review. Report done once the work is complete and verified; Paperclip then starts the configured review, and the task stays in review until that reviewer decides.",
+      configuredReviewStageCorrection,
     );
   }
   if (

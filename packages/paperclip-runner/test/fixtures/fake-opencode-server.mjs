@@ -193,6 +193,31 @@ async function mcpRequest(method, params, signal) {
   return response.json();
 }
 
+let mcpStatus = null;
+async function connectPaperclipMcp() {
+  const failuresPath = join(process.env.XDG_DATA_HOME, "fake-mcp-connect-failures");
+  const failures = (await readFile(failuresPath, "utf8").catch(() => "")).trim();
+  await appendFile(join(process.env.XDG_DATA_HOME, "fake-mcp-connects.log"), "connect\n");
+  if (failures === "always" || Number(failures) > 0) {
+    if (failures !== "always") await writeFile(failuresPath, String(Number(failures) - 1));
+    mcpStatus = { status: "failed", error: "Failed to get tools" };
+    return;
+  }
+  try {
+    await mcpRequest("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "fake-opencode", version: "1" },
+    });
+    const listed = await mcpRequest("tools/list");
+    mcpStatus = Array.isArray(listed.result?.tools)
+      ? { status: "connected" }
+      : { status: "failed", error: "Failed to get tools" };
+  } catch (error) {
+    mcpStatus = { status: "failed", error: String(error) };
+  }
+}
+
 async function callFirstPaperclipTool() {
   if (!mcp?.url) return;
   await mcpRequest("initialize", {
@@ -328,6 +353,15 @@ const server = createServer(async (request, response) => {
     clients.add(response);
     request.on("close", () => clients.delete(response));
     return;
+  }
+  if (request.method === "GET" && request.url === "/mcp") {
+    if (mcp?.url && mcpStatus === null) await connectPaperclipMcp();
+    return json(response, 200, mcp?.url ? { paperclip: mcpStatus } : {});
+  }
+  if (request.method === "POST" && request.url === "/mcp/paperclip/connect") {
+    if (!mcp?.url) return json(response, 404, { error: "not found" });
+    await connectPaperclipMcp();
+    return json(response, 200, true);
   }
   if (request.method === "POST" && request.url === "/session")
     return json(response, 200, session);
@@ -763,6 +797,9 @@ const server = createServer(async (request, response) => {
         const correlatedFinal = String(parsedPrompt.message ?? "").includes(
           "correlated-final-message",
         );
+        const answerBeforeFinishThenReference = String(
+          parsedPrompt.message ?? "",
+        ).includes("answer-before-finish-then-reference");
         const finalAfterToolCommentary = String(
           parsedPrompt.message ?? "",
         ).includes("final-after-tool-commentary");
@@ -964,6 +1001,62 @@ const server = createServer(async (request, response) => {
               },
             },
           });
+        } else if (answerBeforeFinishThenReference) {
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-before-finish",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-before-finish",
+                messageID: "message-assistant",
+                type: "text",
+                text: "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-finish-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-finish",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-reference-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-reference",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-reference",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-reference",
+                messageID: "message-reference",
+                type: "text",
+                text: "Answered above: two inbox items need your attention.",
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
         } else if (correlatedFinal) {
           emit({
             type: "message.part.updated",
@@ -1152,4 +1245,4 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, "127.0.0.1");
 for (const signal of ["SIGTERM", "SIGINT"])
-  process.on(signal, () => server.close(() => process.exit(0)));
+  process.on(signal, () => { server.close(() => process.exit(0)); server.closeAllConnections(); });

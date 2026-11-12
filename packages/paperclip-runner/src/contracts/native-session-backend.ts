@@ -12,6 +12,7 @@ import type {
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
 import type {
+  DownloadRunnerAttachment,
   HarnessRuntimeRequest,
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
@@ -222,6 +223,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
+  downloadAttachment?: DownloadRunnerAttachment;
   /** completionContract is the attaching run's own contract; a retained session must not keep the prior run's. */
   attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void>;
   beginRunAttachment?(input: { identity: NativeRunIdentity }): boolean;
