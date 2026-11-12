@@ -1251,6 +1251,90 @@ describe("grok_local execute", () => {
       expect(writes.some((call) => call.args?.join(" ").includes(`rm -f`) && call.args.join(" ").includes(filePath))).toBe(true);
     });
 
+    it.each([
+      {
+        label: "writeFile rejects after a partial write",
+        kind: "write" as const,
+        failure: Object.assign(new Error("local prompt write failed"), { code: "ENOSPC" }),
+      },
+      {
+        label: "chmod rejects after the prompt file is written",
+        kind: "chmod" as const,
+        failure: Object.assign(new Error("local prompt chmod failed"), { code: "EPERM" }),
+      },
+    ])("removes the local prompt file when $label and preserves that error", async ({ kind, failure }) => {
+      const scratch = await makeTempRoot();
+      const previousTmp = process.env.PAPERCLIP_TMPDIR;
+      process.env.PAPERCLIP_TMPDIR = scratch;
+      const realWriteFile = fs.writeFile.bind(fs);
+      const realChmod = fs.chmod.bind(fs);
+      let partialPath = "";
+      const writeSpy = kind === "write"
+        ? vi.spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+          if (
+            typeof file === "string" &&
+            file.includes(`${path.sep}paperclip-grok-prompt-`) &&
+            file.endsWith(`${path.sep}prompt.txt`)
+          ) {
+            partialPath = file;
+            await realWriteFile(file, "partial prompt secret", { encoding: "utf8", mode: 0o600 });
+            throw failure;
+          }
+          return realWriteFile(file, data, options);
+        })
+        : null;
+      const chmodSpy = kind === "chmod"
+        ? vi.spyOn(fs, "chmod").mockImplementation(async (file, mode) => {
+          if (typeof file === "string" && file.includes(`${path.sep}paperclip-grok-prompt-`)) {
+            partialPath = file;
+            throw failure;
+          }
+          return realChmod(file, mode);
+        })
+        : null;
+
+      try {
+        await expect(execute(await makeCtx("run-local-prompt-placement-failure", await makeTempRoot()))).rejects.toBe(failure);
+      } finally {
+        writeSpy?.mockRestore();
+        chmodSpy?.mockRestore();
+        if (previousTmp === undefined) delete process.env.PAPERCLIP_TMPDIR;
+        else process.env.PAPERCLIP_TMPDIR = previousTmp;
+      }
+
+      expect(runProcessMock).not.toHaveBeenCalled();
+      expect(partialPath).not.toBe("");
+      await expect(fs.stat(partialPath)).rejects.toThrow();
+      expect((await fs.readdir(scratch)).filter((name) => name.startsWith("paperclip-grok-prompt-"))).toEqual([]);
+    });
+
+    it("removes the sandbox prompt file when the write is rejected and preserves that error", async () => {
+      const failure = new Error("sandbox prompt write rejected");
+      const calls: Array<{ args?: string[] }> = [];
+      const remoteExecute = vi.fn(async (input: { command?: string; args?: string[]; stdin?: string }) => {
+        calls.push(input);
+        if ((input.args ?? []).join(" ").includes("cat >")) throw failure;
+        return promptFileCommandResult();
+      });
+      const ctx = await makeCtx("run-sandbox-prompt-write-reject", await makeTempRoot());
+      ctx.executionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/remote/workspace",
+        runner: { execute: remoteExecute },
+      };
+      remoteState.isRemote = true;
+      runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+      await expect(execute(ctx)).rejects.toBe(failure);
+
+      expect(runProcessMock).not.toHaveBeenCalled();
+      const write = calls.find((call) => (call.args ?? []).join(" ").includes("cat >"));
+      const filePath = write?.args?.join(" ").match(/prompt-[0-9a-f-]+\.txt/)?.[0];
+      expect(filePath).toBeTruthy();
+      expect(calls.some((call) => (call.args ?? []).join(" ").includes("rm -f") && (call.args ?? []).join(" ").includes(filePath!))).toBe(true);
+    });
+
     function sshTarget() {
       return {
         kind: "remote" as const,

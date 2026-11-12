@@ -87,14 +87,17 @@ function localPromptTempRoot(): string {
 async function writeLocalGrokPromptFile(prompt: string): Promise<GrokPromptFile> {
   const dir = await fs.mkdtemp(path.join(localPromptTempRoot(), "paperclip-grok-prompt-"));
   const filePath = path.join(dir, "prompt.txt");
-  await fs.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
-  await fs.chmod(filePath, 0o600);
-  return {
-    path: filePath,
-    cleanup: async () => {
-      await fs.rm(dir, { recursive: true, force: true });
-    },
+  const cleanup = async () => {
+    await fs.rm(dir, { recursive: true, force: true });
   };
+  try {
+    await fs.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(filePath, 0o600);
+  } catch (error) {
+    await cleanup().catch(() => undefined);
+    throw error;
+  }
+  return { path: filePath, cleanup };
 }
 
 function remotePromptLocation(cwd: string): { dir: string; filePath: string } {
@@ -115,19 +118,22 @@ async function writeSandboxGrokPromptFile(
   if (!runner) throw new Error("Remote Grok execution has no sandbox runner to place the prompt file.");
   const shell = target.shellCommand === "bash" ? "bash" : "sh";
   const { dir, filePath } = remotePromptLocation(cwd);
-  const written = await runner.execute({
-    command: shell,
-    args: ["-c", remotePromptWriteScript(dir, filePath)],
-    cwd: target.remoteCwd,
-    stdin: prompt,
-    timeoutMs: 60_000,
-  });
   const remove = () => runner.execute({
     command: shell,
     args: ["-c", `rm -f ${shellQuote(filePath)}`],
     cwd: target.remoteCwd,
     timeoutMs: 15_000,
   }).catch(() => undefined);
+  const written = await runner.execute({
+    command: shell,
+    args: ["-c", remotePromptWriteScript(dir, filePath)],
+    cwd: target.remoteCwd,
+    stdin: prompt,
+    timeoutMs: 60_000,
+  }).catch(async (error: unknown) => {
+    await remove();
+    throw error;
+  });
   if (written.timedOut || (written.exitCode ?? 1) !== 0) {
     await remove();
     throw new Error("Failed to write the Grok prompt file in the remote workspace.");
