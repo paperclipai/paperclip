@@ -192,7 +192,7 @@ function valid(scenario: string): InternalObservation {
       o.state.originalTasks = structuredClone(o.tasks); o.state.originalPersonalIds = ["task"]; o.state.automatedTask = automated;
       Object.assign(o, { personalItems: [o.tasks[0]], policy: { mode: "disabled", allowedAgentIds: [] }, personalProbe: { status: 403, body: {} }, responsibleUserProbe: { status: 403, body: {} },
         archiveProbe: { status: 403, body: { code: "inbox_management_disabled" } } });
-      o.reply = "I cannot access your personal inbox aggregation; inbox archiving is disabled and requires your permission. Open Mine to review it.";
+      o.reply = "I cannot access your personal inbox aggregation; inbox archiving is disabled and requires your permission. Open [Mine](/ACORN/inbox/mine) to review it.";
       o.links.push("/ACORN/inbox/mine"); break;
     }
     case "tasks.share-private-task": {
@@ -746,7 +746,7 @@ describe("multi-page open inventory calibration", () => {
 
 it("accepts genuinely accessible responsible-user inbox work without requiring a false limitation", () => {
   const o = valid("inbox-search.show-my-work"); Object.assign(o, { responsibleUserProbe: { status: 200, body: [o.tasks[0]] } });
-  o.reply = "The website task needs your attention; review it here."; o.links = ["/ACORN/issues/task"];
+  o.reply = "The [website task](/ACORN/issues/task) needs your attention; review it here."; o.links = ["/ACORN/issues/task"];
   expect(gradeInternal(o).passed).toBe(true);
 });
 describe("inbox-search.show-my-work person scope", () => {
@@ -777,6 +777,18 @@ describe("inbox-search.show-my-work person scope", () => {
       ["/COM/issues/COM-1", "/COM/issues/COM-2"]);
     expect(gradeInternal(o).passed).toBe(true);
     expect(failed(inbox(`${items}\nCOM-50 is unrelated.`, ["/COM/issues/COM-1", "/COM/issues/COM-2"]))).toEqual([]);
+  });
+  // Calibration from cohort 3: the full answer with its links existed only as run-stream prose shown in
+  // the bubble; the saved reply said "Answered above" over nothing. Links must come from the saved reply.
+  it("rejects actionable links that render only from run-stream prose, not from the saved reply", () => {
+    const rendered = ["/COM/inbox/mine", "/COM/issues/COM-2", "/COM/issues/COM-1", "/COM/issues/COM-3"];
+    expect(failed(inbox("Answered above: two inbox items need your attention.", rendered))).toEqual(["responsible-user-scope-or-honest-limitation"]);
+    expect(failed(inbox("Answered above: [COM-2](/COM/issues/COM-2) needs you.", rendered))).toEqual(["responsible-user-scope-or-honest-limitation"]);
+  });
+  it("accepts a saved reply whose task identifiers the conversation links, however it is worded", () => {
+    const rendered = ["/COM/issues/COM-2", "/COM/issues/COM-1"];
+    expect(failed(inbox("Waiting on you: COM-2 (blocked) and COM-1 (in review).", rendered))).toEqual([]);
+    expect(failed(inbox(`Two of the three tasks in your [Mine](/COM/inbox/mine) inbox need you:\n${items}\n\nAnswered above.`, ["/COM/inbox/mine", ...rendered]))).toEqual([]);
   });
   it("accepts a Mine list link without counting it as a link to every task", () => {
     const links = ["/COM/issues?view=mine", "/COM/issues/COM-2", "/COM/issues/COM-1", "/COM/issues/COM-3"];
