@@ -1,13 +1,3 @@
-/**
- * Cost of the native chat progress page read in the server process, against the module at --baseline-ref.
- * `page` is the read alone; `wake` is one wake of the progress queue for a task whose progress is published.
- * Fails unless both versions send the same statements and parameters and return the same result.
- *
- *   TSX_DISABLE_CACHE=1 pnpm --filter @paperclipai/server exec tsx scripts/benchmark-native-progress-page.ts \
- *     --baseline-ref=<pre-fix commit>
- *
- * Optional: ITERATIONS (default 2000 calls per pass), PASSES (default 5 per version).
- */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
