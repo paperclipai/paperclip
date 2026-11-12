@@ -163,6 +163,7 @@ export function AgentActionButtons({
   size = "sm",
   assignLabel = "Assign Task",
   showAssignIcon = true,
+  assignIcon: AssignIcon = Plus,
   showChat = false,
   runLabel = "Run now",
   showStatus = true,
@@ -187,6 +188,7 @@ export function AgentActionButtons({
   size?: "sm" | "default";
   assignLabel?: string;
   showAssignIcon?: boolean;
+  assignIcon?: typeof Plus;
   showChat?: boolean;
   runLabel?: string;
   showStatus?: boolean;
@@ -216,7 +218,6 @@ export function AgentActionButtons({
    * omitted, failures surface as toasts (used by the list view).
    */
   onActionError?: (message: string | null) => void;
-  /** Called after termination succeeds so callers can leave now-hidden detail routes. */
   onTerminateSuccess?: (agent: Agent) => void;
   /** Extra content rendered just before the overflow menu (e.g. live-run link). */
   children?: React.ReactNode;
@@ -293,8 +294,6 @@ export function AgentActionButtons({
       onActionError?.(null);
       invalidateAgent();
       if (action === "terminate") {
-        const state = (data as Agent).lifecycleState;
-        if (state === "terminating" || state === "cleaning_up") return;
         if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
         onTerminateSuccess?.(data as Agent);
       }
@@ -527,9 +526,10 @@ export function AgentActionButtons({
             )}
           </PopoverContent>
         </Popover>
-        {showChat && <Button variant="outline" size="icon" aria-label={`Chat with ${agent.name}`} title="Chat with this agent"
+        {showChat && <Button variant="outline" size={size} aria-label={`Chat with ${agent.name}`} title="Chat with this agent"
           disabled={disabled} onClick={() => { if (!onBeforeNavigate || onBeforeNavigate()) navigate(`/chats/${canonicalAgentRef}`); }}>
           <MessagesSquare className="size-4" />
+          Chat
         </Button>}
         {needsSetup ? (
           <Button size={size} disabled={disabled} onClick={finishSetup}>
@@ -543,7 +543,7 @@ export function AgentActionButtons({
             disabled={assignAndRunDisabled}
             title={workActionsDisabled ? workActionsDisabledReason : undefined}
           >
-            {showAssignIcon && <Plus className="size-4" />}
+            {showAssignIcon && <AssignIcon className="size-4" />}
             {assignLabel}
           </Button>
         )}

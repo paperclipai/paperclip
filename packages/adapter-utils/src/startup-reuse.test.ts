@@ -60,6 +60,12 @@ describe("startup reuse evidence", () => {
     expect(environmentStartupReuse({ kind: "remote", transport: "sandbox", sandboxLeaseAcquisition: { outcome: "resumed" } })).toEqual({ state: "reused", reason: "verified_reuse" });
     expect(environmentStartupReuse({ kind: "remote", transport: "sandbox", sandboxLeaseAcquisition: { outcome: "replacement", reason: "sensitive" } })).toEqual({ state: "fresh", reason: "replacement" });
   });
+  it("reports a restart's reattachment to the run's retained sandbox as reuse, not the lease's original creation", () => {
+    const retained = { kind: "remote", transport: "sandbox", sandboxLeaseAcquisition: { outcome: "created" } };
+    expect(environmentStartupReuse(retained, { reattachedRetainedLease: true })).toEqual({ state: "reused", reason: "verified_reuse" });
+    expect(environmentStartupReuse(retained)).toEqual({ state: "fresh", reason: "created" });
+    expect(environmentStartupReuse({ kind: "local" }, { reattachedRetainedLease: true })).toEqual({ state: "not_applicable", reason: "not_applicable" });
+  });
   it("keeps a failing diagnostic sink out of the execution path", async () => {
     await expect(emitStartupReuse(async () => { throw new Error("sink unavailable"); }, "workspace", { state: "reused", reason: "verified_reuse" })).resolves.toBeUndefined();
   });

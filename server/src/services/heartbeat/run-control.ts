@@ -129,6 +129,7 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
+import { resumePreservedResultFinalization } from "../preserved-result-finalization.js";
 import { isNativeRunnerOwnershipHeld, nativeManualAdmissionOwnerColumns, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
 import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
@@ -851,6 +852,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         responsibleUserId: intent.actorId },
       issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
       idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
+    // Admission held this Retry because its source run's files are saved and
+    // its accepted result can be applied. Apply it now instead of a new turn.
+    // One key read after admission; the resumption runs only for a held Retry.
+    const [held] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, wake.id)));
+    if (held?.status === "deferred_issue_execution"
+      && parseObject(held.payload?.executionWait).reason === "finalizing_saved_result")
+      await resumePreservedResultFinalization(db, companyId, intent.sourceRunId);
   }
 
   async function resumeExecutionWaitComments(scope: DeferredReceiptRecoveryOptions = {}) {

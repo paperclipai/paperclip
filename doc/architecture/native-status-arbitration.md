@@ -141,7 +141,8 @@ conditions before model disposition:
 | Runner reports `needs_review` without a decision, or an incomplete completion claim | Keep work with the agent | No automatic human approval; at most one corrective continuation, then a visible recovery action |
 | Runner reports a task-wide blocker | `blocked` | Persist blocker owner and unblock action |
 | Runner reports a current-track blocker | `in_progress` | Enqueue another productive track |
-| Runner reports `yielded` with a valid continuation | `in_progress` | Enqueue the declared continuation |
+| Runner reports `yielded` / `response_wake` with no admitted response source | `in_progress` | `response_wake_waiting_for_input`: no wake; the task shows "Waiting for a reply" until a comment, answer or status change wakes it |
+| Runner reports `yielded` with another valid continuation | `in_progress` | Enqueue the declared continuation |
 | Ordinary task reports `response_wake` and blocking remaining work, without a real wait | `in_progress` | Use the bounded incomplete-work continuation, then a visible recovery error if repair was already used |
 | Completion evidence is incomplete and continuation is forbidden | Preserve | Record a finalization error and named next action |
 | Completion evidence is otherwise incomplete | `in_progress` | Enqueue a bounded, idempotent continuation |
@@ -170,6 +171,25 @@ is queued. Edited, deleted, or superseded comments do not authorize replay of an
 old response. Recovery no longer treats an old committed passive wait as healthy
 when its report admits blocking work and its Board source is still current.
 Existing recovery gates continue to protect pauses, budgets, and ownership.
+
+A `response_wake` asks for the next response; it is never a request to run
+again now. Only a directly admitted Board comment, an authorized external chat,
+an accepted plan or a governance gate gives it a specific wait record. Every
+other `response_wake` parks the task as `response_wake_waiting_for_input`.
+Recovery treats that applied decision as a durable wait while it is the issue's
+latest decision and no user comment arrived after the run started. A comment,
+an interaction answer or a status change by someone else wakes the agent through
+its normal path.
+
+Declared continuations that do enqueue a wake (`issue_status_changed` with a
+`continuationKind`) are throttle candidates in the issue rewake throttle. After
+two consecutive successful runs with no issue-visible progress, the wake waits
+for the escalating cooldown. The native status dispatcher keeps the intent
+queued and dispatches it again at the cooldown deadline; it is never dropped.
+The native status committer's own `issue.updated` record does not count as
+progress or new input. The "Waiting for a reply" execution label shows only
+while the parked decision is still the issue's latest decision and the issue
+is `in_progress`.
 
 ## Transactional decision commit
 

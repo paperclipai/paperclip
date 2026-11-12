@@ -134,6 +134,150 @@ fn restart_relaunches_a_provider_whose_runner_died_before_admitting_it() {
     fs::remove_dir_all(directory).unwrap();
 }
 
+/// A provider relaunch whose reply never came within the runner's 30 s request
+/// deadline (a stalled or frozen host: restart-chaos TM2 freezes the runner
+/// and the provider while the monotonic clock keeps running). The runner
+/// retires that provider and records the failed startup. A later runner must
+/// relaunch it instead of refusing every restore until the user clicks Retry.
+#[cfg(unix)]
+#[test]
+fn restart_relaunches_a_provider_whose_relaunch_timed_out_without_a_reply() {
+    let directory = temporary_directory("timed-out-provider-startup");
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": provider_config(
+                &directory,
+                &["--hold-turn", "--stall-first-thread-resume-ms", "33000"],
+            )}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Survive a stalled provider relaunch."}),
+        ))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+
+    // The next runner relaunches the provider; thread/resume gets no reply.
+    let mut stalled = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let error = stalled
+        .execute(&command(
+            "command_resume_probe_1",
+            9,
+            "runner.drain",
+            json!({}),
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error}");
+    drop(stalled);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let fact = &saved["startupAttempt"];
+    assert_eq!(fact["phase"], "initialization_failed");
+    assert_eq!(fact["failedStage"], "thread_open");
+    assert_eq!(fact["noReply"], true);
+    assert_eq!(fact["directChildExitObserved"], true);
+
+    let resumes_before = call_count(&directory, "thread/resume");
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    recovered
+        .execute(&command(
+            "command_resume_probe_2",
+            10,
+            "runner.drain",
+            json!({}),
+        ))
+        .expect("a provider launch that timed out without a reply no longer blocks recovery");
+    assert_eq!(call_count(&directory, "thread/resume"), resumes_before + 1);
+    let events = recovered.retained_events().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "harness.diagnostic"
+            && event.payload["code"] == "provider_startup_retired"
+            && event.payload["startup"]["phase"] == "initialization_failed"));
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert!(saved["startupAttempt"].is_null());
+    recovered.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+/// A provider that closed its stdout without replying failed; it was not a
+/// silent stall. Its fence stays closed even after its process is gone.
+#[cfg(unix)]
+#[test]
+fn restart_keeps_the_fence_for_a_provider_that_closed_stdout_without_a_reply() {
+    let directory = temporary_directory("closed-stdout-provider-startup");
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": provider_config(
+                &directory,
+                &["--hold-turn", "--close-stdout-on-first-thread-resume"],
+            )}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Fail a provider relaunch by closing stdout."}),
+        ))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+
+    let mut failed = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    failed
+        .execute(&command(
+            "command_resume_probe_1",
+            9,
+            "runner.drain",
+            json!({}),
+        ))
+        .unwrap_err();
+    drop(failed);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let fact = &saved["startupAttempt"];
+    assert_eq!(fact["phase"], "initialization_failed");
+    assert_eq!(fact["failedStage"], "thread_open");
+    assert!(fact.get("noReply").is_none(), "{fact}");
+
+    let mut restarted = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let error = restarted
+        .execute(&command(
+            "command_resume_probe_2",
+            10,
+            "runner.drain",
+            json!({}),
+        ))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("provider startup ownership remains unadmitted"));
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn temporary_directory(label: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
         "paperclip-runner-codex-{label}-{}-{}",
@@ -488,8 +632,12 @@ fn ordinary_recovery_preserves_command_replay_and_collision_checks() {
 #[test]
 fn delegates_command_isolation_to_an_explicit_external_sandbox() {
     let directory = temporary_directory("external-sandbox");
-    let mut config = provider_config(&directory, &["--require-external-sandbox"]);
+    let mut config = provider_config(
+        &directory,
+        &["--require-external-sandbox", "--forbid-plan-collaboration"],
+    );
     config.externally_sandboxed = true;
+    config.read_only = false;
 
     let mut provider = CodexProvider::start(&config, None)
         .expect("start Codex with an externally owned sandbox boundary");
@@ -498,6 +646,44 @@ fn delegates_command_isolation_to_an_explicit_external_sandbox() {
         .expect("start the turn with the external sandbox policy");
     provider.shutdown().expect("stop fake Codex provider");
     fs::remove_dir_all(directory).expect("remove external sandbox test directory");
+}
+
+#[test]
+fn planning_in_an_external_sandbox_keeps_the_read_only_profile_on_thread_and_turn() {
+    let directory = temporary_directory("external-sandbox-planning");
+    let log = directory.join("requests.ndjson");
+    let mut config = provider_config(&directory, &["--request-log", log.to_str().unwrap()]);
+    config.externally_sandboxed = true;
+    config.read_only = true;
+
+    let mut provider = CodexProvider::start(&config, None)
+        .expect("start a read-only Codex thread inside an external sandbox");
+    provider
+        .start_turn("Plan the change without editing files.", &config.cwd)
+        .expect("start the planning turn");
+    provider.shutdown().expect("stop fake Codex provider");
+
+    let frames = skill_wire_requests(&directory);
+    let thread = frames
+        .iter()
+        .find(|frame| frame["method"] == "thread/start")
+        .expect("thread/start request");
+    assert_eq!(
+        thread["params"]["permissions"],
+        "paperclip-runner-workspace-read-only"
+    );
+    assert!(thread["params"].get("sandbox").is_none());
+    let turn = frames
+        .iter()
+        .find(|frame| frame["method"] == "turn/start")
+        .expect("turn/start request");
+    assert_eq!(
+        turn["params"]["permissions"],
+        "paperclip-runner-workspace-read-only"
+    );
+    assert!(turn["params"].get("sandboxPolicy").is_none());
+    assert_eq!(turn["params"]["collaborationMode"]["mode"], "plan");
+    fs::remove_dir_all(directory).expect("remove external sandbox planning test directory");
 }
 
 #[test]

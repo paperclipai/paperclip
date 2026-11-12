@@ -2,6 +2,7 @@ import { QueryErrorState } from "./QueryView";
 import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
+import { topRenderedNavEntryRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { IssueRowDetailsNotice } from "./IssueRowDetailsNotice";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
@@ -453,6 +454,8 @@ type IssueListRequestFilters = NonNullable<Parameters<typeof issuesApi.list>[1]>
 
 interface IssuesListProps {
   issues: Issue[];
+  /** Preload the chat of the top visible rows. Only the top-level tasks page sets this. */
+  preloadTaskChats?: boolean;
   isLoading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
@@ -711,6 +714,7 @@ export function IssuesList(props: IssuesListProps) {
 
 function StreamlinedIssuesList({
   issues,
+  preloadTaskChats = false,
   isLoading,
   error,
   onRetry,
@@ -1483,6 +1487,13 @@ function StreamlinedIssuesList({
     viewState.collapsedParents,
     viewState.nestingEnabled,
   ]);
+  // The top rows the list renders, in display order (collapsed groups and
+  // parents hide theirs), so the preload warms what a person can click.
+  const preloadTaskRefs = useMemo(
+    () => preloadTaskChats ? topRenderedNavEntryRefs(flatNavEntries, renderedIssueRowLimit) : [],
+    [flatNavEntries, preloadTaskChats, renderedIssueRowLimit],
+  );
+  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, !collectionLoading && !error && preloadTaskRefs.length > 0);
 
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
     selectedCompanyId, rootRef,

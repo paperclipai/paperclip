@@ -573,7 +573,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
 });
 
-it("shows Queued during admission and clears it when the saved follow-up enters backoff", async () => {
+it("shows activity during admission and clears it when the saved follow-up enters backoff", async () => {
   const pending = { id: "optimistic-recovery", companyId: "company", issueId: "issue", authorType: "user" as const,
     authorAgentId: null, authorUserId: "board", body: "Confirm the existing result.", presentation: null, metadata: null,
     createdAt: new Date(), updatedAt: new Date(), clientStatus: "pending" as const };
@@ -586,7 +586,9 @@ it("shows Queued during admission and clears it when the saved follow-up enters 
     agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
   show(false);
   expect(container.textContent).toContain("Confirm the existing result.");
-  expect(container.textContent).toContain("Queued");
+  expect(container.textContent).toContain("Working");
+  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).not.toContain("Queued");
   show(true);
   expect(container.textContent).not.toContain("Thinking");
   expect(container.textContent).not.toContain("Working");
@@ -616,7 +618,9 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
   try {
     await act(async () => { send!.click(); });
     expect(onAdd).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("Queued");
+    expect(container.textContent).toContain("Working");
+    expect(container.textContent).toContain("Thinking");
+    expect(container.textContent).not.toContain("Queued");
     const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
     render(<Component {...props} composerDisabledReason="Could not load task pause state." />);
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
@@ -757,7 +761,9 @@ it.each([null, "previous-agent"].flatMap(previousAgentId => ["paperclip_runner",
   render(<TaskChatThread {...props} comments={[saved]} issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" />);
   await act(async () => acknowledge());
   expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
-  expect(container.textContent).toContain("Queued");
+  expect(container.textContent).toContain("Working");
+  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).not.toContain("Queued");
   // Choosing a recipient for the next draft does not change the sent request.
   await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
   await act(async () => document.querySelector('[data-assignee-identity="agent:previous-agent"]')!.closest("button")!.click());
@@ -1681,7 +1687,7 @@ describe("TaskChatThread runtime transcript selection", () => {
     const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
     expect(identity?.textContent).toBe("Runner");
     expect(identity?.querySelector("svg, img")).not.toBeNull();
-    expect(activity?.textContent).toBe("Queued");
+    expect(activity?.textContent).toBe("Thinking");
 
     renderThread(props);
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
@@ -1697,7 +1703,9 @@ describe("TaskChatThread runtime transcript selection", () => {
       expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
       expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
-      expect(activity?.textContent).toBe(startup.status === "queued" ? "Queued" : "Thinking");
+      expect(activity?.textContent).toBe("Thinking");
+      expect(header?.textContent).toContain("Working");
+      expect(container.textContent).not.toContain("Queued");
       expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();
       expect(container.textContent).not.toContain("run started");
     }
@@ -4208,6 +4216,14 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
     expect(takeover()).toBeNull();
     expect(pendingIndicator()).toBeNull();
+  });
+
+  it("links a review request's own document so the person can open what it asks them to review", () => {
+    const review = { ...planReviewInteraction(), id: "draft-review", title: "Review draft", payload: { version: 1, prompt: "Review the unpublished draft.",
+      target: { type: "issue_document", key: "draft", revisionId: "draft-revision-1" } } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
+    const link = takeover()?.querySelector<HTMLAnchorElement>('a[href="#document-draft"]');
+    expect(link?.textContent).toContain("draft");
   });
 
   it("keeps unrelated approvals and accepted plan history when a plan changes", () => {

@@ -560,7 +560,7 @@ describe("residual recovery production matrix", () => {
       eq(heartbeatRunEvents.eventType, "native.local_process_stopped")))).toEqual([]);
     await quiet();
   });
-  it("renews only the active recovery owner and re-reads the moved controller deadline", async () => {
+  it("renews without waking recovery and re-reads the moved controller deadline at the old one", async () => {
     const f = await fixture(), old = new Date(Date.now() - 6 * 60_000), expiry = new Date(Date.now() + 20_000);
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
       runtimeMode: "legacy", status: "running", controllerBootId: legacyControllerBootId,
@@ -573,7 +573,7 @@ describe("residual recovery production matrix", () => {
     expect(moved.getTime()).toBeGreaterThan(expiry.getTime());
     await advance(1_000);
     expect(timeline.slice(before).filter(event => Array.isArray(event) && event[0] === "pass")
-      .map(event => (event as unknown[])[1])).toEqual(["active-execution-recovery", "active-execution-recovery"]);
+      .map(event => (event as unknown[])[1])).toEqual([]);
     await advance(expiry.getTime() - Date.now());
     expect((await getRun(run.id)).status).toBe("running");
     expect(deadlines.get("active-execution-recovery")!()).toBe(moved.getTime());
