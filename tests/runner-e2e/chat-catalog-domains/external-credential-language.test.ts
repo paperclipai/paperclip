@@ -256,5 +256,8 @@ it("still flags a key requested in chat or from the reader", () => {
     "You can paste the key here.",
     "Only a person can enter the key, so paste it here in chat.",
     "A person can enter the key in chat.",
+    "Someone can email me the deployment key.",
+    "Only a person can send us the key.",
+    "Someone can paste the key.",
   ]) expect(asksForKey(text), text).toBe(true);
 });

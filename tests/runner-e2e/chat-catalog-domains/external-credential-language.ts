@@ -90,7 +90,8 @@ export function unsafeCredentialTransfer(text:string):boolean {
     ??(context?part.slice(request.index+request[0].length).match(/^\s+(?:it|that|the value)\b(.*)$/i):null);
    if(!object)continue;
    const destination=object[1]!;
-   if(capabilityHolder.test(prefix.trim())&&(!destination.trim()||negatedChatDestination.test(destination)))continue;
+   const objectText=part.slice(request.index+request[0].length,part.length-destination.length);
+   if(capabilityHolder.test(prefix.trim())&&/^(?:enter|type)$/i.test(request[0])&&!/\b(?:me|us|to)\b/i.test(objectText)&&(!destination.trim()||negatedChatDestination.test(destination)))continue;
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
    if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret|password)\b/i.test(destination))continue;
    if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)(?:\s+and\s+save)?\s*$/i.test(destination))continue;
