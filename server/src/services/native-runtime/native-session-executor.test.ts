@@ -1398,11 +1398,11 @@ describe.skipIf(!existsSync("/proc/self/cmdline"))("remote runner launch stale s
     };
     const running = (child: ReturnType<typeof spawn>, arg: string) =>
       vi.waitFor(async () => expect((await readFile(`/proc/${child.pid}/cmdline`, "utf8")).split("\0")).toContain(arg));
-    const launch = (stateDirectory: string, report: { verified: boolean; reason: string | null }) =>
+    const launch = (stateDirectory: string, report: { verified: boolean; reason: string | null; remaining?: number[] }) =>
       spawnSync("/bin/sh", ["-c", REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT, "launch", join(root, "identity"), "nonce", "runner",
         join(root, "diagnostics"), binary, "--state-dir", stateDirectory], { encoding: "utf8", env: { ...process.env,
         REAP_LOG: join(root, "reap.log"), REAP_EXIT: report.verified ? "0" : "1",
-        REAP_REPORT: JSON.stringify({ schema: "paperclip.runner.process-lineage-reap.v1", ...report, journals: 1, signalled: 0, remaining: [] }) } });
+        REAP_REPORT: JSON.stringify({ schema: "paperclip.runner.process-lineage-reap.v1", journals: 1, signalled: 0, remaining: [], ...report }) } });
     const cleanup = async (extraPids: number[] = []) => {
       for (const child of children) child.kill("SIGKILL");
       for (const pid of extraPids) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
@@ -1464,6 +1464,27 @@ describe.skipIf(!existsSync("/proc/self/cmdline"))("remote runner launch stale s
       } else {
         expect((await lstat(log)).isSymbolicLink()).toBe(true);
       }
+    } finally { await cleanup(); }
+  }, 30_000);
+
+  // The reaper cannot claim an orphan that started after the stale Runner's
+  // last sample, and this launch's own detached shell is one. It reports that
+  // only after every recorded process is gone, so the launch continues.
+  it.each([
+    { reason: "unattributed_orphan", remaining: [4242] },
+    { reason: "journal_unavailable", remaining: [] },
+  ])("continues with a warning when the reap reports $reason", async ({ reason, remaining }) => {
+    const { root, start, running, launch, cleanup } = await fixture();
+    const stateDirectory = join(root, "state");
+    try {
+      await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+      const stale = start(["--state-dir", stateDirectory]);
+      await running(stale, stateDirectory);
+      const result = launch(stateDirectory, { verified: false, reason, remaining });
+      expect(result.stdout).toBe("launched");
+      expect((await readFile(join(root, "identity"), "utf8")).split("\n")[0]).toBe("nonce");
+      expect(await readFile(join(root, "diagnostics", REMOTE_RUNNER_PROCESS_STDERR_FILE), "utf8"))
+        .toContain(`runner_stale_lineage_partial: runner ${stale.pid}: ${reason} ${remaining.join(",")}`);
     } finally { await cleanup(); }
   }, 30_000);
 

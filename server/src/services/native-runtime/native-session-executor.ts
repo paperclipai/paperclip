@@ -14836,9 +14836,14 @@ const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
  * - It sends TERM and waits up to 5 s, then KILL with a 2 s wait. A survivor
  *   fails the launch with `runner_stale_state_holder_alive`.
  * - It runs `<binary> reap-lineage` for the stopped Runner, which stops the
- *   tools its journal recorded that have left the process tree. Anything but
- *   a verified reap (or a Runner that kept no journal) fails the launch with
- *   `runner_stale_lineage_unproven`.
+ *   tools its journal recorded that have left the process tree. A reap that
+ *   leaves a recorded process alive, or gives no report, fails the launch with
+ *   `runner_stale_lineage_unproven`. Two refusals still let it continue, with
+ *   a warning in the log: a Runner that kept no journal (its visible lineage
+ *   is already gone), and `unattributed_orphan`. The reaper reports that only
+ *   after every recorded process is gone, for orphans it can neither claim nor
+ *   signal; this launch's own detached shell and other sessions' Runners are
+ *   such orphans, so refusing there would block every relaunch.
  *
  * A failure exits before the identity marker is written, so the existing
  * marker is kept, and the reason goes to the process stderr log when that path
@@ -14873,7 +14878,9 @@ export const REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT = [
   "for(const p of roots){let out='';try{out=cp.execFileSync(binary,['reap-lineage','--state-dir',stateDir,'--runner-pid',String(p),'--grace-ms','1000','--deadline-ms','5000'],",
   "{encoding:'utf8',timeout:7000,killSignal:'SIGKILL',stdio:['ignore','pipe','ignore']})}catch(e){out=String(e.stdout||'')}",
   "let r=null;try{r=JSON.parse(out.trim().split(String.fromCharCode(10)).pop())}catch{}",
-  "if(!r||(r.verified!==true&&r.reason!=='journal_unavailable')){console.error('runner_stale_lineage_unproven: runner '+p+': '+(r?r.reason:'no reap report'));process.exit(1)}}",
+  "if(r&&r.verified===true)continue;",
+  "if(r&&(r.reason==='journal_unavailable'||r.reason==='unattributed_orphan')){console.error('runner_stale_lineage_partial: runner '+p+': '+r.reason+' '+(r.remaining||[]).join(','));continue}",
+  "console.error('runner_stale_lineage_unproven: runner '+p+': '+(r?r.reason:'no reap report'));process.exit(1)}",
   "process.exit(0)",
 ].join("");
 
