@@ -574,6 +574,49 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       && wake.payload?.sourceRunId === sourceRun!.id)).toHaveLength(0);
   });
 
+  it.each(["undelivered", "delivered_with_queued_continuation", "terminated_assignee", "delivered_and_consumed"] as const)(
+    "reads the accepted tool review continuation as a review path only while it can still run (%s)",
+    async (state) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Review Path Co", issuePrefix: `R${companyId.slice(0, 6)}` });
+      await db.insert(agents).values({
+        id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local",
+        status: state === "terminated_assignee" ? "terminated" : "idle",
+      });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Review", status: "in_review", assigneeAgentId: agentId });
+      const [interaction] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind: "request_confirmation", status: "accepted", createdByAgentId: agentId,
+        payload: { version: 1, prompt: "Run the tool?" }, result: { version: 1, outcome: "accepted" }, resolvedAt: new Date(),
+      }).returning();
+      const [invocation] = await db.insert(toolInvocations).values({ companyId, agentId, issueId, toolName: "create_issue" }).returning();
+      const [request] = await db.insert(toolActionRequests).values({
+        companyId, invocationId: invocation!.id, issueId, interactionId: interaction!.id, status: "executed",
+        canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { type: "object" } as never, requestedByAgentId: agentId,
+      }).returning();
+      const delivered = state === "delivered_with_queued_continuation" || state === "delivered_and_consumed";
+      await db.insert(toolActionDeliveries).values({
+        actionRequestId: request!.id, companyId, issueId, interactionId: interaction!.id,
+        deliveredAt: delivered ? new Date() : null,
+      });
+      if (delivered) {
+        await db.insert(agentWakeupRequests).values({
+          companyId, agentId, source: "automation", reason: "issue_commented",
+          status: state === "delivered_and_consumed" ? "completed" : "queued",
+          idempotencyKey: `tool-action-response:${request!.id}`,
+          payload: {},
+        });
+      }
+
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+      const attention = (await issueService(db).listReviewAttention(companyId, [issue])).get(issueId)!;
+      const covered = state === "undelivered" || state === "delivered_with_queued_continuation";
+      expect(attention.state).toBe(covered ? "covered" : "stalled");
+      expect(attention.paths.some((path) => path.kind === "queued_wake")).toBe(covered);
+    },
+  );
+
   it.each(["monitor", "completed", "reassigned", "newer_run", "other_company"] as const)(
     "does not escalate a stale review recovery after %s",
     async (change) => {

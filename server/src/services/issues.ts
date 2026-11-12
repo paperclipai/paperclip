@@ -4930,11 +4930,39 @@ async function listIssueReviewAttentionMap(
           eq(issues.assigneeAgentId, toolActionRequests.requestedByAgentId),
         ),
       )
+      .innerJoin(
+        agents,
+        and(
+          eq(agents.id, toolActionRequests.requestedByAgentId),
+          eq(agents.companyId, companyId),
+        ),
+      )
       .where(
         and(
           eq(toolActionDeliveries.companyId, companyId),
-          isNull(toolActionDeliveries.deliveredAt),
-          inArray(toolActionDeliveries.issueId, reviewIds),
+          inArray(toolActionRequests.issueId, reviewIds),
+          or(
+            and(
+              isNull(toolActionDeliveries.deliveredAt),
+              notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
+            ),
+            sql`exists (
+              select 1 from ${agentWakeupRequests} continuation
+              where continuation.company_id = ${companyId}
+                and continuation.idempotency_key like 'tool-action-response:%'
+                and continuation.idempotency_key = 'tool-action-response:' || ${toolActionDeliveries.actionRequestId}::text
+                and continuation.status not in ('skipped', 'failed', 'cancelled')
+                and (
+                  continuation.status in ('queued', 'deferred_issue_execution', 'claimed')
+                  or exists (
+                    select 1 from ${heartbeatRuns} continuation_run
+                    where continuation_run.id = continuation.run_id
+                      and continuation_run.company_id = ${companyId}
+                      and continuation_run.status in ('queued', 'running')
+                  )
+                )
+            )`,
+          ),
         ),
       ),
   ]);
