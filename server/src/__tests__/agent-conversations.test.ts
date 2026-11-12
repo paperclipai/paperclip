@@ -1050,7 +1050,7 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
     expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
-    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>/api-keys");
+    expect(prompt).toContain("/RUN/agents/<urlKey or id>/api-keys");
   });
 
   it("says how to read the company link prefix from a task identifier so agent links are not guessed", () => {
