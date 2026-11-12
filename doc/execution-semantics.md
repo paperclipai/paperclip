@@ -1745,6 +1745,11 @@ this, the close stopped the Runner mid-turn, so the reattachment always found it
 gone with an unsettled journal (`runner_remote_process_identity_unavailable`) and
 the task waited for Retry. A Stop, a cancelled turn and a `stop_cleanup` recovery
 still stop the Runner, and a Runner that settled or exited is handled as before.
+The runtime's own cleanup after a failed turn start or a failed event stream
+(for example `runnerd did not report the provider turn identity` or the
+execution timeout) revokes the turn's output but is not a Stop, so it keeps the
+Runner for the same-run reattachment too. A protocol integrity fault, which
+needs an operator, still stops the Runner.
 
 A remote native run can lose its original runner or sandbox before reattachment.
 This happens after a server restart, and for a same-run retry after a turn ends
