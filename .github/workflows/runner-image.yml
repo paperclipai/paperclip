@@ -1,8 +1,9 @@
 name: Runner image
 
 # Builds and checks the Runner image: the `runner-artifacts` target of the
-# Dockerfile, a plain file tree that other image builds copy the Runner from.
-# doc/runner-image-contract.md is the contract.
+# Dockerfile, a plain file tree that other image builds copy the Runner from,
+# and its `runner-artifacts-slim` variant without the pack's transport
+# archives. doc/runner-image-contract.md is the contract.
 #
 # This workflow builds and checks only. It has no access to a registry and
 # publishes nothing.
@@ -185,44 +186,72 @@ jobs:
               mirrors = ["mirror.gcr.io"]
 
       # The build itself runs the frozen install, the Runner's own build, the
-      # provider pack integrity check and the layout check. The tree is
-      # exported for the checks below.
+      # provider pack integrity check and the layout check.
+      #
+      # Both variants come from one build: the second command only reads the
+      # cache of the first. Each is exported as a tree, for the checks by
+      # path, and as an OCI archive, for the check of its layers.
       #
       # This is the publication form of the build, the only one whose pack
       # names the image (`runnerInputsDigest`), so the check below can bind
       # the tree to the digest the identity job resolved. Nothing here
-      # publishes it: the tree stays on this runner.
-      - name: Build the Runner image
+      # publishes it: the trees and archives stay on this runner.
+      - name: Build both variants of the Runner image
         run: |
           set -euo pipefail
-          docker buildx build \
-            --target runner-artifacts \
-            --platform "$PLATFORM" \
-            --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=$GITHUB_SHA" \
-            --build-arg PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1 \
-            --provenance=false --sbom=false \
-            --output "type=local,dest=$RUNNER_TEMP/runner-image/tree" \
-            .
+          for variant in full slim; do
+            target=runner-artifacts
+            if [ "$variant" = slim ]; then target=runner-artifacts-slim; fi
+            docker buildx build \
+              --target "$target" \
+              --platform "$PLATFORM" \
+              --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=$GITHUB_SHA" \
+              --build-arg PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1 \
+              --provenance=false --sbom=false \
+              --output "type=local,dest=$RUNNER_TEMP/runner-image/$variant" \
+              --output "type=oci,dest=$RUNNER_TEMP/runner-image/$variant.oci.tar" \
+              .
+          done
 
-      # Against the exported tree, bound to this run: the digest the identity
+      # Against each exported tree, bound to this run: the digest the identity
       # job resolved, this commit and this leg's architecture. Checks every
-      # documented path, the build stamp, every pack artifact and tree digest
-      # in provider-pack.json, and every transport archive. It also extracts
-      # the archives as a sandbox does and compares the result with the pack;
-      # that needs about as much free disk as the pack is large.
+      # documented path, the build stamp, and every pack artifact and tree
+      # digest in provider-pack.json. A slim tree must not hold the transport
+      # archives. A full tree must: the check verifies each one, extracts
+      # them as a sandbox does and compares the result with the pack; that
+      # needs about as much free disk as the pack is large.
       - name: Check the layout contract and pack integrity
         run: |
-          node scripts/runner-image-layout.mjs check "$RUNNER_TEMP/runner-image/tree" \
-            --expect-inputs-digest "$DIGEST" \
-            --expect-source-revision "$GITHUB_SHA" \
-            --expect-architecture "$ARCH"
+          set -euo pipefail
+          for variant in full slim; do
+            node scripts/runner-image-layout.mjs check "$RUNNER_TEMP/runner-image/$variant" \
+              --variant "$variant" \
+              --expect-inputs-digest "$DIGEST" \
+              --expect-source-revision "$GITHUB_SHA" \
+              --expect-architecture "$ARCH"
+          done
 
+      # The full image must be the slim image's layers, as the same blobs,
+      # then the transport layers, with nothing else in them.
+      - name: Check the layers of both variants
+        run: |
+          set -euo pipefail
+          {
+            echo '```'
+            node scripts/runner-image-layout.mjs check-layers \
+              --slim "$RUNNER_TEMP/runner-image/slim.oci.tar" \
+              --full "$RUNNER_TEMP/runner-image/full.oci.tar"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # On the slim tree: the daemon is in a layer both variants share, so
+      # one run covers both, and the slim tree is the smaller one to load.
       - name: Run the daemon on every consumer base image
         run: |
           docker buildx build \
             --file docker/runner-image/Dockerfile.smoke \
             --platform "$PLATFORM" \
-            --build-context "runner-artifacts=$RUNNER_TEMP/runner-image/tree" \
+            --build-context "runner-artifacts=$RUNNER_TEMP/runner-image/slim" \
             --output "type=local,dest=$RUNNER_TEMP/runner-image/smoke" \
             docker/runner-image
           ls -l "$RUNNER_TEMP/runner-image/smoke"

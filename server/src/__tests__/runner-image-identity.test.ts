@@ -233,10 +233,23 @@ describe("Runner image stages", () => {
     expect([...sources].sort()).toEqual([...RUNNER_IMAGE_CONTEXT_INPUTS].sort());
   });
 
-  it("end in a file tree, and leave the default target and the application stages alone", () => {
-    const target = runner.find((stage) => stage.name === "runner-artifacts")!;
-    expect(target.from).toBe("scratch");
-    expect(copies(target)).toEqual(["COPY --from=runner-artifacts-build /out/ /"]);
+  it("end in two file trees, the full one being the slim one plus the transport layers", () => {
+    // Each COPY --link is one layer that does not depend on the layers under
+    // it. The slim variant is the first two; the full variant starts from it,
+    // so it has the same two layers and then the transport archives.
+    const slim = runner.find((stage) => stage.name === "runner-artifacts-slim")!;
+    const full = runner.find((stage) => stage.name === "runner-artifacts")!;
+    const instructions = (stage: typeof slim) => stage.lines.filter((line) => /^[A-Z]+\s/.test(line)).slice(1);
+    expect(slim.from).toBe("scratch");
+    expect(instructions(slim)).toEqual([
+      "COPY --link --from=runner-artifacts-build /out-large/ /",
+      "COPY --link --from=runner-artifacts-build /out/ /",
+    ]);
+    expect(full.from).toBe("runner-artifacts-slim");
+    expect(instructions(full)).toEqual([
+      "COPY --link --from=runner-artifacts-build /out-archives/ /",
+      "COPY --link --from=runner-artifacts-build /out-transport/ /",
+    ]);
     // `docker build .` builds the last stage.
     expect(names.at(-1)).toBe("cloud");
     for (const stage of stages) {

@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { zstdCompressSync } from "node:zlib";
+import { gzipSync, zstdCompressSync } from "node:zlib";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   BUILD_INPUTS_SCHEMA,
@@ -29,14 +29,20 @@ import {
   PROVIDER_PACK_ARCHIVE_SCHEMA,
   PROVIDER_PACK_SCHEMA,
   RUNNER_IMAGE_INPUTS_SCHEMA,
+  RUNNER_IMAGE_LAYERS,
   RUNNER_IMAGE_PATHS,
   RUNNER_IMAGE_SCHEMA,
   canonicalJson,
   checkProviderPackArchives,
-  checkRunnerImageLayout,
+  checkRunnerImageLayers,
+  checkRunnerImageLayout as checkLayout,
   parseLayoutArguments,
   writeRunnerImageManifest,
 } from "../../../scripts/runner-image-layout.mjs";
+
+/** The fixture is a full image, so most tests check it as one. */
+const checkRunnerImageLayout = (root: string, options: Omit<Parameters<typeof checkLayout>[1], "variant"> = {}) =>
+  checkLayout(root, { variant: "full", ...options });
 
 /**
  * The layout contract of the Runner image. Consumers copy the documented
@@ -182,6 +188,7 @@ describe("Runner image layout contract", () => {
       platform: { os: "linux", architecture: "amd64" },
       libc: { family: "glibc", baseline: "debian-bookworm", buildVersion: "2.36", runnerdRequires: "2.34" },
       paths: RUNNER_IMAGE_PATHS,
+      fullImageOnly: ["providerPackArchiveReceipt", "providerPackArchives"],
     });
     // One daemon, at the root for sandbox images and inside the build output
     // for a build that vendors the Runner.
@@ -209,6 +216,7 @@ describe("Runner image layout contract", () => {
     ["a short inputs digest", (m) => { m.inputsDigest.digest = "abc"; }, /inputsDigest must be/],
     ["another build-inputs schema", (m) => { m.buildInputsDigest.schema = "paperclip.runner-build-inputs.v1"; }, /buildInputsDigest must be/],
     ["an abbreviated source revision", (m) => { m.sourceRevision = "abc1234"; }, /sourceRevision/],
+    ["transport paths claimed for both variants", (m) => { m.fullImageOnly = []; }, /fullImageOnly does not name the paths only the full image has/],
     ["no word on whether it is a publication build", (m) => { delete m.publication; }, /publication must say/],
     ["a publication build without a source revision", (m) => { m.sourceRevision = null; }, /publication build must have a source revision/],
     ["an unsupported platform", (m) => { m.platform = { os: "linux", architecture: "riscv64" }; }, /platform must be/],
@@ -375,6 +383,171 @@ describe("Runner image layout contract", () => {
       expect(() => writeRunnerImageManifest({
         outRoot: path.join(root, "out"), workspaceRoot: path.join(root, "workspace"), identity, platform, libc, sourceRevision: null, publication: true,
       })).toThrow(/publication build needs a source revision/);
+    });
+  });
+
+  describe("variants", () => {
+    /** A slim tree: the full fixture without its transport archives and receipt. */
+    function slim(tree: string) {
+      rmSync(path.join(tree, "provider-pack.archives"), { recursive: true });
+      rmSync(path.join(tree, "provider-pack.archive.json"));
+      return tree;
+    }
+
+    it("accepts a slim tree only as slim, and a full tree only as full", () => {
+      expect(checkLayout(out, { variant: "full" })).toEqual([]);
+      expect(checkLayout(out, { variant: "slim" })).toEqual([
+        "provider-pack.archive.json (providerPackArchiveReceipt) is in a slim image; only the full image has the transport archives",
+        "provider-pack.archives (providerPackArchives) is in a slim image; only the full image has the transport archives",
+      ]);
+      slim(out);
+      expect(checkLayout(out, { variant: "slim", expectInputsDigest: INPUTS, expectSourceRevision: REVISION, expectArchitecture: "amd64" })).toEqual([]);
+      expect(checkLayout(out, { variant: "full" })).toEqual(expect.arrayContaining([
+        "documented path provider-pack.archive.json (providerPackArchiveReceipt) is missing",
+        "documented path provider-pack.archives (providerPackArchives) is missing",
+      ]));
+    });
+
+    it("refuses a slim tree that holds only one of the two transport paths", () => {
+      rmSync(path.join(out, "provider-pack.archive.json"));
+      expect(checkLayout(out, { variant: "slim" }).join("\n")).toMatch(/provider-pack\.archives \(providerPackArchives\) is in a slim image/);
+    });
+
+    it("still checks everything else in a slim tree", () => {
+      appendFileSync(path.join(slim(out), "provider-pack/dist/cli/opencode-app-server-proxy.js"), "// later edit\n");
+      expect(checkLayout(out, { variant: "slim" }).join("\n")).toMatch(/the provider pack dist tree does not match its tree digest/);
+    });
+
+    it("has no default: the variant is always given", () => {
+      // @ts-expect-error the variant is required
+      expect(() => checkLayout(out, {})).toThrow(/must be told the variant: slim or full/);
+      expect(() => checkLayout(out, { variant: "both" })).toThrow(/must be told the variant/);
+      const check = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check", out, ...args], { encoding: "utf8" });
+      expect(check().stderr).toMatch(/check needs --variant slim or --variant full/);
+      expect(check("--variant", "both").stderr).toMatch(/check needs --variant slim or --variant full/);
+      expect(check("--variant", "slim").stderr).toMatch(/is in a slim image/);
+      const passed = spawnSync(process.execPath, [layoutScript, "check", slim(out), "--variant", "slim"], { encoding: "utf8" });
+      expect(passed.status).toBe(0);
+      expect(passed.stdout).toMatch(/A slim image has no transport archives/);
+    });
+
+    it("writes one runner-image.json for both, which names the paths only the full image has", () => {
+      const manifest = manifestOf(out);
+      expect(manifest.fullImageOnly.map((name: keyof typeof RUNNER_IMAGE_PATHS) => RUNNER_IMAGE_PATHS[name]))
+        .toEqual(["provider-pack.archive.json", "provider-pack.archives"]);
+      expect(manifest.paths).toEqual(RUNNER_IMAGE_PATHS);
+    });
+  });
+
+  describe("image layers", () => {
+    // What `docker buildx build --output type=oci` writes for one platform,
+    // with the given entries in each layer.
+    function ociArchive(layers: Record<string, string>[]) {
+      const root = path.join(scratch, String(sequence += 1));
+      const layout = path.join(root, "layout");
+      mkdirSync(path.join(layout, "blobs/sha256"), { recursive: true });
+      const blob = (bytes: Buffer) => {
+        const digest = sha256(bytes);
+        writeFileSync(path.join(layout, "blobs/sha256", digest), bytes);
+        return { digest: `sha256:${digest}`, size: bytes.length };
+      };
+      const descriptors = layers.map((entries, position) => {
+        const directory = path.join(root, `layer-${position}`);
+        mkdirSync(directory, { recursive: true });
+        for (const [relative, content] of Object.entries(entries)) write(directory, relative, content);
+        // Fixed timestamps: two archives with the same entries share the blob.
+        spawnSync("find", [directory, "-exec", "touch", "-h", "-t", "200001010000", "{}", "+"]);
+        const tarball = spawnSync("tar", ["-cf", "-", "-C", directory, "."], { maxBuffer: 16 * 1024 * 1024 });
+        expect(tarball.status).toBe(0);
+        return { mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", ...blob(gzipSync(tarball.stdout)) };
+      });
+      const manifest = blob(Buffer.from(JSON.stringify({ schemaVersion: 2, config: blob(Buffer.from("{}")), layers: descriptors })));
+      write(layout, "index.json", JSON.stringify({ schemaVersion: 2, manifests: [{ mediaType: "application/vnd.oci.image.manifest.v1+json", ...manifest }] }));
+      write(layout, "oci-layout", '{"imageLayoutVersion":"1.0.0"}');
+      const archive = path.join(root, "image.oci.tar");
+      expect(spawnSync("tar", ["-cf", archive, "-C", layout, "."]).status).toBe(0);
+      return archive;
+    }
+    // Archive N is file N of the receipt. File 0 is the Runner's own output.
+    const receipt = JSON.stringify({ files: [{ path: "dist/cli/sidecar.cjs" }, { path: "node_modules/big/big.bin" }, { path: "node_modules/node/bin/node" }] });
+    const large = { "provider-pack/node_modules/node/bin/node": "node", "provider-pack/node_modules/big/big.bin": "big" };
+    const rest = {
+      "runner-image.json": "{}", "paperclip-runnerd": "elf", "pnpm-lock.yaml": "lock",
+      "provider-pack/provider-pack.json": "{}", "provider-pack/dist/cli/sidecar.cjs": "sidecar",
+    };
+    const stable = { "provider-pack.archives/1.tar.zst": "1", "provider-pack.archives/2.tar.zst": "2" };
+    const changing = { "provider-pack.archives/0.tar.zst": "0", "provider-pack.archives/overlay.tar.zst": "overlay", "provider-pack.archive.json": receipt };
+    const problemsOf = (archives: { slim?: Record<string, string>[]; full?: Record<string, string>[] }) => checkRunnerImageLayers({
+      slim: archives.slim ? ociArchive(archives.slim) : null, full: archives.full ? ociArchive(archives.full) : null,
+    }).problems.join("\n");
+
+    it("accepts a full image that is the slim image plus the two transport layers", () => {
+      const result = checkRunnerImageLayers({ slim: ociArchive([large, rest]), full: ociArchive([large, rest, stable, changing]) });
+      expect(result.problems).toEqual([]);
+      expect(result.layers.slim.map((layer) => layer.role)).toEqual(RUNNER_IMAGE_LAYERS.slim);
+      expect(result.layers.full.map((layer) => layer.role)).toEqual(RUNNER_IMAGE_LAYERS.full);
+      expect(RUNNER_IMAGE_LAYERS.full.slice(0, 2)).toEqual(RUNNER_IMAGE_LAYERS.slim);
+      // The same blobs, not only the same files.
+      expect(result.layers.full.slice(0, 2).map((layer) => layer.digest)).toEqual(result.layers.slim.map((layer) => layer.digest));
+    });
+
+    it("checks one variant alone, and needs at least one", () => {
+      expect(problemsOf({ slim: [large, rest] })).toBe("");
+      expect(problemsOf({ full: [large, rest, stable, changing] })).toBe("");
+      expect(() => checkRunnerImageLayers({})).toThrow(/needs --slim, --full or both/);
+    });
+
+    it.each<[string, { slim?: Record<string, string>[]; full?: Record<string, string>[] }, RegExp]>([
+      ["a full image whose shared layers are not the slim image's blobs",
+        { slim: [large, rest], full: [large, { ...rest, "paperclip-runnerd": "another build" }, stable, changing] },
+        /the full image does not start with the layers of the slim image/],
+      ["a full image with the slim layers in another order",
+        { slim: [large, rest], full: [rest, large, stable, changing] }, /the full image does not start with the layers of the slim image/],
+      ["a slim image with the transport layers", { slim: [large, rest, stable, changing] }, /the slim image has 4 layers, not 2/],
+      ["a slim image that holds a transport archive", { slim: [large, { ...rest, "provider-pack.archives/1.tar.zst": "1" }] },
+        /slim: transport content is in the layers both variants share \(2\): provider-pack\.archives, provider-pack\.archives\/1\.tar\.zst/],
+      ["a full image in a single layer", { full: [{ ...large, ...rest, ...stable, ...changing }] }, /the full image has 1 layers, not 4/],
+      ["the receipt in a shared layer", { full: [large, { ...rest, "provider-pack.archive.json": receipt }, stable, changing] },
+        /full: transport content is in the layers both variants share/],
+      ["a file outside the pack in the first layer", { full: [{ ...large, "paperclip-runnerd": "elf" }, rest, stable, changing] },
+        /full: the first layer holds entries outside the pack's dependency files/],
+      ["the Runner's own large output in the first layer", { full: [{ ...large, "provider-pack/dist/cli/sidecar.cjs": "sidecar" }, rest, stable, changing] },
+        /full: the first layer holds entries outside the pack's dependency files/],
+      ["a large dependency file left in the layer that changes with every build",
+        { full: [{ "provider-pack/node_modules/node/bin/node": "node" }, { ...rest, "provider-pack/node_modules/big/big.bin": "big" }, stable, changing] },
+        /full: the first layer lacks \(1\): provider-pack\/node_modules\/big\/big\.bin/],
+      ["the overlay archive in the stable transport layer",
+        { full: [large, rest, { ...stable, "provider-pack.archives/overlay.tar.zst": "overlay" }, changing] },
+        /full: the third layer holds something other than transport archives/],
+      ["a pack file in the last layer", { full: [large, rest, stable, { ...changing, "provider-pack/provider-pack.json": "{}" }] },
+        /full: the last layer holds something other than transport content/],
+      ["a stable archive in the layer that changes with every build",
+        { full: [large, rest, { "provider-pack.archives/1.tar.zst": "1" }, { ...changing, "provider-pack.archives/2.tar.zst": "2" }] },
+        /full: the third layer lacks \(1\): provider-pack\.archives\/2\.tar\.zst/],
+      ["the archive of the Runner's own output in the stable layer",
+        { full: [large, rest, { ...stable, "provider-pack.archives/0.tar.zst": "0" }, { "provider-pack.archives/overlay.tar.zst": "overlay", "provider-pack.archive.json": receipt }] },
+        /full: the third layer holds, against the receipt, \(1\): provider-pack\.archives\/0\.tar\.zst/],
+      ["an archive the receipt does not list", { full: [large, rest, { ...stable, "provider-pack.archives/3.tar.zst": "3" }, changing] },
+        /full: the third layer holds, against the receipt, \(1\): provider-pack\.archives\/3\.tar\.zst/],
+      ["no receipt in the last layer",
+        { full: [large, rest, stable, { "provider-pack.archives/0.tar.zst": "0", "provider-pack.archives/overlay.tar.zst": "overlay" }] },
+        /full: the last layer lacks \(1\): provider-pack\.archive\.json/],
+    ])("refuses %s", (_label, archives, expected) => {
+      expect(problemsOf(archives)).toMatch(expected);
+    });
+
+    it("is a command that prints the layer table of each variant", () => {
+      const run = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check-layers", ...args], { encoding: "utf8" });
+      const slim = ociArchive([large, rest]);
+      const passed = run("--slim", slim, "--full", ociArchive([large, rest, stable, changing]));
+      expect(passed.status).toBe(0);
+      expect(passed.stdout).toMatch(/slim layer 2: sha256:[0-9a-f]{64} +\d+ bytes +\d+ entries +everything else/);
+      expect(passed.stdout).toMatch(/full layer 4: sha256:[0-9a-f]{64} +\d+ bytes +\d+ entries +the other transport archives, the overlay archive and the receipt/);
+      const failed = run("--slim", slim, "--full", ociArchive([large, rest, stable]));
+      expect(failed.status).toBe(1);
+      expect(failed.stderr).toMatch(/the full image has 3 layers, not 4/);
+      expect(run().stderr).toMatch(/needs --slim, --full or both/);
+      expect(run(slim).stderr).toMatch(/takes no positional argument/);
     });
   });
 
@@ -555,7 +728,7 @@ describe("Runner image layout contract", () => {
     });
 
     it("is part of the check command, which says which tar extracted the archives", async () => {
-      const check = (tree: string) => spawnSync(process.execPath, [layoutScript, "check", tree], { encoding: "utf8" });
+      const check = (tree: string) => spawnSync(process.execPath, [layoutScript, "check", tree, "--variant", "full"], { encoding: "utf8" });
       const passed = check(out);
       expect(passed.status).toBe(0);
       expect(passed.stdout).toMatch(/The transport archives were extracted with (GNU tar, as a sandbox extracts them,|bsdtar) and match the provider pack/);
@@ -567,7 +740,7 @@ describe("Runner image layout contract", () => {
       expect(failed.stderr).toMatch(/transport archive overlay\.tar\.zst is not a zstd archive/);
       expect(failed.stdout).not.toMatch(/passed/);
       // A tree without a pack has nothing to extract, and the command says so.
-      const unstamped = spawnSync(process.execPath, [layoutScript, "check", await image({ stamped: false }), "--allow-unstamped"], { encoding: "utf8" });
+      const unstamped = spawnSync(process.execPath, [layoutScript, "check", await image({ stamped: false }), "--variant", "full", "--allow-unstamped"], { encoding: "utf8" });
       expect(unstamped.status).toBe(0);
       expect(unstamped.stdout).toMatch(/no provider pack, so there are no transport archives to extract/);
     });
@@ -634,7 +807,7 @@ describe("Runner image layout contract", () => {
   });
 
   describe("command line", () => {
-    const check = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check", ...args], { encoding: "utf8" });
+    const check = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check", ...args, "--variant", "full"], { encoding: "utf8" });
 
     it("passes for a valid tree and fails for a wrong expectation", () => {
       expect(check(out, "--expect-inputs-digest", INPUTS, "--expect-source-revision", REVISION, "--expect-architecture", "amd64").status).toBe(0);
@@ -675,6 +848,8 @@ describe("Runner image layout contract", () => {
       expect(() => parseLayoutArguments("write", ["--out", "o", "--source-revision", ""])).toThrow(/--source-revision needs a value/);
       expect(parseLayoutArguments("write", ["--out", "o", "--publication"]).flags).toEqual({ out: "o", publication: true });
       expect(() => parseLayoutArguments("check", ["tree", "--publication"])).toThrow(/check does not take --publication/);
+      expect(parseLayoutArguments("check-layers", ["--slim", "a.tar", "--full", "b.tar"]).flags).toEqual({ slim: "a.tar", full: "b.tar" });
+      expect(() => parseLayoutArguments("check-layers", ["--variant", "slim"])).toThrow(/check-layers does not take --variant/);
       expect(() => parseLayoutArguments("write", ["--expect-architecture", "arm64"])).toThrow(/write does not take/);
     });
   });
