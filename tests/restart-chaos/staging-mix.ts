@@ -313,8 +313,11 @@ export function roundCommand(nonce: string): string {
 function roundsSteps(nonce: string, rounds: number): string[] {
   return [
     `Run this shell command ${rounds} times, as separate tool calls in the foreground, replacing every <N> with the round number 1 to ${rounds}`,
-    `(each takes about ${ROUND_SECONDS} seconds; do not run rounds in the background or in parallel, and do not skip, repeat or shorten any):`,
+    `(each takes about ${ROUND_SECONDS} seconds; run them one at a time in the foreground, never in the background or in parallel):`,
     `\`${roundCommand(nonce)}\``,
+    `Every round from 1 to ${rounds} must end up in \`${ledgerFile(nonce)}\` exactly once, with the hash the command printed.`,
+    "Before each round, read the ledger file: if that round's ROUND line is already there, the round is finished, so never run it again.",
+    "If a round was interrupted (for example the tool call failed or your session restarted) before its ROUND line was written, you must run that round again from the start.",
   ];
 }
 
@@ -355,7 +358,7 @@ export function stagingMixDescription(nonce: string, task: StagingMixTask, agent
 export const followUpRequestId = (issueId: string, nonce: string) => stableRequestId(`followup-${issueId}-${nonce}`);
 
 export function followUpComment(nonce: string): string {
-  return `Additional requirement: include the line \`${followUpMarker(nonce)}\` on its own line in this task's \`ledger\` document. Keep going with your rounds; do not restart any.`;
+  return `Additional requirement: include the line \`${followUpMarker(nonce)}\` on its own line in this task's \`ledger\` document. Keep going with your rounds: a round whose ROUND line is already in the ledger file is finished, and a round without one must still be run.`;
 }
 
 export interface LedgerRound { round: number; start: number; end: number; hash: string }
