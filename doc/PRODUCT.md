@@ -263,7 +263,8 @@ admin can include files flagged only for a remote-fetch or dynamic-execution pat
 repository at the reviewed commit, with a required reason. Credential exfiltration,
 path escapes, symlinks, and other structural findings can never be overridden. The
 approval covers the exact file bytes at that commit; later commits need a new review
-unless the admin opted in to trusting those paths in future updates. Each approval,
+unless the admin opted in to trusting those paths in future updates. That opt-in
+ends when the source starts following another branch or revision. Each approval,
 and each later commit an opt-in covers, is written to the activity log with the
 approver, files, hashes, and reason. Agents and unattended refreshes can apply a
 recorded approval but never create one. An administrator can withdraw a saved

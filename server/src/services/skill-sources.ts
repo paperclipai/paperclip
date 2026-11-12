@@ -492,6 +492,10 @@ export function skillSourceService(db: Db) {
       const commit = await reader(`/repos/${source.fullName}/commits/${encodeURIComponent(ref)}`) as { sha?: unknown } | null;
       if (!commit || typeof commit.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(commit.sha)) throw unprocessable('The selected branch or revision is unavailable.', { code: 'skill_source_ref_unavailable' });
     }
+    // Future-update trust covers later commits of the reviewed branch only. Following another ref
+    // needs a new administrator review, so the saved approval keeps only its reviewed commit.
+    const narrowedOverride = input.trackingRef !== undefined && input.trackingRef !== source.trackingRef && source.securityOverride?.trustFutureUpdates
+      ? { ...source.securityOverride, trustFutureUpdates: false } : null;
     return db.transaction(async tx => {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       if (input.trackingRef !== undefined) {
@@ -511,11 +515,14 @@ export function skillSourceService(db: Db) {
           refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId ?? null,
           refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader?.grantId ?? null, lastError: null } : {}),
         ...(input.trackingRef !== undefined ? { trackingRef: input.trackingRef, lastError: null, failureCount: 0 } : {}),
+        ...(narrowedOverride ? { securityOverride: narrowedOverride } : {}),
         revision: sql`${sources.revision} + 1`, nextSyncAt: new Date(),
       }).where(and(scope(companyId, id), eq(sources.revision, input.revision), or(isNull(sources.leaseToken), lt(sources.leaseExpiresAt, new Date())))).returning();
       if (!updated) throw conflict('This source is refreshing or changed. Reload before saving.', { code: 'skill_source_settings_changed' });
       await context.audit(tx, id, 'company.skill_source_settings_updated', { automaticUpdates: updated.automaticUpdates, importNewSkills: updated.importNewSkills, connectionChanged: input.connectionId !== undefined,
         ...(input.trackingRef !== undefined ? { previousRef: source.trackingRef, trackingRef: updated.trackingRef } : {}) });
+      if (narrowedOverride) await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
+        approvedCommit: narrowedOverride.commitSha, fileCount: narrowedOverride.files.length, futureUpdatesOnly: true, cause: 'tracking_ref_changed' });
       return detail(companyId, id, tx);
     });
   }

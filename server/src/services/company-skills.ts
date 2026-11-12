@@ -3615,8 +3615,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     // a skill package installs them relative to the skill directory.
     const repositoryPrefix = `${REPOSITORY_CONTENT_DIR}/`;
     const fromSkillDirectory = skillRelativeToRepositoryPath(path.posix.dirname(entrypoint));
+    // The generated agents/openai.yaml is a copy of the skill directory's policy file; the generated SKILL.md is not an original.
+    const policyCopy = path.posix.join(path.posix.dirname(entrypoint), "agents/openai.yaml");
     const toRepositoryPath = skill.metadata?.packageMode === "repository"
-      ? (filePath: string) => filePath.startsWith(repositoryPrefix) ? filePath.slice(repositoryPrefix.length) : `${repositoryPrefix}${filePath}`
+      ? (filePath: string) => filePath.startsWith(repositoryPrefix) ? filePath.slice(repositoryPrefix.length)
+        : filePath === "agents/openai.yaml" ? policyCopy : `${repositoryPrefix}${filePath}`
       : (filePath: string) => filePath === "SKILL.md" ? entrypoint : fromSkillDirectory(filePath);
     return securityOverrideAcceptor([source?.securityOverride], skill.sourceRef, toRepositoryPath);
   }
