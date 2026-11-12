@@ -599,7 +599,7 @@ describe("durable, authorized connection routing", () => {
     expect(selected.runtimeConfig.permissionMode).toBe("deny-all");
     if (selected.binding.mode === "responsible_user") throw new Error("Expected explicit account");
     await service().recordQuotaCooldown(companyId, selected.binding.connectionId, await identityFor(selected.binding.grantId), new Date(Date.now() + 60_000));
-    const result = await db.transaction(tx => aiConnectionRouterService(tx).transitionQuotaPin({ companyId, poolId: pool.id,
+    const result = await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db).transitionQuotaPin({ companyId, poolId: pool.id,
       agentId, taskKey, expectedSelection: selected, userId: "alice", adapterType: "paperclip_runner", attemptedMemberIds: [], sourceAdapterConfig: {} }));
     expect(result.kind).not.toBe("selected");
     const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
