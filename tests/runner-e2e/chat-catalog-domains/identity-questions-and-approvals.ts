@@ -41,18 +41,24 @@ async function questionFixture(ctx: ChatCatalogContext, multipart: boolean) {
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
   return { original, answer: `Acorn ${ctx.input.nonce}`, sourceId: source.id };
 }
+/** The form's last-page button: the card's own submitLabel (QuestionForm shows it, e.g. "Continue"), else the default. */
+export function submitAnswersButtonName(card: Pick<Interaction, "payload"> | undefined): string | RegExp {
+  const label = card?.payload.questionSet?.submitLabel?.trim();
+  return label ? label : /^(Submit|Send) answers$/;
+}
 async function answerText(ctx: ChatCatalogContext, answer: string) {
   const form = ctx.input.page.getByTestId("task-chat-composer-takeover");
   await expect(form).toBeVisible();
+  const pending = (await cards(ctx)).find(row => row.kind === "ask_user_questions" && row.status === "pending");
   const text = form.getByTestId("question-text-answer-composer");
   if (await text.isVisible()) await text.locator('[contenteditable="true"],textarea').first().fill(answer);
   else {
-    const pending = (await cards(ctx)).find(row => row.kind === "ask_user_questions" && row.status === "pending");
     const label = pending?.payload.questionSet?.questions[0]?.customAnswer?.label ?? "Other";
     await form.getByRole("radio", { name: label, exact: true }).click();
     await form.getByTestId("question-other-answer-composer").locator('[contenteditable="true"],textarea').first().fill(answer);
   }
-  await form.getByRole("button", { name: /^(Submit|Send) answers$/ }).click();
+  const submit = submitAnswersButtonName(pending);
+  await form.getByRole("button", typeof submit === "string" ? { name: submit, exact: true } : { name: submit }).click();
 }
 /** The one required question of the agent's card, when every other question on it is optional. */
 export function soleRequiredQuestion(card: Pick<Interaction, "payload"> | undefined) {
@@ -86,7 +92,8 @@ async function answerRequiredQuestion(ctx: ChatCatalogContext, answer: string) {
       await form.getByRole("radio", { name: question.customAnswer?.label ?? "Other", exact: true }).click();
       await form.getByTestId("question-other-answer-composer").locator('[contenteditable="true"],textarea').first().fill(answer);
     }
-    await form.getByRole("button", last ? { name: /^(Submit|Send) answers$/ } : { name: "Next", exact: true }).click();
+    const submit = submitAnswersButtonName(card);
+    await form.getByRole("button", !last ? { name: "Next", exact: true } : typeof submit === "string" ? { name: submit, exact: true } : { name: submit }).click();
   }
 }
 async function beforeAnswer(ctx: ChatCatalogContext, state: Record<string, unknown>) {

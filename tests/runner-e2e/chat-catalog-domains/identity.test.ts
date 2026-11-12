@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { companyIdentityCases, gradeCompanyRename } from "./identity-companies.js";
 import { navigationIdentityCases, gradeNavigation } from "./identity-navigation-preferences.js";
-import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries, multipartExistingFormDescription, type AnswerDeliverable } from "./identity-questions-and-approvals.js";
+import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries, multipartExistingFormDescription, submitAnswersButtonName, type AnswerDeliverable } from "./identity-questions-and-approvals.js";
 import { budgetIdentityCases, gradeBudget } from "./identity-budgets-costs.js";
 import { accessIdentityCases } from "./identity-access.js";
 import { toolReviewIdentityCases } from "./identity-tool-review.js";
@@ -215,6 +215,14 @@ describe("identity catalog independent oracle calibration", () => {
     expect(gradeQuestions(deliverableOnly({ runId: "someone-elses-run" })).passed).toBe(false);
     expect(gradeQuestions(deliverableOnly({ current: false })).passed).toBe(false);
     const unlinked = deliverableOnly(); unlinked.links = ["/ACORN/projects/project"]; expect(gradeQuestions(unlinked).passed).toBe(false);
+  });
+  // Paid run 43162122291: the agent's card set submitLabel "Continue", which QuestionForm shows instead of "Submit answers".
+  it("answers through the card's own submit label", () => {
+    const card = (submitLabel?: string) => ({ payload: { questionSet: { questions: [], ...(submitLabel !== undefined ? { submitLabel } : {}) } } });
+    expect(submitAnswersButtonName(card("Continue"))).toBe("Continue");
+    expect(submitAnswersButtonName(card())).toEqual(/^(Submit|Send) answers$/);
+    expect(submitAnswersButtonName(card("  "))).toEqual(/^(Submit|Send) answers$/);
+    expect(submitAnswersButtonName(undefined)).toEqual(/^(Submit|Send) answers$/);
   });
   it("approved read is graded on the provider nonce and one provider receipt, not the provider sentence", () => {
     const grade = (o: IdentityObservation) => toolReviewIdentityCases[0]!.grade(o).passed;
