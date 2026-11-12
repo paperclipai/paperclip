@@ -2075,12 +2075,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }}))?;
                     // Codex can announce a helper through the root's spawn receipt
                     // before emitting any thread/started notification for that helper.
-                    send(json!({"method": "item/completed", "params": {
-                        "threadId": state.thread_id, "turnId": provider_turn_id,
-                        "item": {"id": "spawn-first-child", "type": "collabAgentToolCall",
+                    let spawn_item = if args
+                        .iter()
+                        .any(|value| value == "--modern-subagent-receipts")
+                    {
+                        json!({"id": "spawn-first-child", "type": "subAgentActivity",
+                            "kind": "started", "agentThreadId": "descendant-0",
+                            "agentPath": "/root/helper"})
+                    } else {
+                        json!({"id": "spawn-first-child", "type": "collabAgentToolCall",
                             "tool": "spawnAgent", "status": "completed",
                             "senderThreadId": state.thread_id,
-                            "receiverThreadIds": ["descendant-0"]}
+                            "receiverThreadIds": ["descendant-0"]})
+                    };
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": spawn_item
                     }}))?;
                     send(json!({"method": "turn/started", "params": {
                         "threadId": "descendant-0", "turnId": "first-child-turn"

@@ -8094,11 +8094,25 @@ fn durable_integrity_failure_preserves_code_and_stops_provider_authority() {
 
 #[test]
 fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
-    let directory = temporary_directory("descendant-restoration");
-    let config = provider_config(
-        &directory,
-        &["--descendant-notifications", "--durable-turn-ids"],
-    );
+    assert_durable_descendant_lineage(false);
+}
+
+#[test]
+fn modern_subagent_lineage_survives_capacity_and_provider_restoration() {
+    assert_durable_descendant_lineage(true);
+}
+
+fn assert_durable_descendant_lineage(modern: bool) {
+    let directory = temporary_directory(if modern {
+        "modern-descendant-restoration"
+    } else {
+        "descendant-restoration"
+    });
+    let mut args = vec!["--descendant-notifications", "--durable-turn-ids"];
+    if modern {
+        args.push("--modern-subagent-receipts");
+    }
+    let config = provider_config(&directory, &args);
     let runner_config = durable_config(&directory);
     let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
     first
