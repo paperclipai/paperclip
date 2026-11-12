@@ -377,15 +377,27 @@ async function promoteDeferredWake(
   // A person's answer saved while the task was still open is owed input. The
   // worker may have finished its turn without reading it; closing the task
   // must not silently drop it. It reopens the task straight to in_progress,
-  // because an answer continues the assignee's own execution.
+  // because an answer continues the assignee's own execution. While
+  // unresolved blockers forbid in_progress, an answer continuation cannot run
+  // (it requires in_progress), so the task stays done and the wake is
+  // cancelled with that reason; it never fails or stalls this drain.
   let reopenForAnswer = false;
   if (
     !shouldReopen &&
     currentIssue.status === "done" &&
     workingCandidate.requestedByActorType === "user" &&
-    workingCandidate.agentId === currentIssue.assigneeAgentId &&
-    await ports.transaction.isOwedInteractionAnswer({ companyId: run.companyId, issueId: currentIssue.id, payload: workingCandidate.payload })
-  ) shouldReopen = reopenForAnswer = true;
+    workingCandidate.agentId === currentIssue.assigneeAgentId
+  ) {
+    const owed = await ports.transaction.owedInteractionAnswer({ companyId: run.companyId, issueId: currentIssue.id, payload: workingCandidate.payload });
+    if (owed === "blocked") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId, wakeId: workingCandidate.id, agentId: workingCandidate.agentId,
+        reason: "Queued answer cannot continue a task with unresolved blockers", now: input.now,
+      });
+      return null;
+    }
+    if (owed === "deliver") shouldReopen = reopenForAnswer = true;
+  }
 
   // Agent continuations can outlive the work they addressed. Live,
   // non-self feedback with an explicit resume intent must still be read

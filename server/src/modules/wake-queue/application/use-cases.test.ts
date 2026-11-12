@@ -115,7 +115,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       releasePolicy: null,
     })),
     getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
-    isOwedInteractionAnswer: vi.fn(async () => false),
+    owedInteractionAnswer: vi.fn(async (): Promise<"deliver" | "blocked" | null> => null),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
@@ -596,16 +596,16 @@ describe("releaseIssueExecution", () => {
   });
 
   it.each([
-    ["owed answer on a done task", "done", "user", true, "promoted"],
-    ["answer already delivered or saved after completion", "done", "user", false, "released"],
-    ["answer on a cancelled task", "cancelled", "user", true, "released"],
-    ["agent-requested interaction wake", "done", "agent", true, "released"],
+    ["owed answer on a done task", "done", "user", "deliver", "promoted"],
+    ["answer already delivered or saved after completion", "done", "user", null, "released"],
+    ["answer on a cancelled task", "cancelled", "user", "deliver", "released"],
+    ["agent-requested interaction wake", "done", "agent", "deliver", "released"],
   ] as const)("handles a person's answer queued behind a turn that closed the task: %s", async (_label, status, actor, owed, outcome) => {
     const queue = [wakeCandidate({ agentId: ISSUE.assigneeAgentId!, requestedByActorType: actor,
       payload: { issueId: ISSUE.id, mutation: "interaction", interactionId: "11111111-1111-4111-8111-111111111111", interactionStatus: "answered" } })];
     const transaction = createFakeTransaction({
       findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
-      isOwedInteractionAnswer: vi.fn(async () => owed),
+      owedInteractionAnswer: vi.fn(async () => owed),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "in_progress" })),
     });
     const release = createReleaseIssueExecution({
@@ -621,6 +621,26 @@ describe("releaseIssueExecution", () => {
       expect(transaction.reopenIssue).not.toHaveBeenCalled();
       expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ reason: "Deferred execution wake no longer applies to a terminal task" }));
     }
+  });
+
+  it("cancels an owed answer without reopening or failing the drain while blockers forbid in_progress", async () => {
+    const queue = [wakeCandidate({ id: "answer", agentId: ISSUE.assigneeAgentId!, requestedByActorType: "user",
+      payload: { issueId: ISSUE.id, mutation: "interaction", interactionId: "11111111-1111-4111-8111-111111111111", interactionStatus: "answered" } }),
+      wakeCandidate({ id: "next", agentId: ISSUE.assigneeAgentId!, requestedByActorType: "agent" })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      owedInteractionAnswer: vi.fn(async () => "blocked" as const),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: "done" }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect(transaction.reopenIssue).not.toHaveBeenCalled();
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "answer", reason: "Queued answer cannot continue a task with unresolved blockers" }));
+    // The drain continues past the answer to the next queued wake.
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "next" }));
   });
 
   it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {

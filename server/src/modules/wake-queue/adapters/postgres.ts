@@ -451,13 +451,16 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       };
     },
 
-    async isOwedInteractionAnswer({ companyId, issueId, payload }) {
+    async owedInteractionAnswer({ companyId, issueId, payload }) {
       const response = await readQueuedInteractionResponse(tx as unknown as Db, companyId, issueId, payload);
-      if (!response || response.toolActionOutcome || !response.comment.authorUserId) return false;
+      if (!response || response.toolActionOutcome || !response.comment.authorUserId) return null;
       const [task] = await tx.select({ completedAt: issues.completedAt }).from(issues)
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
       const answeredAt = new Date(response.comment.createdAt);
-      return !!task && (!task.completedAt || answeredAt.getTime() <= task.completedAt.getTime());
+      if (!task || (task.completedAt && answeredAt.getTime() > task.completedAt.getTime())) return null;
+      // in_progress is refused while blockers are unresolved, and reopening would throw inside this drain.
+      const readiness = await issuesSvc.getDependencyReadiness(issueId, tx);
+      return readiness.unresolvedBlockerIssueIds.length > 0 ? "blocked" : "deliver";
     },
 
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {

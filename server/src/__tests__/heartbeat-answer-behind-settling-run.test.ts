@@ -10,6 +10,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -62,7 +63,7 @@ describeEmbeddedPostgres("an answer saved while the worker settles its turn", ()
    * Morgan's turn is running while the person answers its question and the chat lead relays the answer as a
    * task comment; both wait behind the turn. The turn then completes the task without reading the answer.
    */
-  async function settleWithQueuedAnswer(options: { answerAfterCompletion?: boolean } = {}) {
+  async function settleWithQueuedAnswer(options: { answerAfterCompletion?: boolean; blockerReopens?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), leadId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Answer fixture", issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: userId });
@@ -78,7 +79,15 @@ describeEmbeddedPostgres("an answer saved while the worker settles its turn", ()
 
     gate.turns = 0;
     const answeredAt = new Date(), completedAt = new Date(answeredAt.getTime() + (options.answerAfterCompletion ? -60_000 : 60_000));
-    gate.onTurn = async () => { await db.update(issues).set({ status: "done", completedAt }).where(eq(issues.id, issueId)); };
+    const blockerId = randomUUID();
+    gate.onTurn = async () => {
+      // A blocker can reopen while the turn runs; the turn still marks this task done.
+      if (options.blockerReopens && gate.turns === 1) {
+        await db.insert(issues).values({ id: blockerId, companyId, title: "Brand review", status: "todo", responsibleUserId: userId });
+        await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+      }
+      await db.update(issues).set({ status: "done", completedAt }).where(eq(issues.id, issueId));
+    };
     const first = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
       payload: { issueId }, contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" }, requestedByActorType: "system", requestedByActorId: null });
     expect(first).not.toBeNull();
@@ -103,7 +112,7 @@ describeEmbeddedPostgres("an answer saved while the worker settles its turn", ()
       eq(agentWakeupRequests.status, "deferred_issue_execution")))).length === 0, 60_000);
     await heartbeat.drainActiveRunExecutions();
     await waitFor(settled, 60_000);
-    return { question: question!, issueId, agentId };
+    return { question: question!, issueId, agentId, blockerId };
   }
 
   it("delivers a person's answer saved before the worker closed the task, without replaying it", async () => {
@@ -124,5 +133,17 @@ describeEmbeddedPostgres("an answer saved while the worker settles its turn", ()
     const [answerWake] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.agentId, agentId),
       sql`${agentWakeupRequests.payload}->>'interactionId' = ${question.id}`));
     expect(answerWake).toMatchObject({ status: "cancelled", error: "Deferred execution wake no longer applies to a terminal task" });
+  }, 120_000);
+
+  it("settles without reopening when a blocker reopened during the turn forbids in_progress", async () => {
+    const { question, agentId, issueId, blockerId } = await settleWithQueuedAnswer({ blockerReopens: true });
+    const [task] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+    expect(task?.status).toBe("done");
+    const [answerWake] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.agentId, agentId),
+      sql`${agentWakeupRequests.payload}->>'interactionId' = ${question.id}`));
+    expect(answerWake).toMatchObject({ status: "cancelled", error: "Queued answer cannot continue a task with unresolved blockers", runId: null });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map(r => r.status)).toEqual(["succeeded"]);
+    expect(blockerId).toBeTruthy();
   }, 120_000);
 });

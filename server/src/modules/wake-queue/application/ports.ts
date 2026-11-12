@@ -166,10 +166,11 @@ export interface WakeQueueTransaction {
     releasePolicy: unknown;
   }>;
   /**
-   * True when the wake carries a person's saved answer to an interaction on this task that no run has received yet
-   * and that was saved before the task was completed. Such an answer is owed input, like the person's own queued message.
+   * Whether the wake carries a person's saved answer to an interaction on this task that no run has received yet and
+   * that was saved before the task was completed. Such an answer is owed input, like the person's own queued message.
+   * "deliver" when the task can run now; "blocked" when unresolved blockers keep it from in_progress; null otherwise.
    */
-  isOwedInteractionAnswer(input: { companyId: string; issueId: string; payload: Record<string, unknown> }): Promise<boolean>;
+  owedInteractionAnswer(input: { companyId: string; issueId: string; payload: Record<string, unknown> }): Promise<"deliver" | "blocked" | null>;
   getCommentSelfAuthorship(input: {
     companyId: string;
     issueId: string;
