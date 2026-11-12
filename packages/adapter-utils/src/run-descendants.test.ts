@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findRunMarkedProcesses,
   readBootId,
+  readProcessStartedAtMs,
   readRunProcessTable,
   readRunProcessTableAsync,
   RUN_ID_ENV_MARKER,
@@ -422,8 +423,8 @@ linuxOnly("run descendant teardown", () => {
         expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([leader.pid]);
 
         // The leader exits; a member it started (cleared env, reparented to
-        // init) keeps its session. Another member starts after the leader
-        // was seen gone (uptime 50 s = 5000 ticks).
+        // init) keeps its session. A process that joins the session later
+        // than the members present when the leader was seen gone is not owned.
         await fs.rm(path.join(procRoot, String(leader.pid)), { recursive: true });
         const member = { pid: 4_000_002, ppid: 1, pgid: 4_000_002, sid: leader.sid, startTime: 1_200 };
         await writeFixtureProcess(procRoot, member);
@@ -432,6 +433,47 @@ linuxOnly("run descendant teardown", () => {
         const late = { pid: 4_000_003, ppid: 1, pgid: 4_000_003, sid: leader.sid, startTime: 6_000 };
         await writeFixtureProcess(procRoot, late);
         expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([member.pid]);
+      });
+    });
+
+    it("bounds a dead leader's members by start times from the same table, not /proc/uptime", async () => {
+      await withFixture(async (procRoot) => {
+        // In a container, /proc/uptime can be behind the clock that process
+        // start times use: here 5 s (500 ticks), below every start time.
+        await fs.writeFile(path.join(procRoot, "uptime"), "5.00 0.00\n");
+        const runId = newRunId();
+        await writeFixtureProcess(procRoot, { ...leader, environ: `${RUN_ID_ENV_MARKER}=${runId}\0` });
+        const lineage = new RunProcessLineage(runId);
+        expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([leader.pid]);
+
+        // The leader exits. Members it started (cleared environment,
+        // reparented to init) stay in its session and its group.
+        await fs.rm(path.join(procRoot, String(leader.pid)), { recursive: true });
+        const sessionMember = { pid: 4_000_040, ppid: 1, pgid: 4_000_040, sid: leader.sid, startTime: 1_200 };
+        const groupMember = { pid: 4_000_041, ppid: 1, pgid: leader.pgid, sid: leader.sid, startTime: 1_250 };
+        await writeFixtureProcess(procRoot, sessionMember);
+        await writeFixtureProcess(procRoot, groupMember);
+        expect(lineage.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid).sort())
+          .toEqual([sessionMember.pid, groupMember.pid]);
+
+        // The members exit, so the number is free again. An unrelated process
+        // that starts later and reuses it as its session and group is not owned.
+        await fs.rm(path.join(procRoot, String(sessionMember.pid)), { recursive: true });
+        await fs.rm(path.join(procRoot, String(groupMember.pid)), { recursive: true });
+        const unrelated = { pid: 4_000_042, ppid: 1, pgid: leader.pgid, sid: leader.sid, startTime: 1_300 };
+        await writeFixtureProcess(procRoot, unrelated);
+        expect(lineage.sample(readRunProcessTable({ procRoot }))).toEqual([]);
+      });
+    });
+
+    it("derives a process's wall-clock start from btime, not /proc/uptime", async () => {
+      await withFixture(async (procRoot) => {
+        await fs.writeFile(path.join(procRoot, "uptime"), "1.00 0.00\n");
+        await fs.writeFile(path.join(procRoot, "stat"), "cpu  1 2 3 4\nbtime 1700000000\nprocesses 10\n");
+        await writeFixtureProcess(procRoot, { pid: 4_000_050, ppid: 1, pgid: 4_000_050, sid: 4_000_050, startTime: 12_345 });
+        expect(readProcessStartedAtMs(4_000_050, { procRoot })).toBe(1_700_000_000_000 + 123_450);
+        await fs.rm(path.join(procRoot, "stat"));
+        expect(readProcessStartedAtMs(4_000_050, { procRoot })).toBeNull();
       });
     });
 

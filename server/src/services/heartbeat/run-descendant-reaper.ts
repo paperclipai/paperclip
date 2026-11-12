@@ -129,6 +129,10 @@ export function forgetTrackedRunLineageForTests() {
 /**
  * Starts recording a local legacy run's processes. `rootPid` is the CLI the
  * adapter spawned. Safe to call more than once for the same run.
+ *
+ * `rootPid` is recorded synchronously, before this function's first await,
+ * so call it as soon as the CLI is spawned and before awaiting anything else.
+ * {@link reapRunDescendants} ends the tracking.
  */
 export async function trackRunDescendants(input: { runId: string; rootPid?: number | null }) {
   try {
