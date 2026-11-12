@@ -36,7 +36,8 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
-import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck } from "./fresh-continuation-fallback.js";
+import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
+  settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -398,6 +399,7 @@ export async function deliverReconciledExecutions(
             evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
           })
           .where(pendingDecision);
+        await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id, delivery: "invalidated" });
         continue;
       }
       // A fresh continuation is the task's next run only while nothing else
@@ -414,6 +416,8 @@ export async function deliverReconciledExecutions(
           await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
             { continuationDelivery: "delivered", continuationRunId: newer.id, continuationSupersededByRun: true })}::jsonb` })
             .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: newer.id });
           continue;
         }
       }
@@ -463,6 +467,8 @@ export async function deliverReconciledExecutions(
               )}::jsonb`,
             })
             .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: run.id });
         });
     } catch {
       logger.warn(

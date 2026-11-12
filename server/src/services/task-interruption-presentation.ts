@@ -571,7 +571,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const freshRows = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
     runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'`,
     delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'`,
-    recorded: sql<boolean>`${issueRecoveryActions.evidence} ? 'freshContinuationSettlement'`,
+    recorded: sql<boolean>`${issueRecoveryActions.evidence} ? 'freshContinuation'`,
     checkKind: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}'`,
     nextCheckAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}'` })
     .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
@@ -579,7 +579,9 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       sql`(${issueRecoveryActions.evidence} ? 'freshContinuationSettlement' or ${issueRecoveryActions.evidence} ? 'freshContinuationCheck')`)) : [];
   const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
-    if (rows.some(row => row.recorded && ["pending", "not_requested", "coalesced"].includes(row.delivery ?? ""))) return { state: "continuing" };
+    // Only the primary record (it carries `freshContinuation`) says whether a
+    // continuation is still on its way; holds coalesced into it never do.
+    if (rows.some(row => row.recorded && ["pending", "not_requested"].includes(row.delivery ?? ""))) return { state: "continuing" };
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
       .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
     return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;

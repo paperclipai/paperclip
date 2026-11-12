@@ -352,6 +352,33 @@ suite("fresh-continuation fallback", () => {
     expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("invalidated");
   }, 60_000);
 
+  it("settles coalesced holds with their primary, so a task back in todo is not shown as working and the sweep sees it", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted" });
+    // A second no-replay hold of the same run, settled together with the first.
+    const [sibling] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+      status: "resolved", outcome: "blocked", ownerType: "board", cause: "native_restart_recovery_blocked",
+      fingerprint: `native-restart:${f.runId}`, nextAction: "held", resolvedAt: new Date(),
+      evidence: { runId: f.runId, automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "blocked" } } }).returning();
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, sibling!.id)))[0]!.evidence.continuationDelivery)
+      .toBe("coalesced");
+    // The task moves to review before delivery: the primary is cancelled, and so is its sibling.
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, f.issueId));
+    await occupySlot();
+    expect(await deliveryWake(f)).toBeNull();
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, sibling!.id)))[0]!.evidence.continuationDelivery)
+      .toBe("invalidated");
+    // Back to todo with nothing pending: a failed attempt with Retry, not "working".
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    const task = await issue(f.issueId);
+    expect(await taskInterruptionPresentation(db, { id: task.id, companyId, status: task.status,
+      assigneeAgentId: task.assigneeAgentId, projectId: task.projectId })).toMatchObject({ state: "failed", canRetry: true });
+    // The assigned-work sweep sees it as left with nothing pending: inside its
+    // settle window after the recent change it schedules the recheck, never "ok".
+    const check = await heartbeatService(db).checkAssignedWorkInvariant({ companyId, issueId: f.issueId });
+    expect(["violation", "settling"]).toContain(check?.verdict.kind);
+  }, 60_000);
+
   it("starts no run for a task that finished while its continuation was pending", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });

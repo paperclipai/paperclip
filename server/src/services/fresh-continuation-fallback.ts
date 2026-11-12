@@ -704,6 +704,17 @@ export async function continueHeldExecutions(db: Db, now = new Date(), limit = 2
   return { checked: seen.size, continued };
 }
 
+/** Holds settled together with a primary record follow its final delivery
+ * state, so no coalesced hold outlives the record it points at. */
+export async function settleCoalescedFreshContinuationHolds(db: Db, input: { companyId: string; primaryId: string;
+  delivery: "delivered" | "invalidated"; continuationRunId?: string | null }) {
+  await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+    continuationDelivery: input.delivery, ...(input.continuationRunId ? { continuationRunId: input.continuationRunId } : {}) })}::jsonb` })
+    .where(and(eq(issueRecoveryActions.companyId, input.companyId),
+      sql`${issueRecoveryActions.evidence}->>'coalescedIntoRecoveryActionId' = ${input.primaryId}`,
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'coalesced'`));
+}
+
 /** A fresh continuation of this task is recorded and its run does not exist yet. */
 export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string) {
   const [row] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
