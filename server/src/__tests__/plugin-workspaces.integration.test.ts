@@ -641,8 +641,8 @@ const support = await getEmbeddedPostgresTestSupport();
         inspectPluginWorkspace(db, f.workers, reservation),
       ).resolves.toMatchObject({ remotelyRecoverable: true });
       expect(f.calls[1]).toMatchObject({
-        runId: null,
-        agentId: null,
+        runId: f.runId,
+        agentId: f.input.agentId,
         operation: { kind: "prepare" },
       });
       expect(f.calls[1].operationId).toBe(f.calls[0].operationId);
@@ -652,7 +652,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, reservation.id));
       expect(recorded.providerRef).not.toBeNull();
     });
-    it.each(["inspect", "retry"] as const)("replays a lost Launcher prepare through %s", async (recovery) => {
+    it.each(["inspect", "retry", "replacement"] as const)("recovers a lost Launcher prepare through %s", async (recovery) => {
       const f = await fixture();
       const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
       await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
@@ -666,8 +666,18 @@ const support = await getEmbeddedPostgresTestSupport();
       const leaseId = randomUUID();
       const input = { ...f.input, environment: { ...environment, driver: "plugin" as const },
         acquireTaskLease: async () => ({ leaseId, taskLease }) };
-      f.lose();
-      await expect(preparePluginWorkspace(db, f.workers, input)).rejects.toThrow("incomplete");
+      let deleted = false;
+      const replacementTaskLease = { ...taskLease, providerLeaseId: randomUUID() };
+      const replacementWorkers = { ...f.workers, call: vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
+        const request = args[2] as (typeof f.calls)[number];
+        if (deleted && request.taskLease?.providerLeaseId === taskLease.providerLeaseId)
+          throw new Error("Previous Launcher allocation is gone");
+        const result = await f.workers.call(...args) as { kind: string };
+        if (!deleted) throw new Error("Lost committed preparation result");
+        return { ...result, created: false } as never;
+      }) };
+      if (recovery !== "replacement") f.lose();
+      await expect(preparePluginWorkspace(db, recovery === "replacement" ? replacementWorkers : f.workers, input)).rejects.toThrow("incomplete");
       const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
       const [reservation] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
       expect(reservation.providerRef).toBeNull();
@@ -677,14 +687,26 @@ const support = await getEmbeddedPostgresTestSupport();
       if (recovery === "inspect") {
         await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
         await expect(inspectPluginWorkspace(db, f.workers, reservation)).resolves.toMatchObject({ remotelyRecoverable: true });
-      } else {
+      } else if (recovery === "retry") {
         await expect(preparePluginWorkspace(db, f.workers, { ...input, existingWorkspaceId: reservation.id })).resolves.toMatchObject({ id: reservation.id });
-        expect(f.calls).toHaveLength(2);
+      } else {
+        await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
+        const [nextRun] = await db.insert(heartbeatRuns).values({
+          companyId: f.companyId, issueId: f.issueId, agentId: f.input.agentId, status: "running",
+        }).returning();
+        deleted = true;
+        await expect(preparePluginWorkspace(db, replacementWorkers, {
+          ...input, runId: nextRun.id, existingWorkspaceId: reservation.id,
+          acquireTaskLease: async () => ({ leaseId: randomUUID(), taskLease: replacementTaskLease }),
+        })).resolves.toMatchObject({ id: reservation.id });
+        expect(replacementWorkers.call).toHaveBeenCalledTimes(2);
+        expect(f.calls[1]).toMatchObject({ runId: nextRun.id, agentId: f.input.agentId, taskLease: replacementTaskLease });
+        expect(f.calls[1].operationId).not.toBe(f.calls[0].operationId);
       }
-      expect(f.calls[1]).toMatchObject({
-        runId: f.runId, agentId: f.input.agentId, taskLease,
-        operationId: f.calls[0].operationId, operation: f.calls[0].operation,
+      if (recovery !== "replacement") expect(f.calls[1]).toMatchObject({
+        runId: f.runId, agentId: f.input.agentId, taskLease, operationId: f.calls[0].operationId,
       });
+      expect(f.calls[1].operation).toEqual(f.calls[0].operation);
       const [prepared] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, reservation.id));
       expect(prepared.providerRef).not.toBeNull();
       expect(prepared.metadata?.workspaceProviderPreparationPlacement).toBeUndefined();

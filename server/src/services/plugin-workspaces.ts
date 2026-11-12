@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { assertProjectStorageEnvironment, effectiveProjectWorkspacePolicy, requireWorkspaceProviderWorker, type WorkspaceWorkers } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers } from "./provider-fresh-workspace.js";
@@ -42,7 +43,7 @@ type Workspace = typeof executionWorkspaces.$inferSelect;
 type TaskPlacement = NonNullable<PluginWorkspaceParams["taskLease"]>;
 const preparationPlacementSchema = pluginWorkspaceParamsSchema.pick({
   generation: true, runId: true, agentId: true, taskLease: true,
-}).required();
+});
 
 function readPreparationPlacement(workspace: Workspace) {
   const saved = workspace.metadata?.workspaceProviderPreparationPlacement;
@@ -254,7 +255,7 @@ export async function preparePluginWorkspace(
     : (input.branchName ??
       (strategy === "git_worktree" ? `workspace-${randomUUID()}` : null));
   // Reserve and bind before calling the provider. A crash must not orphan a created checkout.
-  let workspace =
+  const workspace =
     existing ??
     (await db.transaction(async (tx) => {
       const [currentProject] = await tx
@@ -341,11 +342,6 @@ export async function preparePluginWorkspace(
         .where(eq(issues.id, task.id));
       return row!;
     }));
-  const pendingPreparation = readPreparationPlacement(workspace);
-  if (pendingPreparation) {
-    workspace = await withExecutionWorkspaceLifecycleLock(db, workspace.id, () =>
-      reconcilePluginWorkspaceReservation(db, workers, workspace));
-  }
   const driverKey = input.environment?.driver === "plugin" ? input.environment.config?.driverKey : undefined;
   const placement = selectedProvider.manifestJson.environmentDrivers?.some(driver =>
     driver.driverKey === driverKey && driver.sessionHandoffVersion === 1)
@@ -382,17 +378,21 @@ export async function preparePluginWorkspace(
     ) : undefined;
     if (replacementScope && !(await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(replacementScope)).length)
       throw conflict("Workspace Launcher placement changed");
-    if (taskLease && !current.providerRef) {
+    if (!current.providerRef && !input.verifyExisting) {
       const generation = current.metadata?.lifecycleGeneration ?? 0;
-      const intent = { generation, runId: input.runId, agentId: input.agentId, taskLease };
-      // The request must survive a lost reply or rollback of the lifecycle transaction.
-      const [recorded] = await db.update(executionWorkspaces).set({
-        metadata: sql`coalesce(${executionWorkspaces.metadata}, '{}'::jsonb) || ${JSON.stringify({ workspaceProviderPreparationPlacement: intent })}::jsonb`,
-      }).where(and(eq(executionWorkspaces.id, current.id), eq(executionWorkspaces.companyId, current.companyId),
-        sql`${executionWorkspaces.providerRef} is null
-          and coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}
-          and ${executionWorkspaces.metadata}->'workspaceProviderPreparationPlacement' is null`)).returning({ id: executionWorkspaces.id });
-      if (!recorded) throw conflict("Workspace preparation placement changed");
+      const intent = { generation, runId: input.runId, agentId: input.agentId, ...(taskLease ? { taskLease } : {}) };
+      const previous = readPreparationPlacement(current);
+      if (!isDeepStrictEqual(previous, intent)) {
+        // The request must survive a lost reply or rollback of the lifecycle transaction.
+        const [recorded] = await db.update(executionWorkspaces).set({
+          metadata: sql`coalesce(${executionWorkspaces.metadata}, '{}'::jsonb) || ${JSON.stringify({ workspaceProviderPreparationPlacement: intent })}::jsonb`,
+        }).where(and(eq(executionWorkspaces.id, current.id), eq(executionWorkspaces.companyId, current.companyId),
+          sql`${executionWorkspaces.providerRef} is null
+            and coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}
+            and coalesce(${executionWorkspaces.metadata}->'workspaceProviderPreparationPlacement', 'null'::jsonb)
+              = ${JSON.stringify(previous ?? null)}::jsonb`)).returning({ id: executionWorkspaces.id });
+        if (!recorded) throw conflict("Workspace preparation placement changed");
+      }
     }
     const result = await callWorkspaceProvider(tx as unknown as Db, workers, {
       workspace,
@@ -451,6 +451,7 @@ export async function preparePluginWorkspace(
       if (!currentLease) throw conflict("Workspace Launcher placement changed during preparation");
     }
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+    const { workspaceProviderPreparationPlacement: _placement, ...metadata } = current.metadata ?? {};
     const [updated] = await tx
       .update(executionWorkspaces)
       .set({
@@ -460,7 +461,7 @@ export async function preparePluginWorkspace(
         lastUsedAt: new Date(),
         updatedAt: new Date(),
         metadata: {
-          ...workspace.metadata,
+          ...metadata,
           workspaceProvider: result.binding,
           workspaceProviderBaseSha: result.baseSha,
           ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
@@ -482,12 +483,7 @@ export async function preparePluginWorkspace(
       throw conflict("Workspace changed before preparation could be recorded");
     return updated!;
   });
-  const alreadyPrepared = placement && pendingPreparation?.runId === input.runId &&
-    pendingPreparation.agentId === input.agentId &&
-    pendingPreparation.taskLease.environmentId === placement.taskLease.environmentId &&
-    pendingPreparation.taskLease.driverKey === placement.taskLease.driverKey &&
-    pendingPreparation.taskLease.providerLeaseId === placement.taskLease.providerLeaseId;
-  const prepared = alreadyPrepared ? workspace : await prepare(workspace, placement?.taskLease);
+  const prepared = await prepare(workspace, placement?.taskLease);
   if (placement && input.onTaskPrepared) {
     let preparedTaskId = placement.taskLease.providerLeaseId;
     let preparedWorkspace = prepared;

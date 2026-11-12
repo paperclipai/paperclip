@@ -183,9 +183,11 @@ operation ID and the provider's established routing for requests made before
 this upgrade.
 
 Before dispatching preparation for an unbound workspace, Core records the
-original run, agent, and task placement. Reservation recovery replays that
-request with the same operation ID. A provider must be able to recover the
-preparation receipt after the Launcher allocation has been deleted.
+run and agent, plus the task placement when present. Inspection replays the
+saved request. A retry with the same run, agent, and placement uses the same
+operation ID. When a retry acquires a different task, Core records its
+placement and prepares the same workspace. The provider settles the prior
+preparation before using the retained checkout.
 
 A portable restore uses the durable ownership claim and the same account
 identity after a credential refresh or controller replacement. It starts a
