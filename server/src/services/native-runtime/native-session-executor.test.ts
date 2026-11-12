@@ -22016,6 +22016,9 @@ it("classifies a startup session.open timeout as a bounded transient startup fai
   for (const startupCode of ["runner_local_connect_failed", "runner_direct_wss_failed", "runner_ingress_unavailable"]) {
     const code = nativeSessionFailureSourceCode(new Error(`${startupCode}: PRP command session.open timed out`));
     expect(code).toBe("provider_session_open_timeout");
+    // The timeout can end with the description of what the command waited behind.
+    expect(nativeSessionFailureSourceCode(new Error(`${startupCode}: PRP command session.open timed out `
+      + "(runner connected; pending ahead 0; last runner event none)"))).toBe("provider_session_open_timeout");
     expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({ phase: "retryable_failure" });
     expect(nativeSessionFailureDisposition(3, new Date(), code)).toMatchObject({
       phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
