@@ -417,6 +417,8 @@ export async function deliverReconciledExecutions(
           forceFreshSession: true,
           wakeReason: "issue_recovery_action_restored",
           source: "execution.reconciled",
+          ...((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace"
+            ? { freshContinuationIsolation: action.id } : {}),
         },
       });
       if (run)

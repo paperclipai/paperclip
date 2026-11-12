@@ -1253,6 +1253,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (!previousRunId || previousRunId === run.id) continue;
         const [previous] = await tx.select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
           issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+          supersededByFreshContinuation: sql<boolean>`${heartbeatRuns.resultJson} ? 'freshContinuationSupersededAt'`,
           contextIssueId: sql<unknown>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
         })
           .from(heartbeatRuns).where(and(
@@ -1267,7 +1268,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             liveRunExecutions.has(previousRunId)) {
           return declined("predecessor_still_executing", previousRunId);
         }
-        if (await hasPendingRunCleanup(tx, run.companyId, previousRunId)) {
+        // A fresh continuation replaced the predecessor: its writes are revoked
+        // and it shares no workspace with this run (a fenced remote epoch or a
+        // new isolated workspace), so its cleanup continues without holding it.
+        if (!previous?.supersededByFreshContinuation && await hasPendingRunCleanup(tx, run.companyId, previousRunId)) {
           return declined("predecessor_cleanup_pending", previousRunId);
         }
       }
@@ -3736,9 +3740,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // continuation: unless its cause is the person's, the fallback
             // settles it in this transaction and this wake becomes the fresh
             // continuation from the task's saved work.
+            // Only system continuation wakes (sweeps, monitors, timers) take
+            // this path. A person's Retry, message or queued send keeps its own
+            // exact admission; the disposition worker settles the hold through
+            // the same fallback, and the saved input then continues the task.
             // Agent Chat conversations keep their own owner-bound continuation.
-            const freshSourceRunId = executionBlocker?.recoveryActionId && executionBlocker.runId && !executionReconciliationWake
-              && !issue.conversationAgentId ? executionBlocker.runId : null;
+            const systemWake = opts.requestedByActorType !== "user" && !taskRetryActorId && !wakeCommentId
+              && !durableRequest && !opts.queuedCommentInterruptId && !opts.queuedCommentRequestId && !opts.failedRunId;
+            const freshSourceRunId = systemWake && executionBlocker?.recoveryActionId && executionBlocker.runId
+              && !executionReconciliationWake && !issue.conversationAgentId ? executionBlocker.runId : null;
             const fresh = freshSourceRunId ? await continueFreshInTransaction(tx as unknown as Db, {
               companyId: issue.companyId, runId: freshSourceRunId, trigger: "continuation_wake", delivery: "caller_owns" }) : null;
             if (fresh?.kind !== "continued") return deferBlockedExecution(continuationHold());
@@ -3749,6 +3759,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.freshContinuationOfRunId = freshSourceRunId;
+            if (fresh.isolation === "fresh_isolated_workspace") enrichedContextSnapshot.freshContinuationIsolation = fresh.recoveryActionId;
           }
 
 

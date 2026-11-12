@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentWakeupRequests, agents, approvals, authUsers, companies, createDb, heartbeatRuns, issueApprovals, issueRecoveryActions,
+  agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -10,8 +10,14 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./ex
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
+  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
+import { currentControllerProcessStamp } from "./controller-process-identity.js";
+import { executionControlSchedule } from "./execution-control-work.js";
+import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
+import { loadAgentRunAuthentication } from "../middleware/agent-run-authentication.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "./execution-recovery-attempt.js";
 import { FRESH_CONTINUATION_WINDOW_MS } from "./fresh-continuation-fallback.js";
 
@@ -48,7 +54,7 @@ suite("fresh-continuation fallback", () => {
 
   afterEach(async () => {
     await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
-      issue_approvals, approvals, agent_wakeup_requests, heartbeat_runs, issues cascade`);
+      issue_approvals, approvals, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
   });
 
   afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
@@ -155,6 +161,18 @@ suite("fresh-continuation fallback", () => {
     await expectOneFreshSuccessor(f);
   }, 60_000);
 
+  // Staging: the person had already pressed Retry, and the automatic successor
+  // could not carry that authorization forward. That is the system's failure,
+  // not the person's: the task continues under its responsible user.
+  it("continues a task whose automatic retry lost the person's continuation authorization", async () => {
+    expect(PERSON_OWNED_FAILURE_CODES).not.toContain("continuation_user_authorization_missing");
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "continuation_user_authorization_missing",
+      error: "The automatic retry could not revalidate the original user continuation" });
+    await settleUnrecoverableExecutions(db);
+    const next = await expectOneFreshSuccessor(f);
+    expect(next.responsibleUserId).toBe(userId);
+  }, 60_000);
+
   it("falls back for a failure code nobody has classified yet", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "runner_new_failure_added_next_week" });
     await settleUnrecoverableExecutions(db);
@@ -206,6 +224,144 @@ suite("fresh-continuation fallback", () => {
     await deliver();
     expect(await successors(f.runId)).toHaveLength(0);
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`)).toHaveLength(2);
+  }, 60_000);
+
+  // The cut-off run's agent may still be alive in its old, unreachable sandbox.
+  // Once the continuation is recorded it can neither write to the task through
+  // the API nor publish its workspace, and the next run restores the last save
+  // into a new root on a new allocation.
+  it("fences the cut-off run: its API writes are refused and its workspace epoch is abandoned", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation",
+      error: "runner_remote_process_identity_unavailable" });
+    const workspaceId = randomUUID(), snapshotId = null, leaseId = randomUUID(), environmentId = randomUUID();
+    const location = { environmentId, leaseId, providerLeaseId: "sandbox-1", remoteCwd: "/home/daytona/.paperclip-workspaces/a" };
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "remote", name: "Task workspace", providerType: "remote", providerRef: location.remoteCwd,
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 3, snapshotId,
+        source: { kind: "empty" }, location, writerRunId: f.runId, dirty: true } } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1",
+      workspaceId, leaseId, providerLeaseId: location.providerLeaseId, remoteCwd: location.remoteCwd, epoch: 3,
+      state: "prepared", snapshotId } } }).where(eq(heartbeatRuns.id, f.runId));
+    // Today a failed run's token still writes.
+    const [before] = await loadAgentRunAuthentication(db, { runId: f.runId, companyId, agentId });
+    expect(agentRunWritesRevoked(before)).toBe(false);
+
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+
+    // The auth middleware's own row read refuses every write of the old token.
+    const [after] = await loadAgentRunAuthentication(db, { runId: f.runId, companyId, agentId });
+    expect(agentRunWritesRevoked(after)).toBe(true);
+    await expect(db.transaction(tx => assertAgentRunWriteAllowed(tx as unknown as typeof db, companyId, { agentId, runId: f.runId })))
+      .rejects.toMatchObject({ status: 403, details: { code: "agent_run_superseded" } });
+    // The workspace writer is fenced out and the next preparation starts from the last save in a new root.
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+    expect(workspace!.metadata!.remoteWorkspace).toMatchObject({ epoch: 4, writerRunId: null, dirty: false, location: null });
+    expect(workspace!.providerRef).toBeNull();
+    expect(workspace!.metadata!.remoteWorkspaceAbandonedEpochs).toEqual([expect.objectContaining({ epoch: 3, runId: f.runId, location })]);
+    // The continuation's own token is unaffected.
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    await expect(db.transaction(tx => assertAgentRunWriteAllowed(tx as unknown as typeof db, companyId, { agentId, runId: next!.id })))
+      .resolves.toBeTruthy();
+  }, 60_000);
+
+  // The staging shape: the new server cannot re-reach the old Runner, so the old
+  // run's sandbox lease is still active (or its cleanup is pending) with no stop
+  // receipt. The continuation must still start, not wait behind that cleanup.
+  it.each(["active", "pending_cleanup"] as const)("starts the continuation while the unreachable old lease is %s", async leaseStatus => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation",
+      error: "runner_remote_process_identity_unavailable" });
+    const [environment] = await db.insert(environments).values({ name: `sandbox-${f.runId}`, driver: "sandbox" }).returning();
+    await db.insert(environmentLeases).values({ companyId, issueId: f.issueId, heartbeatRunId: f.runId,
+      environmentId: environment!.id, provider: "daytona", providerLeaseId: `sandbox-${f.runId}`, status: leaseStatus,
+      leasePolicy: "retain_on_failure", metadata: { remoteCwd: "/home/daytona/work", driver: "sandbox" } });
+    await settleUnrecoverableExecutions(db);
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(next).toBeTruthy();
+    // Admission claims it: it leaves the queue instead of being declined for the old run's cleanup.
+    await vi.waitFor(async () => {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, next!.id));
+      expect(current!.status).not.toBe("queued");
+    }, { timeout: 20_000, interval: 100 });
+    // The abandoned allocation stays fenced: the old run still cannot write.
+    const [old] = await loadAgentRunAuthentication(db, { runId: f.runId, companyId, agentId });
+    expect(agentRunWritesRevoked(old)).toBe(true);
+  }, 60_000);
+
+  // A legacy run whose local process may still be alive: the continuation must
+  // never write the same directory. It gets a new isolated workspace and the
+  // decision records the stop as unproven.
+  it("gives the continuation a new isolated workspace while the old local writer may be alive", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    // Its controller ran on another host (the replaced server), so no probe from here can prove it gone.
+    await db.update(heartbeatRuns).set({ processPid: 4242, controllerProcess: { ...currentControllerProcessStamp(), hostHash: "replaced-server" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(hold!.evidence).toMatchObject({ freshContinuation: { isolation: "fresh_isolated_workspace", stopProof: "unproven_isolated" },
+      executionReconciliation: { providerStopProof: "isolated" } });
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(next!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId });
+    // Workspace selection gives it a new isolated workspace, never the old directory.
+    expect(await readFreshWorkspaceReadiness(db, next!)).toEqual({ mode: "fresh_isolated_workspace", retryIntentId: f.actionId,
+      sourceRunId: f.runId, retainedSourceIds: [] });
+  }, 60_000);
+
+  it("lets a previous process still running on this host settle first", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
+    await db.update(heartbeatRuns).set({ processPid: process.pid, controllerProcess: currentControllerProcessStamp() })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "exact_recovery_pending", reason: "previous_process_running" });
+  }, 60_000);
+
+  it("keeps the task workspace when the old local writer is proven gone", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "writer_ended" });
+  }, 60_000);
+
+  it("settles only the reconciliation holds it owns and leaves restore holds and history alone", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted" });
+    const [history] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+      status: "cancelled", outcome: "cancelled", ownerType: "board", cause: "native_restart_recovery_blocked",
+      fingerprint: `history:${f.runId}`, nextAction: "Old note", resolutionNote: "kept", resolvedAt: new Date(),
+      evidence: { runId: f.runId } }).returning();
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    const [untouched] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, history!.id));
+    expect(untouched).toMatchObject({ status: "cancelled", nextAction: "Old note", resolutionNote: "kept", ownerType: "board" });
+    expect(untouched!.evidence).toEqual({ runId: f.runId });
+
+    // A restore hold that workspace recovery has not finished keeps the task with it.
+    const g = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted" });
+    const [restore] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: g.issueId, kind: "active_run_watchdog",
+      status: "resolved", outcome: "blocked", ownerType: "system", cause: "native_continuation_requires_reconciliation",
+      fingerprint: `native-workspace:${g.runId}`, nextAction: "Recovering saved work", resolvedAt: new Date(),
+      evidence: { runId: g.runId, workspaceRestoreFailure: "restore_unsafe_archive",
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: g.runId, replay: "blocked" } } }).returning();
+    expect(await ensureFreshContinuation(db, { companyId, runId: g.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "exact_recovery_pending", reason: "workspace_recovery_owns_restore" });
+    const [kept] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, restore!.id));
+    expect(kept!.evidence).toMatchObject({ workspaceRestoreFailure: "restore_unsafe_archive", automaticRecovery: { replay: "blocked" } });
+    expect(kept!.evidence.executionReconciliation).toBeUndefined();
+  }, 60_000);
+
+  it("schedules no recheck for a held task nothing would act on", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted", hold: "settled_blocked" });
+    await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+      freshContinuationCheck: { kind: "person_owned", reason: "approval_pending", checkedAt: Date.now() - 7_200_000,
+        nextCheckAt: Date.now() - 3_600_000 } })}::jsonb` }).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await nextFreshContinuationCheckAt(db)).not.toBeNull();
+    // The task was cancelled after that check: the schedule goes quiet.
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
+    expect(await nextFreshContinuationCheckAt(db)).toBeNull();
+    expect(await heldExecutionsAwaitingFreshContinuation(db, new Date(), 10)).toEqual([]);
+    expect(await executionControlSchedule(db).disposition()).toBeNull();
   }, 60_000);
 
   it("tells the agent the previous attempt was cut off and which actions are unverified", async () => {

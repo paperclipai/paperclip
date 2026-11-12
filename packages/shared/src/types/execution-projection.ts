@@ -86,6 +86,12 @@ export function requiresExecutionReconciliation(
 export interface ExecutionReconciliation {
   runId: string;
   providerStopped: true;
+  /**
+   * What backs `providerStopped` when the fresh-continuation fallback recorded
+   * it. `isolated`: the old executor is NOT proven stopped; its writes are
+   * revoked and it shares no workspace with the continuation.
+   */
+  providerStopProof?: "writer_ended" | "isolated";
   /** Only the exact namespace-unverified Native ownership hold accepts these. */
   controllerStopped?: true;
   controllerAuthorityDigest?: string;
