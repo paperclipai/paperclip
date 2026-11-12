@@ -280,3 +280,39 @@ it.skipIf(process.platform === "win32")("keeps an uncertainty that starts at SIG
     expect(signals.filter(([, signal]) => signal === "SIGKILL")).toEqual([]);
   } finally { owner.stopObserving(); }
 });
+
+it.skipIf(process.platform === "win32")("re-reads a process listing that fails once while the launcher stops", async () => {
+  const self = row(process.pid, 1, 10);
+  let table: ProcessObservation[] = [self, row(100, process.pid, 100)];
+  let failedReads = 0;
+  let stopping = false;
+  const signals: Array<[number, NodeJS.Signals]> = [];
+  const child = { pid: 100, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+    kill: () => { throw new Error("must not fall back to the direct child"); } };
+  const owner = createProcessTreeOwner(child as unknown as ChildProcess, {
+    readTable: async () => {
+      if (stopping && failedReads === 0) { failedReads += 1; return null; }
+      return table;
+    },
+    signalGroup: (pid, signal) => {
+      signals.push([pid, signal]);
+      child.exitCode = 0; table = [self];
+    },
+  });
+  try {
+    await owner.observe();
+    stopping = true;
+    await stopOwnedProcessTree(child as unknown as ChildProcess, owner, 2_000, 500);
+    expect(failedReads).toBe(1);
+    expect(signals).toEqual([[100, "SIGTERM"]]);
+  } finally { owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("reports why the process listing failed", async () => {
+  const reasons: string[] = [];
+  const inspector = spawn(process.execPath, ["-e", "process.stderr.write('listing unavailable'); process.exit(3)"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  expect(await readProcessTable(() => inspector, reason => reasons.push(reason))).toBeNull();
+  expect(reasons).toEqual(["ps exited code=3 signal=null: listing unavailable"]);
+});
