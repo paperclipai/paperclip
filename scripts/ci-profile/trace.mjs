@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 const millis = (value) => Date.parse(value);
 const id = (value, size = 16) => createHash("sha256").update(value).digest("hex").slice(0, size);
-const failed = (status) => ["failure", "failed", "timed_out", "timedOut", "cancelled", "interrupted"].includes(status);
+// "error" is a commit status that could not complete.
+const failed = (status) => ["failure", "failed", "error", "timed_out", "timedOut", "cancelled", "interrupted"].includes(status);
 const text = (value) => typeof value === "string" && value.length <= 4096;
 
 // Outside checks belong to the push that started this run. A check that began

@@ -231,6 +231,8 @@ test("outside checks are spans on the run's clock, with elapsed time to the last
       { context: "security/scan", state: "success", created_at: at(15) },
       { context: "security/scan", state: "pending", created_at: at(0) },
       { context: "slow/status", state: "pending", created_at: at(0) },
+      { context: "broken/status", state: "error", created_at: at(4) },
+      { context: "broken/status", state: "pending", created_at: at(1) },
     ],
     workflowRuns: [
       { id: 42, path: ".github/workflows/pr.yml", head_sha: "abc", event: "pull_request", name: "PR", status: "completed", created_at: at(0), updated_at: at(20) },
@@ -241,7 +243,7 @@ test("outside checks are spans on the run's clock, with elapsed time to the last
     ],
   });
   assert.deepEqual(checks.map((check) => check.name).sort(),
-    ["Before this run", "Greptile Review", "Review", "Scan", "Skipped", "security/scan", "slow/status"]);
+    ["Before this run", "Greptile Review", "Review", "Scan", "Skipped", "broken/status", "security/scan", "slow/status"]);
   assert.deepEqual(pendingChecks(head, checks).map((check) => check.name), ["Scan", "slow/status"]);
 
   const trace = buildTrace(head, jobs, [], { checks });
@@ -249,20 +251,21 @@ test("outside checks are spans on the run's clock, with elapsed time to the last
   assert.deepEqual(spans.map((event) => [event.data.name, event.data["ci.kind"], event.data.duration_ms, event.data["ci.status"]]), [
     ["Greptile Review", "external_check", 89000, "success"],
     ["security/scan", "external_check", 15000, "success"],
+    ["broken/status", "external_check", 3000, "error"],
     ["Review", "workflow_check", 55000, "failure"],
   ]);
+  assert.deepEqual(spans.map((event) => event.data.error), [false, false, true, true]);
   const root = trace.events[0].data;
   assert.ok(spans.every((event) => event.data["trace.parent_id"] === root["trace.span_id"]));
   assert.equal(spans[0].data["ci.finishes_after_workflow"], true);
   assert.equal(spans[1].data["ci.finishes_after_workflow"], false);
-  assert.equal(spans[2].data.error, true);
   assert.equal(root.duration_ms, 20000);
   assert.equal(root["ci.workflow_ms"], 20000);
   assert.equal(root["ci.all_checks_ms"], 90000);
   assert.equal(root["ci.last_to_finish"], "Greptile Review");
   assert.equal(root["ci.slowest_check"], "Greptile Review");
   assert.equal(root["ci.slowest_check_ms"], 89000);
-  assert.equal(root["ci.check_count"], 3);
+  assert.equal(root["ci.check_count"], 4);
   assert.equal(root["ci.pending_check_count"], 2);
   assert.equal(root["ci.pending_checks"], "Scan, slow/status");
   assert.equal(root["ci.earlier_check_count"], 1);
