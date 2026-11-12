@@ -33,16 +33,21 @@ import fsp from "node:fs/promises";
  * - A process is identified by PID plus kernel start time. The start time is
  *   read again before each signal, so a reused PID is never signalled.
  * - A session or group of a dead leader matches only members that started
- *   before the leader was seen gone. Linux does not reuse a PID number while
- *   any process still uses it as a session or group id, so this excludes a
- *   later session that reused the number.
+ *   no later than the latest member present in the process table where the
+ *   leader was first seen gone. Linux does not reuse a PID number while any
+ *   process still uses it as a session or group id, so a later session that
+ *   reuses the number can only start after those members have exited. The
+ *   bound is a kernel start time from the same table, so it is in the same
+ *   clock domain as the members' start times. `/proc/uptime` is not used: in
+ *   a container it can report a different clock from process start times.
  * - Callers can exclude PIDs and process groups that another owner tracks
  *   (for example a server-managed runtime service).
  *
- * Known limit: lineage is sampled, not event-driven. A process that clears
- * its environment, and whose run-owned parent and session or group leader all
- * exit before the next sample, is not matched. A kernel containment (a
- * delegated cgroup) is needed to close that gap.
+ * Known limit: lineage is sampled, not event-driven. A descendant can still
+ * survive if it clears its inherited environment and detaches through a
+ * double fork that starts and finishes between two samples. Closing that gap
+ * needs kernel containment (a delegated cgroup), which this module does not
+ * use.
  */
 
 export const RUN_ID_ENV_MARKER = "PAPERCLIP_RUN_ID";
@@ -57,8 +62,12 @@ export interface RunProcessIdentity {
 export interface RunLineageEntry extends RunProcessIdentity {
   /** The process led its session or its process group when it was seen. */
   leader?: boolean;
-  /** Clock ticks since boot when the process was first seen gone. */
-  goneAtTicks?: number;
+  /**
+   * For a leader seen gone: the latest kernel start time (clock ticks since
+   * boot) of a member of its session or group in the table where it was first
+   * seen gone. Later members are not matched through the session or group.
+   */
+  memberStartLimit?: number;
 }
 
 export interface RunLineageSnapshot {
@@ -107,8 +116,6 @@ interface ProcEntry extends RunProcessIdentity {
 /** A same-user process table read once from procfs. */
 export interface RunProcessTable {
   entries: Map<number, ProcEntry>;
-  /** Clock ticks since boot when the table was read. */
-  nowTicks: number;
   procRoot: string;
   /**
    * Order in which table reads started. A lineage does not let an older table
@@ -198,16 +205,6 @@ function isGoneState(state: string) {
   return state === "Z" || state === "X" || state === "x";
 }
 
-function readNowTicks(procRoot: string) {
-  try {
-    const seconds = Number.parseFloat(fs.readFileSync(`${procRoot}/uptime`, "utf8").split(/\s+/)[0] ?? "");
-    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * USER_HZ);
-  } catch {
-    // Fall through.
-  }
-  return Number.MAX_SAFE_INTEGER;
-}
-
 function protectedPids(procRoot: string) {
   const pids = new Set<number>();
   let pid = process.pid;
@@ -252,7 +249,7 @@ function identityKey(identity: RunProcessIdentity) {
 export function readRunProcessTable(opts: Pick<RunDescendantScanOptions, "procRoot"> = {}): RunProcessTable {
   const procRoot = opts.procRoot ?? "/proc";
   const entries = new Map<number, ProcEntry>();
-  const table = { entries, nowTicks: readNowTicks(procRoot), procRoot, seq: ++tableReadSeq };
+  const table = { entries, procRoot, seq: ++tableReadSeq };
   if (!isSupported()) return table;
   const uid = process.getuid!();
   let names: string[];
@@ -291,15 +288,7 @@ export async function readRunProcessTableAsync(
 ): Promise<RunProcessTable> {
   const procRoot = opts.procRoot ?? "/proc";
   const entries = new Map<number, ProcEntry>();
-  const seq = ++tableReadSeq;
-  let nowTicks = Number.MAX_SAFE_INTEGER;
-  try {
-    const seconds = Number.parseFloat((await fsp.readFile(`${procRoot}/uptime`, "utf8")).split(/\s+/)[0] ?? "");
-    if (Number.isFinite(seconds) && seconds >= 0) nowTicks = Math.ceil(seconds * USER_HZ);
-  } catch {
-    // Keep the open-ended bound.
-  }
-  const table = { entries, nowTicks, procRoot, seq };
+  const table = { entries, procRoot, seq: ++tableReadSeq };
   if (!isSupported()) return table;
   const uid = process.getuid!();
   let names: string[];
@@ -352,7 +341,9 @@ export class RunProcessLineage {
         pid: entry.pid,
         startTime: entry.startTime,
         ...(entry.leader ? { leader: true } : {}),
-        ...(typeof entry.goneAtTicks === "number" ? { goneAtTicks: entry.goneAtTicks } : {}),
+        ...(typeof entry.memberStartLimit === "number" && Number.isFinite(entry.memberStartLimit)
+          ? { memberStartLimit: entry.memberStartLimit }
+          : {}),
       });
     }
   }
@@ -511,21 +502,27 @@ export class RunProcessLineage {
     // child that the newer table recorded.
     const stale = typeof table.seq === "number" && table.seq < this.lastTableSeq;
     if (typeof table.seq === "number" && !stale) this.lastTableSeq = table.seq;
-    const liveSidOrGroup = new Set<number>();
+    // Latest member start time of each live session and group in this table.
+    const latestMemberStart = new Map<number, number>();
+    const noteMember = (id: number, startTime: number) => {
+      const latest = latestMemberStart.get(id);
+      if (latest === undefined || startTime > latest) latestMemberStart.set(id, startTime);
+    };
     for (const entry of entries.values()) {
-      liveSidOrGroup.add(entry.sid);
-      liveSidOrGroup.add(entry.pgid);
+      noteMember(entry.sid, Number(entry.startTime));
+      noteMember(entry.pgid, Number(entry.startTime));
     }
     if (!stale) for (const [key, entry] of this.recorded) {
       const live = entries.get(entry.pid);
       if (live && live.startTime === entry.startTime) continue;
-      if (!entry.leader || !liveSidOrGroup.has(entry.pid) || (live && live.startTime !== entry.startTime)) {
+      const memberStart = latestMemberStart.get(entry.pid);
+      if (!entry.leader || memberStart === undefined || (live && live.startTime !== entry.startTime)) {
         this.recorded.delete(key);
         this.changed = true;
         continue;
       }
-      if (entry.goneAtTicks === undefined) {
-        entry.goneAtTicks = table.nowTicks;
+      if (entry.memberStartLimit === undefined) {
+        entry.memberStartLimit = memberStart;
         this.changed = true;
       }
     }
@@ -535,7 +532,7 @@ export class RunProcessLineage {
     const leaders = new Map<number, number>();
     const addLeader = (entry: RunLineageEntry) => {
       if (!entry.leader || blockedLeaders.has(entry.pid)) return;
-      leaders.set(entry.pid, entry.goneAtTicks ?? Number.MAX_SAFE_INTEGER);
+      leaders.set(entry.pid, entry.memberStartLimit ?? Number.MAX_SAFE_INTEGER);
     };
     for (const entry of this.recorded.values()) addLeader(entry);
 
@@ -580,25 +577,38 @@ export class RunProcessLineage {
 
 /**
  * Wall-clock start time (ms since the epoch) of a live process, or null when
- * the PID is gone or the platform is unsupported. Precision is one clock tick.
+ * the PID is gone or the platform is unsupported. Precision is about one
+ * second, because the kernel reports boot time in whole seconds.
  */
 export function readProcessStartedAtMs(pid: number, opts: Pick<RunDescendantScanOptions, "procRoot"> = {}) {
   if (!isSupported() || !Number.isInteger(pid) || pid <= 0) return null;
   const procRoot = opts.procRoot ?? "/proc";
   const stat = readStat(procRoot, pid);
   if (!stat || isGoneState(stat.state)) return null;
-  let uptimeSeconds: number;
-  try {
-    uptimeSeconds = Number.parseFloat(fs.readFileSync(`${procRoot}/uptime`, "utf8").split(/\s+/)[0] ?? "");
-  } catch {
-    return null;
-  }
-  if (!Number.isFinite(uptimeSeconds)) return null;
-  const bootMs = Date.now() - uptimeSeconds * 1_000;
+  const bootMs = readBootTimeMs(procRoot);
+  if (bootMs === null) return null;
   return bootMs + (Number(stat.startTime) / USER_HZ) * 1_000;
 }
 
-/** Lists live processes of the current user that carry `PAPERCLIP_RUN_ID=<runId>`. */
+/**
+ * Boot time (ms since the epoch) from `btime` in `/proc/stat`. This is the
+ * clock that process start times count from. `/proc/uptime` is not used: in a
+ * container it can report a different clock (for example the container's own
+ * uptime), which would shift every derived start time.
+ */
+function readBootTimeMs(procRoot: string) {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(`${procRoot}/stat`, "utf8");
+  } catch {
+    return null;
+  }
+  const match = /^btime\s+(\d+)\s*$/m.exec(raw);
+  if (!match) return null;
+  const seconds = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : null;
+}
+
 export function findRunMarkedProcesses(
   runId: string,
   opts: RunDescendantScanOptions = {},
