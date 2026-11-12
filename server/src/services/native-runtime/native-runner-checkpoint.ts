@@ -302,6 +302,17 @@ export type NativeRemoteBootstrapProof = "bootstrap_incomplete" | "session_opene
 export async function nativeRunnerCheckpointRemoteBootstrapProof(
   db: Pick<Db, "select">, binding: Binding, expected: { runnerInstanceId: string; normalizedSessionId: string },
 ): Promise<NativeRemoteBootstrapProof | null> {
+  const evidence = await nativeRunnerCheckpointRemoteBootstrapEvidence(db, binding, expected.normalizedSessionId);
+  return evidence?.runnerInstanceId === expected.runnerInstanceId ? evidence.proof : null;
+}
+
+/**
+ * The same proof, with the runner instance the checkpoint names. A caller that
+ * must hold the proof across a new controller's registration reads it first.
+ */
+export async function nativeRunnerCheckpointRemoteBootstrapEvidence(
+  db: Pick<Db, "select">, binding: Binding, normalizedSessionId: string,
+): Promise<{ proof: NativeRemoteBootstrapProof; runnerInstanceId: string } | null> {
   try {
     const limit = BOOTSTRAP_CHECKPOINT_PARTS.size + MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + MAX_BOOTSTRAP_CHECKPOINT_EVENTS;
     const parts = await db.select({ part: nativeRunnerCheckpoints.part }).from(nativeRunnerCheckpoints).where(and(
@@ -314,8 +325,8 @@ export async function nativeRunnerCheckpointRemoteBootstrapProof(
       || parts.some(row => !BOOTSTRAP_CHECKPOINT_PARTS.has(row.part) && !/^(?:event|command):\d+$/.test(row.part))) return null;
     const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
     if (!checkpoint || checkpoint.predecessor !== null
-      || checkpoint.recoveryEvidence.runnerInstanceId !== expected.runnerInstanceId
-      || checkpoint.recoveryEvidence.normalizedSessionId !== expected.normalizedSessionId) return null;
+      || checkpoint.recoveryEvidence.normalizedSessionId !== normalizedSessionId) return null;
+    const runnerInstanceId = checkpoint.recoveryEvidence.runnerInstanceId;
     // The decoder above validated these canonical v2 records. Rebuild the
     // controller state in memory without writing files under recovery locks.
     const read = (part: string) => {
@@ -335,8 +346,8 @@ export async function nativeRunnerCheckpointRemoteBootstrapProof(
         .map(seq => read(`event:${seq}`)),
     };
     if ((state.identity as { runId?: unknown } | undefined)?.runId !== binding.runId) return null;
-    if (runnerdStateIsIncompleteBootstrap(state)) return "bootstrap_incomplete";
-    return runnerdStateHasNoProviderTurn(state) ? "session_opened_without_turn" : null;
+    if (runnerdStateIsIncompleteBootstrap(state)) return { proof: "bootstrap_incomplete", runnerInstanceId };
+    return runnerdStateHasNoProviderTurn(state) ? { proof: "session_opened_without_turn", runnerInstanceId } : null;
   } catch {
     return null;
   }
