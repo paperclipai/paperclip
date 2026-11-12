@@ -122,10 +122,39 @@ export async function isLinkedGitWorktree(worktreePath: string) {
   return stat?.isFile() === true;
 }
 
+function hasGitEntry(entries: { name: string }[]) {
+  return entries.some((entry) => entry.name === ".git");
+}
+
+// Returns true when a directory holds, at any depth, a `.git` or `.paperclip`
+// entry: another repository (with its own source and unpublished history) or
+// Paperclip instance data. The outer repository's index and ignore rules say
+// nothing about either, so such a directory is never removed. Symlinks are not
+// followed. A directory that cannot be read counts as protected.
+async function containsProtectedEntry(directory: string, signal?: AbortSignal) {
+  const pending = [directory];
+  while (pending.length > 0) {
+    signal?.throwIfAborted();
+    const current = pending.pop()!;
+    let entries;
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      return true;
+    }
+    for (const entry of entries) {
+      if (PROTECTED_WORKSPACE_DIR_NAMES.has(entry.name)) return true;
+      if (entry.isDirectory()) pending.push(path.join(current, entry.name));
+    }
+  }
+  return false;
+}
+
 // Lists the regenerable directories in a worktree, as paths relative to the
 // worktree root. Symlinks are never followed or returned. A directory with a
 // regenerable name that does not qualify (for example a tracked `build/`) is
-// searched in turn, so eligible directories inside it are still found.
+// searched in turn, so eligible directories inside it are still found. The
+// search stops at a nested checkout: this worktree's rules do not apply there.
 export async function findRegenerableWorkspaceDirs(
   worktreePath: string,
   options: { signal?: AbortSignal } = {},
@@ -137,6 +166,7 @@ export async function findRegenerableWorkspaceDirs(
     if (depth > MAX_WALK_DEPTH) return;
     const entries = await fs.readdir(path.join(worktreePath, relativeDir), { withFileTypes: true })
       .catch(() => []);
+    if (relativeDir && hasGitEntry(entries)) return;
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (PROTECTED_WORKSPACE_DIR_NAMES.has(entry.name)) continue;
@@ -156,17 +186,23 @@ export async function findRegenerableWorkspaceDirs(
       await collect(root, root ? root.split("/").length : 0, candidates);
     }
     if (candidates.length === 0) break;
-    const eligible = new Set(await filterRemovableCandidates(worktreePath, candidates, options.signal));
-    removable.push(...candidates.filter((candidate) => eligible.has(candidate)));
-    roots = candidates.filter((candidate) => !eligible.has(candidate));
+    const ignored = new Set(await filterRemovableCandidates(worktreePath, candidates, options.signal));
+    const protectedCandidates = new Set<string>();
+    for (const candidate of ignored) {
+      if (await containsProtectedEntry(path.join(worktreePath, candidate), options.signal)) protectedCandidates.add(candidate);
+    }
+    removable.push(...candidates.filter((candidate) => ignored.has(candidate) && !protectedCandidates.has(candidate)));
+    // A protected candidate is kept whole and not searched further.
+    roots = candidates.filter((candidate) => !ignored.has(candidate));
   }
   return removable;
 }
 
 // An isolated task directory is not a worktree itself. It holds the task's own
 // files and, often, repository checkouts that the agent cloned into it. Each
-// checkout is compacted as its own root, so that checkout's `.gitignore` decides
-// what is regenerable. Files outside every checkout are never candidates.
+// checkout, including one nested inside another, is compacted as its own root,
+// so that checkout's `.gitignore` and index decide what is regenerable. Files
+// outside every checkout are never candidates.
 const MAX_TASK_DIRECTORY_CHECKOUT_DEPTH = 4;
 
 async function findGitCheckouts(root: string, signal?: AbortSignal) {
@@ -177,7 +213,6 @@ async function findGitCheckouts(root: string, signal?: AbortSignal) {
     const entries = await fs.readdir(absoluteDir, { withFileTypes: true }).catch(() => []);
     if (entries.some((entry) => entry.name === ".git" && (entry.isDirectory() || entry.isFile()))) {
       checkouts.push(relativeDir);
-      return;
     }
     if (depth >= MAX_TASK_DIRECTORY_CHECKOUT_DEPTH) return;
     for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {

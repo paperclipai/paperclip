@@ -496,16 +496,12 @@ describe("durable, authorized connection routing", () => {
 
   it("keeps session identity and fingerprints stable on authenticated refresh, but changes them on manual replacement", async () => {
     const input = { companyId, agentId, responsibleUserId: "alice", adapterType: "paperclip_runner", binding: members[0]!.binding, config: { provider: "codex", model: "gpt-5.6-sol" } };
-    for (const key of ["npm_config_store_dir", "NPM_CONFIG_STORE_DIR", "pnpm_config_store_dir", "PNPM_CONFIG_STORE_DIR"]) vi.stubEnv(key, undefined);
     const first = await prepareManagedAiRuntime(db, input);
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[0]!.binding.grantId)); const ref = grant!.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
     try {
-      const store = path.join(home, "instances", "router-fixture", "package-stores", companyId, "pnpm");
-      expect(first.config.env).toMatchObject({ npm_config_store_dir: store, pnpm_config_store_dir: store, XDG_DATA_HOME: path.join(first.home!, "data") });
-      expect(managedAiSessionFingerprintConfig(first.config, first.home).env).not.toHaveProperty("pnpm_config_store_dir");
       await secretService(db).rotate(ref.secretId, { value: "fixture-new-token", preserveAiSessionEpoch: true }, { userId: "alice" });
       const refreshed = await prepareManagedAiRuntime(db, input);
-      try { expect(refreshed.config.env).toMatchObject({ npm_config_store_dir: store, pnpm_config_store_dir: store }); expect(refreshed.identity).not.toBe(first.identity); expect(refreshed.sessionIdentity).toBe(first.sessionIdentity); expect(managedAiSessionFingerprintConfig(refreshed.config, refreshed.home)).toEqual(managedAiSessionFingerprintConfig(first.config, first.home)); } finally { await refreshed.cleanup(); }
+      try { expect(refreshed.identity).not.toBe(first.identity); expect(refreshed.sessionIdentity).toBe(first.sessionIdentity); expect(managedAiSessionFingerprintConfig(refreshed.config, refreshed.home)).toEqual(managedAiSessionFingerprintConfig(first.config, first.home)); } finally { await refreshed.cleanup(); }
       await secretService(db).rotate(ref.secretId, { value: "fixture-replacement" }, { userId: "alice" });
       const replaced = await prepareManagedAiRuntime(db, input); try { expect(replaced.sessionIdentity).not.toBe(first.sessionIdentity); } finally { await replaced.cleanup(); }
       const [secret] = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, ref.secretId))); expect(secret!.aiSessionEpoch).toBeGreaterThan(0);

@@ -102,20 +102,56 @@ describeEmbeddedPostgres("isolated task directory compaction after task closure"
     expect(await exists(path.join(f.repo, "dist", "index.js"))).toBe(true);
   }
 
+  // A separate repository inside the clone, under a path the clone ignores,
+  // with source and history that exist nowhere else.
+  async function addNestedRepository(f: Awaited<ReturnType<typeof fixture>>) {
+    const nested = path.join(f.repo, "build");
+    await fs.appendFile(path.join(f.repo, ".gitignore"), "build/\n");
+    await fs.mkdir(nested);
+    git(nested, "init", "-q");
+    await fs.writeFile(path.join(nested, "source.txt"), "unique source");
+    git(nested, "add", ".");
+    git(nested, "commit", "-q", "-m", "unpublished source");
+    return nested;
+  }
+
   it.each(["done", "cancelled"] as const)("removes a cloned repository's ignored dependencies after the task is %s", async (status) => {
     const f = await fixture();
+    const nested = await addNestedRepository(f);
     await f.close(status);
     const result = await f.service().sweepTerminalWorkspaces();
     expect(result).toMatchObject({ compacted: 1, compactionFailed: 0 });
     expect(await exists(path.join(f.repo, "node_modules"))).toBe(false);
     expect(await exists(path.join(f.repo, "dist"))).toBe(false);
     await expectSourceKept(f);
+    expect(await fs.readFile(path.join(nested, "source.txt"), "utf8")).toBe("unique source");
+    expect(git(nested, "log", "--format=%s").toString().trim()).toBe("unpublished source");
     // The row still describes a present, reusable directory.
     expect(await f.row()).toMatchObject({ status: "active", closedAt: null, cwd: f.cwd });
     expect(await exists(f.cwd)).toBe(true);
     expect((await f.removedActivity()).map(entry => entry.details)).toEqual([
       expect.objectContaining({ sourceIssueId: f.issueId, removedPaths: ["repo/dist", "repo/node_modules"] })]);
     expect(await fs.readdir(path.join(f.cwd, "..", ".paperclip-compaction-trash")).catch(() => [])).toEqual([]);
+  });
+
+  it("applies each nested checkout's own rules, not the outer checkout's", async () => {
+    const f = await fixture();
+    const inner = path.join(f.repo, "libs", "inner");
+    await fs.mkdir(path.join(inner, "node_modules"), { recursive: true });
+    git(inner, "init", "-q");
+    await fs.writeFile(path.join(inner, ".gitignore"), "dist/\n");
+    // The outer checkout ignores node_modules/, but the inner one tracks it.
+    await fs.writeFile(path.join(inner, "node_modules", "vendored.js"), "tracked\n");
+    git(inner, "add", ".");
+    git(inner, "commit", "-q", "-m", "inner");
+    await fs.mkdir(path.join(inner, "dist"));
+    await fs.writeFile(path.join(inner, "dist", "out.js"), "built\n");
+    await f.close("done");
+    expect(await f.service().sweepTerminalWorkspaces()).toMatchObject({ compacted: 1, compactionFailed: 0 });
+    expect(await fs.readFile(path.join(inner, "node_modules", "vendored.js"), "utf8")).toBe("tracked\n");
+    expect(await exists(path.join(inner, "dist"))).toBe(false);
+    expect(await exists(path.join(f.repo, "node_modules"))).toBe(false);
+    await expectSourceKept(f);
   });
 
   it("removes regenerable files of a directory too large to save before deletion, and keeps the rest", async () => {
@@ -144,17 +180,20 @@ describeEmbeddedPostgres("isolated task directory compaction after task closure"
     await expectSourceKept(f);
   });
 
-  it("keeps a directory that a registered runtime service runs from, and checks again later", async () => {
+  const RETENTION = { dryRun: false, terminalDelayMs: 3 * DAY_MS, orphanGraceMs: 7 * DAY_MS };
+
+  it.each([false, true])("keeps a directory that a registered runtime service runs from, and checks again later (retention %s)", async (retention) => {
     const f = await fixture();
     await db.insert(workspaceRuntimeServices).values({ id: randomUUID(), companyId: f.companyId, scopeType: "execution_workspace",
       serviceName: "web", status: "running", lifecycle: "shared", provider: "local_process", executionWorkspaceId: f.workspaceId,
       cwd: f.repo });
     await f.close("done");
     const now = f.later();
-    const service = f.service({ now });
+    const service = f.service({ now, ...(retention ? { taskDirectoryRetention: RETENTION } : {}) });
     expect(await service.sweepTerminalWorkspaces()).toMatchObject({ compacted: 0, compactionFailed: 0 });
     await expectRegenerableKept(f);
-    // The deferral stays scheduled instead of being forgotten.
+    // The deferral stays scheduled instead of being forgotten, and is not
+    // replaced by a deadline that has already passed.
     const next = await service.nextTerminalWorkspaceSweepAt();
     expect(next).not.toBeNull();
     expect(next!).toBeGreaterThan(now().getTime() + TASK_DIRECTORY_RETRY_MS - 60_000);
@@ -165,11 +204,16 @@ describeEmbeddedPostgres("isolated task directory compaction after task closure"
     expect(await exists(path.join(f.repo, "node_modules"))).toBe(false);
   });
 
-  it("waits a day after closure before touching a task directory", async () => {
+  it.each([false, true])("waits a day after closure before touching a task directory (retention %s)", async (retention) => {
     const f = await fixture();
     await f.close("cancelled");
-    expect(await f.service({ now: f.later(2 * HOUR_MS) }).sweepTerminalWorkspaces()).toMatchObject({ compacted: 0 });
+    const now = f.later(2 * HOUR_MS);
+    const service = f.service({ now, ...(retention ? { taskDirectoryRetention: RETENTION } : {}) });
+    expect(await service.sweepTerminalWorkspaces()).toMatchObject({ compacted: 0 });
     await expectRegenerableKept(f);
+    const next = await service.nextTerminalWorkspaceSweepAt();
+    expect(next!).toBeGreaterThan(now().getTime() + TASK_DIRECTORY_RETRY_MS - 60_000);
+    expect(next!).toBeLessThanOrEqual(now().getTime() + TASK_DIRECTORY_RETRY_MS + 60_000);
   });
 
   it("reports a failed compaction, keeps the files, and retries on the next sweep", async () => {

@@ -3840,6 +3840,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           && compactedTerminalAt.get(workspace.id) !== latestTerminalAt;
         const compactionDueAt = latestTerminalAt + (workspaceCompactionDelayMs ?? 0);
         const archiveDueAt = latestTerminalAt + workspaceReaperCooldownMs;
+        // When compaction next needs a look: its due time, or a later retry when
+        // a busy task directory defers it.
+        let compactionNextAt = compactionDueAt;
         terminalWorkspaceDeadlines.set(workspace.id, reopenPending ? now().getTime()
           : compactionPending ? Math.min(compactionDueAt, archiveDueAt) : archiveDueAt);
         if (compactionPending && options.compact !== false && compactionDueAt <= now().getTime()) {
@@ -3853,7 +3856,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             } else if (mayBeIsolatedTaskDirectoryWorkspace(workspace)) {
               // A task directory stays busy while its consumer check fails,
               // which can last a day after closure. Check again later.
-              terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TASK_DIRECTORY_RETRY_MS);
+              compactionNextAt = now().getTime() + TASK_DIRECTORY_RETRY_MS;
+              terminalWorkspaceDeadlines.set(workspace.id, compactionNextAt);
             }
           } catch (error) {
             if (signal?.aborted) throw error;
@@ -3871,7 +3875,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const dueAt = latestTerminalAt + opts.taskDirectoryRetention.terminalDelayMs;
           const compactionWaiting = compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt;
           if (dueAt > now().getTime()) {
-            terminalWorkspaceDeadlines.set(workspace.id, compactionWaiting ? Math.min(dueAt, compactionDueAt) : dueAt);
+            terminalWorkspaceDeadlines.set(workspace.id, compactionWaiting ? Math.min(dueAt, compactionNextAt) : dueAt);
             result.skippedCooldown += 1;
           } else await expireTaskDirectory(workspace, new Date(dueAt));
           continue;
