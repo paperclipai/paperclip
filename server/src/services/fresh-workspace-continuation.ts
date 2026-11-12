@@ -20,6 +20,7 @@ import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { nativeExecutionUsesTaskWorkspace } from "./heartbeat/external-provider.js";
 import { preparePluginWorkspace, type WorkspaceWorkers } from "./plugin-workspaces.js";
+import { readFreshContinuationReadiness } from "./fresh-continuation-fallback.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
@@ -360,6 +361,11 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     if (workspace) return null;
     if (admitted.binding.executionWorkspaceId !== run.id) throw new Error("native_execution_workspace_admission_missing");
   }
+  // A fresh continuation whose old writer is not proven stopped never reuses
+  // its directory. Read only when the run's context names that record.
+  const freshContinuation = run.contextSnapshot?.freshContinuationIsolation
+    ? await readFreshContinuationReadiness(db, run, issueId) : null;
+  if (freshContinuation) return freshContinuation;
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${run.id}`,

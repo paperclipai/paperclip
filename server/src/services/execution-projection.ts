@@ -360,9 +360,15 @@ export function projectExecution(
   ) {
     if (recoveryAction.evidence.continuationDelivery === "invalidated") {
       projection.cause = "continuation_ownership_changed";
-      projection.nextAction =
-        "The task was closed or reassigned before delivery. Inspect the current task owner and status.";
+      projection.nextAction = "The task changed before this continuation started, so it was not started.";
       return set("failed", "Continuation cancelled");
+    }
+    // A hold the fresh-continuation fallback settled together with another:
+    // the task continues through that record.
+    if (recoveryAction.evidence.continuationDelivery === "coalesced") {
+      projection.cause = null;
+      projection.nextAction = "Paperclip continues the task in a fresh run from its saved work.";
+      return set("queued", "Continuing automatically");
     }
     const reconciliation = recoveryAction.evidence.executionReconciliation;
     if (recoveryAction.cause === "native_restart_recovery_blocked"
@@ -390,10 +396,13 @@ export function projectExecution(
     projection.cause = null;
     projection.nextAction = deliveredRunId
       ? null
-      : "The previous execution is reconciled. Its continuation is queued for delivery.";
+      : recoveryAction.evidence.freshContinuationSettlement
+        ? "Paperclip continues the task in a fresh run from its saved work."
+        : "The previous execution is reconciled. Its continuation is queued for delivery.";
     return set(
       deliveredRunId ? "completed" : "queued",
-      deliveredRunId ? "Continued in another run" : "Continuation queued",
+      deliveredRunId ? "Continued in another run"
+        : recoveryAction.evidence.freshContinuationSettlement ? "Continuing automatically" : "Continuation queued",
     );
   }
   if (
