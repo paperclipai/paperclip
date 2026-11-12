@@ -197,6 +197,7 @@ function pathsByIssue<Path extends { companyId: string; issueId: string | null }
 
 function createIssueGraphLivenessIndex(input: IssueGraphLivenessInput): IssueGraphLivenessIndex {
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
+  const agentList = [...agentsById.values()];
   // Keyed by the agent record, not its id: the input may list an id twice.
   const eligibilityByAgent = new Map<IssueLivenessAgentInput, AgentWorkEligibility>();
   const invokableAgentsByCompanyId = new Map<string, IssueLivenessAgentInput[]>();
@@ -204,7 +205,7 @@ function createIssueGraphLivenessIndex(input: IssueGraphLivenessInput): IssueGra
   function eligibility(agent: IssueLivenessAgentInput) {
     let result = eligibilityByAgent.get(agent);
     if (!result) {
-      result = getAgentWorkEligibility({ agent, agents: agentsById });
+      result = getAgentWorkEligibility({ agent, agents: agentList });
       eligibilityByAgent.set(agent, result);
     }
     return result;

@@ -123,22 +123,11 @@ function buildRepairGuidance(
   ].join(" ");
 }
 
-/**
- * The agents of a company, as a list or already indexed by id. A caller that
- * checks many agents passes the index, so it is built once and not once per
- * check.
- */
-export type AgentEligibilityAgents =
-  | AgentEligibilityAgent[]
-  | ReadonlyMap<string, AgentEligibilityAgent>;
-
 export function getAgentOrgChainHealth(input: {
   agent: AgentEligibilityAgent;
-  agents: AgentEligibilityAgents;
+  agents: AgentEligibilityAgent[];
 }): AgentOrgChainHealth {
-  const byId = Array.isArray(input.agents)
-    ? new Map(input.agents.map((agent) => [agent.id, agent]))
-    : input.agents;
+  const byId = new Map(input.agents.map((agent) => [agent.id, agent]));
   const fullChain: AgentOrgChainEntry[] = [chainEntry(input.agent, 0, "self")];
   const invalidAncestors: AgentInvalidOrgChainAncestor[] = [];
   const pausedAncestors: AgentInvalidOrgChainAncestor[] = [];
@@ -233,7 +222,7 @@ export function getAgentOrgChainHealth(input: {
 
 export function getAgentWorkEligibility(input: {
   agent: AgentEligibilityAgent;
-  agents: AgentEligibilityAgents;
+  agents: AgentEligibilityAgent[];
 }): AgentWorkEligibility {
   const orgChainHealth = getAgentOrgChainHealth(input);
   const assignabilityReason: AgentEligibilityLifecycleReason = !isAgentStatusAssignableToWork(input.agent.status)
@@ -268,14 +257,14 @@ export function getAgentWorkEligibility(input: {
 
 export function isAgentAssignableToWork(input: {
   agent: AgentEligibilityAgent;
-  agents: AgentEligibilityAgents;
+  agents: AgentEligibilityAgent[];
 }): boolean {
   return getAgentWorkEligibility(input).assignable;
 }
 
 export function isAgentInvokable(input: {
   agent: AgentEligibilityAgent;
-  agents: AgentEligibilityAgents;
+  agents: AgentEligibilityAgent[];
 }): boolean {
   return getAgentWorkEligibility(input).invokable;
 }

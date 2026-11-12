@@ -44,8 +44,7 @@ const scriptPath = fileURLToPath(import.meta.url);
 const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 // The modules of the fix. The baseline process loads their pre-fix source;
 // every other module is the current tree in both processes.
-const modules = ["server/src/services/issues.ts", "server/src/services/recovery/issue-graph-liveness.ts",
-  "packages/shared/src/agent-eligibility.ts"];
+const modules = ["server/src/services/issues.ts", "server/src/services/recovery/issue-graph-liveness.ts"];
 // Functions of the review-attention read path, reported from the CPU profile
 // with the time spent in them and everything they call.
 const profiledFunctions = ["listIssueReviewAttentionMap", "classifyIssueGraphLiveness", "classifyIssueReviewPaths",
