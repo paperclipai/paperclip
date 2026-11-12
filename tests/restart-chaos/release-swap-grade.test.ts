@@ -103,6 +103,9 @@ describe("release swap task grade", () => {
     expect(grade).toMatchObject({ verdict: "open_no_owner", label: "nothing pending" });
     expect(grade.detail).toContain("run r9 running with no activity for 17 min");
     expect(gradeReleaseSwapTask({ ...stuck, runs: [{ ...stuck.runs[0]!, lastActivityAt: 1_500_000 }] }).verdict).toBe("still_working");
+    const retry = gradeReleaseSwapTask({ ...stuck, scheduledRetry: true, runs: [failed, { ...stuck.runs[0]!, status: "queued" }] });
+    expect(retry).toMatchObject({ verdict: "open_no_owner", label: "nothing pending" });
+    expect(gradeReleaseSwapTask({ ...stuck, scheduledRetry: true, runs: [failed] }).verdict).toBe("still_working");
   });
 
   it("says the number is incomplete when task views could not be read", () => {

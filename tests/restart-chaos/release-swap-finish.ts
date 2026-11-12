@@ -73,6 +73,7 @@ async function queuedWakes(db: Client, companyId: string): Promise<Map<string, n
   const rows = await db.$client.unsafe(
     `select payload->>'issueId' as "issueId", count(*)::int as count from agent_wakeup_requests
       where company_id::text = $1 and status in ('queued', 'claimed', 'deferred_issue_execution', 'deferred_comment_wake')
+        and not (status = 'claimed' and run_id is not null)
       group by payload->>'issueId'`, [companyId]) as Row[];
   return new Map(rows.flatMap(row => row.issueId ? [[String(row.issueId), Number(row.count)] as const] : []));
 }

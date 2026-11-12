@@ -89,7 +89,7 @@ function liveOwner(task: GradeTaskInput): string | null {
   const live = task.runs.find(run => LIVE_RUN.has(run.status) && !stale.has(run.runId));
   if (live) return `run ${live.runId} ${live.status}`;
   if (task.queuedWakes > 0) return `${task.queuedWakes} queued wake(s)`;
-  if (task.scheduledRetry) return "scheduled retry";
+  if (task.scheduledRetry && !stale.size) return "scheduled retry";
   const interruption = task.interruption;
   if (!stale.size && interruption && (interruption.state === "working" || interruption.state === "retry_scheduled" || interruption.retryWait)) {
     return `interruption ${interruption.retryWait ? "retry waiting on the system" : interruption.state}`;
