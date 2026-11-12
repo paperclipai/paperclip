@@ -161,7 +161,7 @@ import {
 import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerNeverAuthenticated, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRemoteBootstrapProof, nativeRunnerNeverAuthenticated, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS, localRunnerProcessReconnectGraceMs } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -16673,7 +16673,9 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId || runnerState.runId !== runId
       || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
       || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended") return null;
-    if (!hasRemoteBootstrapRestartProof(runId) && !(remoteRunnerStateNeverConnected(runnerState)
+    if (!hasRemoteBootstrapRestartProof(runId) && !((remoteRunnerStateNeverConnected(runnerState)
+      || await nativeRunnerCheckpointRemoteBootstrapProof(input.db, input.execution.binding,
+        { runnerInstanceId: input.runnerInstanceId, normalizedSessionId: nativeSessionKey(input.execution) }) !== null)
       && recordRemoteBootstrapRestartProof(runId, await stopStaleRemoteRunnerBeforeBootstrap({
         execution: input.execution, runnerExecutionTarget: input.runnerExecutionTarget, identity: runnerState, onLog: input.onLog,
       })))) return null;
@@ -16759,12 +16761,16 @@ async function createRunnerdBackendWithinSessionClaim(
       throw new Error("runner_harness_state_mismatch: runner_identity");
     }
     if (runnerState.lifecycle !== "suspended") {
+      const notSuspendedRunId = typeof runnerState.runId === "string" ? runnerState.runId : null;
+      if (source === "host_preparation" && notSuspendedRunId === input.execution.binding.runId) {
+        await inspectOwnUnpreparedBootstrap();
+      }
       return {
         complete: false,
         runnerState: null,
         providerSessionIdentity: null,
         incompleteReason: "not_suspended",
-        notSuspendedRunId: typeof runnerState.runId === "string" ? runnerState.runId : null,
+        notSuspendedRunId,
       };
     }
     let providerState: Record<string, unknown>;
