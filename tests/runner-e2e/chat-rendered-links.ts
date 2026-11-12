@@ -10,12 +10,15 @@ export interface ConversationLinkInput {
   origin: string; companyId: string; companyPrefix?: string | null; sourceId: string; leadId: string;
   comments: Row[]; runs: ChatRun[]; projects: Row[]; activity: Row[];
 }
-/** Markdown link targets written in saved text, e.g. a reply body: [label](target). */
+/** Markdown link targets written in saved text, e.g. a reply body: inline [label](target), reference
+ * definitions ([label]: target) and autolinks (<https://...>). */
 export function markdownLinkTargets(text: string): string[] {
-  return [...text.matchAll(/\]\(\s*([^)\s]+)/g)].map(match => {
-    const target = match[1]!;
-    return target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
-  });
+  const unwrap = (target: string) => target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
+  return [
+    ...[...text.matchAll(/\]\(\s*([^)\s]+)/g)].map(match => unwrap(match[1]!)),
+    ...[...text.matchAll(/^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(\S+)/gm)].map(match => unwrap(match[1]!)),
+    ...[...text.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!),
+  ];
 }
 /** A link target that still holds a template placeholder such as <prefix> or {companyId}; it opens no real page. */
 export function unresolvedLinkTarget(href: string): boolean {

@@ -788,6 +788,8 @@ describe("inbox-search.show-my-work person scope", () => {
   it("accepts a saved reply whose task identifiers the conversation links, however it is worded", () => {
     const rendered = ["/COM/issues/COM-2", "/COM/issues/COM-1"];
     expect(failed(inbox("Waiting on you: COM-2 (blocked) and COM-1 (in review).", rendered))).toEqual([]);
+    expect(failed(inbox("Waiting on you: com-2 (blocked) and com-1 (in review).", rendered))).toEqual([]);
+    expect(failed(inbox("Waiting on you: [the decision][d] and [the review][r].\n\n[d]: /COM/issues/COM-2\n[r]: /COM/issues/COM-1", rendered))).toEqual([]);
     expect(failed(inbox(`Two of the three tasks in your [Mine](/COM/inbox/mine) inbox need you:\n${items}\n\nAnswered above.`, ["/COM/inbox/mine", ...rendered]))).toEqual([]);
   });
   it("accepts a Mine list link without counting it as a link to every task", () => {

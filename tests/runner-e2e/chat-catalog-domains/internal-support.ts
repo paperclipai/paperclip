@@ -100,8 +100,8 @@ export function savedReplyLinks(o: Pick<InternalObservation, "links" | "origin" 
     const at = location(href); if (!at) return false;
     if (targets.has(at)) return true;
     const parts = at.split("?")[0]!.split("/"); const identifier = parts[parts.indexOf("issues") + 1];
-    return parts.includes("issues") && !!identifier && /^[A-Z][A-Z0-9]*-\d+$/.test(identifier)
-      && new RegExp(`(?<![\\w-])${identifier}(?![\\w-])`).test(o.reply);
+    return parts.includes("issues") && !!identifier && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(identifier)
+      && new RegExp(`(?<![\\w-])${identifier}(?![\\w-])`, "i").test(o.reply);
   });
 }
 export function observation(value: unknown): InternalObservation | undefined {
