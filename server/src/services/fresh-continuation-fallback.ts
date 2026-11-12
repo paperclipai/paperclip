@@ -198,12 +198,17 @@ async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect)
 /** The opening context of the continuation. It names no person who must act. */
 export function freshContinuationNote(input: { runId: string; unverified: string[]; workspace: "restored_last_save" | "kept" }) {
   const actions = input.unverified.length
-    ? `These actions of that run have unverified outcomes: ${input.unverified.join(", ")}. Check whether each one took effect before repeating it.`
-    : "No action of that run is recorded with an unknown outcome, but check the task's recent history before repeating any side effect.";
+    ? `These actions of that run have unverified outcomes: ${input.unverified.join(", ")}. For each one, first check whether it took effect.`
+    : "No action of that run is recorded with an unknown outcome; check the task's recent history before repeating any side effect.";
   const files = input.workspace === "restored_last_save"
     ? "Its unsaved file changes could not be verified, so this run starts from the last saved version of the workspace; those changes were not applied."
     : "This run starts from the task's saved workspace.";
-  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files} ${actions}`;
+  // How to proceed. Nobody has to restore the previous attempt: the agent
+  // checks, redoes what is missing, and asks only through the normal approval.
+  const guidance = "If an action did not take effect, or repeating it is safe, do it again and continue the task. "
+    + "If repeating it would be a governed or irreversible action, request it through the normal approval step. "
+    + "Nothing about the previous attempt needs to be restored before you continue.";
+  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files} ${actions} ${guidance}`;
 }
 
 const USER_TEXT = "The previous run was cut off. Paperclip continues the task in a fresh run from its last saved work.";

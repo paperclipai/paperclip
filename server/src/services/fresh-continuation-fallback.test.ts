@@ -10,9 +10,10 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./ex
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
-  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS,
+  freshContinuationNote, heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
+import { buildExecutionContinuation } from "./execution-continuation.js";
 import { currentProcessSpaceHash } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
@@ -377,6 +378,44 @@ suite("fresh-continuation fallback", () => {
     // settle window after the recent change it schedules the recheck, never "ok".
     const check = await heartbeatService(db).checkAssignedWorkInvariant({ companyId, issueId: f.issueId });
     expect(["violation", "settling"]).toContain(check?.verdict.kind);
+  }, 60_000);
+
+  // The agent is told to check, redo what is missing, and ask only through the
+  // normal approval step; never that someone must restore the previous attempt.
+  it("guides the agent to check and redo, never to wait for an operator to recover the previous attempt", async () => {
+    for (const unverified of [[], ["github.merge_pull_request"]]) {
+      const note = freshContinuationNote({ runId: randomUUID(), unverified, workspace: "restored_last_save" });
+      if (unverified.length) expect(note).toContain("first check whether it took effect");
+      expect(note).toContain("do it again and continue the task");
+      expect(note).toContain("request it through the normal approval step");
+      expect(note).not.toMatch(/operator|recover its result|execution state|authorize rerunning/i);
+    }
+    // The same holds for the continuation context the agent actually receives.
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_session_interrupted" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    const continuation = await buildExecutionContinuation({ db, companyId, issueId: f.issueId, agentId,
+      context: { previousRunId: f.runId }, summary: null, exposeLowTrustRaw: false });
+    const text = JSON.stringify(continuation);
+    expect(text).toContain("was cut off before it finished");
+    expect(text).not.toMatch(/operator must|recover its result|recover .*execution state|authorize rerunning/i);
+  }, 60_000);
+
+  // A task whose run completes normally gets no fallback activity at all, even
+  // with an older hold on the task (a run queued across a swap that then ran).
+  it("leaves a task that completes normally alone, even with an older run's hold", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation", hold: "settled_blocked" });
+    const [later] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: f.issueId, nativeIssueId: f.issueId,
+      status: "succeeded", startedAt: new Date(), finishedAt: new Date(), contextSnapshot: { issueId: f.issueId } }).returning();
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" })).toEqual({ kind: "successor_exists" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: later!.id, trigger: "held_recovery" }))
+      .toEqual({ kind: "not_applicable", reason: "run_not_unfinished" });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+    await settleUnrecoverableExecutions(db);
+    await occupySlot();
+    expect(await sweepWake(f.issueId)).toBeNull();
+    await deliver();
+    expect(await pendingRecord(f.issueId)).toBeUndefined();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, f.issueId))).toHaveLength(2);
   }, 60_000);
 
   it("starts no run for a task that finished while its continuation was pending", async () => {
