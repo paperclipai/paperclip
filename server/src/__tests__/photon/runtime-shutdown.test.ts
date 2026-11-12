@@ -73,7 +73,9 @@ it("saved Photon attachments use the external useful owner and retain failed clo
     providerConfig:{provider:"imessage-photon",userName:"Agent",intakeAfter:0,credentials:{allocation:"dedicated",projectId:"project",projectSecret:"controlled-project-secret",lineId:"line",phoneNumber:"+15555550100"}},
     callbacks:{onMessage:async()=>{},onPhotonEvent:async()=>{},onPhotonAssertOwned:async()=>{},onPhotonCheckpoint:async()=>{},onPhotonFailure:async()=>{},
       onPhotonUsefulClientDebt:debt,onPhotonIntakePlacement:async()=>({kind:"cloud",bindingId:"controlled-current-binding"})} });
-  let closeFails = true;
+  let closeFails = true, receiptReady = false;
+  const receiptFailure = new Error("controlled saved attachment cleanup receipt refusal");
+  const receipt = vi.fn(async () => { if (!receiptReady) throw receiptFailure; });
   const failure = new Error("controlled useful close failed");
   controls[1]!.client.close.mockImplementation(async () => { if (closeFails) throw failure; });
   try {
@@ -101,11 +103,17 @@ it("saved Photon attachments use the external useful owner and retain failed clo
     await expect(recovered.fetchData()).rejects.toBe(failure);
     expect(allocate).toHaveBeenCalledTimes(2); expect(controls[1]!.client.attachments.downloadStream).toHaveBeenCalledTimes(1);
     closeFails = false;
+    await expect(adapter.drainUsefulClient(receipt)).rejects.toBe(receiptFailure);
+    await expect(recovered.fetchData(), "saved attachment provider work must wait for its rejected cleanup receipt").rejects.toBe(receiptFailure);
+    expect(allocate).toHaveBeenCalledTimes(2); expect(controls[1]!.client.attachments.downloadStream).toHaveBeenCalledTimes(1);
+    expect(controls[2]!.client.attachments.downloadStream).not.toHaveBeenCalled();
+    receiptReady = true;
     await expect(recovered.fetchData()).resolves.toEqual(body);
+    expect(receipt).toHaveBeenCalledTimes(3);
     expect(allocate).toHaveBeenCalledTimes(3); expect(controls[2]!.client.attachments.downloadStream).toHaveBeenCalledTimes(1);
     expect(controls[2]!.client.close).toHaveBeenCalledTimes(1);
   } finally {
-    closeFails = false;
+    closeFails = false; receiptReady = true;
     try { await runtime.shutdown(); } finally { vi.restoreAllMocks(); }
   }
 });

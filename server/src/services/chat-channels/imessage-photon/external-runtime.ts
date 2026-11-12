@@ -358,14 +358,50 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         if (external.localResourceId !== null && !external.localClosureConfirmed) {
           external = (await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).repair(external)).state;
         }
-        const adapter = options.currentRuntime(id)?.getProviderAdapter();
-        const drainedState = external;
-        if (adapter instanceof PhotonChatAdapter) await adapter.drainUsefulClient(async () => {
-          if (drainedState.failure?.code !== "sender_close") return;
-          // This exact pre-drain receipt cannot erase a concurrent future hold,
-          // authority/allocation/checkpoint update or a different failure.
-          await store.retained(drainedState, value => ({ ...value, failure: null }));
-        });
+        const usefulRuntime = options.currentRuntime(id), usefulContext = usefulRuntime ? options.context(usefulRuntime) : undefined;
+        const adapter = usefulRuntime?.getProviderAdapter();
+        const drainedState = external, senderResource = external.senderResource;
+        if (adapter instanceof PhotonChatAdapter) {
+          // Rebinding a receipt requires the SAME actual Runtime/sender object,
+          // even when the fresh state has no sender_close failure. An old queue
+          // cannot lend its physical close to another allocation's callback.
+          if (!usefulRuntime || !usefulContext || usefulContext.endpointRuntime !== usefulRuntime
+            || options.context(usefulRuntime) !== usefulContext || options.currentRuntime(id) !== usefulRuntime
+            || usefulRuntime.companyId !== drainedState.identity.companyId || usefulRuntime.endpointId !== drainedState.identity.endpointId
+            || usefulContext.generation !== drainedState.identity.runtimeGeneration
+            || usefulContext.credentialFingerprint !== drainedState.identity.credentialReferences
+            || !senderResource || !resources.owns(senderResource.id, usefulRuntime)) {
+            // Join ONLY a previously retained receipt. Never install the new
+            // slot's callback using another object's physical-close fact.
+            await adapter.drainUsefulClient();
+            throw new Error("Photon useful close receipt has no exact original runtime and sender ownership");
+          }
+          await adapter.drainUsefulClient(async () => {
+            const current = await store.read(drainedState.identity);
+            if (!current) throw new Error("Photon useful close receipt has no retained scope");
+            // Positive replacement retires ONLY the old already-closed queue.
+            // It grants no close receipt or business use of the newer allocation.
+            if (!isDeepStrictEqual(current.identity, drainedState.identity)
+              || !isDeepStrictEqual(current.binding, drainedState.binding) || current.handoffId !== drainedState.handoffId)
+              return "obsolete";
+            if (!current.senderResource) throw new Error("Photon useful close receipt sender ownership is unknown");
+            if (current.senderResource.id !== senderResource.id) return "obsolete";
+            if (!isDeepStrictEqual({ ...current.senderResource, closed: false }, { ...senderResource, closed: false }))
+              throw new Error("Photon useful close receipt sender descriptor changed");
+            if (current.phase === "retiring" || current.phase === "retired" || current.senderResource.closed) return "obsolete";
+            if (current.phase !== "external") throw new Error("Photon useful close receipt has no current external authority");
+            if (drainedState.failure?.code !== "sender_close") return;
+            // A committed receipt with a lost reply is already settled. Other
+            // failure domains remain owned and are never erased by this receipt.
+            if (current.failure?.code !== "sender_close") return;
+            if (current.failure.nextAttemptAt === null || Date.parse(current.failure.nextAttemptAt) > Date.now()
+              || !isDeepStrictEqual(current.failure, drainedState.failure))
+              throw new Error("Photon useful close receipt requires current authorized cleanup retry");
+            // Preserve legitimate checkpoint progress; the SAME failure and exact
+            // original sender must still match, then full current-state CAS wins.
+            await store.retained(current, value => ({ ...value, failure: null }));
+          });
+        }
         else if (external.failure?.code === "sender_close") {
           const removed = await options.removeRuntime(id);
           const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });

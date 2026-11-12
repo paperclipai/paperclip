@@ -1,5 +1,7 @@
 import { registerIdleLocalWorkProbe } from "../idle-local-work.js";
 
+export type PhotonUsefulCloseReceipt = () => Promise<void | "obsolete">;
+
 /** Unary useful work owns its actual channel until close resolves. There is no
  * keepalive, idle timeout or new poller. Failed close retains the same resource
  * and blocks the next operation until its normal retry actually closes it. */
@@ -9,13 +11,14 @@ export class PhotonUsefulClient<T extends { close(): Promise<void> | void }> {
   private pending = 0;
   private failed = false;
   private unrecordedDebt = false;
+  private closeReceipt?: PhotonUsefulCloseReceipt;
   private stopped = false;
   private readonly unregister: () => void;
   constructor(private readonly create: () => T, initial?: T, private readonly recordDebt: () => Promise<void> = async () => {}) {
     this.client = initial;
-    this.unregister = registerIdleLocalWorkProbe(() => this.failed || this.unrecordedDebt ? "unknown" : this.pending || this.client ? "present" : "none");
+    this.unregister = registerIdleLocalWorkProbe(() => this.failed || this.unrecordedDebt || this.closeReceipt ? "unknown" : this.pending || this.client ? "present" : "none");
   }
-  private async closeCurrent(afterClose?: () => Promise<void>) {
+  private async closeCurrent(afterClose?: PhotonUsefulCloseReceipt) {
     const client = this.client;
     if (client) {
       try { await client.close(); this.client = undefined; this.failed = false; }
@@ -27,10 +30,16 @@ export class PhotonUsefulClient<T extends { close(): Promise<void> | void }> {
     }
     // The exact cleanup receipt substitutes for recording debt after an actual
     // successful close. A failed receipt stays pending and is not a close error.
-    if (afterClose) { await afterClose(); this.unrecordedDebt = false; }
-    else if (this.unrecordedDebt) { await this.recordDebt(); this.unrecordedDebt = false; }
+    if (afterClose) this.closeReceipt = afterClose;
+    const receipt = this.closeReceipt;
+    if (receipt) {
+      const outcome = await receipt();
+      if (this.closeReceipt === receipt) this.closeReceipt = undefined;
+      this.unrecordedDebt = false;
+      if (outcome === "obsolete") this.stopped = true;
+    } else if (this.unrecordedDebt) { await this.recordDebt(); this.unrecordedDebt = false; }
   }
-  hasUnrecordedCleanupDebt(): boolean { return this.unrecordedDebt; }
+  hasUnrecordedCleanupDebt(): boolean { return this.unrecordedDebt || !!this.closeReceipt; }
   private enqueue<R>(action: () => Promise<R>): Promise<R> {
     this.pending += 1;
     const result = this.tail.then(action);
@@ -42,6 +51,7 @@ export class PhotonUsefulClient<T extends { close(): Promise<void> | void }> {
     return this.enqueue(async () => {
       if (this.stopped) throw new Error("Photon useful client is stopped");
       await this.closeCurrent();
+      if (this.stopped) throw new Error("Photon useful client is stopped");
       const client = this.create(); this.client = client;
       let value: R;
       try { value = await action(client); }
@@ -55,7 +65,7 @@ export class PhotonUsefulClient<T extends { close(): Promise<void> | void }> {
       return value;
     });
   }
-  drain(afterClose?: () => Promise<void>): Promise<void> { return this.enqueue(() => this.closeCurrent(afterClose)); }
+  drain(afterClose?: PhotonUsefulCloseReceipt): Promise<void> { return this.enqueue(() => this.closeCurrent(afterClose)); }
   close(): Promise<void> {
     this.stopped = true;
     return this.enqueue(async () => { await this.closeCurrent(); this.unregister(); });

@@ -314,6 +314,46 @@ describe("Photon actual resource join and useful-channel owner", () => {
       try { await f.adapter.disconnect(); } finally { create.mockRestore(); f.allocation.mockRestore(); }
     }
   });
+  it("a rejected exact post-close receipt remains owned before another useful operation", async () => {
+    let creates = 0, closeFails = true, receiptReady = false;
+    const closeFailure = new Error("controlled original useful close refusal"), receiptFailure = new Error("controlled exact post-close receipt refusal");
+    const closes: number[] = [], debt = vi.fn(async () => {}), knownAction = vi.fn(async () => ({ messageId: "known-original-result" }));
+    const laterAction = vi.fn(async () => "later-useful-result"), receipt = vi.fn(async () => { if (!receiptReady) throw receiptFailure; });
+    const owner = new PhotonUsefulClient(() => { const id = ++creates; return { close: async () => { closes.push(id); if (id === 1 && closeFails) throw closeFailure; } }; }, undefined, debt);
+    try {
+      expect(await owner.run(knownAction)).toEqual({ messageId: "known-original-result" });
+      expect(knownAction).toHaveBeenCalledTimes(1); expect(creates).toBe(1);
+      closeFails = false; await expect(owner.drain(receipt)).rejects.toBe(receiptFailure);
+      expect(closes).toEqual([1, 1]);
+      await expect(owner.run(laterAction), "rejected cleanup receipt must block later construction and provider work").rejects.toBe(receiptFailure);
+      expect(creates).toBe(1); expect(laterAction).not.toHaveBeenCalled(); expect(knownAction).toHaveBeenCalledTimes(1);
+      receiptReady = true; expect(await owner.run(laterAction)).toBe("later-useful-result");
+      expect(receipt).toHaveBeenCalledTimes(3); expect(creates).toBe(2); expect(laterAction).toHaveBeenCalledTimes(1);
+      expect(knownAction).toHaveBeenCalledTimes(1); expect(closes).toEqual([1, 1, 2]);
+    } finally { closeFails = false; receiptReady = true; await owner.close(); }
+  });
+  it("positive obsolete receipt stops the old useful queue before any later allocation or provider action", async () => {
+    let creates = 0, attempts = 0;
+    const close = vi.fn(async () => {}), action = vi.fn(async () => "must-not-run"), failure = new Error("controlled receipt persistence unavailable");
+    const owner = new PhotonUsefulClient(() => { creates++; return { close }; }, { close });
+    try {
+      await expect(owner.drain(async () => { if (++attempts === 1) throw failure; return "obsolete"; })).rejects.toBe(failure);
+      await expect(owner.run(action)).rejects.toThrow("stopped");
+      expect(attempts).toBe(2); expect(creates).toBe(0); expect(action).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledTimes(1);
+      await owner.close(); expect(close).toHaveBeenCalledTimes(1);
+    } finally { await owner.close(); }
+  });
+  it("only explicit cleanup drain can replace a refused receipt for the same already-joined useful owner", async () => {
+    const failure = new Error("controlled stale receipt"), original = vi.fn(async () => { throw failure; }), current = vi.fn(async () => {});
+    let creates = 0; const close = vi.fn(async () => {}), action = vi.fn(async () => "current-useful-result");
+    const owner = new PhotonUsefulClient(() => { creates++; return { close: async () => {} }; }, { close });
+    try {
+      await expect(owner.drain(original)).rejects.toBe(failure);
+      await expect(owner.run(action)).rejects.toBe(failure); expect(creates).toBe(0); expect(action).not.toHaveBeenCalled();
+      await owner.drain(current); expect(original).toHaveBeenCalledTimes(2); expect(current).toHaveBeenCalledTimes(1); expect(close).toHaveBeenCalledTimes(1);
+      expect(await owner.run(action)).toBe("current-useful-result"); expect(creates).toBe(1); expect(action).toHaveBeenCalledTimes(1);
+    } finally { await owner.drain(current); await owner.close(); }
+  });
   it("known provider receipt survives cleanup refusal and old physical resource retries before new send", async () => {
     let opens = 0, closes = 0, sends = 0, debt = 0;
     const owner = new PhotonUsefulClient(() => { opens++; return { close: async () => { if (++closes === 1) throw new Error("cleanup refused"); } }; }, undefined, async () => { debt++; });

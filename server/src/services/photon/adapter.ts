@@ -1,5 +1,5 @@
 import { createOwnedPhotonClient } from "./owned-client.js";
-import { PhotonUsefulClient } from "./useful-client.js";
+import { PhotonUsefulClient, type PhotonUsefulCloseReceipt } from "./useful-client.js";
 import { PhotonRecoveryTransport } from "./recovery-transport.js";
 import { createHash } from "node:crypto";
 import {
@@ -105,8 +105,9 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   private localClient?: GrpcAdvancedIMessage;
   private usefulClient?: PhotonUsefulClient<GrpcAdvancedIMessage>;
   onUsefulClientDebt?: () => Promise<void>;
-  async drainUsefulClient(afterClose?: () => Promise<void>): Promise<void> {
-    await this.externalClientOwner().drain(afterClose);
+  async drainUsefulClient(afterClose?: PhotonUsefulCloseReceipt): Promise<void> {
+    if (afterClose) await this.externalClientOwner().drain(afterClose);
+    else await this.usefulClient?.drain();
   }
   hasUnrecordedUsefulClientDebt(): boolean { return this.usefulClient?.hasUnrecordedCleanupDebt() ?? false; }
   private makeClient(): GrpcAdvancedIMessage {

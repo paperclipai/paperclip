@@ -17,7 +17,7 @@ import { PhotonReceiver } from "../../services/photon/receiver.js";
 import { credentialFingerprint } from "../../services/chat-channels/credential-fingerprint.js";
 import { createPhotonExternalRuntimeOwner } from "../../services/chat-channels/imessage-photon/external-runtime.js";
 import { PHOTON_EXTERNAL_STATE, photonStateFor } from "../../services/chat-channels/imessage-photon/external-store.js";
-import { photonHash, photonExternalStateSchema, readPhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
+import { photonHash, photonExternalStateSchema, readPhotonExternalState, type PhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
 
 import { photonFixture } from "./fixture.js";
 import * as photonExternalRuntime from "../../services/chat-channels/imessage-photon/external-runtime.js";
@@ -761,18 +761,23 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
   });
 
 
-  async function unrecordedSenderFixture() {
+  async function unrecordedSenderFixture(effects?: { before(current: PhotonExternalState, next: PhotonExternalState): void; after?(current: PhotonExternalState, next: PhotonExternalState): void }) {
     const persistenceFailure = new Error("controlled sender debt transaction rollback");
     const closeFailure = new Error("controlled exact useful close failure");
     let failDebtWrite = false, closeFails = false;
     const debtWrites: number[] = [], normalStore = photonStores.createPhotonExternalStore;
     vi.spyOn(photonStores, "createPhotonExternalStore").mockImplementation(database => {
       const store = normalStore(database), retained = store.retained.bind(store);
-      return { ...store, retained: async (...args: Parameters<typeof store.retained>) => retained(args[0], current => {
-        const next = args[1](current);
-        if (failDebtWrite && next.failure?.code === "sender_close") { debtWrites.push(Date.now()); throw persistenceFailure; }
-        return next;
-      }, args[2]) };
+      return { ...store, retained: async (...args: Parameters<typeof store.retained>) => {
+        let previous: PhotonExternalState | undefined;
+        const result = await retained(args[0], current => {
+          const next = args[1](current); effects?.before(current, next);
+          if (failDebtWrite && next.failure?.code === "sender_close") { debtWrites.push(Date.now()); throw persistenceFailure; }
+          previous = current; return next;
+        }, args[2]);
+        if (previous) effects?.after?.(previous, result);
+        return result;
+      } };
     });
     const c = await managedConfiguration(), control = photonFixture();await c.reconstructExternal(control);
     const runtime = c.runtime.get(c.endpoint.id);if (!runtime) throw new Error("normal retained sender runtime absent");
@@ -1203,6 +1208,139 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     await db.transaction(async tx => {
       await lockPhotonCompanyMutation(tx, f.companyId, "imessage-photon");
     });
+  });
+
+  it("normal useful receipt preserves a future hold until authorized Retry and accepts its actual lost SQL reply without duplicate provider work", async () => {
+    const receiptFailure = new Error("controlled exact receipt transaction rollback"), lostReply = new Error("controlled receipt commit reply loss");
+    let refuse = true, loseReply = true, lostReplies = 0, receiptWrites = 0;
+    const t = await unrecordedSenderFixture({
+      before(current, next) { if (current.failure?.code === "sender_close" && next.failure === null) { receiptWrites++; if (refuse) throw receiptFailure; } },
+      after(current, next) { if (current.failure?.code === "sender_close" && next.failure === null && loseReply) { loseReply = false; lostReplies++; throw lostReply; } },
+    });
+    let primary: { error: unknown } | undefined, coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    const later = vi.fn(async () => "later-current-result"), errors: unknown[] = [];
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+      t.arm(); await t.invoke(); t.restorePersistence();
+      await expect(t.adapter.drainUsefulClient()).rejects.toBeInstanceOf(Error); t.restoreClose();
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) }); coordinators.push(coordinator);
+      await t.c.service.registerReceiverWork(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(receiptWrites).toBeGreaterThan(0), { timeout: 5000 });
+      await expect(t.adapter.withClient(later)).rejects.toBe(receiptFailure); expect(later).not.toHaveBeenCalled(); t.assertSingleSend();
+      const held = readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE)); if (!held?.failure) throw new Error("normal retained receipt failure absent");
+      const future = { ...held.failure, nextAttemptAt: new Date(Date.now() + 60_000).toISOString() };
+      await t.c.state.update(PHOTON_EXTERNAL_STATE, () => ({ ...held, failure: future }));
+      refuse = false;
+      await expect(t.adapter.withClient(later)).rejects.toThrow("current authorized cleanup retry");
+      expect(readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE))?.failure).toEqual(future); expect(later).not.toHaveBeenCalled();
+      const management = await connectionManagementService(db).authorize({ type: "board", userId: f.userId, source: "session" }, "connections:configure",
+        { type: "connection_management", companyId: f.companyId, connectionId: t.c.connection.id, provider: "imessage-photon", purpose: "chat", operation: "POST /chat-endpoints/:endpointId/provider-work/:actionId/retry" });
+      await t.c.service.retrySlackFormReceipt(t.c.endpoint.id, held.handoffId, management);
+      await vi.advanceTimersByTimeAsync(30_001); // The existing worker error-backoff, not an extra retry policy.
+      await vi.waitFor(async () => { expect(lostReplies).toBe(1); expect(readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE))?.failure).toBeNull(); }, { timeout: 5000 });
+      const committedWrites = receiptWrites;
+      expect(await t.adapter.withClient(later)).toBe("later-current-result");
+      expect(receiptWrites).toBe(committedWrites); expect(later).toHaveBeenCalledTimes(1); t.assertSingleSend();
+    } catch (error) { primary = { error }; }
+    finally {
+      refuse = false; loseReply = false; t.restorePersistence(); t.restoreClose(); const cleanup: unknown[] = [];
+      try { await coordinator?.stop(); } catch (error) { cleanup.push(error); } vi.useRealTimers();
+      try { await t.c.runtime.removeEndpoint(t.c.endpoint.id); } catch (error) { cleanup.push(error); }
+      try { await t.control.adapter.disconnect(); } catch (error) { cleanup.push(error); }
+      if (cleanup.length) throw new AggregateError([...(primary ? [primary.error] : []), ...cleanup], "normal rejected-receipt retry cleanup remains owned");
+    }
+    if (primary) throw primary.error;
+  });
+  it("normal reconciliation cannot rebind an old closed useful queue onto a newer unknown sender slot or erase its failure", async () => {
+    const receiptFailure = new Error("controlled retained receipt rollback"); let refuse = true;
+    const t = await unrecordedSenderFixture({ before(current, next) { if (refuse && current.failure?.code === "sender_close" && next.failure === null) throw receiptFailure; } });
+    let primary: { error: unknown } | undefined, coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    const later = vi.fn(async () => "must-not-run"), errors: unknown[] = [];
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+      t.arm(); await t.invoke(); t.restorePersistence(); await expect(t.adapter.drainUsefulClient()).rejects.toBeInstanceOf(Error); t.restoreClose();
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) }); coordinators.push(coordinator);
+      await t.c.service.registerReceiverWork(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(t.adapter.hasUnrecordedUsefulClientDebt()).toBe(true), { timeout: 5000 });
+      await expect(t.adapter.withClient(later)).rejects.toBe(receiptFailure);
+      const old = readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE)); if (!old?.senderResource) throw new Error("normal original sender allocation absent");
+      // Controlled unknown-record input, not a claimed allocation or close fact.
+      // Its only purpose is to disprove borrowing OLD physical closure for it.
+      const newer = { ...old, senderResource: { ...old.senderResource, id: randomUUID(), closed: false },
+        failure: { code: "sender_close" as const, attempts: 7, nextAttemptAt: new Date().toISOString() } };
+      await t.c.state.update(PHOTON_EXTERNAL_STATE, () => newer); refuse = false;
+      const beforeErrors = errors.length;
+      await db.transaction(tx => notifyChatReceiver(tx, t.c.endpoint)); await vi.advanceTimersByTimeAsync(30_001);
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(beforeErrors), { timeout: 5000 });
+      expect(await t.c.state.read(PHOTON_EXTERNAL_STATE)).toEqual(newer);
+      expect(t.adapter.hasUnrecordedUsefulClientDebt(), "normal reconciliation must retire the OLD pending receipt without a useful operation").toBe(false);
+      // The normal mismatch path already retried the retained OLD callback.
+      // This useful call only observes stopped; it must not drive cleanup.
+      await expect(t.adapter.withClient(later)).rejects.toThrow("stopped");
+      expect(later).not.toHaveBeenCalled(); t.assertSingleSend(); expect(await t.c.state.read(PHOTON_EXTERNAL_STATE)).toEqual(newer);
+    } catch (error) { primary = { error }; }
+    finally {
+      refuse = false; t.restorePersistence(); t.restoreClose(); const cleanup: unknown[] = [];
+      try { await coordinator?.stop(); } catch (error) { cleanup.push(error); } vi.useRealTimers();
+      try { await t.c.runtime.removeEndpoint(t.c.endpoint.id); } catch (error) { cleanup.push(error); }
+      try { await t.control.adapter.disconnect(); } catch (error) { cleanup.push(error); }
+      if (cleanup.length) throw new AggregateError([...(primary ? [primary.error] : []), ...cleanup], "normal unknown-slot receipt cleanup remains owned");
+    }
+    if (primary) throw primary.error;
+  });
+
+  it("a pending useful receipt observes normal retiring publication before removeRuntime enters shutdown and blocks old business", async () => {
+    const receiptFailure = new Error("controlled useful receipt transaction rollback"); let refuse = true;
+    const makeOwner = photonExternalRuntime.createPhotonExternalRuntimeOwner;
+    const actualOwners: ReturnType<typeof makeOwner>[] = [];
+    vi.spyOn(photonExternalRuntime, "createPhotonExternalRuntimeOwner").mockImplementation((database, options) => {
+      const owner = makeOwner(database, options); actualOwners.push(owner); return owner;
+    });
+    const t = await unrecordedSenderFixture({ before(current, next) { if (refuse && current.failure?.code === "sender_close" && next.failure === null) throw receiptFailure; } });
+    let primary: { error: unknown } | undefined, coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let releaseRemove = () => {}, enteredRemove = () => {};
+    const gate = new Promise<void>(resolve => { releaseRemove = resolve; }), entered = new Promise<void>(resolve => { enteredRemove = resolve; });
+    const normalRemove = t.c.runtime.removeEndpoint.bind(t.c.runtime), later = vi.fn(async () => "must-not-run");
+    let restoreRemove: (() => void) | undefined, retirement: Promise<unknown> | undefined;
+    const disconnect = vi.spyOn(t.adapter, "disconnect");
+    try {
+      t.arm(); await t.invoke(); t.restorePersistence(); await expect(t.adapter.drainUsefulClient()).rejects.toBeInstanceOf(Error); t.restoreClose();
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => {} }); coordinators.push(coordinator);
+      await t.c.service.registerReceiverWork(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(t.adapter.hasUnrecordedUsefulClientDebt()).toBe(true), { timeout: 5000 });
+      await expect(t.adapter.withClient(later)).rejects.toBe(receiptFailure); expect(t.adapter.hasUnrecordedUsefulClientDebt()).toBe(true);
+      refuse = false;
+      const remove = vi.spyOn(t.c.runtime, "removeEndpoint").mockImplementation(async id => { if (id === t.c.endpoint.id) { enteredRemove(); await gate; } return normalRemove(id); });
+      restoreRemove = () => { remove.mockRestore(); };
+      const owner = actualOwners.at(-1);
+      if (!owner) throw new Error("normal reconstructed Photon owner absent");
+      // Exercise the actual service-created internal retirement port. Configure
+      // pause first pre-drains the registry, before this publication boundary.
+      retirement = owner.retire(t.c.endpoint.id); void retirement.catch(() => {});
+      await entered;
+      const retiring = readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE)); if (!retiring) throw new Error("normal retiring state absent");
+      expect(retiring.phase).toBe("retiring"); expect(disconnect).not.toHaveBeenCalled();
+      expect(t.adapter.hasUnrecordedUsefulClientDebt()).toBe(true);
+      // Only the receipt sees retiring: normal removeRuntime has not entered
+      // registry/adapter shutdown, so its stopped flag cannot explain refusal.
+      await expect(t.adapter.withClient(later)).rejects.toThrow("stopped");
+      expect(disconnect).not.toHaveBeenCalled(); expect(later).not.toHaveBeenCalled(); t.assertSingleSend();
+      const after = readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE));
+      expect(after?.phase).toBe("retiring"); expect(after?.failure).toEqual(retiring.failure);
+      expect(after?.senderResource).toEqual(retiring.senderResource); expect(after?.acceptedSequence).toBe(retiring.acceptedSequence);
+      releaseRemove(); await retirement;
+      expect(readPhotonExternalState(await t.c.state.read(PHOTON_EXTERNAL_STATE))?.phase).toBe("retired");
+    } catch (error) { primary = { error }; }
+    finally {
+      refuse = false; releaseRemove(); t.restorePersistence(); t.restoreClose(); const cleanup: unknown[] = [];
+      try { await retirement; } catch (error) { if (!primary) cleanup.push(error); }
+      restoreRemove?.();
+      try { await coordinator?.stop(); } catch (error) { cleanup.push(error); }
+      try { await t.c.runtime.removeEndpoint(t.c.endpoint.id); } catch (error) { cleanup.push(error); }
+      try { await t.control.adapter.disconnect(); } catch (error) { cleanup.push(error); } disconnect.mockRestore();
+      if (cleanup.length) throw new AggregateError([...(primary ? [primary.error] : []), ...cleanup], "normal retiring-receipt cleanup remains owned");
+    }
+    if (primary) throw primary.error;
   });
 
 });
