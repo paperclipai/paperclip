@@ -333,6 +333,16 @@ suppresses push-triggered workflow runs for those pushes. The release jobs
 therefore dispatch `docker.yml` explicitly at the new tag ref; the tag
 mapping keys off `github.ref` either way.
 
+When the merge queue is enabled for `master`,
+[`docker-merge-group.yml`](../.github/workflows/docker-merge-group.yml) builds
+and probes the production image for each merge-group commit. It has no registry
+credentials and uploads an OCI archive with a record of the commit, tree,
+architecture and digest. The `master` push for that same commit then pushes
+those exact bytes by digest instead of rebuilding
+(`scripts/merge-group-image.mjs`). Without a matching successful merge-group
+run, or on any mismatch or error, the push builds from source. The PID 1 probe,
+exact-source gate and signing apply on both paths.
+
 Canary dispatches first look up the full-SHA master image. Reuse requires a
 valid multi-platform index with both `linux/amd64` and `linux/arm64`, a matching
 registry digest, and signed provenance from this repository's `docker.yml`
