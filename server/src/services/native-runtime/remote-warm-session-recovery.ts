@@ -5,6 +5,7 @@ import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNat
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { readyPortableTaskSource } from "../plugin-task-ownership.js";
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -12,6 +13,7 @@ export type RemoteWarmSessionRecovery = {
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
   releasedSource?: DurableRecoveryIdentity;
+  portableSourceTaskId?: string;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };
@@ -128,6 +130,7 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   matchesExecution: (previous: NativeExecutionInput) => boolean;
   loadCheckpoint: (previous: NativeExecutionInput) => PersistedNativeSession | null;
   canReuseProcess: (previous: NativeExecutionInput) => boolean;
+  portableSourceTaskId?: string;
 }): Promise<RemoteWarmSessionRecovery | null> {
   const { binding } = input.execution;
   const { target } = input;
@@ -152,13 +155,15 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   // sandbox (for example after a restart or deploy replaced the controller)
   // holds no Runner to adopt, so live adoption steps aside. Ordinary admission
   // then retires the finished owner or keeps it held with a named reason.
-  if (target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
+  if (!input.portableSourceTaskId && target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
     return null;
   }
   if (target.transport !== "sandbox" || !target.leaseId || !target.environmentId ||
-      !target.providerKey || !target.sandboxLeaseAcquisition || target.sandboxLeaseAcquisition.outcome !== "resumed" ||
+      !target.providerKey || !target.sandboxLeaseAcquisition ||
+      (!input.portableSourceTaskId && target.sandboxLeaseAcquisition.outcome !== "resumed") ||
       identity.runId === binding.runId) return deny("target_not_resumed_sandbox");
   const providerLeaseId = target.sandboxLeaseAcquisition.providerLeaseId;
+  const sourceProviderLeaseId = input.portableSourceTaskId ?? providerLeaseId;
   const [prior] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations })
     .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .where(and(eq(heartbeatRuns.id, identity.runId), eq(heartbeatRuns.companyId, binding.companyId),
@@ -171,7 +176,7 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     throw new NativeControllerRecoveryWaitingError(prior.owner.leaseExpiresAt);
   }
   if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny("owner_unsettled");
-  settledPredecessor = { runId: identity.runId, providerLeaseId };
+  if (sourceProviderLeaseId === providerLeaseId) settledPredecessor = { runId: identity.runId, providerLeaseId };
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||
       checkpoint.identity.companyId !== binding.companyId || checkpoint.identity.issueId !== binding.issueId ||
@@ -194,15 +199,22 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   const priorLeases = await input.db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, binding.companyId), eq(environmentLeases.heartbeatRunId, identity.runId),
     eq(environmentLeases.issueId, binding.issueId), eq(environmentLeases.environmentId, target.environmentId),
-    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, providerLeaseId),
+    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, sourceProviderLeaseId),
   ));
   if (priorLeases.length !== 1 || priorLeases[0].metadata?.remoteCwd !== target.remoteCwd ||
-      !["released", "expired", "active"].includes(priorLeases[0].status)) return deny("prior_lease_mismatch");
+      !["released", "expired", "active", ...(input.portableSourceTaskId ? ["retained"] : [])].includes(priorLeases[0].status)) {
+    return deny("prior_lease_mismatch");
+  }
   return {
     identity, checkpoint, previousExecution: previous, reuseProcess: input.canReuseProcess(previous),
+    portableSourceTaskId: input.portableSourceTaskId,
     remote: { providerLeaseId, remoteCwd: target.remoteCwd },
     revalidate: async leaseOwner => {
       await assertPriorStopped();
+      if (input.portableSourceTaskId &&
+          (await readyPortableTaskSource(input.db, binding.companyId, target.leaseId!, identity))?.taskId !== input.portableSourceTaskId) {
+        return deny("prior_lease_mismatch");
+      }
       const controller = await currentNativeControllerIdentity();
       const [current] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations, issue: issues, agent: agents, company: companies })
         .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))

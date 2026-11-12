@@ -172,6 +172,11 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+A portable restore uses the durable ownership claim and the same account
+identity after a credential refresh or controller replacement. It starts a
+new Runner on the target. Run attachment applies the current tools and
+runtime configuration to the restored provider session.
+
 A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
 Before creating a fresh workspace for an admitted Retry, Core may send the
 original task-owned workspace's `prepare` request with `verifyExisting: true`.

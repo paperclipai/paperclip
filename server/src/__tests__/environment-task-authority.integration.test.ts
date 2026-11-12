@@ -241,19 +241,33 @@ databaseSuite("environment task lease authority", () => {
     await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, oldLeaseId));
     let sessionStateAvailable = false;
     const operations: string[] = [];
-    const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }),
-      call: async (_id: string, _method: string, params: any) => ["read_state", "archive_state"].includes(params.operation.kind)
+    const call = vi.fn(async (_id: string, _method: string, params: any) => ["read_state", "archive_state"].includes(params.operation.kind)
         ? { kind: "state", taskId: params.taskId, state: { schema: "paperclip.runner.durable.state.v1", lifecycle: "suspended",
             ...(params.operation.identity ?? params.operation.priorIdentity) } }
         : params.operation.kind === "status"
           ? (operations.push("status"), { kind: "status", taskId: params.taskId, phase: "completed", executionStopped: true, sessionStateAvailable })
-        : { kind: "accepted", taskId: params.taskId },
-    } as unknown as PluginWorkerManager;
+        : { kind: "accepted", taskId: params.taskId });
+    const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call } as unknown as PluginWorkerManager;
     const runtime = environmentRuntimeService(db, { pluginWorkerManager: workers });
     const runner = { runnerId: "runner", leaseId: oldLeaseId, sessionId: "session", runId: nextRunId,
       turnId: "turn", itemId: "item", harness: "codex", protocolMin: 1, protocolMax: 3 };
     const checkpointIdentity = { ...priorIdentity, turnId: "prior-turn", itemId: "prior-item" };
     const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, oldLeaseId));
+    const portableTargetLeaseId = randomUUID();
+    await db.update(environmentLeases).set({ metadata: { ...source.metadata, portableTaskSuccessor: {
+      sourceLeaseId: oldLeaseId, targetLeaseId: portableTargetLeaseId,
+      operation: { kind: "ensure_ownership", operationId: portableTargetLeaseId, sourceTaskId: "old-task",
+        sourceGeneration: "source-generation", targetGeneration: "target-generation", policy: "ordinary", identity: checkpointIdentity },
+    } } }).where(eq(environmentLeases.id, oldLeaseId));
+    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId, priorIdentity, inspectCheckpoint: true })).rejects.toThrow("not authorized");
+    await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
+      kind: "read_state", identity: checkpointIdentity, resumeFrom: "old-task",
+    } })).rejects.toThrow("not authorized");
+    await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
+      kind: "submit", preparedLaunchId: "fixture", projectIds: [], bootstrapTicket: "fixture", runner, resumeFrom: "old-task",
+    } })).rejects.toThrow("not authorized");
+    expect(call).not.toHaveBeenCalled();
     await db.update(environmentLeases).set({ metadata: { ...source.metadata, runnerTaskSessionRetained: false } }).where(eq(environmentLeases.id, oldLeaseId));
     await expect(authorize()).rejects.toThrow("not authorized");
     await expect(resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId, priorIdentity, inspectCheckpoint: true })).resolves.toBe("old-task");

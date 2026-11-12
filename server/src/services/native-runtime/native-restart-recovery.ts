@@ -123,6 +123,7 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
+      portablePreparationLeaseId?: string;
       /** False when the prior controller suspended this run in a clean drain. */
       chargesProviderAttempt?: boolean;
     };
@@ -1546,6 +1547,12 @@ export async function claimNativeRestartRecoveries(input: {
       const continuedSessionOnly = hasCheckpoint && checkpointIdentityMatches && providerEvents.length === 0
         && !pendingInheritedRequests && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null
         && checkpointRecord.terminal == null;
+      const portablePreparation = pluginTask?.unlaunchedPortable === true && row.run.status === "running" &&
+        row.coordinator.phase === "observed" && !durableAuthority && !row.run.sessionIdAfter &&
+        row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION &&
+        (hasCheckpoint ? admissionCheckpointOnly && providerEvents.length === 0 : !hasProviderEvidence) &&
+        (!row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt || await carriesInheritedRunnerIdentity(tx, row.run)) &&
+        !(await hasNativeExecutionStartEvidence(tx, row.run));
       const remoteRunnerNeverLaunched = !unclaimedBootstrap && remoteWorkspace?.state === "prepared" && !pluginTask
         && !durableAuthority && stagedAttachment === null
         && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
@@ -1672,11 +1679,11 @@ export async function claimNativeRestartRecoveries(input: {
         : await restartResumeKeepsAttempt(tx, { runId: row.run.id, coordinator: row.coordinator });
       const resumeKeepsAttempt = restartCredit.keepsAttempt;
       const classification = classifyNativeRunnerRecoveryEvidence({
-        remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
-        unclaimedBootstrap,
+        remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority) || portablePreparation,
+        unclaimedBootstrap: unclaimedBootstrap || portablePreparation && row.coordinator.attempt === 0,
         remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
-          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || remoteFollowUpNeverAttached,
-        remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
+          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || remoteFollowUpNeverAttached || portablePreparation,
+        remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched || portablePreparation ? "remote_runner_never_launched"
           : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
           : remoteRunnerNeverReceivedCommands ? "remote_runner_never_received_commands"
           : remoteFollowUpNeverAttached ? "remote_follow_up_never_attached"
@@ -1687,13 +1694,13 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessAlive: providerProcesses.livePids.length > 0,
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
-        hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
+        hasCheckpoint: hasCheckpoint && !portablePreparation && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
           && !remoteRunnerNeverLaunched && !remoteFollowUpNeverAttached && !(remoteBootstrapProvenIncomplete && reboundSessionOnly),
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
           (!remoteSandbox || remoteWorkspace !== null),
-        hasProviderEvidence: hasProviderEvidence && !(unclaimedBootstrap && inheritedCheckpointOnly),
+        hasProviderEvidence: hasProviderEvidence && !portablePreparation && !(unclaimedBootstrap && inheritedCheckpointOnly),
         checkpointFailed:
           (checkpointRecord.terminal as Record<string, unknown> | undefined)
             ?.runTerminalState === "failed" &&
@@ -1893,7 +1900,7 @@ export async function claimNativeRestartRecoveries(input: {
           leaseOwner,
           // Cleanup and earlier candidates can outlive the batch observation.
           // The owner row is locked: grant the full lease at this write.
-          leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
+          leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority || portablePreparation ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
           controllerBootId: controller.bootId,
           controllerHostHash,
           controllerPid: controller.pid,
@@ -1981,7 +1988,7 @@ export async function claimNativeRestartRecoveries(input: {
         await restoreNativeSessionExecution(tx as unknown as Db, { issue, run: row.run, agentName: resumptionAgent.name, now });
       }
 
-      claimScope = { companyId: row.run.companyId, issueId: row.coordinator.issueId, controller, remote: Boolean(durableAuthority) };
+      claimScope = { companyId: row.run.companyId, issueId: row.coordinator.issueId, controller, remote: Boolean(durableAuthority || portablePreparation) };
       const common = {
         runId: row.run.id,
         leaseOwner,
@@ -2021,6 +2028,7 @@ export async function claimNativeRestartRecoveries(input: {
       return {
         kind: claimKind,
         ...common,
+        ...(claimKind === "bootstrap_incomplete" && portablePreparation && pluginTask ? { portablePreparationLeaseId: pluginTask.id } : {}),
       } satisfies NativeRestartRecoveryClaim;
     }).catch((error: unknown) => {
       // The whole candidate transaction rolled back, so this run's state is

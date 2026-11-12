@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
-import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
+import { environmentTaskOperationSchema, type PluginEnvironmentTaskResult } from "@paperclipai/plugin-sdk";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunResults, nativeRunnerCheckpoints, plugins } from "@paperclipai/db";
@@ -12,6 +12,7 @@ import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
+import { readyPortableTaskSource, reconcilePluginTaskOwnership } from "../plugin-task-ownership.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
@@ -83,7 +84,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
       leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "source-fixture", version: "1.0.0", status: "ready",
-      manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
+      manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, sessionHandoffVersion: 1 }] } as never });
     await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "plugin", status: "active",
       config: { pluginKey: pluginId, driverKey: "tasks" } });
     const metadata = { driver: "plugin", pluginId, driverKey: "tasks", runnerTaskLease: true };
@@ -98,7 +99,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const input = { companyId, leaseId, context, identity, resumeFrom: "source-task",
       ...(provider === "codex" ? { codexSourceRecoveryVersion: 1 as const } : { acpxSourceRecoveryVersion: 1 as const }),
       accountIdentity: "current-selected-account", matchesExecution: (previous: typeof sourceExecution) => previous.provider.kind === execution.provider.kind && previous.workspace.cwd === execution.workspace.cwd };
-    const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call: vi.fn(async (_id: string, _method: string, p: any) => {
+    const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call: vi.fn(async (_id: string, _method: string, p: any): Promise<PluginEnvironmentTaskResult> => {
       if (p.operation.kind === "prepare") return { kind: "prepared", taskId: p.taskId,
         launch: { configurationId: "source-configuration", requirementsDigest: `sha256:${"a".repeat(64)}`, provider: {} } };
       if (p.operation.kind === "check_project_auth") return { kind: "project_auth", taskId: p.taskId, provider: p.operation.provider, configurationId: p.operation.configurationId, allowed: true };
@@ -124,6 +125,94 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     return { ...input, runId, sourceRunId, sourceLeaseId, environmentId, agentId, issueId, owner, oldOwner, oldWriter, checkpoint, execution, sourceExecution, build, operation, submit, workers, task,
       harness: provider === "claude" ? "claude" as const : "codex" as const, authProvider: provider === "claude" ? "anthropic" : "openai" };
   }
+
+  it.each(["ordinary", "reclaim_if_needed"] as const)("reconciles the same %s ownership request after a lost response", async policy => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(environmentLeases).set({ status: "retained", releasedAt: null,
+      metadata: sql`(${environmentLeases.metadata} - 'remoteExecutionTermination') || ${JSON.stringify({
+        providerMetadata: { ownershipGeneration: "source-generation" }, runnerTaskAccountIdentity: f.accountIdentity,
+      })}::jsonb`,
+    }).where(eq(environmentLeases.id, f.sourceLeaseId));
+    await db.update(environmentLeases).set({
+      metadata: sql`${environmentLeases.metadata} || '{"providerMetadata":{"ownershipGeneration":"target-generation"}}'::jsonb`,
+    }).where(eq(environmentLeases.id, f.leaseId));
+    const request = { companyId: f.companyId, sourceLeaseId: f.sourceLeaseId, targetLeaseId: f.leaseId, policy };
+    const send = (database: typeof db) => reconcilePluginTaskOwnership(database, request, operation =>
+      executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager, { companyId: f.companyId, leaseId: f.leaseId, operation }));
+    const describe = (database: typeof db, ownershipSignal?: AbortSignal) => executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager,
+      { companyId: f.companyId, leaseId: f.leaseId, ownershipSignal, operation: { kind: "describe" } });
+    if (policy === "ordinary") await db.update(environmentLeases).set({
+      metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ portableTaskPreviousLeaseId: f.sourceLeaseId })}::jsonb`,
+    }).where(eq(environmentLeases.id, f.leaseId));
+    f.workers.call.mockRejectedValueOnce(new Error("worker transport lost"));
+    await expect(policy === "ordinary" ? describe(db) : send(db)).rejects.toThrow();
+    const operation = f.workers.call.mock.calls[0][2].operation;
+    expect(operation).toMatchObject({ kind: "ensure_ownership", operationId: f.leaseId, identity: f.identity,
+      sourceTaskId: "source-task", sourceGeneration: "source-generation", targetGeneration: "target-generation", policy });
+    await expect(f.task({ ...operation, policy: policy === "ordinary" ? "reclaim_if_needed" : "ordinary" })).rejects.toThrow("ownership_unverified");
+    await expect(f.task()).rejects.toThrow("session ownership unavailable");
+    await expect(executeEnvironmentTask(db, f.workers as unknown as PluginWorkerManager, {
+      companyId: f.companyId, leaseId: f.sourceLeaseId, operation: { kind: "resume", identity: f.identity, bootstrapTicket: "fixture-ticket" },
+    })).rejects.toThrow("session ownership unavailable");
+    expect(f.workers.call).toHaveBeenCalledTimes(1);
+    const reply = { kind: "ownership", taskId: "replacement-task", operationId: f.leaseId,
+      targetGeneration: "target-generation" } as const;
+    f.workers.call.mockResolvedValueOnce({ ...reply, status: "pending" });
+    await expect(describe(db)).rejects.toThrow("native_portable_task_ownership_pending");
+    const targetWriter = nativeRunnerCheckpointWriter(db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.sourceRunId, authorityRunId: f.runId, ...f.owner });
+    await expect(targetWriter(f.checkpoint)).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    const restarted = createDb(database.connectionString);
+    f.workers.call.mockResolvedValueOnce({ ...reply, status: "ready", targetGeneration: "another-generation" });
+    await expect(describe(restarted)).rejects.toThrow("reconcile the same task");
+    await expect(f.task()).rejects.toThrow("session ownership unavailable");
+    const description = { kind: "description", taskId: "replacement-task",
+      runner: { version: "test", digest: `sha256:${"a".repeat(64)}` } } as const;
+    f.workers.call.mockRejectedValueOnce(new Error("worker transport lost again"));
+    f.workers.call.mockResolvedValueOnce({ ...reply, status: "pending" });
+    f.workers.call.mockResolvedValueOnce({ ...reply, status: "ready" });
+    f.workers.call.mockResolvedValueOnce(description);
+    await expect(describe(restarted, new AbortController().signal)).resolves.toEqual(description);
+    expect(f.workers.call.mock.calls.map(([, , call]) => call.operation)).toEqual([...Array(6).fill(operation), { kind: "describe" }]);
+    const [target] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(target.metadata?.portableTaskOwnershipReady).toBe(true);
+    expect(target.metadata?.runnerTaskAccountIdentity).toBe(f.accountIdentity);
+    const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.sourceLeaseId));
+    expect(source.metadata?.remoteExecutionTermination).toBeUndefined();
+    await expect(f.oldWriter(f.checkpoint)).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    await expect(targetWriter(f.checkpoint)).resolves.toBeUndefined();
+
+    const resume = { kind: "resume", identity: f.identity, bootstrapTicket: "fixture-ticket" } as const;
+    f.workers.call.mockResolvedValueOnce({ kind: "resume", taskId: "replacement-task", outcome: "resumed" });
+    await expect(f.task(resume)).resolves.toMatchObject({ kind: "resume", outcome: "resumed" });
+    const [dispatched] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(dispatched.metadata?.runnerTaskDispatched).toBe(true);
+
+    const readState = { kind: "read_state", identity: f.identity } as const;
+    await expect(f.task({ ...readState, identity: { ...f.identity, itemId: "wrong-item" } }))
+      .rejects.toThrow("ownership_unverified");
+    f.workers.call.mockResolvedValueOnce({ kind: "state", taskId: "replacement-task", state: { ...f.identity } });
+    await expect(f.task(readState)).resolves.toMatchObject({ kind: "state", state: f.identity });
+    const nextIdentity = { ...f.identity, runId: f.runId, turnId: "target-turn", itemId: "target-item" };
+    const attach = { ...f.operation, resumeFrom: undefined, priorIdentity: f.identity,
+      requirements: { ...f.operation.requirements, identity: nextIdentity } };
+    await expect(f.task({ ...attach, requirements: { ...attach.requirements,
+      identity: { ...nextIdentity, normalizedSessionId: randomUUID() } } })).rejects.toThrow("prior identity mismatch");
+    await expect(f.task(attach)).resolves.toMatchObject({ kind: "prepared" });
+    await expect(f.task(attach)).resolves.toMatchObject({ kind: "prepared" });
+    const [attached] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(attached.metadata?.runnerTaskIdentity).toMatchObject({ runId: f.runId, sessionId: f.identity.normalizedSessionId });
+    expect(attached.metadata?.runnerTaskPriorIdentity).toMatchObject({ runId: f.sourceRunId, itemId: f.identity.itemId });
+    const scope = { attachedRunId: f.runId, accountIdentity: f.accountIdentity };
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, nextIdentity, scope)).resolves.toBeUndefined();
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, { ...nextIdentity, turnId: "wrong-turn" }, scope))
+      .rejects.toThrow("ownership_unverified");
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, f.identity, scope))
+      .resolves.toEqual({ taskId: "source-task", identity: f.identity });
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, f.identity, { ...scope, accountIdentity: "another-account" }))
+      .rejects.toThrow("ownership_unverified");
+  });
 
   it.each(["codex", "claude"] as const)("authorizes the claimed %s source while preserving A's accepted outcome", async provider => {
     const f = await fixture(provider);

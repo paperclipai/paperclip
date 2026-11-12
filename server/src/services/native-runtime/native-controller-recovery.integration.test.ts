@@ -509,8 +509,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     await db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     await expect(readSandbox()).resolves.toEqual({ remoteCwd: "/workspace" });
-    await expect(inspect({ readControlState: () => ({ identity, commands: [{ status: "pending" }],
-      committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    const readUnsettledControlState = () => ({ identity, commands: [{ status: "pending" }],
+      committedEvents: [{ eventType: "run.terminal", envelope: identity }] });
+    await expect(inspect({ readControlState: readUnsettledControlState }))
+      .rejects.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    const movedFailure = await inspect({
+      target: { ...target, sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "new-sandbox" } } as never,
+      portableSourceTaskId: "retained-sandbox", readControlState: readUnsettledControlState,
+    }).catch(error => error);
+    expect(movedFailure).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    expect(movedFailure.message).toBe(`${denied}; warm_recovery_refused=journal_unsettled`);
     // A created or replacement sandbox holds no Runner to adopt. Live adoption
     // steps aside so ordinary admission can retire the finished owner, instead
     // of denying with prior_owner_terminal_state_indeterminate (Nov 10 staging).

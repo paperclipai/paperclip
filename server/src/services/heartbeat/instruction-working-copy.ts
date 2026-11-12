@@ -64,7 +64,7 @@ interface InstructionWorkingCopyInput {
   context: Selection["task"]["context"];
   session: {
     taskSession: { lastRunId: string | null } | null;
-    taskSessionForRun: Selection["session"]["taskSessionForRun"];
+    taskSessionForRun: { lastRunId: string | null } | null;
     sessionConfigMetadata: EffectiveRunSessionConfigMetadata;
   };
   workspace: Pick<Selection["workspace"], "executionTarget" | "executionWorkspace" | "persistedExecutionWorkspace">;

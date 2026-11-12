@@ -183,6 +183,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   freshWorkspaceVersion: z.literal(1).optional(),
   creationOperationVersion: z.literal(1).optional(),
   warmTaskVersion: z.literal(1).optional(),
+  sessionHandoffVersion: z.literal(1).optional(),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",

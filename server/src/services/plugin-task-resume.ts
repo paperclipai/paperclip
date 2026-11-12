@@ -19,6 +19,7 @@ export async function resolvePluginTaskResume(db: Db, input: {
     const identity = row.lease.metadata?.runnerTaskIdentity as Record<string, unknown> | undefined;
     const consumer = row.lease.metadata?.runnerTaskSourceConsumer as { leaseId?: unknown; runId?: unknown; resumeFrom?: unknown } | null | undefined;
     return row.lease.id !== input.leaseId && row.run.id === input.priorIdentity.runId &&
+      row.lease.metadata?.portableTaskSuccessor === undefined &&
       (!Object.hasOwn(row.lease.metadata ?? {}, "runnerTaskSourceConsumer") ||
         consumer?.leaseId === input.leaseId && consumer.runId === next?.run.id && consumer.resumeFrom === row.lease.providerLeaseId) &&
       (input.inspectCheckpoint || row.lease.metadata?.runnerTaskSessionRetained === true) &&
