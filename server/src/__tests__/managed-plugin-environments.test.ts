@@ -92,7 +92,10 @@ const support = await getEmbeddedPostgresTestSupport();
       manifestJson: {
         agentLifecycle: true,
         capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
-        environmentDrivers: [{ driverKey: "tasks", requiresAgent: true, supportsTasks: true }],
+        environmentDrivers: [
+          { driverKey: "tasks", requiresAgent: true, supportsTasks: true },
+          { driverKey: "other", requiresAgent: true, supportsTasks: true },
+        ],
       } as never,
     });
   });
@@ -240,6 +243,14 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await instanceDefault()).toBeNull();
     });
 
+    it("persists the configured Runner lifecycle mode on boot and on change", async () => {
+      for (const runnerLifecycleMode of ["per_turn", "warm"]) {
+        await boot([{ ...remoteHostEntry, runnerLifecycleMode }]);
+        const [row] = await pluginRows();
+        expect(row?.config).toMatchObject({ runnerLifecycleMode, driverConfig: { normalized: true } });
+      }
+    });
+
     it("archives the row while the plugin is down and reactivates it when the worker recovers", async () => {
       await boot();
       running = false;
@@ -357,15 +368,28 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await instanceDefault()).toBeNull();
     });
 
-    it("prepares a new agent that follows the default with the plugin, and one set to the sandbox without it", async () => {
-      await boot();
+    it("uses the same environment for lifecycle plugin selection and the provisioning request", async () => {
+      await boot([defaultEntry, { ...remoteHostEntry, name: "Other Host", driverKey: "other" }]);
+      const other = await environmentService(db).findManagedPluginEnvironment({ pluginKey: PLUGIN_KEY, driverKey: "other" });
+      expect(other).toBeDefined();
       const sandboxId = await sandboxRow();
       const companyId = await company();
-      const selection = async (id: string) =>
-        createLifecycleDriver(db, { call } as never)
-          .requiredPluginIds((await createLifecycleStore(db, createAgentLifecycleEffects()).get(id))!);
-      expect(await selection(await agent(companyId, null))).toEqual([pluginId]);
-      expect(await selection(await agent(companyId, sandboxId))).toEqual([]);
+      const invoke = vi.fn(async (_pluginId: string, _method: string, request: { operationId: string; version: number }) =>
+        ({ operationId: request.operationId, version: request.version, status: "complete" }));
+      const driver = createLifecycleDriver(db, { call: invoke } as never);
+      const store = createLifecycleStore(db, createAgentLifecycleEffects());
+      for (const environmentId of [null, other!.id, sandboxId]) {
+        const id = await agent(companyId, environmentId, { lifecycleState: "preparing" });
+        await db.update(agents).set({
+          lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
+        }).where(eq(agents.id, id));
+        const snapshot = (await store.get(id))!;
+        expect(await driver.requiredPluginIds(snapshot)).toEqual(environmentId === sandboxId ? [] : [pluginId]);
+        await expect(driver.runPlugin(snapshot, pluginId)).resolves.toBe("complete");
+      }
+      expect(invoke.mock.calls[0]?.[2]).toMatchObject({ phase: "preparing", environmentDriverKey: "tasks" });
+      expect(invoke.mock.calls[1]?.[2]).toMatchObject({ phase: "preparing", environmentDriverKey: "other" });
+      expect(invoke.mock.calls[2]?.[2]).not.toHaveProperty("environmentDriverKey");
     });
   });
 });
