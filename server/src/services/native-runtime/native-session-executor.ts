@@ -14836,14 +14836,15 @@ const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
  * - It sends TERM and waits up to 5 s, then KILL with a 2 s wait. A survivor
  *   fails the launch with `runner_stale_state_holder_alive`.
  * - It runs `<binary> reap-lineage` for the stopped Runner, which stops the
- *   tools its journal recorded that have left the process tree. A reap that
- *   leaves a recorded process alive, or gives no report, fails the launch with
- *   `runner_stale_lineage_unproven`. Two refusals still let it continue, with
- *   a warning in the log: a Runner that kept no journal (its visible lineage
- *   is already gone), and `unattributed_orphan`. The reaper reports that only
- *   after every recorded process is gone, for orphans it can neither claim nor
- *   signal; this launch's own detached shell and other sessions' Runners are
- *   such orphans, so refusing there would block every relaunch.
+ *   tools its journal recorded that have left the process tree. Any refusal
+ *   fails the launch with `runner_stale_lineage_unproven`, with two
+ *   exceptions that continue with a warning in the log. A Runner that kept no
+ *   journal has nothing more to reap once its visible lineage is gone. And
+ *   `unattributed_orphan` (reported only after every recorded process is gone)
+ *   is accepted only when every orphan it names is proven to have another
+ *   owner: this launch's own detached shell, a `paperclip-runnerd` serving a
+ *   different state directory, or that Runner's stderr trimmer. Any other
+ *   orphan could be an old tool, so the launch fails closed.
  *
  * A failure exits before the identity marker is written, so the existing
  * marker is kept, and the reason goes to the process stderr log when that path
@@ -14862,8 +14863,10 @@ export const REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT = [
   "const stat=p=>{try{const s=fs.readFileSync('/proc/'+p+'/stat','utf8'),r=s.slice(s.lastIndexOf(')')+2).split(' ');",
   "return{state:r[0],ppid:Number(r[1]),pgrp:Number(r[2]),sid:Number(r[3]),start:r[19]}}catch{return null}};",
   "const table=()=>{const t=new Map();for(const d of fs.readdirSync('/proc')){if(String(Number(d))!==d)continue;const s=stat(d);if(s)t.set(Number(d),s)}return t};",
-  "const holds=p=>{let a;try{a=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0))}catch{return false};",
-  "return a[0].split('/').pop()==='paperclip-runnerd'&&a[1]!=='reap-lineage'&&a.some((v,i)=>v==='--state-dir'&&a[i+1]===stateDir)};",
+  "const args=p=>{try{return fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0))}catch{return null}};",
+  "const serving=p=>{const a=args(p);return a!==null&&a[0].split('/').pop()==='paperclip-runnerd'&&a[1]!=='reap-lineage'&&a.includes('--state-dir')?a:null};",
+  "const holds=p=>{const a=serving(p);return a!==null&&a.some((v,i)=>v==='--state-dir'&&a[i+1]===stateDir)};",
+  "const otherRunner=p=>{const a=serving(p);return a!==null&&!roots.includes(p)&&!holds(p)};",
   "const members=new Map(),roots=[];",
   "const live=(t,p)=>{const s=t.get(p);return s!==undefined&&members.get(p)===s.start&&s.state!=='Z'&&!self.includes(p)};",
   "const expand=t=>{for(let grew=true;grew;){grew=false;for(const[p,s]of t){if(members.has(p)||self.includes(p))continue;",
@@ -14879,7 +14882,10 @@ export const REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT = [
   "{encoding:'utf8',timeout:7000,killSignal:'SIGKILL',stdio:['ignore','pipe','ignore']})}catch(e){out=String(e.stdout||'')}",
   "let r=null;try{r=JSON.parse(out.trim().split(String.fromCharCode(10)).pop())}catch{}",
   "if(r&&r.verified===true)continue;",
-  "if(r&&(r.reason==='journal_unavailable'||r.reason==='unattributed_orphan')){console.error('runner_stale_lineage_partial: runner '+p+': '+r.reason+' '+(r.remaining||[]).join(','));continue}",
+  "if(r&&r.reason==='journal_unavailable'){console.error('runner_stale_lineage_partial: runner '+p+': journal_unavailable');continue}",
+  "const owned=x=>{const q=Number(x);if(self.includes(q))return true;const a=args(q);if(a===null)return true;",
+  "return otherRunner(q)||(a[3]==='paperclip-runner-stderr-trim'&&otherRunner(Number(a[4])))};",
+  "if(r&&r.reason==='unattributed_orphan'&&Array.isArray(r.remaining)&&r.remaining.every(owned)){console.error('runner_stale_lineage_partial: runner '+p+': unattributed_orphan owned elsewhere '+r.remaining.join(','));continue}",
   "console.error('runner_stale_lineage_unproven: runner '+p+': '+(r?r.reason:'no reap report'));process.exit(1)}",
   "process.exit(0)",
 ].join("");
