@@ -446,6 +446,8 @@ interface ExecuteTestCallInput {
   toolName: string;
   parameters?: unknown;
   timeoutMs?: number;
+  /** MCP Apps view calls only: return the redacted provider `_meta`. Never set for agent-reachable callers. */
+  includeResultMeta?: boolean;
 }
 
 interface ExecutePluginToolInput {
@@ -6276,6 +6278,14 @@ export function createToolGatewayService(
 
   const mcpResultMetaByResult = new WeakMap<object, Record<string, unknown>>();
 
+  /** The provider `_meta` of a normalized MCP result, redacted, for MCP Apps views only. */
+  async function redactedMcpResultMeta(result: unknown): Promise<Record<string, unknown> | undefined> {
+    const meta = result && typeof result === "object" ? mcpResultMetaByResult.get(result) : undefined;
+    if (!meta) return undefined;
+    const validation = await validateToolContent({ value: meta, direction: "result", sensitiveMode: "redact", promptInjectionMode: "ignore" });
+    return asRecord(validation.value) ?? undefined;
+  }
+
   function normalizeMcpToolResult(
     result: unknown,
     transport: "mcp_http" | "local_stdio" | "cognee_cloud" = "mcp_http",
@@ -7827,7 +7837,7 @@ export function createToolGatewayService(
     approvedClaim?: ToolApprovalClaim;
     managementContext?: ConnectionManagementContext;
   }): Promise<
-    | { decision: "allowed"; invocationId: string; result: unknown }
+    | { decision: "allowed"; invocationId: string; result: unknown; resultMeta?: Record<string, unknown> }
     | {
         decision: "allowed";
         invocationId: string;
@@ -8033,10 +8043,13 @@ export function createToolGatewayService(
       },
     });
     void emitConnectionInvoked(db, args.invocationId);
+    const resultMeta = await redactedMcpResultMeta(connectedMcpExecution?.result);
     return {
       decision: "allowed" as const,
       invocationId: args.invocationId,
       result: resultValidation.value,
+      // Provider `_meta`, redacted, for MCP Apps views only.
+      ...(resultMeta ? { resultMeta } : {}),
     };
 
   }
@@ -10141,7 +10154,7 @@ export function createToolGatewayService(
       }
 
       await input.managementContext?.reauthorize();
-      return runTestToolInvocation({
+      const outcome = await runTestToolInvocation({
         session,
         managementContext: input.managementContext,
         tool,
@@ -10156,6 +10169,11 @@ export function createToolGatewayService(
         timeoutMs: input.timeoutMs,
         signal: input.signal,
       });
+      if (!input.includeResultMeta && "resultMeta" in outcome) {
+        const { resultMeta: _viewOnly, ...rest } = outcome;
+        return rest;
+      }
+      return outcome;
     },
 
     /**
@@ -10231,6 +10249,7 @@ export function createToolGatewayService(
         toolName: tool.name,
         parameters: input.arguments,
         signal: input.signal,
+        includeResultMeta: true,
       });
       if (outcome.decision === "ask_first") {
         return { content: [{ type: "text", text: "This action needs approval first. It was sent for review." }], isError: true };
@@ -10238,7 +10257,10 @@ export function createToolGatewayService(
       if ("error" in outcome && outcome.error) {
         return { content: [{ type: "text", text: outcome.error.message }], isError: true };
       }
-      return mcpAppCallToolResult("result" in outcome ? outcome.result : null);
+      return mcpAppCallToolResult(
+        "result" in outcome ? outcome.result : null,
+        "resultMeta" in outcome ? outcome.resultMeta : undefined,
+      );
     },
 
     /**
@@ -11649,18 +11671,13 @@ export function createToolGatewayService(
         // execution report both outcomes.
         void emitConnectionInvoked(db, invocationId);
         if (connectedMcpExecution) {
-          const resultMeta = asRecord(connectedMcpExecution.result)
-            ? mcpResultMetaByResult.get(connectedMcpExecution.result as object)
-            : undefined;
           await recordMcpAppView(db, {
             session,
             tool,
             invocationId,
             toolInput: argumentValidation.value,
             result: resultValidation.value,
-            resultMeta: resultMeta
-              ? (await validateToolContent({ value: resultMeta, direction: "result", sensitiveMode: "redact", promptInjectionMode: "ignore" })).value
-              : undefined,
+            resultMeta: await redactedMcpResultMeta(connectedMcpExecution.result),
           });
         }
         return {

@@ -185,7 +185,12 @@ const support = await getEmbeddedPostgresTestSupport();
 
     const appCall = await http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
       .send({ name: "RefreshMeetingCards", arguments: { meetingIds: ["m1"] } }).expect(200);
-    expect(appCall.body).toMatchObject({ content: [{ type: "text", text: "RefreshMeetingCards done" }], structuredContent: { tool: "RefreshMeetingCards" } });
+    expect(appCall.body).toMatchObject({
+      content: [{ type: "text", text: "RefreshMeetingCards done" }],
+      structuredContent: { tool: "RefreshMeetingCards" },
+      // The view's own calls keep the provider `_meta` the cards need.
+      _meta: { "circleback/cards": [{ id: "m1" }] },
+    });
 
     // A model-only tool is never callable from a view.
     await http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
