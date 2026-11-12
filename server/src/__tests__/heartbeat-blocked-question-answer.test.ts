@@ -20,7 +20,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { heartbeatService } from "../services/heartbeat.ts";
 import { issueService } from "../services/issues.ts";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
-import { arbitrateNativeStatus, NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
+import { arbitrateNativeStatus, NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "../services/native-runtime/status-arbiter.js";
 import { classifyNativeEvidence } from "../services/native-runtime/evidence-classifier.js";
 
 const mockAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
@@ -102,7 +102,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, assessmentJson: {}, inputDigest: assessmentId });
     await db.insert(nativeRunFinalizations).values({ runId, companyId: input.companyId, issueId: input.issueId,
       phase: "arbitrating", resultId, assessmentId });
-    const decision = input.blocker ? arbitrateNativeStatus({
+    const decision: NativeStatusDecision = input.blocker ? arbitrateNativeStatus({
       assessment: await classifyNativeEvidence({ db, companyId: input.companyId, issueId: input.issueId, runId,
         contract: { revision: "1", objective: "Write the brief", criteria: [{ id: "objective", requirement: "Write the brief" }] },
         result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "blocked",
