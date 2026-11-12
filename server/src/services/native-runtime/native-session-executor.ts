@@ -58,8 +58,10 @@ import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
-import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
+import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
+import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
@@ -848,12 +850,29 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
     throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId,
       new Error("warm Runner stop unconfirmed (injected test fault)"));
   }
-  try { await closeWarmNativeSession(entry, reason, options); }
-  catch (error) {
-    entry.retirementUnproven = true;
-    throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
+  const directoryWaitDeadline = Date.now() + warmRetirementDirectoryWait.timeoutMs;
+  for (;;) {
+    try {
+      await closeWarmNativeSession(entry, reason, options);
+      return;
+    } catch (error) {
+      if (error instanceof AgentDirectoryOperationBusyError) {
+        if (Date.now() + warmRetirementDirectoryWait.pollMs <= directoryWaitDeadline) {
+          await new Promise(resolve => setTimeout(resolve, warmRetirementDirectoryWait.pollMs));
+          continue;
+        }
+        await entry.instructionWorkingCopy?.retirementFailed?.().catch(receiptError => {
+          logger.warn({ err: receiptError, runId: entry.runId }, "could not keep the predecessor's agent files for later collection");
+        });
+        throw new NativePredecessorRetirementDirectoryBusyError(entry.runId, error);
+      }
+      entry.retirementUnproven = true;
+      throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
+    }
   }
 }
+
+export const warmRetirementDirectoryWait = { timeoutMs: 300_000, pollMs: 1_000 };
 
 /**
  * An owner whose retirement stayed unproven lives only in its own sandbox,
@@ -1127,6 +1146,10 @@ async function closeIdleWarmNativeSessions(input: {
       closed += 1;
     } catch (error) {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+      if (!detach && error instanceof AgentDirectoryOperationBusyError) {
+        busy += 1;
+        continue;
+      }
       const destroyed = !detach && input.forceStopUnsettled && input.db
         ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
           logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
@@ -8624,6 +8647,10 @@ function armWarmNativeSessionIdleTimer(
       .then(() => { forgetWarmNativeSession(sessionId, current); })
       .catch(error => {
         if (released) current.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+        if (!released && error instanceof AgentDirectoryOperationBusyError) {
+          armWarmNativeSessionIdleTimer(sessionId, current, agentDirectoryBusyRetryDelayMs());
+          return;
+        }
         logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
           providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error) },
         released ? "idle warm native session detach failed" : "idle warm native session close failed");
