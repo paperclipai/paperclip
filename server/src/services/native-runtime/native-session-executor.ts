@@ -12495,7 +12495,7 @@ async function executePaperclipNativeSessionAttempt(
                   throw new NativeControllerDetachedForRestartError();
                 }
                 try {
-                  await recordNativeProviderPackAdmission(input.db, {
+                  const admissionVerified = await recordNativeProviderPackAdmission(input.db, {
                     session,
                     admissionEpoch: providerPackAdmissionEpoch,
                     identity: { runId: input.execution.binding.runId, companyId: input.execution.binding.companyId,
@@ -12504,6 +12504,10 @@ async function executePaperclipNativeSessionAttempt(
                     claim: { leaseOwner, attempt, controllerGeneration, controllerBootId: controller.bootId },
                     waitForClaim: runnerdBackend?.providerAdmissionRequired?.() === true,
                   });
+                  if (!admissionVerified && runnerdBackend?.providerAdmissionRequired?.() === true) {
+                    logger.warn({ runId: input.execution.binding.runId }, "native provider-pack admission was not verified for this session");
+                    try { await input.onLog?.("stderr", "[paperclip-runner] native provider-pack admission was not verified for this session\n"); } catch {}
+                  }
                 } catch (error) {
                   // Name the database cause (a SQLSTATE only), so a lost
                   // admission is diagnosable from the run log.
@@ -18238,7 +18242,11 @@ async function createRunnerdBackendWithinSessionClaim(
         try {
           await rememberRecoveredNativeProviderPack(input.db, session, { identity, sourceRunId,
             runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
-            source: input.providerPackAdmissionSource });
+            source: input.providerPackAdmissionSource,
+            onRefused: async reason => {
+              logger.warn({ runId: input.execution.binding.runId, sourceRunId, reason }, "saved provider-pack admission was not reused");
+              await input.onLog?.("stderr", `[paperclip-runner] saved provider-pack admission was not reused (reason=${reason})\n`);
+            } });
         } catch {
           try { await input.onLog?.("stderr", "[paperclip-runner] prior provider-pack admission receipt is unavailable\n"); } catch {}
         }
