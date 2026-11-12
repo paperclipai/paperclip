@@ -267,7 +267,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       { id: agentTask, companyId, identifier: "PHS-5", title: "Routine work", createdByAgentId: agentId, originKind: "routine_execution" },
     ]);
     const at = (minutes: number) => new Date(Date.parse("2026-11-02T12:00:00.000Z") + minutes * 60_000);
-    const payload = { version: 1, prompt: "?" };
+    const payload = { version: 1 as const, prompt: "?" };
     const [answeredOwn, expiredOwn, expiredChild, answeredForDotta, forRiley, expiredAssigned, transferred, ownerless] =
       Array.from({ length: 8 }, () => randomUUID());
     await db.insert(issueThreadInteractions).values([

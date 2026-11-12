@@ -178,7 +178,7 @@ describeEmbeddedPostgres("attention escalation owners (PAP-749 task 1d)", () => 
 
     // Nothing ownerless is left in the pool.
     const unassigned = await list(companyId, SCOTT, "unassigned");
-    expect(unassigned.items.filter((item) => [ownedCard, plainCard].includes(item.subject.id))).toEqual([]);
+    expect(unassigned.items.filter((item) => [ownedCard, plainCard].some((id) => id === item.subject.id))).toEqual([]);
   });
 
   it("skips a project decision owner who is no longer an active member", async () => {

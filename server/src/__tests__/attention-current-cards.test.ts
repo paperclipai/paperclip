@@ -14,7 +14,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import type { AttentionAudience, AttentionFeedView, AttentionItem } from "@paperclipai/shared";
+import type { AttentionAudience, AttentionFeedView, AttentionItem, RequestConfirmationToolActionPayload } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -29,6 +29,22 @@ import {
 import { expirePendingInteractionsOnClosedIssues } from "../services/closed-issue-interaction-sweep.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.js";
 import { pendingUserRequestRowCondition } from "../services/issue-participation.js";
+
+const TOOL_ACTION = {
+  version: 1,
+  actionRequestId: "tool-approval",
+  invocationId: "invocation",
+  toolName: "calendar.create_event",
+  toolDisplayName: "Create event",
+  connectionId: null,
+  applicationId: "google-calendar",
+  appDisplayName: "Google Calendar",
+  risk: "write",
+  previewMarkdown: "Create the calendar event.",
+  argumentsSummaryJson: "{}",
+  argumentsHash: "fixture-arguments",
+  expiresAt: null,
+} satisfies RequestConfirmationToolActionPayload;
 
 const DAY = 86_400_000;
 const SCOTT = "scott";
@@ -186,7 +202,7 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     workerId: string;
     kind?: string;
     addresseeUserId?: string | null;
-    payload?: Record<string, unknown>;
+    payload?: typeof issueThreadInteractions.$inferInsert.payload;
     ageDays?: number;
     dismissedAt?: Date | null;
   }) {
@@ -230,8 +246,8 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     });
     // A governed request keeps its gate even after a dismiss.
     const governed = await insertInteraction({
-      companyId, issueId: task, workerId, addresseeUserId: SCOTT, kind: "request_item_verdicts",
-      payload: { version: 1, prompt: "Allow the tool?", items: [], toolAction: { id: "tool-1" } },
+      companyId, issueId: task, workerId, addresseeUserId: SCOTT, kind: "request_confirmation",
+      payload: { version: 1, prompt: "Allow the tool?", toolAction: TOOL_ACTION },
       dismissedAt: new Date(),
     });
     // An ordinary question answered by a later human comment is historical.
@@ -264,8 +280,8 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     const fresh = await insertInteraction({ companyId, issueId: task, workerId, ageDays: 10 });
     const old = await insertInteraction({ companyId, issueId: task, workerId, kind: "suggest_tasks", ageDays: 31,
       payload: { version: 1, tasks: [{ clientKey: "a", title: "Follow up" }] } });
-    const governed = await insertInteraction({ companyId, issueId: task, workerId, kind: "request_item_verdicts",
-      addresseeUserId: SCOTT, ageDays: 40, payload: { version: 1, prompt: "Allow?", items: [], toolAction: { id: "t" } } });
+    const governed = await insertInteraction({ companyId, issueId: task, workerId, kind: "request_confirmation",
+      addresseeUserId: SCOTT, ageDays: 40, payload: { version: 1, prompt: "Allow?", toolAction: TOOL_ACTION } });
     const approvalId = randomUUID();
     const approvalAt = new Date(Date.now() - 31 * DAY);
     await db.insert(approvals).values({
@@ -312,7 +328,7 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     await db.update(companies).set({ defaultDecisionOwnerUserId: owner }).where(eq(companies.id, companyId));
     const issueId = await insertIssue({ companyId, createdByUserId: SCOTT });
     const sourceId = await insertInteraction({ companyId, issueId, workerId, addresseeUserId: SCOTT, ageDays: 31,
-      kind: "request_item_verdicts", payload: { version: 1, prompt: "Review", items: [], toolAction: { id: "governed" } } });
+      kind: "request_confirmation", payload: { version: 1, prompt: "Review", toolAction: TOOL_ACTION } });
     const incoming = await list(companyId, DOTTA, owner ? "mine" : "company");
     expect(find(incoming, sourceId)).toMatchObject({ required: true, audience: owner ? { kind: "user", userId: owner } : { kind: "company" } });
     expect(find(await list(companyId, SCOTT, "mine"), sourceId)).toBeNull();
