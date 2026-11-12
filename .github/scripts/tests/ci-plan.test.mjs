@@ -194,8 +194,8 @@ test("required aggregates reject omitted, failed and cancelled selected work", (
     const resultPlan = plan(["ui/src/components/Sidebar.tsx"]);
     const results = Object.fromEntries(names.map((name) => [name, { result:
       name === "gate" || name === "policy" || resultPlan.jobs[name]?.run ? "success" : "skipped" }]));
-    const run = () => spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8",
-      env: { ...process.env, FULL_CI: "true", CI_PLAN: JSON.stringify(resultPlan), CI_RESULTS: JSON.stringify(results) } });
+    const run = (env = {}) => spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8",
+      env: { ...process.env, FULL_CI: "true", CI_PLAN: JSON.stringify(resultPlan), CI_RESULTS: JSON.stringify(results), ...env } });
     assert.equal(run().status, 0);
     for (const name of names) {
       // Optional analysis can fail or be skipped; the unchanged task plan
@@ -208,6 +208,14 @@ test("required aggregates reject omitted, failed and cancelled selected work", (
       }
       results[name].result = previous;
     }
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      results.gate.result = result;
+      const failedGate = run({ FULL_CI: "", CI_PLAN: "" });
+      assert.notEqual(failedGate.status, 0, `${id}: an absent routing output must not pass`);
+      assert.match(failedGate.stderr, /CI routing must succeed/);
+    }
+    assert.match(block, /^ {4}runs-on: \$\{\{ needs\.gate\.outputs\.runner \|\| 'ubuntu-latest' \}\}$/m,
+      `${id}: the always-run summary must have a runner when routing produces no output`);
   }
 });
 

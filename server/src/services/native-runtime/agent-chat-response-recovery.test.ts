@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, approvals, issueApprovals, statusDecisions, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
-  nativeRunFinalizations, nativeRunResults, issueThreadInteractions, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, type Db } from "@paperclipai/db";
+import { agents, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults, issueThreadInteractions, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, statusDecisions, type Db, approvals, issueApprovals } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
@@ -14,6 +13,16 @@ import { chatCompletionDeliveryService, existingChatCompletionReply } from "../c
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueService } from "../issues.js";
 import * as nativeResponseNotifications from "../native-response-presentation-notifications.js";
+import { compactRunLogChunk } from "../heartbeat/run-log.js";
+
+const runLogReads = vi.hoisted(() => [] as unknown[]);
+vi.mock("../run-log-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../run-log-store.js")>();
+  return { ...actual, getRunLogStore: () => {
+    const store = actual.getRunLogStore();
+    return { ...store, read: (...args: Parameters<typeof store.read>) => { runLogReads.push(args[0]); return store.read(...args); } };
+  } };
+});
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_CHAT_RESPONSE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -26,8 +35,9 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  async function fixture(conversation = true, options: { succeed?: boolean; disposition?: "done" | "needs_review" | "yielded";
-    beforeFinalize?: (ids: { companyId: string; issueId: string; runId: string; agentId: string }) => Promise<void> } = {}) {
+  async function fixture(conversation = true, options: { succeed?: boolean; disposition?: "done" | "needs_review" | "yielded"; channel?: "final" | "unknown";
+    beforeFinalize?: (ids: { companyId: string; issueId: string; runId: string; agentId: string }) => Promise<void>;
+    reply?: string; logRef?: string } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID(), runnerId = randomUUID(), userId = `fixture-${randomUUID()}`, wakeId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Conversation owner", email: `${userId}@example.test`,
@@ -45,20 +55,22 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, nativeSessionId: sessionId,
       runnerInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
       status: "running", runtimeMode: "native", responsibleUserId: userId,
+      ...(options.logRef ? { logStore: "local_file", logRef: options.logRef } : {}),
       contextSnapshot: { issueId, source: "issue.comment", wakeCommentId: wakeId, ...(conversation ? { conversationSessionGeneration: 0 } : {}) } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const port = new NativeRunCoordinatorStore(db, { companyId, issueId, runId, agentId, normalizedSessionId: sessionId,
       runnerSourceInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
       completionContractRevision: "test", completionContractCriterionIds: [] });
-    const reply = "The teammate is hired and ready for your next instruction.";
+    const reply = options.reply ?? "The teammate is hired and ready for your next instruction.";
     const prpEvent = { runId, normalizedSessionId: sessionId, turnId: "hire-turn", sourceEventId: "fixture-final-answer",
       payload: { kind: "agentMessage", channel: "final", providerPhase: "final", text: reply } };
+    if (options.channel) prpEvent.payload.channel = options.channel;
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 170, eventType: "item.completed", payload: { prpEvent } });
     const disposition = options.disposition ?? "done";
     await options.beforeFinalize?.({ companyId, issueId, runId, agentId });
     await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: disposition,
       summary: "A completed hire, with its final message preserved separately.",
-      ...(disposition === "yielded" ? { continuation: { kind: "response_wake", summary: "Wait for the hire decision.", idempotencyKey: "hire-wait" } } : {}),
+      ...(disposition === "yielded" ? { continuation: { kind: "response_wake" as const, summary: "Wait for the next human message", idempotencyKey: "conversation-next-message" } } : {}),
       completionClaim: { contractRevision: "test",
         objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [],
       attentionRequests: disposition === "needs_review" ? [{ kind: "review", ownerClass: "human", summary: "Review the completed work." }] : [], artifacts: [] },
@@ -604,6 +616,30 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(await work.load(f.input)).toEqual([]);
     await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
     expect(await comments(f.runId)).toHaveLength(1);
+  });
+  it("recovers a server-finished yielded conversation from its completed unknown-channel reply", async () => {
+    const f = await fixture(true, { disposition: "yielded", channel: "unknown" });
+    expect((await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId)))[0])
+      .toMatchObject({ reasonCode: "conversation_turn_finished" });
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply, createdByRunId: f.runId })]);
+    expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toHaveLength(1);
+  });
+
+  it("presents an invite join link from database run events, never from the redacted run log", async () => {
+    // The run log redacts invitation tokens; the person must still receive the
+    // working join link, so the reply must come from the stored run events.
+    const token = "pcp_invite_FixtureInviteToken-0123456789_abcdefghijklmnopqrstu";
+    const reply = `Created the invite.\n\n**Invite link:** [Join Company](http://127.0.0.1:3100/invite/${token})`;
+    expect(compactRunLogChunk(reply)).not.toContain(token);
+    const f = await fixture(true, { reply, logRef: `${randomUUID()}/${randomUUID()}/redacted-run.ndjson` });
+    runLogReads.length = 0;
+    const work = nativeResponsePresentationWork(db), entries = await work.load(f.input);
+    await expect(work.check(entries[0])).resolves.toBeNull();
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: reply, createdByRunId: f.runId })]);
+    expect(runLogReads).toEqual([]);
   });
   it("keeps a later user message actionable after recovering the earlier exact reply", async () => {
     const f = await fixture();

@@ -1,3 +1,4 @@
+import { assertAgentToolAssignmentInteractions } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
 import { toConnection, toConnectionInstall } from "./projection.js";
 import { actorBinding } from "../actor.js";
@@ -208,7 +209,13 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
         const bindings = await tx.select({ targetType: toolProfileBindings.targetType, targetId: toolProfileBindings.targetId })
           .from(toolProfileBindings).innerJoin(toolProfiles, eq(toolProfiles.id, toolProfileBindings.profileId))
           .where(and(eq(toolProfileBindings.companyId, connection.companyId), eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.profileKey, `app:${connection.id}`)));
-        await lockToolAssignmentAgents(tx, connection.companyId, [...existing, ...requested.values(), ...bindings]);
+        const sourceAgentId = actor?.managementContext?.actor.type === "agent" ? actor.managementContext.actor.agentId
+          : actor?.actorType === "agent" ? actor.actorId : null;
+        await lockToolAssignmentAgents(tx, connection.companyId, [...existing, ...requested.values(), ...bindings], sourceAgentId);
+        const changedAgentIds = [...existing.filter(install => !requested.has(`${install.targetType}:${install.targetId}`)),
+          ...[...requested.entries()].filter(([key]) => !existingKeys.has(key)).map(([, install]) => install)]
+          .filter(install => install.targetType === "agent").map(install => install.targetId);
+        await assertAgentToolAssignmentInteractions(tx as unknown as Db, sourceAgentId, connection.companyId, changedAgentIds, false);
         const removals = existing.filter(
           (install) =>
             !requested.has(`${install.targetType}:${install.targetId}`),

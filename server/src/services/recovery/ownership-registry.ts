@@ -21,7 +21,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { readControllerProcess } from "../controller-process-identity.js";
+import { currentControllerBootId, readControllerProcess } from "../controller-process-identity.js";
+import { isRemoteWorkspaceSaveInvocationLive } from "../remote-workspaces.js";
 import { idleAccountingSpoolPath, idleOrphanSpoolPath } from "../idle-local-work.js";
 import {
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
@@ -37,6 +38,8 @@ import {
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -45,8 +48,9 @@ import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } fr
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
-import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
+import { finishedLegacyControllerOwnerStamp, legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
+import { completedTurnCleanupHoldWhere, settleCompletedTurnCleanupHolds } from "../native-runtime/completed-turn-cleanup-hold-settlement.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -520,6 +524,21 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
 // ----------------------------------------------------------------------------
 // workspace_operations
 
+function remoteSnapshotSaveOwner(row: OperationRow): RecordOwner {
+  const work = json(json(row.metadata).saveWork);
+  const active = Array.isArray(work.activeIds) ? work.activeIds.filter((id): id is string => typeof id === "string") : [];
+  if (!active.length) return runOwner(row.heartbeatRunId);
+  const owners = json(work.owners);
+  const stamps = active.map(id => readControllerProcess(owners[id]));
+  if (stamps.every(stamp => stamp === null) && !active.some(id => owners[id] !== undefined)) return runOwner(row.heartbeatRunId);
+  const [first] = stamps;
+  if (!first || stamps.some(stamp => !stamp || stamp.bootId !== first.bootId || stamp.pid !== first.pid)) return { kind: "none" };
+  if (first.bootId === currentControllerBootId() && first.pid === process.pid && !active.some(isRemoteWorkspaceSaveInvocationLive)) {
+    return runOwner(row.heartbeatRunId);
+  }
+  return controllerStamp(owners[active[0]!], "remote_snapshot_save");
+}
+
 type OperationRow = Pick<typeof workspaceOperations.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "issueId"
   | "metadata" | "updatedAt">;
 
@@ -876,7 +895,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => runOwner(row.heartbeatRunId)),
   { ...operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_snapshot"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)), settle: settleAbandonedRemoteSnapshotSave },
+    remoteSnapshotSaveOwner), settle: settleAbandonedRemoteSnapshotSave },
   operationKind("remote_workspace_migration", "Remote workspace migration op", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),
@@ -914,7 +933,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_workspace_unsaved_files", title: "Remote workspace unsaved-files flag", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [1, 2],
+    storage: "database", settle: settlePreparationOnlyRemoteWorkspaceEpoch, invariantChecks: [1, 2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)
@@ -929,7 +948,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_snapshot_ledger", title: "Remote snapshot ledger", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [2],
+    storage: "database", settle: settleAbandonedRemoteSnapshotLedger, invariantChecks: [2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
@@ -1046,7 +1065,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   }, versionLock(heartbeatRuns)),
   {
     // A preparation a shutdown interrupted, held before its no-provider-work
-    // proof could exist. Its owner is the recorded controller process: the
+    // proof could exist, or one the orphan reaper ended as process_lost. Its
+    // owner is the recorded controller process: the
     // shared prover must prove it gone (a missing stamp, or one from another
     // host or PID space, is unprovable and stays held). The settle re-checks
     // the durable proof and replays the preparation exactly once.
@@ -1054,10 +1074,21 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
       heldInterruptedPreparationWhere(), row => {
-        const stamp = legacyControllerOwnerStamp(row);
+        // A preparation the orphan reaper ended has a revoked lease: its owner
+        // is still the recorded controller process.
+        const stamp = finishedLegacyControllerOwnerStamp(row);
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleHeldInterruptedPreparation,
+  },
+  {
+    // No-replay holds of a run that completed its turn and was then refused by
+    // the in-process cleanup gate. Its owner is the controller that closed the
+    // session (the coordinator's stamp); once that process is proven gone, so
+    // is its gate, and the holds settle without replaying anything.
+    ...nrfKind("native_completed_turn_cleanup_hold", "Completed-turn cleanup hold", "ownership",
+      completedTurnCleanupHoldWhere()),
+    settle: settleCompletedTurnCleanupHolds,
   },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),

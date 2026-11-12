@@ -44,6 +44,25 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("completes a reviewer's done report from its own recorded final-stage approval", () => {
+    // Retained live failure: the reviewer approved its stage, then cited free-text
+    // evidence; the report was graded as incomplete and the task reopened.
+    const freeText = assessment({ objectiveSatisfied: false, allCriteriaSatisfied: false, verificationPassed: false });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review" }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete" });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .toMatchObject({ toStatus: "done", reasonCode: "execution_stage_approved" });
+    // The decision authorizes completion only for a clean done report.
+    expect(arbitrate({ assessment: { ...freeText, hasBlockingRemainingWork: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, hasFailedVerification: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, reportedDisposition: "needs_review" }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    // A still-pending stage keeps governing the task.
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true, governanceGate: { kind: "execution_stage", id: "run" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
   it("cannot complete an explicitly required quality review from claims or file evidence", () => {
     expect(arbitrate({ completionClaimPolicyAccepted: true, requiredQualityReviewSatisfied: false }))
       .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
@@ -149,8 +168,9 @@ describe("native status authority", () => {
       effects: [],
     });
     expect(arbitrate({ assessment: passive })).toMatchObject({
-      reasonCode: "live_continuation_registered",
-      effects: [expect.objectContaining({ kind: "enqueue_continuation" })],
+      reasonCode: "response_wake_waiting_for_input",
+      toStatus: "in_progress",
+      effects: [],
     });
     expect(
       arbitrate({ assessment: passive, boardResponseWaitOrigin: true }),
@@ -366,13 +386,9 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        reasonCode: "live_continuation_registered",
-        effects: [
-          expect.objectContaining({
-            kind: "enqueue_continuation",
-            continuationKind: "response_wake",
-          }),
-        ],
+        statusAction: "in_progress",
+        reasonCode: "response_wake_waiting_for_input",
+        effects: [],
       }),
     );
     expect(arbitrate({ terminalState: "cancelled" })).toEqual(
@@ -582,7 +598,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v13",
+        policyVersion: "phase6-v14",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

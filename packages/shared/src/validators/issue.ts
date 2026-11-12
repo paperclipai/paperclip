@@ -2,7 +2,8 @@ import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
 import { maxStringLength } from "./text.js";
-import { ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+import { normalizeIssueIdentifier } from "../issue-references.js";
 
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
@@ -52,6 +53,28 @@ export const issueSummariesQuerySchema = z.object({
   ids: z.string().transform((value) => value.split(",").map((id) => id.trim().toLowerCase()))
     .pipe(z.array(z.string().guid()).min(1).max(ISSUE_SUMMARIES_MAX_IDS))
     .transform((ids) => [...new Set(ids)]),
+}).strict();
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A task reference as the UI routes use it: a UUID or an identifier such as `ABC-12`. */
+function normalizeIssueRef(value: string): string | null {
+  const trimmed = value.trim();
+  if (UUID_RE.test(trimmed)) return trimmed.toLowerCase();
+  return normalizeIssueIdentifier(trimmed);
+}
+
+export const issueChatBootstrapQuerySchema = z.object({
+  ids: z.string()
+    .transform((value, ctx) => {
+      const refs = value.split(",").filter((ref) => ref.trim()).map(normalizeIssueRef);
+      if (refs.some((ref) => ref === null)) {
+        ctx.addIssue({ code: "custom", message: "Each id must be a task UUID or identifier" });
+        return z.NEVER;
+      }
+      return [...new Set(refs as string[])];
+    })
+    .pipe(z.array(z.string()).min(1).max(ISSUE_CHAT_BOOTSTRAP_MAX_IDS)),
 }).strict();
 
 export const issueBlockedInboxStateSchema = z.enum([
@@ -1238,6 +1261,8 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    agentSetup: z.literal(true).optional(),
+    agentSetupOperationId: z.string().guid().optional(),
     setupAccess: z.object({
       connectionId: z.string().guid(),
       access: z.union([z.literal("all_agents"), z.object({ agentIds: z.array(z.string().guid()).max(250) }).strict()]),
@@ -1268,7 +1293,9 @@ export const connectionIntentPayloadSchema = z
     requestingAgentName: z.string().trim().min(1).max(160),
     phase: connectionIntentPhaseSchema,
   })
-  .strict();
+  .strict()
+  .refine(value => !value.agentSetup || value.purpose === "ai", "Agent setup cards require AI authentication")
+  .refine(value => !value.agentSetupOperationId || value.agentSetup === true, "A setup operation requires an agent setup card");
 
 export const connectionIntentResultSchema = z
   .object({
@@ -1683,7 +1710,7 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   previewMarkdown: z.string().trim().min(1).max(20000),
   argumentsSummaryJson: z.string().max(20000),
   argumentsHash: z.string().trim().min(1).max(255),
-  expiresAt: z.string().datetime({ offset: true }),
+  expiresAt: z.string().datetime({ offset: true }).nullable(),
 });
 
 export const requestConfirmationSecretProposalPayloadSchema = z.object({

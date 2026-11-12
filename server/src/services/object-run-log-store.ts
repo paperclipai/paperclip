@@ -4,6 +4,7 @@ import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
 import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
 import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
+import { notFound } from "../errors.js";
 
 const MAX_SEGMENT_BYTES = 1024 * 1024;
 const MAX_PENDING_BYTES = MAX_RUN_LOG_RECORD_BYTES;
@@ -254,14 +255,12 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   return {
     async begin(input) {
       const logRef = `${input.companyId}/${input.agentId}/${input.runId}`;
-      const store = journal(logRef),
-        current = await store.head(input.signal);
+      const store = journal(logRef);
       const writer = await store.claim({
-        expectedOwner: current?.head.owner ?? null,
         assertAuthority: () => options.assertWriterAuthority(input),
         signal: input.signal,
       });
-      const sourcePrefixVerified = await store.hasVerifiedSourcePrefix(writer.head, input.signal);
+      const sourcePrefixVerified = writer.head.generation > 1 && await store.hasVerifiedSourcePrefix(writer.head, input.signal);
       const handle: RunLogHandle = {
         store: "s3_segments",
         logRef,
@@ -358,8 +357,8 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     async read(handle, opts = {}) {
       if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
       const store = journal(handle.logRef, opts.priority ?? "interactive"),
-        snapshot = await store.head(opts.signal);
-      if (!snapshot || snapshot.head.deleted) throw new Error("Object run log not found");
+        snapshot = await store.head(opts.signal) ?? writers.get(handle)?.writer;
+      if (!snapshot || snapshot.head.deleted) throw notFound("Run log not found");
       const offset = Math.max(0, opts.offset ?? 0),
         limit = opts.limitBytes ?? 256_000;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_READ_BYTES)

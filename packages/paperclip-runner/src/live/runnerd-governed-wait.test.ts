@@ -10,7 +10,7 @@ import { executeNativeSession } from "../native-session-runtime.js";
 import { createRunnerdCodexTransport } from "./runnerd-codex-transport.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
-it.each([0, 18_000, null])("requires a proven Codex terminal when parking a wait (delay: %s)", async terminalDelayMs => {
+it.each([0, 18_000, null])("requires a Codex terminal or verified shutdown when parking a wait (delay: %s)", async terminalDelayMs => {
   const root = await mkdtemp(join(tmpdir(), "runner-governed-wait-"));
   const input: NativeExecutionInputV1 = {
     schema: "paperclip.native-execution-input.v1",
@@ -93,13 +93,17 @@ it.each([0, 18_000, null])("requires a proven Codex terminal when parking a wait
       },
       resolveGovernedWait: ({ event }) => event.eventType === "item.completed" && event.payload.kind === "dynamicToolCall" ? yielded : null,
     });
+    await expect(execution).resolves.toMatchObject({ result: yielded });
+    expect(completeRun).toHaveBeenCalledOnce();
     if (terminalDelayMs === null) {
-      await expect(execution).rejects.toMatchObject({ providerCode: "governed_wait_provider_terminal_unproven" });
-      expect(completeRun).not.toHaveBeenCalled();
-      expect(history.some(event => event.eventType === "run.terminal")).toBe(false);
+      expect(history.filter(event => ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(event.eventType))).toEqual([]);
+      expect(checkpoint?.governedWait?.settlement).toEqual({ runId: input.binding.runId,
+        normalizedSessionId: input.session.normalizedSessionId, turnId: checkpoint?.governedWait?.sourceEvent.turnId });
+      const journal = JSON.parse(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8"));
+      expect(journal.commands.find((command: { type: string }) => command.type === "turn.stop"))
+        .toMatchObject({ status: "completed", result: { result: { providerExitConfirmed: true } } });
+      expect(JSON.parse(await readFile(join(root, "runner/runner-state.json"), "utf8"))).toMatchObject({ lifecycle: "suspended" });
     } else {
-      await expect(execution).resolves.toMatchObject({ result: yielded });
-      expect(completeRun).toHaveBeenCalledOnce();
       expect(history.some(event => event.eventType === "turn.interrupted")).toBe(true);
     }
     expect(checkpoint?.governedWait?.result).toEqual(yielded);

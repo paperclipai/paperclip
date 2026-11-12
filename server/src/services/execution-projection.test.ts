@@ -67,6 +67,18 @@ describe("execution truth projection", () => {
       expect(project(run({ status }), undefined).canStop).toBe(false);
     }
   });
+  it("shows setup progress without overriding real holds or started work", () => {
+    const queued = run({ status: "queued", startedAt: null });
+    const setup = { lifecycleState: "verifying", lifecycleHolds: [], lifecycleError: null };
+    const projectSetup = (r = queued, agent = setup) => projectExecution(r, undefined, [], undefined, now, undefined, false, agent);
+    expect(projectSetup()).toMatchObject({ label: "Waiting for agent setup", cause: "agent_setup_pending" });
+    expect(projectSetup(queued, { ...setup, lifecycleState: "paused" })).toMatchObject({ label: "Queued", cause: null });
+    expect(projectExecution(queued, undefined, [], undefined, now, undefined, false,
+      { ...setup, lifecycleHolds: ["budget"] })).toMatchObject({ label: "Queued", cause: null });
+    expect(projectSetup(run({ status: "queued", startedAt: now }))).toMatchObject({ label: "Queued", cause: null });
+    expect(projectSetup(run({ status: "running" })).label).toBe("Confirming execution");
+  });
+
   it("shows maintenance only for admission that has not started", () => {
     startTaskDrain();
     try {
@@ -274,6 +286,14 @@ describe("execution truth projection", () => {
   });
   it("includes the original legacy attempt in the displayed incident budget", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryAttempt: 1 }), undefined, [], undefined, now)).toMatchObject({ attempt: 2, maxAttempts: 3 });
+  });
+  it("keeps saved governed work in shutdown reconciliation without offering a new attempt", () => {
+    expect(project(
+      run({ status: "failed", errorCode: "native_governed_wait_settlement_pending" }),
+      coordinator({ phase: "retryable_failure", failureCode: "native_governed_wait_settlement_pending",
+        nextAttemptAt: new Date(now.getTime() + 30_000) }),
+    )).toMatchObject({ phase: "finishing", label: "Finishing shutdown", permittedActions: ["inspect_run"],
+      nextAction: "The work and waiting state are saved. Paperclip is confirming shutdown before continuing." });
   });
   it("shows pending interaction only after productive work has stopped", () => {
     expect(

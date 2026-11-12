@@ -132,7 +132,7 @@ describe("MarkdownBody", () => {
       { identifier: "PAP-1271", status: "done" },
       { identifier: "PAP-1271", status: "done", cacheKey: "PAP-1271#document-output" },
     ], { linkIssueReferences: true });
-    expect(html).toContain('href="/issues/PAP-1271#document-output"');
+    expect(html).toContain('href="/PAP/issues/PAP-1271#document-output"');
     expect(html).not.toContain("PAP-1271%23document-output");
   });
 
@@ -422,7 +422,7 @@ describe("MarkdownBody", () => {
     ]);
 
     expect(html).toContain('href="/issues/PAP-1179"');
-    expect(html).toContain('href="/issues/PAP-1180"');
+    expect(html).toContain('href="/PAP/issues/PAP-1180"');
     expect(html).toContain(">/issues/PAP-1179<");
     expect(html).toContain(">/PAP/issues/pap-1180<");
     expect(html).toContain("var(--status-task-icon-blocked)");
@@ -507,7 +507,7 @@ describe("MarkdownBody", () => {
     );
 
     expect(html).not.toContain("data-workspace-file-link");
-    expect(html).toContain('href="/issues/PAP-10306"');
+    expect(html).toContain('href="/PAP/issues/PAP-10306"');
   });
 
   it("promotes an openable auto-detected path to a workspace file chip", () => {
@@ -805,6 +805,18 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
+  it("keeps another company's task link in that company", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "COM" }, { issuePrefix: "BIR" }] });
+    const html = renderMarkdown("I can't read [BIR-1](/BIR/issues/BIR-1); BIR-1 and [this link](/issues/BIR-1) stay in Birch.", [
+      { identifier: "BIR-1", status: "todo" },
+    ]);
+    expect(html.match(/href="[^"]*"/g)).toEqual([
+      'href="/BIR/issues/BIR-1"',
+      'href="/BIR/issues/BIR-1"',
+      'href="/BIR/issues/BIR-1"',
+    ]);
+  });
+
   it("gates bare-identifier auto-linking to known company prefixes", () => {
     mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "PAP" }] });
 
@@ -814,7 +826,7 @@ describe("MarkdownBody", () => {
     ]);
 
     // Known prefix links; foreign tracker key stays as plain text.
-    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).toContain('href="/PAP/issues/PAP-1271"');
     expect(html).not.toContain('href="/issues/JIRA-2"');
     expect(html).toContain("blocked by JIRA-2.");
   });
@@ -857,7 +869,7 @@ describe("MarkdownBody", () => {
       { identifier: "ACME-1", status: "done" },
     ]);
 
-    expect(html).toContain('href="/issues/ACME-1"');
+    expect(html).toContain('href="/ACME/issues/ACME-1"');
   });
 
 });

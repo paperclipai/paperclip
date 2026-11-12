@@ -72,7 +72,7 @@ import {
   waitForAdapterStop,
 } from "../adapter-execution-control.js";
 import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
-import { budgetCancellationScopePredicate, pendingBudgetRunCancellationPredicate } from "./budget-cancellation.js";
+import { pendingBudgetRunCancellationPredicate, pendingBudgetRunIdsForScopeQuery } from "./budget-cancellation.js";
 import { notifyBudgetStopsSettled } from "../budget-resume-continuation.js";
 import { withBudgetSpan } from "../budget-tracing.js";
 import { captureException } from "../../sentry.js";
@@ -129,6 +129,7 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
+import { resumePreservedResultFinalization } from "../preserved-result-finalization.js";
 import { isNativeRunnerOwnershipHeld, nativeManualAdmissionOwnerColumns, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
 import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
@@ -851,6 +852,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         responsibleUserId: intent.actorId },
       issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
       idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
+    // Admission held this Retry because its source run's files are saved and
+    // its accepted result can be applied. Apply it now instead of a new turn.
+    // One key read after admission; the resumption runs only for a held Retry.
+    const [held] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, wake.id)));
+    if (held?.status === "deferred_issue_execution"
+      && parseObject(held.payload?.executionWait).reason === "finalizing_saved_result")
+      await resumePreservedResultFinalization(db, companyId, intent.sourceRunId);
   }
 
   async function resumeExecutionWaitComments(scope: DeferredReceiptRecoveryOptions = {}) {
@@ -1819,9 +1828,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     });
     // A later policy change revokes permission to fence new work, not the Stop
     // already committed for older work. Recovery must deliver those intents.
-    const pending = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      pendingBudgetRunCancellationPredicate(), budgetCancellationScopePredicate(scope),
-    ));
+    const pending = await pendingBudgetRunIdsForScopeQuery(db, scope);
     const runIds = [...new Set([...(newlyFenced ?? []), ...pending.map(run => run.id)])];
     if (!runIds.length) return;
     const failures: unknown[] = [];

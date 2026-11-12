@@ -317,7 +317,11 @@ describeEmbeddedPostgres("tool gateway service", () => {
       const rows = (await source.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, context.company.id)))
         .filter(row => !before.has(row.id));
       expect(rows).toHaveLength(1);
-      return rows[0];
+      // This worker group exercises explicit deadlines. Ordinary human tool
+      // reviews have no implicit expiry; give this fixture its intended hour.
+      const [pending] = await writeToolReviewChange(source, context.company.id, tx => tx.update(toolActionRequests)
+        .set({ expiresAt: new Date(Date.now() + 60 * 60_000) }).where(eq(toolActionRequests.id, rows[0].id)).returning());
+      return pending;
     }
     async function expectExpired(id: string, invocationId: string) {
       expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, id)))[0].status).toBe("expired");
