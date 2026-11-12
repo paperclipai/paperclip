@@ -468,6 +468,8 @@ import {
   resolveNativeBilling,
   parseRemoteRunnerProcessIdentity,
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+  REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT,
+  REMOTE_RUNNER_PROCESS_STDERR_FILE,
   REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
   verifyRemoteRunnerReattachment,
   stopStaleRemoteRunnerBeforeBootstrap,
@@ -1362,6 +1364,164 @@ describe("remote runner launch fingerprint compatibility", () => {
       const lines = (await readFile(marker, "utf8")).split("\n");
       expect(lines[4]).toBe(hasBootIdentity ? "linux:abcd-1234:1234" : "");
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("embeds a stale Runner stop script that survives double-quoted shell embedding", () => {
+    expect(REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT).not.toMatch(/["$`\\]/);
+    expect(() => new Function("require", "process", REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT)).not.toThrow();
+  });
+});
+
+// Staging failure: the previous server launched a Runner just before an
+// upgrade. It kept the run's state directory and ingress port, and each new
+// launch failed with runner_ingress_bind_conflict in a restart loop.
+describe.skipIf(!existsSync("/proc/self/cmdline"))("remote runner launch stale state holder", () => {
+  const gone = (pid: number) => { try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z") ?? true; } catch { return true; } };
+  const fixture = async () => {
+    const root = await mkdtemp(join(tmpdir(), "remote-launch-fence-"));
+    const binary = join(root, "bin", "paperclip-runnerd");
+    await mkdir(join(root, "bin"));
+    // The launched binary: `reap-lineage` prints the report the test chose, anything else is the new Runner.
+    // LAUNCH_SHELL in the report becomes the detached launch shell's PID (the parent of node, this reaper's parent).
+    await writeFile(binary, '#!/bin/sh\nif test "$1" = reap-lineage; then printf "%s\\n" "$*" >> "$REAP_LOG"; read -r stat < "/proc/$PPID/stat"; set -- $stat;'
+      + ' printf "%s\\n" "$REAP_REPORT" | sed "s/LAUNCH_SHELL/$4/"; exit "$REAP_EXIT"; fi\nprintf launched\n', { mode: 0o755 });
+    const children: ReturnType<typeof spawn>[] = [];
+    const start = (args: string[], options: { script?: string; argv0?: string } = {}) => {
+      const child = spawn(process.execPath, ["-e", options.script ?? "setInterval(() => {}, 1000)", "--", ...args],
+        { argv0: options.argv0 ?? binary, stdio: "ignore", detached: true });
+      children.push(child);
+      return child;
+    };
+    // A real `paperclip-runnerd reap-lineage ...` command line: sh runs ./reap-lineage under the Runner's name.
+    await writeFile(join(root, "reap-lineage"), "while :; do sleep 1; done\n");
+    const startReaper = (args: string[]) => {
+      const child = spawn("/bin/sh", ["reap-lineage", ...args], { argv0: binary, cwd: root, stdio: "ignore", detached: true });
+      children.push(child);
+      return child;
+    };
+    const running = (child: ReturnType<typeof spawn>, arg: string) =>
+      vi.waitFor(async () => expect((await readFile(`/proc/${child.pid}/cmdline`, "utf8")).split("\0")).toContain(arg));
+    const launch = (stateDirectory: string, report: { verified: boolean; reason: string | null; remaining?: (number | "LAUNCH_SHELL")[] }) =>
+      spawnSync("/bin/sh", ["-c", REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT, "launch", join(root, "identity"), "nonce", "runner",
+        join(root, "diagnostics"), binary, "--state-dir", stateDirectory], { encoding: "utf8", env: { ...process.env,
+        REAP_LOG: join(root, "reap.log"), REAP_EXIT: report.verified ? "0" : "1",
+        REAP_REPORT: JSON.stringify({ schema: "paperclip.runner.process-lineage-reap.v1", journals: 1, signalled: 0, remaining: [], ...report })
+          .replace('"LAUNCH_SHELL"', "LAUNCH_SHELL") } });
+    const cleanup = async (extraPids: number[] = []) => {
+      for (const child of children) child.kill("SIGKILL");
+      for (const pid of extraPids) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      await rm(root, { recursive: true, force: true });
+    };
+    return { root, start, startReaper, running, launch, cleanup };
+  };
+
+  it("stops only this state directory's Runner and its lineage, then reaps its journal before launching", async () => {
+    const { root, start, startReaper, running, launch, cleanup } = await fixture();
+    const stateDirectory = join(root, "state");
+    const toolPidFile = join(root, "tool.pid");
+    // The stale Runner's provider tool runs in its own session and process group.
+    const stale = start(["--state-dir", stateDirectory], { script:
+      `const c=require("child_process").spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{detached:true,stdio:"ignore"});`
+      + `require("fs").writeFileSync(${JSON.stringify(toolPidFile)},String(c.pid));setInterval(()=>{},1000)` });
+    const staleExit = new Promise<string>(resolveExit => stale.once("exit", (_code, signal) => resolveExit(String(signal))));
+    const survivors = [
+      start(["--state-dir", join(root, "other-state")]),
+      startReaper(["--state-dir", stateDirectory, "--runner-pid", "1"]),
+      start(["--diagnostics-directory", stateDirectory, "--state-dir", join(root, "other-state")]),
+      start(["--state-dir", stateDirectory], { argv0: join(root, "bin", "some-other-tool") }),
+    ];
+    let toolPid = 0;
+    try {
+      await running(stale, stateDirectory);
+      for (const survivor of survivors) await running(survivor, "--state-dir");
+      await vi.waitFor(async () => { toolPid = Number(await readFile(toolPidFile, "utf8")); expect(toolPid).toBeGreaterThan(0); });
+      const result = launch(stateDirectory, { verified: true, reason: null });
+      expect(result.stdout).toBe("launched");
+      expect(await Promise.race([staleExit, new Promise(resolveAlive => setTimeout(() => resolveAlive("alive"), 8_000))])).toBe("SIGTERM");
+      expect(gone(toolPid)).toBe(true);
+      for (const survivor of survivors) expect(gone(survivor.pid!)).toBe(false);
+      expect(await readFile(join(root, "reap.log"), "utf8"))
+        .toBe(`reap-lineage --state-dir ${stateDirectory} --runner-pid ${stale.pid} --grace-ms 1000 --deadline-ms 5000\n`);
+      expect((await readFile(join(root, "identity"), "utf8")).split("\n")[0]).toBe("nonce");
+    } finally { await cleanup(toolPid ? [toolPid] : []); }
+  }, 30_000);
+
+  it.each(["plain file", "symlink"] as const)("fails closed and keeps the marker when the stale lineage is not proven gone (log is a %s)", async (logKind) => {
+    const { root, start, running, launch, cleanup } = await fixture();
+    const stateDirectory = join(root, "state");
+    const outside = join(root, "outside.log");
+    const log = join(root, "diagnostics", REMOTE_RUNNER_PROCESS_STDERR_FILE);
+    try {
+      await writeFile(join(root, "identity"), "previous-marker\n");
+      await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+      await writeFile(outside, "");
+      if (logKind === "symlink") await symlink(outside, log);
+      const stale = start(["--state-dir", stateDirectory]);
+      await running(stale, stateDirectory);
+      const result = launch(stateDirectory, { verified: false, reason: "survivors_remaining" });
+      expect(result.status).toBe(75);
+      expect(result.stdout).toBe("");
+      expect(await readFile(join(root, "identity"), "utf8")).toBe("previous-marker\n");
+      expect(await readFile(outside, "utf8")).toBe("");
+      if (logKind === "plain file") {
+        expect(await readFile(log, "utf8")).toContain(`runner_stale_lineage_unproven: runner ${stale.pid}: survivors_remaining`);
+      } else {
+        expect((await lstat(log)).isSymbolicLink()).toBe(true);
+      }
+    } finally { await cleanup(); }
+  }, 30_000);
+
+  // The reaper reports unattributed_orphan only after every recorded process
+  // is gone, for orphans it can neither claim nor signal. This launch's own
+  // detached shell and other sessions' Runners are such orphans; any other
+  // orphan could be an old tool that escaped between samples.
+  it.each(["owned elsewhere", "an unknown orphan", "no journal"] as const)("handles a reap refusal for %s", async (kind) => {
+    const { root, start, running, launch, cleanup } = await fixture();
+    const stateDirectory = join(root, "state");
+    const log = join(root, "diagnostics", REMOTE_RUNNER_PROCESS_STDERR_FILE);
+    const other = start(["--state-dir", join(root, "other-state")]);
+    const trimmer = spawn("/bin/sh", ["-c", "while :; do sleep 1; done", "paperclip-runner-stderr-trim", String(other.pid), log],
+      { stdio: "ignore", detached: true });
+    const unknown = start(["--tool"], { argv0: join(root, "bin", "tool") });
+    try {
+      await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+      const stale = start(["--state-dir", stateDirectory]);
+      for (const [child, arg] of [[stale, stateDirectory], [other, "--state-dir"], [trimmer, "paperclip-runner-stderr-trim"], [unknown, "--tool"]] as const) {
+        await running(child, arg);
+      }
+      const result = launch(stateDirectory, kind === "no journal"
+        ? { verified: false, reason: "journal_unavailable" }
+        : { verified: false, reason: "unattributed_orphan",
+          remaining: kind === "owned elsewhere" ? ["LAUNCH_SHELL", other.pid!, trimmer.pid!] : [other.pid!, unknown.pid!] });
+      if (kind === "an unknown orphan") {
+        expect(result.status).toBe(75);
+        expect(result.stdout).toBe("");
+        await expect(access(join(root, "identity"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await readFile(log, "utf8")).toContain(`runner_stale_lineage_unproven: runner ${stale.pid}: unattributed_orphan`);
+      } else {
+        expect(result.stdout).toBe("launched");
+        expect((await readFile(join(root, "identity"), "utf8")).split("\n")[0]).toBe("nonce");
+        expect(await readFile(log, "utf8")).toContain(`runner_stale_lineage_partial: runner ${stale.pid}:`);
+      }
+      for (const survivor of [other, trimmer, unknown]) expect(gone(survivor.pid!)).toBe(false);
+    } finally {
+      trimmer.kill("SIGKILL");
+      await cleanup();
+    }
+  }, 30_000);
+
+  it("starts no extra process on a launch that finds no stale Runner", async () => {
+    const { root, cleanup } = await fixture();
+    const wrappers = join(root, "wrappers");
+    try {
+      await mkdir(wrappers);
+      await writeFile(join(wrappers, "node"), `#!/bin/sh\nprintf "%s\\n" node >> '${join(root, "node.log")}'\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+      const result = spawnSync("/bin/sh", ["-c", `PATH='${wrappers}':"$PATH"; export PATH; ${REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT}`, "launch", join(root, "identity"), "nonce", "runner",
+        join(root, "diagnostics"), join(root, "bin", "paperclip-runnerd"), "--state-dir", join(root, "state")], { encoding: "utf8" });
+      expect(result.stdout).toBe("launched");
+      // Only the existing process-fingerprint read runs node.
+      expect(await readFile(join(root, "node.log"), "utf8")).toBe("node\n");
+    } finally { await cleanup(); }
   });
 });
 
@@ -21304,9 +21464,13 @@ describe("runnerd provider runtime wiring", () => {
       "interrupted_bootstrap_unprepared_other_run", "interrupted_bootstrap_unprepared_suspended", "interrupted_bootstrap_unprepared_backup",
       "interrupted_bootstrap_unprepared_unrecorded", "interrupted_bootstrap_unprepared_connected"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
+    ...["interrupted_bootstrap_unlaunched", "interrupted_bootstrap_unlaunched_marker", "interrupted_bootstrap_unlaunched_backup",
+      "interrupted_bootstrap_unlaunched_archived", "interrupted_bootstrap_unlaunched_nested_state"]
+      .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
     { outcome: "created", scenario: "interrupted_bootstrap", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unprepared", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unprepared_unrecorded", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unlaunched", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_symlink_parent", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_active_turn", homeMode: "isolated" },
@@ -21324,6 +21488,24 @@ describe("runnerd provider runtime wiring", () => {
       await symlink(symlinkTarget, join(runtimeRoot, "sessions"));
     }
     if (scenario.startsWith("interrupted_bootstrap")) await mkdir(sessionRoot, { recursive: true });
+    if (scenario.startsWith("interrupted_bootstrap_unlaunched")) {
+      // The detached controller staged launch files but never launched a Runner.
+      await mkdir(join(sessionRoot, "codex-home"), { recursive: true });
+      await writeFile(join(sessionRoot, "codex-home", "config.toml"), "fixture-staged-config");
+      if (scenario.endsWith("_marker")) {
+        await mkdir(join(sessionRoot, "runner"), { recursive: true });
+        await writeFile(join(sessionRoot, "runner", "runner-process.identity"), "launchednonce\n4242\n");
+      }
+      if (scenario.endsWith("_archived")) {
+        // An authority rotation archived the live Runner state of a real session.
+        await mkdir(join(sessionRoot, "authority-epochs", "epoch-previous"), { recursive: true });
+        await writeFile(join(sessionRoot, "authority-epochs", "epoch-previous", "runner-state.json"), "{}");
+      }
+      if (scenario.endsWith("_nested_state")) {
+        await mkdir(join(sessionRoot, "filesystem", "elsewhere"), { recursive: true });
+        await writeFile(join(sessionRoot, "filesystem", "elsewhere", "runner-state.json"), "{}");
+      }
+    }
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
       if (command.args?.[2] === "paperclip-runner-claim-unstarted-session") {
@@ -21354,6 +21536,12 @@ describe("runnerd provider runtime wiring", () => {
         try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
         catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
       }
+      if (command.args?.[2] === "paperclip-runner-unlaunched-bootstrap") {
+        try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
+        catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
+      }
+      if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unlaunched")) return {
+        exitCode: 1, timedOut: false, stdout: "", stderr: "" };
       if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unprepared")
         && command.args[1].includes("codex-provider-state.json")) return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
       if (command.args?.[2] === "paperclip-runner-recovery-identity" && scenario === "interrupted_bootstrap_unprepared_unrecorded") return {
@@ -21460,6 +21648,29 @@ describe("runnerd provider runtime wiring", () => {
       commands: [{ type: "run.prepare", status: scenario === "committed_command" ? "committed" : "pending" },
         { type: scenario === "pending_turn" ? "turn.start" : "session.open", status: "pending" }],
       }));
+    }
+    if (scenario.startsWith("interrupted_bootstrap_unlaunched")) {
+      // A closing server detached this bootstrap after staging launch files and
+      // before launching its Runner; nothing else proves the Runner's absence.
+      if (scenario.endsWith("_backup")) {
+        await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
+        await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
+      }
+      const restartAsides = async () => (await readdir(dirname(sessionRoot)))
+        .filter(name => name.startsWith(`${basename(sessionRoot)}.bootstrap-restart-`));
+      if (scenario === "interrupted_bootstrap_unlaunched") {
+        await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+        expect(await restartAsides()).toHaveLength(1);
+        expect(await readdir(sessionRoot)).toEqual([]);
+        expect(remoteExecute.mock.calls.filter(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")).toHaveLength(1);
+      } else {
+        // A launch marker, any saved Runner state or a failover backup keeps the run fail-closed.
+        await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch: resumed_unavailable");
+        expect(await restartAsides()).toEqual([]);
+        expect(remoteExecute.mock.calls.some(([command]) => command.args?.[2] === "paperclip-runner-bootstrap-restart")).toBe(false);
+      }
+      takeRemoteBootstrapRestartProof(execution.binding.runId);
+      return;
     }
     if (scenario === "missing_control_plane") {
       await rm(join(options.stateDirectory!, "control-plane", "control-plane-state.json"));

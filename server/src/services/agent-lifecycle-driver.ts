@@ -15,6 +15,15 @@ import { AGENT_LIFECYCLE_STOP_REASON, COMPANY_ARCHIVED_STOP_REASON } from "./gov
 export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): LifecycleDriver {
   const { verify } = agentHarnessVerificationService(db, manager);
   const heartbeat = heartbeatService(db, { pluginWorkerManager: manager });
+
+  async function resolveAgentEnvironment(agent: { id: string; companyId: string }) {
+    const [placement] = await db.select({ environmentId: agents.defaultEnvironmentId }).from(agents)
+      .where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId)));
+    const environmentId = placement?.environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
+    const [environment] = environmentId ? await db.select().from(environments).where(eq(environments.id, environmentId)) : [];
+    return environment;
+  }
+
   return {
     async onReady(agent) {
       await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: agent.companyId, trigger: "pause_lifted" }));
@@ -27,9 +36,7 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
         .where(and(eq(pluginCompanySettings.companyId, agent.companyId), eq(pluginCompanySettings.enabled, false)));
       const candidates = installed.filter(plugin => !disabled.some(row => row.pluginId === plugin.id) &&
         plugin.manifestJson.agentLifecycle && plugin.manifestJson.capabilities.includes("agents.lifecycle.manage"));
-      const [row] = await db.select({ environmentId: agents.defaultEnvironmentId }).from(agents).where(eq(agents.id, agent.id));
-      const environmentId = row?.environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
-      const [environment] = environmentId ? await db.select().from(environments).where(eq(environments.id, environmentId)) : [];
+      const environment = await resolveAgentEnvironment(agent);
       if (selected !== null) {
         const added = candidates.filter(plugin => pluginServesAgentEnvironment(plugin, environment) && !selected.includes(plugin.id));
         return [...selected, ...added.map(plugin => plugin.id)];
@@ -47,8 +54,11 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
       const secrets = agentInstanceSecretService(db);
       const instanceSecrets = ["preparing", "resuming"].includes(agent.lifecycleState)
         ? await secrets.read({ companyId: agent.companyId, agentId: agent.id, pluginId }) : {};
+      const environment = await resolveAgentEnvironment(agent);
+      const environmentDriverKey = pluginServesAgentEnvironment(plugin, environment) && typeof environment?.config?.driverKey === "string"
+        ? environment.config.driverKey : undefined;
       const request = { companyId: agent.companyId, agentId: agent.id, operationId, version: agent.lifecycleVersion, phase: agent.lifecycleState,
-        instanceSecrets };
+        ...(environmentDriverKey ? { environmentDriverKey } : {}), instanceSecrets };
       const result = await manager.call(plugin.id, "agentLifecycle", request, 30_000);
       if (!result || result.operationId !== operationId || result.version !== agent.lifecycleVersion || !["complete", "pending"].includes(result.status)) {
         throw Object.assign(new Error("Invalid lifecycle result"), { code: "invalid_lifecycle_result" });
