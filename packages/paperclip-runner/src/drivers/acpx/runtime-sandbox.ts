@@ -431,8 +431,6 @@ export async function prepareAcpxRuntimeSandbox(input: {
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
   }
   const initializeOwnedConfiguration = input.agent === "claude" ? async (agentFilesRoot?: string) => {
-    // The registered agent directory is outside Claude's workspace; modes other
-    // than approve-all need it granted. approve-all approves every operation.
     const permissions = {
       ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
         ? { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) }
