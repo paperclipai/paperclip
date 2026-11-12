@@ -1,6 +1,6 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, lte, or, sql } from "drizzle-orm";
+import { and, eq, lte, ne, or, sql } from "drizzle-orm";
 import { currentControllerProcess } from "./controller-process-identity.js";
 import { companies, environments, heartbeatRuns, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
@@ -85,6 +85,7 @@ export async function createOwnedSandbox(
     const [existing] = await tx.select().from(sandboxCreationOperations).where(and(
       eq(sandboxCreationOperations.companyId, owner.companyId), eq(sandboxCreationOperations.originalEnvironmentId, owner.environmentId),
       eq(sandboxCreationOperations.runId, runId), eq(sandboxCreationOperations.requestKey, owner.requestKey ?? "run"),
+      ne(sandboxCreationOperations.state, "resolved"),
     ));
     if (!existing) throw new Error("Sandbox creation ownership was not recorded");
     return existing;
