@@ -68,7 +68,7 @@ type RunRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "agentId
 
 export type AssignedWorkDeps = {
   enqueueWakeup: (agentId: string, opts: {
-    source: "automation"; triggerDetail: "system"; reason: string;
+    source: "automation" | "assignment"; triggerDetail: "system"; reason: string;
     payload: Record<string, unknown>; requestedByActorType: "system"; requestedByActorId: null;
     contextSnapshot: Record<string, unknown>;
   }) => Promise<{ id: string } | null>;
@@ -164,7 +164,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       sql`${issueThreadInteractions.issueId}::text`, issueThreadInteractions.createdAt);
 
     const [activeRuns, latestRuns, wakes, chatWakes, nativePending, handoffs, goals, interactions, approvalRows,
-      blockerRows, childRows, actionMap, agentRows, companyRows, onboardingRows, blockActivity, interruptions] = await Promise.all([
+      blockerRows, resolvedBlockerRows, childRows, actionMap, agentRows, companyRows, onboardingRows, blockActivity, interruptions] = await Promise.all([
       db.select(runColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
         inArray(heartbeatRuns.status, NON_TERMINAL_RUN_STATUSES), sql`${runIssue} = any(${idParam})`)),
       // The newest run per task, read through the (company, issueId, created) index.
@@ -219,6 +219,12 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         .where(and(eq(issueRelations.companyId, companyId), inArray(issueRelations.relatedIssueId, ids),
           eq(issueRelations.type, "blocks"), sql`${issues.status} not in ('done', 'cancelled')`))
         .groupBy(issueRelations.relatedIssueId),
+      db.select({ issueId: issueRelations.relatedIssueId,
+        at: sql<string | null>`max(coalesce(${issues.completedAt}, ${issues.cancelledAt}))` }).from(issueRelations)
+        .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, issueRelations.companyId)))
+        .where(and(eq(issueRelations.companyId, companyId), inArray(issueRelations.relatedIssueId, ids),
+          eq(issueRelations.type, "blocks"), sql`${issues.status} in ('done', 'cancelled')`))
+        .groupBy(issueRelations.relatedIssueId),
       db.select({ parentId: issues.parentId, count: sql<number>`count(*)::int` }).from(issues)
         .where(and(eq(issues.companyId, companyId), inArray(issues.parentId, ids), sql`${issues.status} not in ('done', 'cancelled')`,
           isNull(issues.hiddenAt))).groupBy(issues.parentId),
@@ -264,6 +270,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const interactionCounts = counts(interactions);
     const approvalCounts = counts(approvalRows);
     const blockerCounts = counts(blockerRows);
+    const resolvedBlockerAt = new Map(resolvedBlockerRows.filter(row => row.at).map(row => [row.issueId, new Date(row.at!)]));
     const childCounts = counts(childRows.map(row => ({ issueId: row.parentId, count: row.count })));
     const onboardingIds = new Set(onboardingRows.map(row => row.id));
     const latestByIssue = new Map(rowsOf<RunRow>(latestRuns).map(row => [row.issueId, row]));
@@ -318,6 +325,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         pendingInteractions: interactionCounts.get(issue.id) ?? 0,
         pendingApprovals: approvalCounts.get(issue.id) ?? 0,
         openBlockers: blockerCounts.get(issue.id) ?? 0,
+        lastBlockerResolvedAt: resolvedBlockerAt.get(issue.id) ?? null,
         openChildren: childCounts.get(issue.id) ?? 0,
         reviewPending: executionState.status === "pending" || Boolean(executionState.reviewRequest),
         activeRecoveryAction: action ? { cause: action.cause, ownerType: action.ownerType,
@@ -450,10 +458,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
     repairTimes.push(at.getTime());
     const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
-      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      source: facts.latestRun ? "automation" : "assignment", triggerDetail: "system",
+      reason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
       payload: { issueId: issue.id, mutation: "assigned_work_invariant" },
       requestedByActorType: "system", requestedByActorId: null,
-      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_continuation_needed",
+      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
         source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: verdict.reason,
         ...(facts.latestRun ? { previousRunId: facts.latestRun.id } : {}) },
     }).catch(error => {

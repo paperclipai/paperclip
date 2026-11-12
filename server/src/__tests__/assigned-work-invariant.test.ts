@@ -184,7 +184,7 @@ describePostgres("assigned-work invariant sweep", () => {
     const scheduleRecoveryRetry = vi.fn(async (runId: string, outcome?: { continuationRefused?: boolean }) => {
       if (outcome) outcome.continuationRefused = true;
       const [run] = await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-      await db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, String(run.context?.issueId)));
+      await db.update(issues).set({ updatedAt: new Date(Date.now() - 2 * HOUR) }).where(eq(issues.id, String(run.context?.issueId)));
       return null;
     });
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry });

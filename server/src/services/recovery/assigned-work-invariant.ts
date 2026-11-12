@@ -141,6 +141,8 @@ export type AssignedWorkFacts = {
   pendingInteractions: number;
   pendingApprovals: number;
   openBlockers: number;
+  /** When the task's most recent blocker was finished, if any. */
+  lastBlockerResolvedAt?: Date | null;
   openChildren: number;
   reviewPending: boolean;
   activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null } | null;
@@ -221,11 +223,16 @@ function pendingIntent(facts: AssignedWorkFacts, now: Date): PendingIntent | nul
   return null;
 }
 
+/** The owners of a fresh change act on its own event: a run's failure path
+ * schedules its retry, a new assignment is dispatched, a resolved blocker
+ * wakes its dependent. The invariant judges only once that grace is over. */
 function settlingUntil(facts: AssignedWorkFacts, now: Date): Date | null {
   const run = facts.latestRun;
-  if (!run || !run.finishedAt) return null;
-  const candidates: number[] = [run.finishedAt.getTime() + SETTLING_GRACE_MS];
-  if (run.settlingUntil) candidates.push(run.settlingUntil.getTime());
+  const candidates: number[] = [];
+  if (run?.finishedAt) candidates.push(run.finishedAt.getTime() + SETTLING_GRACE_MS);
+  if (run?.finishedAt && run.settlingUntil) candidates.push(run.settlingUntil.getTime());
+  candidates.push(facts.issue.updatedAt.getTime() + SETTLING_GRACE_MS);
+  if (facts.lastBlockerResolvedAt) candidates.push(facts.lastBlockerResolvedAt.getTime() + SETTLING_GRACE_MS);
   const until = Math.max(...candidates);
   return until > now.getTime() ? new Date(until) : null;
 }

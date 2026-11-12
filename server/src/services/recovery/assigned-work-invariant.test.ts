@@ -171,6 +171,15 @@ describe("assigned-work invariant", () => {
         .toEqual({ kind: "settling", recheckAt: new Date(finishedAt.getTime() + SETTLING_GRACE_MS) });
     });
 
+    it("gives a just-changed task (new assignment) and a just-resolved blocker to their own owners first", () => {
+      const updatedAt = ago(5_000);
+      expect(evaluateAssignedWork(facts({ issue: { status: "todo", updatedAt }, latestRun: null }), now))
+        .toEqual({ kind: "settling", recheckAt: new Date(updatedAt.getTime() + SETTLING_GRACE_MS) });
+      const resolved = ago(10_000);
+      expect(evaluateAssignedWork(facts({ issue: { status: "blocked", blockedTransitionAt: ago(60 * 60_000) }, blockedBy: "assignee",
+        lastBlockerResolvedAt: resolved }), now)).toEqual({ kind: "settling", recheckAt: new Date(resolved.getTime() + SETTLING_GRACE_MS) });
+    });
+
     it("waits for another server's controller lease that still settles the run", () => {
       const lease = new Date(now.getTime() + 5 * 60_000);
       expect(evaluateAssignedWork(facts({ latestRun: { id: "r", status: "failed", errorCode: "process_lost",
