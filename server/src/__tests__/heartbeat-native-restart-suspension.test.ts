@@ -37,7 +37,7 @@ import { currentControllerBootId, currentProcessSpaceHash } from "../services/co
 import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind, type OwnershipReport } from "../services/recovery/ownership-invariant-report.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { reconcileNativeFinalizations, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
-import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { OWNABLE_KINDS, registerNativeRestartRecheck } from "../services/recovery/ownership-registry.js";
 import { currentProcessProbe, proveOwnerGone } from "../services/owner-proof.js";
 import { createRunLogWriterAuthority } from "../services/heartbeat/run-log-authority.js";
 import { resolveHotRestartIntentPath, writeHotRestartIntent } from "../services/hot-restart.js";
@@ -1714,6 +1714,35 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     // Settled records are no longer in progress, so rule I2 never fires.
     const second = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state });
     expect(second.violations.filter(violation => violation.kind === "native_accepted_result_lease")).toEqual([]);
+  }, 60_000);
+
+  it("hands a run awaiting evidence to restart recovery once the reconciler proves its controller gone (crash mid-overlap)", async () => {
+    // A crashed old server's run was classified by the new server's startup pass while the
+    // old server lived, so no restart re-check was scheduled for it. Only the reconciler
+    // sees the controller die; it must hand the run to restart recovery on the live server.
+    const f = await seedRecoverableRun("AWAITING-CRASHED-CONTROLLER");
+    await f.db.update(nativeRunFinalizations).set({ recoveryState: "awaiting_evidence",
+      leaseOwner: `old-controller:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() + 15 * 60_000),
+      controllerBootId: randomUUID(), controllerPid: 2_000_000_001, controllerHostHash: currentProcessSpaceHash(),
+      controllerProcessStartedAt: new Date(Date.now() - 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_awaiting_evidence")!;
+    const kinds = [{ ...kind, listInProgress: async (db: typeof f.db) => ({ records: await kind.listForRuns!(db, [f.runId]), truncated: false }) }];
+    const recheck = vi.fn(async () => undefined);
+    const unregister = registerNativeRestartRecheck(recheck);
+    const original = process.kill.bind(process);
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === 2_000_000_001 && signal === 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      return original(pid, signal);
+    });
+    try {
+      const state = createOwnershipReportState();
+      const first = await runOwnershipReconciliationPass(f.db, { kinds, state });
+      expect(first.kinds[0]).toMatchObject({ verdicts: { gone: 1 } });
+      expect(recheck).toHaveBeenCalledWith([f.runId]);
+      // The next 30 s pass does not hand it over again; restart recovery schedules its own re-checks.
+      await runOwnershipReconciliationPass(f.db, { kinds, state });
+      expect(recheck).toHaveBeenCalledTimes(1);
+    } finally { kill.mockRestore(); unregister(); }
   }, 60_000);
 
   it("keeps a live earlier-boot controller's result lease in the reconciler pass", async () => {
