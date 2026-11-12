@@ -262,10 +262,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, agent)).rejects.toMatchObject({ status: 403 });
     const open = await f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "none" }, { userId: "board-user" });
     expect(open.trigger.signingMode).toBe("none");
-    // The person's choice stays: an agent may edit that trigger without changing its mode.
     await expect(f.svc.updateTrigger(open.trigger.id, { label: "Inbound", signingMode: "none" }, agent))
       .resolves.toMatchObject({ trigger: { label: "Inbound", signingMode: "none" } });
-    // An agent cannot restore an older revision that switches a signed trigger to unauthenticated.
     await f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, { userId: "board-user" });
     const unsafeRevision = (await f.svc.listRevisions(f.routine.id))[0]!.id;
     await f.svc.updateTrigger(signed.trigger.id, { signingMode: "bearer" }, { userId: "board-user" });
