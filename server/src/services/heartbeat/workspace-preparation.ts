@@ -900,6 +900,17 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
   let issueExecutionWorkspaceIdForRun =
     issueRef?.executionWorkspaceId ?? null;
+  const previousExecutionWorkspaceId =
+    previousProviderWorkspaceId ??
+    workspaceReuseRequest?.requestedExecutionWorkspaceId ??
+    issueExecutionWorkspaceIdForRun ??
+    null;
+  const isRecoveryFallback = Boolean(
+    input.task.freshWorkspace?.mode === "fresh_isolated_workspace" ||
+    remoteFresh?.mode === "fresh_isolated_workspace" ||
+    providerFresh ||
+    nativeRecoveryExecutionWorkspaceId,
+  );
   let issueProjectWorkspaceIdForRun = issueRef?.projectWorkspaceId ?? null;
   let issueExecutionWorkspacePreferenceForRun =
     issueRef?.executionWorkspacePreference ?? null;
@@ -957,6 +968,24 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       if (shouldSwitchIssueToExistingWorkspace) {
         issueExecutionWorkspacePreferenceForRun = "reuse_existing";
         issueExecutionWorkspaceModeForRun = nextIssueWorkspaceMode;
+      }
+      if (previousExecutionWorkspaceId && previousExecutionWorkspaceId !== workspace.id) {
+        try {
+          await appendRunEvent(run, {
+            eventType: isRecoveryFallback ? "workspace.fallback_to_fresh" : "workspace.switched",
+            stream: "system",
+            level: isRecoveryFallback ? "warn" : "info",
+            message: isRecoveryFallback
+              ? "The earlier execution workspace could not be restored; bound task to a fresh workspace."
+              : "Switched task to a new execution workspace.",
+            payload: {
+              previousExecutionWorkspaceId,
+              nextExecutionWorkspaceId: workspace.id,
+              cwd: workspace.cwd,
+            },
+          });
+        } catch {
+        }
       }
     }
   };
@@ -1020,6 +1049,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const nextExecutionWorkspaceMetadata = {
     ...baseExecutionWorkspaceMetadata,
     ...(pluginPrepared?.metadata ?? {}),
+    ...(previousExecutionWorkspaceId ? { previousExecutionWorkspaceId } : {}),
     ...(taskWorkspaceOwner && !pluginPrepared ? { runnerTaskWorkspaceOwner: taskWorkspaceOwner } : {}),
     ...(providerFresh && pluginTaskWorkspace && !pluginPrepared ? { runnerTaskFreshWorkspace: providerFresh } : {}),
     ...(copyOnlyProvisioning ? { [CONTROLLER_PROVISION_COPY_ONLY]: true } : {}),
@@ -1066,6 +1096,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, reserved.id);
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
       persistedExecutionWorkspace = await executionWorkspacesSvc.update(reserved.id, {
+        ...(previousExecutionWorkspaceId && previousExecutionWorkspaceId !== reserved.id ? { derivedFromExecutionWorkspaceId: previousExecutionWorkspaceId } : {}),
         metadata: { ...reserved.metadata, ...nextExecutionWorkspaceMetadata,
           remoteWorkspace: reserved.metadata?.remoteWorkspace },
       });
@@ -1073,8 +1104,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       executionWorkspace.cwd = persistedExecutionWorkspace.cwd;
       resolvedWorkspace.cwd = executionWorkspace.cwd;
     } else persistedExecutionWorkspace =
-      pluginPrepared ? await executionWorkspacesSvc.update(pluginPrepared.id, { metadata: nextExecutionWorkspaceMetadata }) :
-      freshTaskReservation ? await executionWorkspacesSvc.update(freshTaskReservation.id, { metadata: nextExecutionWorkspaceMetadata }) :
+      pluginPrepared ? await executionWorkspacesSvc.update(pluginPrepared.id, {
+        ...(previousExecutionWorkspaceId && previousExecutionWorkspaceId !== pluginPrepared.id ? { derivedFromExecutionWorkspaceId: previousExecutionWorkspaceId } : {}),
+        metadata: nextExecutionWorkspaceMetadata,
+      }) :
+      freshTaskReservation ? await executionWorkspacesSvc.update(freshTaskReservation.id, {
+        ...(previousExecutionWorkspaceId && previousExecutionWorkspaceId !== freshTaskReservation.id ? { derivedFromExecutionWorkspaceId: previousExecutionWorkspaceId } : {}),
+        metadata: nextExecutionWorkspaceMetadata,
+      }) :
       resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace &&
       reusableExistingExecutionWorkspace
         ? await timeWorkspace("workspace_record_update", () => executionWorkspacesSvc.update(
@@ -1131,6 +1168,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
                   ? "git_worktree"
                   : "local_fs",
               providerRef: executionWorkspace.worktreePath,
+              derivedFromExecutionWorkspaceId: previousExecutionWorkspaceId ?? null,
               lastUsedAt: new Date(),
               openedAt: new Date(),
               metadata: nextExecutionWorkspaceMetadata,
@@ -1219,6 +1257,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         cleanupReason: null,
       },
     ));
+  }
+  if (createdExecutionWorkspaceThisRun && isRecoveryFallback && previousExecutionWorkspaceId && previousExecutionWorkspaceId !== persistedExecutionWorkspace?.id) {
+    executionWorkspace.warnings.push(
+      "The earlier execution workspace could not be restored; bound task to a fresh workspace.",
+    );
   }
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const projectRepositoryPaths: string[] = [];

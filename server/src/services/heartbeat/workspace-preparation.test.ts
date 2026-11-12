@@ -1209,6 +1209,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       const common = await execFile("git", ["-C", replacement.executionWorkspace.cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
       expect(common.stdout.trim()).toBe(join(replacement.executionWorkspace.cwd, ".git"));
       expect((await readIssue(issue.id)).executionWorkspaceId).toBe(replacement.persistedExecutionWorkspace!.id);
+      expect(replacement.persistedExecutionWorkspace!.derivedFromExecutionWorkspaceId).toBe(original.persistedExecutionWorkspace!.id);
+      expect(replacement.executionWorkspace.warnings).toContain("The earlier execution workspace could not be restored; bound task to a fresh workspace.");
+      expect(replacement.persistedExecutionWorkspace!.metadata).toMatchObject({ previousExecutionWorkspaceId: original.persistedExecutionWorkspace!.id });
     }, 30_000,
   );
 

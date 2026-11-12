@@ -151,6 +151,7 @@ export async function reserveFreshPluginTaskWorkspace(input: {
       companyId: input.companyId, sourceIssueId: input.issueId, ...source,
       mode: "isolated_workspace", strategyType: "project_primary", name: "Fresh task workspace", status: "active",
       providerType: "adapter_managed", cwd: `/workspaces/${input.fresh.attemptId}`,
+      derivedFromExecutionWorkspaceId: input.fresh.previousWorkspaceId ?? null,
       metadata: { runnerTaskFreshWorkspace: input.fresh, runnerTaskWorkspaceOwner: input.owner },
     });
     await notifyStatusCardIssueChange(tx, input.companyId);
