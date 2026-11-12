@@ -11,6 +11,8 @@ import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-
 import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
 
 import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
+import { volumeFreeControllerStateOwned } from "./native-runtime/volume-free-controller-state.js";
+import { logger } from "../middleware/logger.js";
 
 export { ephemeralServerEnabled };
 
@@ -40,11 +42,36 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
   return listener.href;
 }
 
+/** Findings that describe work in progress when a server stopped, not data
+ * waiting on a volume to be migrated. Every volume-free server that stops
+ * during a run leaves some of them behind. Runtime skill assets are not in
+ * this set: that finding also covers retained sessions whose skill bundles
+ * were never preserved, which the owner marker does not prove durable. */
+const interruptedRunBlockers: ReadonlySet<string> = new Set([
+  "native_harness_backups_require_migration",
+  "local_instruction_copies_require_settlement",
+]);
+
 /** A readiness gate, not a periodic scan or an implicit migration. Existing
  * volume data is adopted by the owning maintenance commands before removal. */
 export async function assertEphemeralServerData(db: Db) {
   if (!ephemeralServerEnabled()) return;
-  const { blockers, controller } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
+  const eligibility = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
+  const { controller } = eligibility;
+  let blockers = eligibility.blockers;
+  // Run state that never reached durable storage needs migration only while
+  // it can still be on a volume. Once this filesystem carries the volume-free
+  // owner marker there is no volume: the state was written by a volume-free
+  // server, this one or a predecessor that stopped mid-run, and refusing to
+  // start cannot bring it back. It would only keep every restart from
+  // starting again. Restart recovery owns those runs; start and say so.
+  // Configuration that would write new data to the local disk stays refused.
+  const interrupted = blockers.filter(blocker => interruptedRunBlockers.has(blocker));
+  if (interrupted.length && await volumeFreeControllerStateOwned()) {
+    blockers = blockers.filter(blocker => !interruptedRunBlockers.has(blocker));
+    logger.warn({ blockers: interrupted },
+      "Volume-free server is starting over run state that never reached durable storage; restart recovery owns those runs");
+  }
   if (!blockers.length) return;
   const detail = (blocker: string) => blocker === "native_controllers_require_migration" && controller
     ? `${blocker} (run ${controller.runId} on task ${controller.issueId}: controller state at ${controller.source} is not proven by the database, and this filesystem has no volume-free owner marker, so it may be the only copy of that run's progress; adopt it with the native controller migration before starting a volume-free server)`
