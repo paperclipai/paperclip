@@ -1017,7 +1017,11 @@ wake then neither reopens the finished task nor starts another turn. An edit
 after the read, or a read by a run that did not succeed, leaves the comment
 owed, so it is delivered once. The check reads only the assignee's succeeded
 runs of that task that finished at or after the comment's current revision,
-through the existing run-binding and `(company_id, run_id)` event indexes. A failure to write the event leaves the comment
+through the existing run-binding and `(company_id, run_id)` event indexes.
+A saved follow-up resumed after a remote Stop uses the same rule. A read by a
+run that did not succeed never counts. `taskHistoryReadsForRun` lists the
+comments one run read, with each read's time and the comment revision it saw,
+whatever the run's outcome. A failure to write the event leaves the comment
 owed in the same way.
 
 ## Managed Agent File Save Receipts
