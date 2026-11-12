@@ -49,7 +49,7 @@ function privateDelegation(): ChatCatalogCase {
     await putDocument(ctx, source.id, `# Confidential launch brief\n${confidentialMarker}. Keep the announcement inside Private Launch and its authorized team.\n`);
     return { project: p, worker, ownerId, observerId: observer.id, sourceId: source.id, confidentialMarker };
   }, gradePrivateDelegation);
-  return { ...base, authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.private-task.v2", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2,
     runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-private-delegation.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-support.ts"],
     async observe(ctx, state): Promise<PrivateDelegationObservation> {

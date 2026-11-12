@@ -1,5 +1,5 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely } from "../chat-catalog-contract.js";
-import { expect } from "@playwright/test";
+import { expect, type Locator, type Page, type Response } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { inflateRawSync } from "node:zlib";
@@ -9,6 +9,26 @@ import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.j
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
 import type { IssueAttachment, IssueQueuedCommentQueue } from "../../../packages/shared/src/types/issue.js";
 import type { IssueWorkProduct } from "../../../packages/shared/src/types/work-product.js";
+/** Move a queued message up one place with the drag handle's keyboard gesture, as a keyboard user does.
+ * Saving an edit disables every handle until that queue change settles, and a gesture pressed on a disabled
+ * handle does nothing, so wait for this handle to be enabled first. The gesture must send the queue order
+ * request; its status is returned so the caller can tell an accepted move from a refused one. */
+export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForResponse">, handle: Pick<Locator, "isEnabled" | "focus" | "press">,
+  timeoutMs = 15_000, intervalMs = 100): Promise<{ status: number; waitedForEnabledMs: number }> {
+  const started = Date.now();
+  while (!await handle.isEnabled()) {
+    if (Date.now() - started >= timeoutMs) throw new Error("The queued message's reorder handle stayed disabled");
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  const waitedForEnabledMs = Date.now() - started;
+  const sent = page.waitForResponse((response: Response) => response.request().method() === "PUT"
+    && new URL(response.url()).pathname.endsWith("/queued-comments/order"), { timeout: timeoutMs });
+  sent.catch(() => undefined);
+  await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
+  const response = await sent.catch(() => null);
+  if (!response) throw new Error("The keyboard reorder gesture sent no queue order request");
+  return { status: response.status(), waitedForEnabledMs };
+}
 const MAX_DELIVERABLE_BYTES = 262_144;
 /** Text of each stored or deflated entry in a zip deliverable, read from its central directory; [] when it is not a readable zip. */
 export function zipEntryTexts(bytes: Buffer): string[] {

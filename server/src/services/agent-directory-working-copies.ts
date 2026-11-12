@@ -659,7 +659,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
     // Test instrumentation only (disarmed in production): restart chaos fails the Nth attempt with the lock's own conflict.
-    crashPoint("agent_directory.operation_lock.before_acquire", { fail: () => conflict("Agent directory operation is already active") });
+    crashPoint("agent_directory.operation_lock.before_acquire", { fail: () => new AgentDirectoryOperationBusyError() });
     return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
       const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
         (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);

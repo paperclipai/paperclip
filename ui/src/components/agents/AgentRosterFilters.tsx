@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Filter } from "lucide-react";
 import type { Agent, Department } from "@paperclipai/shared";
@@ -34,11 +34,14 @@ export function useAgentRosterFilters(companyId: string | null, agents: Agent[] 
   const departmentOptions = [...departments]
     .sort((left, right) => left.name.localeCompare(right.name))
     .map((department) => ({ value: department.id, label: department.name }));
+  const matches = useCallback((agent: Agent) => (
+    matchesAgentRosterFilters(index.byAgentId.get(agent.id), filters)
+    && matchesDepartmentFilter(agent.id, filters.department, departments)
+  ), [index, filters, departments]);
   return {
     filters, options: index.options, departmentOptions, activeCount,
     onChange: (next: RosterFilters) => setSelection({ companyId, filters: next }),
-    matches: (agent: Agent) => matchesAgentRosterFilters(index.byAgentId.get(agent.id), filters)
-      && matchesDepartmentFilter(agent.id, filters.department, departments),
+    matches,
     departmentLabel: (agentId: string) => {
       const names = departmentNamesForAgent(agentId, departments);
       return names.length ? names.join(", ") : null;
@@ -50,23 +53,24 @@ export function useAgentRosterFilters(companyId: string | null, agents: Agent[] 
   };
 }
 
-export function AgentRosterFilters({ filters, options, departmentOptions, onChange, activeCount, count, connectionError, departmentError, retryConnections, retryDepartments }: {
+export function AgentRosterFilters({ filters, options, departmentOptions, onChange, activeCount, count, connectionError, departmentError, retryConnections, retryDepartments, compact = false }: {
   filters: RosterFilters;
   options: Record<AgentRosterFilterField, AgentRosterOption[]>;
   departmentOptions: AgentRosterOption[];
   onChange: (filters: RosterFilters) => void;
   activeCount: number;
   count: number;
+  compact?: boolean;
   connectionError?: unknown;
   departmentError?: unknown;
   retryConnections: () => void;
   retryDepartments: () => void;
 }) {
-  return <div data-canonical-toolbar="agent-filters" role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center justify-between gap-3">
+  return <div data-canonical-toolbar="agent-filters" role="toolbar" aria-label="Agent filters" className={cn("flex flex-wrap items-center gap-3", !compact && "justify-between")}>
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Filter agents" title={activeCount ? `Filters: ${activeCount}` : "Filter agents"}
-          className={cn("relative shrink-0", activeCount > 0 && "text-blue-600 dark:text-blue-400")}>
+        <Button variant={compact ? "outline" : "ghost"} size="icon" aria-label="Filter agents" title={activeCount ? `Filters: ${activeCount}` : "Filter agents"}
+          className={cn("relative shrink-0", compact && "design-toolbar-icon", activeCount > 0 && "text-blue-600 dark:text-blue-400")}>
           <Filter className="size-3.5" aria-hidden />
           {activeCount > 0 && <span aria-hidden className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">{activeCount}</span>}
         </Button>
@@ -97,7 +101,7 @@ export function AgentRosterFilters({ filters, options, departmentOptions, onChan
         </label>
       </PopoverContent>
     </Popover>
-    <span className="text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>
+    {!compact && <span className="text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>}
     {!!connectionError && <p role="alert" className="basis-full text-xs text-destructive">Connection names couldn’t be loaded. <Button variant="link" size="sm" onClick={retryConnections}>Retry</Button></p>}
     {!!departmentError && <p role="alert" className="basis-full text-xs text-destructive">Departments couldn’t be loaded. <Button variant="link" size="sm" onClick={retryDepartments}>Retry</Button></p>}
   </div>;

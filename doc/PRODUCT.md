@@ -431,9 +431,12 @@ telemetry. See [Announcements](ANNOUNCEMENTS.md).
 
 With Agent Chat enabled, Chat is the first row of the Work section and opens a
 secondary sidebar beside the primary nav. It lists every agent you can chat
-with: the open conversation first, then your other conversations by recent
-activity, then the rest of the roster alphabetically. Terminated agents and
-agents you have left are omitted unless you have history with them. Search
+with: pinned agents first in their saved order, then your conversations by recent
+activity, then the rest of the roster alphabetically. Pin controls appear on hover
+or keyboard focus. Drag a pinned agent's handle to change the order, or use Space,
+the arrow keys, and Space again. Pin order stays personal to the signed-in user
+in the current browser. Search filters the list without changing hidden pins.
+Terminated agents and agents you have left are omitted unless you have history with them. Search
 filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
@@ -449,6 +452,22 @@ so the conversation stays open.
 Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
+
+Inbox opens with **Assigned to you**. Its assignee filter can show all accessible
+assignees, a particular person, ownerless requests, or company alerts. Cards for
+someone else prepend that person's name to the action label; your own cards omit
+your name. Routing validates who may reassign a request and whether its recipient
+may answer it.
+
+Decision, problem, and update cards use the compact Paper design. Each type keeps
+its own context and supported actions, with the primary action at the right of
+the footer. Plans, documents, attachments, and approval details open in sidebar
+tabs and highlight their source card. Confirmation and approval revision drafts
+and pending submissions synchronize across review views. Other requests keep one
+editable form on the inbox card while their supporting artifact is open, so a
+second form cannot submit an older answer. Claim, transfer,
+personal archive/snooze, withdrawal, receipts, and personal history retain their
+multiplayer behavior and update open views through live events.
 
 Tasks defaults to **All tasks**, with a saved view per person and company. Mine uses
 the previous Inbox's personal participation rules, mixed attention items,

@@ -124,6 +124,17 @@ Use Chrome's request waterfall and this mark together to distinguish API wait,
 request dependencies, and rendering time. A hard-load trace also includes auth,
 company selection, and JavaScript startup before the task navigation mark.
 
+## Browser performance tracing
+
+Hosted Paperclip Cloud instances can also trace the board UI in the browser:
+a `page.load` span for every hard load and client-side navigation (named by
+route pattern), Core Web Vitals, and same-origin API request spans whose W3C
+trace context joins the server spans above. It is off unless the instance is
+cloud managed and `PAPERCLIP_BROWSER_TRACES_ENDPOINT` is set; self-hosted
+installs never download the browser SDK. Configuration, the closed attribute
+allowlist, the page-load definitions, and example queries are in
+[browser-performance-tracing.md](browser-performance-tracing.md).
+
 ## Enabling tracing
 
 ### 1. Install the OTel peer dependencies

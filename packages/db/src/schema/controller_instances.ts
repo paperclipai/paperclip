@@ -6,6 +6,9 @@ import { bigint, bigserial, index, integer, pgTable, text, timestamp, uniqueInde
  * expired, and a fenced or lease-less process stops. Stamps name the boot id,
  * so a record owned by a replaced container is proven gone without sharing a
  * host or PID space with it.
+ *
+ * During a deploy overlap the newer boot records when it began starting runs,
+ * and the older boot leaves new run starts to it (run-start-handover.ts).
  */
 export const controllerInstances = pgTable(
   "controller_instances",
@@ -20,6 +23,10 @@ export const controllerInstances = pgTable(
     fencedAt: timestamp("fenced_at", { withTimezone: true }),
     fencedByEpoch: bigint("fenced_by_epoch", { mode: "number" }),
     stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+    /** When this boot began starting queued runs; null until then, and on rows written by older releases. */
+    dispatchingAt: timestamp("dispatching_at", { withTimezone: true }),
+    /** While in the future, an older boot that is still serving leaves new run starts to this boot. */
+    dispatchLeaseExpiresAt: timestamp("dispatch_lease_expires_at", { withTimezone: true }),
   },
   (table) => ({
     epochIdx: uniqueIndex("controller_instances_epoch_idx").on(table.epoch),

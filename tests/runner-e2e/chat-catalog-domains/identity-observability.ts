@@ -7,8 +7,10 @@ import { expect } from "@playwright/test";
 import type { AgentObservabilitySettingsResponse, AgentObservabilityTestReceipt } from "../../../packages/shared/src/agent-observability.js";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
+import { readRecord, recordParams } from "./api-read-receipts.js";
 import { sendChatMessage } from "../chat-flow.js";
-import { checks } from "./internal-support.js";
+import { checks, type InternalObservation } from "./internal-support.js";
 import { identityDefinition, identityObservation, observeIdentity, probeAgentPermission } from "./identity-support.js";
 
 interface Received { path: string; authenticated: boolean; body: Buffer; sha256: string }
@@ -32,6 +34,29 @@ async function collector(): Promise<Collector> {
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Synthetic collector has no real local address");
   return { server, url: `http://127.0.0.1:${address.port}`, key, received };
 }
+/** Company settings (where the Agent observability section lives) for this company's prefix, by rendered reply link. */
+export function companySettingsLinked(o: Pick<InternalObservation, "links" | "origin">, prefix: unknown): boolean {
+  return typeof prefix === "string" && !!prefix && o.links.some(href => {
+    try {
+      const url = new URL(href, o.origin);
+      return url.origin === new URL(o.origin).origin && url.pathname.replace(/\/+$/, "") === `/${prefix}/company/settings`;
+    } catch { return false; }
+  });
+}
+/** The run read the company's saved trace export status (or, if ever permitted, its settings) successfully. */
+export function readSavedObservabilityStatus(events: readonly Record<string, unknown>[], companyId: string): boolean {
+  const pathParams = [...recordParams("companyId", companyId), undefined];
+  return readRecord(events, ["GET /api/companies/{companyId}/observability/status", "GET /api/companies/{companyId}/observability"]
+    .map(operationId => ({ operationId, pathParams })));
+}
+async function turnReadSavedStatus(ctx: ChatCatalogContext, before: ReadonlySet<string>): Promise<boolean> {
+  const runs = (await ctx.allRuns()).filter(run => !before.has(run.id));
+  for (const run of runs) {
+    const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
+    if (readSavedObservabilityStatus(events, ctx.input.fixtures.company.id)) return true;
+  }
+  return false;
+}
 export function gradeObservability(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-opt-in-trace-evidence", !!o, "Real saved destination, actual collector deliveries, native runs and disabled-export evidence are required."); if (!o) return c.result();
   const saved = o.state.saved as AgentObservabilitySettingsResponse | undefined; const receipt = o.state.testReceipt as AgentObservabilityTestReceipt | undefined;
@@ -47,6 +72,14 @@ export function gradeObservability(value: unknown) {
   c.add("disabled-stops-future-export", o.state.disabledSaved === true && o.state.disabledNativeRunCount === 3 && o.state.callsAfterDisabledRun === o.state.callsAtDisable
     && o.state.disabledCallsDidNotIncrease === true,
     "The explicit human Disable export control persists, then a third actual native turn completes without another collector delivery.");
+  // An acknowledgement is only truthful when the turn read the saved settings it acknowledges. The
+  // board-only settings are unreadable to agents; the status read is the agent's only source. The
+  // agent's wording is never matched: the redaction-safe receipt of a successful read in each
+  // acknowledgement turn is graded instead, so a reply built from agent config and secrets alone fails.
+  c.add("acknowledgements-read-saved-settings", o.state.enabledTurnReadSavedStatus === true && o.state.disabledTurnReadSavedStatus === true,
+    "Each acknowledgement turn (export saved and enabled, then disabled) successfully read the company's saved trace export status before replying.");
+  c.add("points-to-company-observability-setup", companySettingsLinked(o, o.state.companyPrefix),
+    "A reply renders a link to the company settings page, where the board configures the destination and enters its credential securely.");
   // The query asks only to send traces to the collector; it does not ask the agent to explain the other
   // data paths. Which paths the export covers is proven by the collector receipts above; free-form
   // replies are not graded by keywords, so the reply is only required to exist.
@@ -58,10 +91,10 @@ export const observabilityIdentityCases: readonly ChatCatalogCase[] = [identityD
   const before = await ctx.input.api.get<AgentObservabilitySettingsResponse>(`/api/companies/${ctx.input.fixtures.company.id}/observability`);
   if (!before.canManage || before.settings !== null || !ctx.input.privateSecrets) throw new Error("Setup blocker: the real human must manage an initially unconfigured trace destination");
   const target = await collector(); collectors.set(ctx, target); ctx.input.privateSecrets.push(target.key);
-  return { beforeSettings: before.settings, collectorUrl: target.url, syntheticCollector: true };
+  return { beforeSettings: before.settings, collectorUrl: target.url, syntheticCollector: true, companyPrefix: ctx.input.fixtures.company.issuePrefix };
 }, gradeObservability, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.agent-observability.structural.v3", expectedRunCount: 3, expectedHumanMessageCount: 3, attemptTimeoutMs: 600_000,
-  sourceFiles: ["chat-catalog-domains/identity-observability.ts", "chat-catalog-domains/identity-company-observer.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/companies.yaml"],
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.agent-observability.structural.v4", expectedRunCount: 3, expectedHumanMessageCount: 3, attemptTimeoutMs: 600_000,
+  sourceFiles: ["chat-catalog-domains/identity-observability.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/identity-company-observer.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/companies.yaml"],
   async act(ctx, state) {
     await waitForCompanySettingsTurn(ctx); const target = collectors.get(ctx); if (!target) throw new Error("Owned synthetic collector is missing");
     const root = `/api/companies/${ctx.input.fixtures.company.id}/observability`; const source = ctx.input.page.url();
@@ -78,16 +111,20 @@ export const observabilityIdentityCases: readonly ChatCatalogCase[] = [identityD
     await expect(section.getByText("Test payload accepted", { exact: true })).toBeVisible();
     state.collectorMatchedTestSignals = ["/v1/logs", "/v1/traces"].filter(signal => target.received.some(row => row.path === signal && row.authenticated && row.body.includes(receipt.marker)
       && row.body.includes(ctx.input.fixtures.company.id) && row.body.includes(receipt.revision))).length;
+    let priorRuns = new Set((await ctx.allRuns()).map(run => run.id));
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" }); await sendChatMessage(ctx.input.page, "Please acknowledge that our test collector configuration is saved. Do not change its settings.");
     await waitForCompanySettingsTurn(ctx, 2); state.enabledNativeRunCount = (await ctx.allRuns()).length;
+    state.enabledTurnReadSavedStatus = await turnReadSavedStatus(ctx, priorRuns);
     state.nativeExportMatched = await pollUntil({ label: "actual native harness trace export", deadlineAt: Date.now() + 30_000,
       load: async () => target.received.some(row => row.authenticated && row.body.includes(ctx.input.fixtures.company.id)
         && row.body.includes(ctx.input.fixtures.agent.id) && row.body.includes(receipt.revision)), accept: Boolean });
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/company/settings`, { waitUntil: "domcontentloaded" });
     await section.getByRole("button", { name: "Disable export", exact: true }).click();
     await expect.poll(async () => (await ctx.input.api.get<AgentObservabilitySettingsResponse>(root)).settings?.enabled).toBe(false); state.disabledSaved = true; state.callsAtDisable = target.received.length;
+    priorRuns = new Set((await ctx.allRuns()).map(run => run.id));
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" }); await sendChatMessage(ctx.input.page, "Please acknowledge that export is now disabled. Do not change it or start any additional work.");
-    await waitForCompanySettingsTurn(ctx, 3); state.disabledNativeRunCount = (await ctx.allRuns()).length; state.callsAfterDisabledRun = target.received.length; state.disabledCallsDidNotIncrease = state.callsAfterDisabledRun === state.callsAtDisable;
+    await waitForCompanySettingsTurn(ctx, 3); state.disabledNativeRunCount = (await ctx.allRuns()).length;
+    state.disabledTurnReadSavedStatus = await turnReadSavedStatus(ctx, priorRuns); state.callsAfterDisabledRun = target.received.length; state.disabledCallsDidNotIncrease = state.callsAfterDisabledRun === state.callsAtDisable;
     await ctx.input.evidence("identity-synthetic-otlp-delivery.json", { syntheticCollector: true, savedRevision: receipt.revision, controlPlaneTestMarker: receipt.marker,
       requests: target.received.map(row => ({ path: row.path, authenticated: row.authenticated, sha256: row.sha256 })), nativeExportMatched: state.nativeExportMatched,
       enabledNativeRunCount: state.enabledNativeRunCount, disabledNativeRunCount: state.disabledNativeRunCount, callsAtDisable: state.callsAtDisable, callsAfterDisabledRun: state.callsAfterDisabledRun,

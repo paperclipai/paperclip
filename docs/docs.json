@@ -124,6 +124,7 @@
               "api/agents",
               "api/issues",
               "api/approvals",
+              "api/attention",
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",

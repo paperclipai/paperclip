@@ -656,7 +656,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
 
   it("keeps a reconciler pass due when the backstop cannot save a message", async () => {
     const report = { violations: [{ rule: "I4_exactly_once_intent", kind: "issue_comment", recordId: randomUUID(),
-      companyId: "not-a-company-id", runId: null, issueId: "not-an-issue-id", reason: "user_comment_without_wake" }] };
+      companyId: "not-a-company-id", runId: null, issueId: "not-an-issue-id", reason: "user_comment_without_wake" }], newViolations: [] };
     expect(await applyOwnershipReportBackstops(db, report as never)).toEqual({ retryNeeded: true });
   });
 

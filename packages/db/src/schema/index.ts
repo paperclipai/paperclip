@@ -191,6 +191,7 @@ export {
   toolGatewaySessions,
   connectionTokenIssuances,
   toolInvocations,
+  toolMcpAppViews,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,

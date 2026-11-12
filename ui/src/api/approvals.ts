@@ -16,6 +16,9 @@ export const approvalsApi = {
     api.post<Approval>(`/approvals/${id}/reject`, { decisionNote }),
   requestRevision: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/request-revision`, { decisionNote }),
+  /** Withdraw an out-of-date approval. It never approves; the gate stays closed. */
+  cancel: (id: string, reason?: string) =>
+    api.post<Approval>(`/approvals/${id}/cancel`, { reason }),
   resubmit: (id: string, payload?: Record<string, unknown>) =>
     api.post<Approval>(`/approvals/${id}/resubmit`, { payload }),
   listComments: (id: string) => api.get<ApprovalComment[]>(`/approvals/${id}/comments`),

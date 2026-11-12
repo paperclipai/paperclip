@@ -2477,6 +2477,9 @@ function renderPaperclipWakePromptBody(
       : [];
   const wakeSummaryLines = [
     `- reason: ${normalized.reason ?? "unknown"}`,
+    ...(normalized.executionContinuation?.trigger?.retriedReason
+      ? [`- retried wake: ${normalized.executionContinuation.trigger.retriedReason} (this Retry re-delivers the wake the failed run did not finish; handle it as that wake)`]
+      : []),
     `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
     ...(hasWakeCommentBatch
       ? [

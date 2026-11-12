@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { stableRequestId } from "./plan-primitives.js";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,7 @@ import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "
 import { isSessionFault, rotateAgentSession } from "./session-faults.js";
 import { awaitingRewake, collectRewakeArtifacts, isRewakeWorkload, rewakeStep } from "./rewake.js";
 import { withLongTurn } from "./long-turn.js";
+import { collectStagingMixArtifacts, holdsRetry, stagingMixDefinition, stagingMixStep } from "./staging-mix.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -30,6 +32,8 @@ const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modu
 const MAX_SNAPSHOT_FILES = 2_000;
 
 /** Relative paths of workspace files, excluding VCS and cache directories. */
+
+export { stableRequestId } from "./plan-primitives.js";
 export async function listWorkspaceFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   const walk = async (relative: string) => {
@@ -236,7 +240,9 @@ export class TaskObserver {
   readonly journey: JourneyDriver | null;
 
   /** The workload, with `--long-turn-minutes` tool work in front of its first turn (long-turn.ts). */
-  get definition() { return withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes); }
+  get definition() {
+    return this.plan.stagingMix ? stagingMixDefinition(this.plan.stagingMix) : withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes);
+  }
 
   /**
    * Crash-point suite: create the issue without an assignee, so no wake is
@@ -255,6 +261,7 @@ export class TaskObserver {
     for (;;) {
       try {
         await this.api.patch(`/api/issues/${this.record.issueId}`, { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id });
+        await this.postStartComment();
         break;
       } catch (error) {
         const transient = error instanceof ChaosApiError && (error.status === null || error.status >= 500);
@@ -272,6 +279,14 @@ export class TaskObserver {
     this.timeline.add("task_released", { taskId: this.plan.taskId, issueId: this.record.issueId });
   }
 
+  private async postStartComment(): Promise<void> {
+    if (!this.definition.startComment || !this.record.issueId) return;
+    const body = this.definition.startComment(this.plan.nonce);
+    const existing = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/comments`);
+    if (existing.some(comment => comment.body === body)) return;
+    await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body, clientRequestId: stableRequestId(`start-${this.plan.taskId}-${this.plan.nonce}`) });
+  }
+
   async launch(options: { assign?: boolean } = {}): Promise<void> {
     const definition = this.definition;
     const assign = options.assign !== false;
@@ -282,13 +297,14 @@ export class TaskObserver {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
         description: definition.description(this.plan.nonce, this.workloadAgents()),
-        status: "todo",
+        status: definition.startComment ? "backlog" : "todo",
         priority: "medium",
         ...(assign ? { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id } : {}),
         ...(definition.usesRepository ? { projectId: this.lab.projectId } : {}),
       });
       this.record.issueId = String(issue.id);
       this.record.identifier = issue.identifier ?? null;
+      if (assign) await this.postStartComment();
       // K14: which build launched the task, so a replay starts it on the same one.
       if (this.supervisor.serverBuild) this.record.serverBuildAtLaunch = this.supervisor.serverBuild;
       this.record.createdAt = Date.now();
@@ -670,10 +686,9 @@ export class TaskObserver {
     }
     if (!await this.clearDiskFullAtRest(now)) { this.restCandidateSince = null; return; }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
-      if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
-      this.record.retry = await this.retry(sample, now);
+      if (this.plan.stagingMix?.retryDuringWave && holdsRetry(this.record, this.plan.stagingMix.holdMs, now)) { this.restCandidateSince = null; return; }
+      if (!this.plan.stagingMix || this.plan.stagingMix.retryDuringWave) { await this.boardRetry(sample, now); return; }
       this.restCandidateSince = null;
-      if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);
       return;
     }
     this.record.restAt = this.restCandidateSince ?? now;
@@ -681,6 +696,26 @@ export class TaskObserver {
     this.done = true;
     this.timeline.add("task_rested", { taskId: this.plan.taskId, status, interruption: sample.interruption?.state ?? null,
       canRetry: sample.interruption?.canRetry ?? false, retried: Boolean(this.record.retry) });
+  }
+
+  reopen(now: number): void {
+    this.done = false;
+    this.record.restAt = null;
+    this.record.timedOut = false;
+    this.record.deadlineAt = now + RETRY_BUDGET_MS;
+  }
+
+  async retryAfterSettle(sample: TaskSample, now: number): Promise<void> {
+    this.reopen(now);
+    await this.boardRetry(sample, now);
+    this.record.deadlineAt = now + RETRY_BUDGET_MS;
+  }
+
+  private async boardRetry(sample: TaskSample, now: number): Promise<void> {
+    if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
+    this.record.retry = await this.retry(sample, now);
+    this.restCandidateSince = null;
+    if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);
   }
 
   /** Exactly one click, with the same body ui/src/hooks/useTaskRetry.ts sends. */
@@ -866,6 +901,11 @@ export class TaskObserver {
         note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }),
         ...(sessionFault ? { beforeAnswer: () => rotateAgentSession(this.api, this.lab.agents[this.plan.adapter].id, this.plan.index, now, sessionFault) } : {}) });
     }
+    if (this.plan.stagingMix) {
+      await stagingMixStep({ api: this.api, record: this.record, task: this.plan.stagingMix, nonce: this.plan.nonce, sample, now,
+        faultInProgress: this.supervisor.faultInProgress, retry: (current, at) => this.boardRetry(current, at),
+        note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
+    }
     if (isRewakeWorkload(this.plan.workload)) {
       await rewakeStep({ api: this.api, record: this.record, plan: this.plan, issueId: this.record.issueId, agentId: this.lab.agents[this.plan.adapter].id,
         sample, now, boardMayAct: this.boardMayAct(sample), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
@@ -1008,7 +1048,7 @@ export class TaskObserver {
       const document = await this.api.get<Json>(`/api/issues/${issueId}/documents/${key}`).catch(() => null);
       documents[key] = typeof document?.body === "string" ? document.body : null;
     }
-    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => []);
+    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => null);
     const workspacePath = await this.workspacePath();
     const snapshotPath = this.record.preFaultWorkspacePath ?? workspacePath;
     if (snapshotPath && this.record.preFaultFiles) {
@@ -1066,6 +1106,7 @@ export class TaskObserver {
         status: String(run.status), errorCode: run.errorCode ?? null, createdAt: run.createdAt ?? null, finishedAt: run.finishedAt ?? null }))).catch(() => []),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
       ...(this.plan.workload === "H2" ? { handoff: await this.collectHandoff(issueId, issue) } : {}),
+      ...(this.plan.stagingMix ? { stagingMix: collectStagingMixArtifacts(this.record, comments) } : {}),
     };
   }
 

@@ -31,6 +31,12 @@ or `provider_session`. Its state is `reused`, `fresh`, `unknown`, or
 `not_applicable`, and `evidence_missing`. No paths, identifiers, configuration
 values, or exception messages enter these fields.
 
+A restart's reattachment to a remote Runner resumes the run's own retained
+sandbox lease and never acquires another one. Its `environment` receipt is
+`reused` / `verified_reuse`. Earlier releases reported the lease's original
+acquisition there, so a reattachment to a sandbox the run created showed
+`fresh` / `created` although no sandbox was created.
+
 Provider-process receipts carry a cumulative `providerLaunchCount` for the run.
 `null` means unobserved; zero requires a physical launch observer. Direct ACPX
 processes count initial launches and respawns, including launches during retries.
@@ -441,6 +447,15 @@ provider cleanup or warm transition is pending. These fields explain how the run
 stopped. The event is not recorded when a scheduled retry resumes a runner that
 exited after a settled suspension; see `doc/execution-semantics.md`.
 
+`native.interrupted_turn_outcome_unknown` (level `warn`) is recorded once on a
+failed run whose reattachment proved the Runner process gone
+(`process_verification` / `process_not_running`) while its last provider turn
+had no observed settlement, just before the server requests the automatic
+Retry. The payload holds the provider `turnId` (or `null`), the last turn event
+type, `replayed: false`, and the closed `runnerExit` fields `stage`, `reason`
+and `runnerLifecycle`. It names a turn whose outcome is unknown; the Retry's
+fresh session never replays it.
+
 For a prepared remote workspace interrupted before its first executor claim,
 that ledger records `remote_execution_never_claimed` with a
 `bootstrap_incomplete` disposition. The provider attempt remains zero during
@@ -683,16 +698,16 @@ run phases:
 
 | Phase | Step |
 | --- | --- |
-| `storage.snapshot.download` | Get the encrypted archive from storage and hash it while it streams. |
-| `storage.snapshot.decrypt` | Decrypt the archive to private scratch. |
-| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest. |
-| `storage.snapshot.publish` | Copy the verified archive to its destination. |
+| `storage.snapshot.download` | Get the encrypted archive from storage. |
+| `storage.snapshot.decrypt` | Hash the downloaded archive and decrypt it to private scratch, at the same time on worker threads. |
+| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest while copying it beside its destination, on a worker thread. |
+| `storage.snapshot.publish` | Link the verified copy to its destination. |
 | `workspace.snapshot.sandbox_restore` | Upload and unpack the archive in the sandbox. |
 | `workspace.snapshot.sandbox_upload` | Inside `sandbox_restore`: copy the archive into the sandbox. |
 | `workspace.snapshot.sandbox_extract` | Inside `sandbox_restore`: verify and unpack the archive, then publish the restored folder. |
 | `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
-| `storage.snapshot.encrypt` | Hash and encrypt the archive in one pass. |
-| `storage.snapshot.digest` | Hash the encrypted file that is uploaded. |
+| `storage.snapshot.encrypt` | Hash the archive, encrypt it and hash the encrypted file, in one pass on a worker thread. |
+| `storage.snapshot.digest` | Record the digest of the encrypted file. The `encrypt` pass computes it, so this step takes no time. |
 | `storage.snapshot.put` | Upload the encrypted archive (multipart above 16 MiB). |
 | `storage.snapshot.verify` | Confirm the stored object (its size when the backend checked every part, otherwise a full read-back). |
 
@@ -786,6 +801,14 @@ after it lost the durable controller lease; the reason names a closed cause
 (`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
 retries a failed renewal until the lease deadline, so `renewal_error` means the
 attempts still failed with an error when the deadline passed.
+All legacy controllers in one server process renew through a single queue on
+the private lease connection pool. Renewals that arrive while one is in flight
+share the next statement, so a burst of runs costs one renewal statement per
+round instead of one transaction per run, and a renewal waits behind at most
+one other. A run whose row another transaction holds is skipped and retried
+shortly, without delaying the other runs. A renewal only moves the lease
+deadline later, so it does not wake live-run recovery; recovery rereads the
+moved deadline when the earlier one comes due.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
