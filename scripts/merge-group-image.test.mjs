@@ -136,3 +136,30 @@ test("the merge-queue build has no publishing credentials or paid infrastructure
   assert.ok(workflow.indexOf("assert-orphan-reaping.sh") < workflow.indexOf("merge-group-image.mjs record"),
     "the record is written only after the probe passes");
 });
+
+test("master promotes only after proof and otherwise builds exactly as before", () => {
+  const workflow = readFileSync(path.join(root, ".github", "workflows", "docker.yml"), "utf8");
+  const leg = workflow.split("\n  build-and-push:\n")[1].split("\n  publication_verification:\n")[0];
+  const steps = leg.split(/\n(?=      - name: )/);
+  const step = name => { const found = steps.find(item => item.startsWith(`      - name: ${name}\n`)); assert.ok(found, name); return found; };
+  const order = name => steps.indexOf(step(name));
+  assert.match(step("Find the merge-queue build of this commit"),
+    /if: github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
+  for (const name of ["Find the merge-queue build of this commit", "Download the merge-queue image", "Promote the merge-queue image"]) {
+    assert.match(step(name), /continue-on-error: true/, `${name} must fall back to the build`);
+  }
+  const promote = step("Promote the merge-queue image");
+  assert.ok(promote.indexOf("merge-group-image.mjs verify") < promote.indexOf("skopeo copy"));
+  assert.ok(promote.indexOf("skopeo copy --all --preserve-digests") < promote.indexOf('echo "digest=$digest" >> "$GITHUB_OUTPUT"'),
+    "the promoted digest becomes an output only after the exact bytes are pushed");
+  assert.match(promote, /GITHUB_OUTPUT='' node scripts\/merge-group-image.mjs verify/);
+  for (const name of ["Set up Docker Buildx", "Compute schema migration labels", "Docker meta", "Build and push by digest"]) {
+    assert.match(step(name), /if: steps.promote.outputs.digest == ''/, `${name} runs whenever nothing was promoted`);
+    assert.ok(order(name) > order("Promote the merge-queue image"));
+  }
+  assert.match(step("Select image digest"), /digest="\$\{PROMOTED:-\$BUILT\}"/);
+  assert.ok(order("Select image digest") < order("Verify PID 1 reaps orphaned processes"));
+  assert.match(step("Verify PID 1 reaps orphaned processes"), /IMAGE_DIGEST: \$\{\{ steps.image.outputs.digest \}\}/);
+  assert.match(step("Export digest"), /digest="\$\{\{ steps.image.outputs.digest \}\}"/);
+  assert.match(leg, /permissions:\n\s+contents: read\n\s+packages: write\n\s+actions: read/);
+});
