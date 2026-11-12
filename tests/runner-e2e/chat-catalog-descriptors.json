@@ -2680,7 +2680,7 @@
       "../../server/src/services/connection-intents.ts",
       "chat-scenarios/connection-setup.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v2",
+    "oracleVersion": "paperclip.chat-catalog.external.v3",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 2,
@@ -3670,9 +3670,10 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/identity-navigation-preferences.ts",
+      "chat-rendered-links.ts",
       "chat-scenarios/navigation-preferences.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity.find-project-view.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
