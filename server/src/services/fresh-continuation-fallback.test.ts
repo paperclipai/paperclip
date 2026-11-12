@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions,
-  issueComments, issues, nativeRunFinalizations, toolInvocations,
+  heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -806,6 +806,24 @@ suite("fresh-continuation fallback", () => {
     expect(decision.outcomeEvidence).toContain('"DONE-0d981334"');
     expect(decision.outcomeEvidence).toContain("Do not create or post them again");
     expect(hold!.evidence.freshContinuation).toMatchObject({ createdObjects: { subtasks: expect.arrayContaining([expect.stringContaining("SM sub 1")]) } });
+  }, 60_000);
+
+  it("names the follow-up the cut-off run had read and its own final comment, so the agent answers once (t003)", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_restart_recovery_blocked" });
+    const [followUp] = await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorType: "user",
+      authorUserId: "board-user", body: "Additional requirement: include the line FOLLOWUP-0d981334" } as typeof issueComments.$inferInsert).returning();
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: f.runId, agentId, seq: 1, eventType: "task_history.read",
+      stream: "system", level: "info", payload: { comments: { [followUp!.id]: followUp!.updatedAt.toISOString() } },
+    } as typeof heartbeatRunEvents.$inferInsert);
+    await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorAgentId: agentId, createdByRunId: f.runId,
+      body: "DONE-0d981334" } as typeof issueComments.$inferInsert);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    const note = (hold!.evidence.executionReconciliation as Record<string, string>).outcomeEvidence;
+    expect(note).toContain("had already read these messages");
+    expect(note).toContain("FOLLOWUP-0d981334");
+    expect(note).toContain('posted comments "DONE-0d981334"');
+    expect(note.indexOf("had already read")).toBeLessThan(note.indexOf("DONE-0d981334"));
   }, 60_000);
 
   it.each([

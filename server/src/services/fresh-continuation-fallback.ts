@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
-  agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRuns, issueApprovals,
+  agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueApprovals,
   issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
 } from "@paperclipai/db";
 import {
@@ -195,7 +195,20 @@ async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect)
   return [...names].slice(0, 20);
 }
 
-export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[] };
+export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[]; readFollowUps?: string[] };
+
+/** Comment ids the run read through get_task_history, with the read time (the
+ * `task_history.read` run-log event). One function, so the queued-comment
+ * owner's read helper can replace it in one line. */
+async function taskHistoryReadsOfRun(tx: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">) {
+  const events = await tx.select({ payload: heartbeatRunEvents.payload, createdAt: heartbeatRunEvents.createdAt })
+    .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.eventType, "task_history.read"))).orderBy(asc(heartbeatRunEvents.createdAt)).limit(50);
+  const firstReadAt = new Map<string, Date>();
+  for (const event of events) for (const commentId of Object.keys(object(object(event.payload).comments)))
+    if (!firstReadAt.has(commentId)) firstReadAt.set(commentId, event.createdAt);
+  return firstReadAt;
+}
 
 const quoted = (value: string, max = 80) => `"${value.replace(/\s+/g, " ").trim().slice(0, max)}${value.length > max ? "..." : ""}"`;
 
@@ -213,7 +226,12 @@ async function createdObjects(tx: Db, run: typeof heartbeatRuns.$inferSelect): P
       .innerJoin(documents, eq(documents.id, documentRevisions.documentId))
       .where(and(eq(documentRevisions.companyId, run.companyId), eq(documentRevisions.createdByRunId, run.id))).limit(10),
   ]);
+  const reads = await taskHistoryReadsOfRun(tx, run);
+  const readComments = reads.size ? await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
+    eq(issueComments.companyId, run.companyId), inArray(issueComments.id, [...reads.keys()]),
+    eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt))).limit(10) : [];
   return {
+    readFollowUps: readComments.map(comment => `${quoted(comment.body)} (read at ${reads.get(comment.id)!.toISOString().slice(11, 16)} UTC)`),
     subtasks: children.map(child => `${child.identifier ?? "subtask"} ${quoted(child.title)}`),
     comments: comments.map(comment => quoted(comment.body)),
     documents: revisions.map(revision => quoted(revision.title ?? "untitled document")),
@@ -236,6 +254,9 @@ export function freshContinuationNote(input: { runId: string; unverified: string
     + "If repeating it would be a governed or irreversible action, request it through the normal approval step. "
     + "Nothing about the previous attempt needs to be restored before you continue.";
   const created = input.created;
+  const read = created?.readFollowUps?.length
+    ? ` That run had already read these messages from a person: ${created.readFollowUps.join(", ")}. Answer each once; what it did after reading is below.`
+    : "";
   const existing = created && (created.subtasks.length || created.comments.length || created.documents.length)
     ? ` That run already did these, and they exist now: ${[
       created.subtasks.length ? `created subtasks ${created.subtasks.join(", ")}` : null,
@@ -243,7 +264,7 @@ export function freshContinuationNote(input: { runId: string; unverified: string
       created.documents.length ? `saved documents ${created.documents.join(", ")}` : null,
     ].filter(Boolean).join("; ")}. Do not create or post them again; read them and continue from where they leave off.`
     : "";
-  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files}${existing} ${actions} ${guidance}`;
+  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files}${read}${existing} ${actions} ${guidance}`;
 }
 
 const USER_TEXT = "The previous run was cut off. Paperclip continues the task in a fresh run from its last saved work.";
