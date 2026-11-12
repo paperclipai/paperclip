@@ -10,6 +10,7 @@ import {
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
+import { resolveBrowserTracingConfig, warnOnce } from "../browser-tracing-config.js";
 import { logger } from "../middleware/logger.js";
 import { loadBoardBootstrap } from "../services/board-bootstrap.js";
 
@@ -36,6 +37,8 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
     image: user.image ?? null,
   });
 }
+
+const warnBrowserTracing = warnOnce((message) => logger.warn(message));
 
 export function authRoutes(db: Db) {
   const router = Router();
@@ -67,6 +70,9 @@ export function authRoutes(db: Db) {
       sentryDsn: resolveSentryDsns().frontend,
       // Match the server SDK's runtime environment, including in reused images.
       sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
+      // Hosted Paperclip Cloud only; null everywhere else. The ingest key is
+      // ingest-only by construction — see `server/src/browser-tracing-config.ts`.
+      browserTracing: resolveBrowserTracingConfig(process.env, warnBrowserTracing),
     });
     res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
   });

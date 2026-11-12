@@ -162,7 +162,9 @@ import {
   ISSUE_DETAIL_HEADER_PAINT_MARK,
   reportIssueDetailWebVitals,
   scheduleIssueDetailPaintMeasure,
+  useIssueDetailContentPaintedAt,
 } from "../lib/issue-detail-performance";
+import { usePageContentReady } from "../hooks/usePageContentReady";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -3526,6 +3528,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   useLayoutEffect(() => {
     beginIssueDetailNavigation();
   }, [issueId]);
+  // The task page is loaded when its conversation content has painted: the
+  // same point as the `issue-detail:navigate→content-paint` measure.
+  const contentPaintedAt = useIssueDetailContentPaintedAt();
+  usePageContentReady(contentPaintedAt !== null, contentPaintedAt);
 
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
