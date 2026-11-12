@@ -2,6 +2,7 @@ import {
   supportsAiConnectionUsage,
   type AiConnectionMetadata,
   type AiConnectionUsage,
+  type AiConnectionUsageLastGood,
   type AiConnectionUsageLimit,
   type AiConnectionUsageOverage,
 } from "@paperclipai/shared";
@@ -60,7 +61,16 @@ function overage(input: Partial<AiConnectionUsageOverage>): AiConnectionUsageOve
 }
 
 class ProbeFailure extends Error {
-  constructor(readonly code: NonNullable<AiConnectionUsage["errorCode"]>) { super(code); }
+  constructor(readonly code: NonNullable<AiConnectionUsage["errorCode"]>, readonly retryAfterMs: number | null = null) { super(code); }
+}
+
+/** Reads `Retry-After` as delta-seconds or an HTTP-date; null when absent or unusable. */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) return Number(raw) * 1000;
+  const date = Date.parse(raw);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
 }
 
 export async function readUsage(url: string, headers: Record<string, string>, request: typeof fetch): Promise<ObjectValue> {
@@ -70,9 +80,10 @@ export async function readUsage(url: string, headers: Record<string, string>, re
   });
   if (!response.ok) {
     await response.body?.cancel();
+    // 429 throttles this check only; it says nothing about the account's own limits.
+    if (response.status === 429) throw new ProbeFailure("rate_limited", parseRetryAfter(response.headers.get("retry-after")));
     throw new ProbeFailure(response.status === 401 ? "authentication_required"
-      : response.status === 403 ? "permission_denied"
-      : response.status === 429 ? "rate_limited" : "provider_unavailable");
+      : response.status === 403 ? "permission_denied" : "provider_unavailable");
   }
   // Provider errors and raw responses must never be returned to the caller.
   const reader = response.body?.getReader();
@@ -320,28 +331,163 @@ const messages: Record<NonNullable<AiConnectionUsage["errorCode"]>, string> = {
   unsupported: "This provider does not expose usage limits through this sign-in method.",
   connection_unavailable: "Reconnect or enable this AI connection before checking usage.",
   authentication_required: "The provider could not authenticate this usage check. Reconnect the account.",
-  permission_denied: "The provider denied access to usage limits for this credential. Its sign-in permissions may not include usage access.",
-  rate_limited: "The provider rate limited the usage check. Try again later.",
+  // A 403 has no single proven cause, so the message names none.
+  permission_denied: "The provider denied this usage check (permission denied). Usage is unavailable for this credential.",
+  rate_limited: "The provider's usage endpoint throttled this check. This does not mean the account is out of usage or signed out.",
   provider_unavailable: "Could not read provider usage. Try again later.",
   invalid_response: "The provider did not return usable limit data. Try again later.",
 };
+
+type ProbeResult = Omit<AiConnectionUsage, "connectionId" | "grantId">;
 
 export async function probeAiConnectionUsage(
   metadata: AiConnectionMetadata,
   credential: string,
   options: { request?: typeof fetch } = {},
-): Promise<Omit<AiConnectionUsage, "connectionId" | "grantId">> {
+): Promise<ProbeResult> {
+  return (await probeAiConnectionUsageDetailed(metadata, credential, options)).usage;
+}
+
+/** Like probeAiConnectionUsage, plus the provider's raw Retry-After hint for the cache. */
+export async function probeAiConnectionUsageDetailed(
+  metadata: AiConnectionMetadata,
+  credential: string,
+  options: { request?: typeof fetch } = {},
+): Promise<{ usage: ProbeResult; retryAfterMs: number | null }> {
   const base = { ...metadata, checkedAt: new Date().toISOString(), source: null, planType: null, limits: [], overage: null };
   if (metadata.provider === "google" || metadata.provider === "github" || !supportsAiConnectionUsage(metadata.provider, metadata.method)) {
-    return { ...base, status: "unsupported", errorCode: "unsupported", message: messages.unsupported };
+    return { usage: { ...base, status: "unsupported", errorCode: "unsupported", message: messages.unsupported }, retryAfterMs: null };
   }
   try {
     const observation = await probes[metadata.provider](credential, options.request ?? fetch);
     if (!observation.limits.some((entry) => entry.usedPercent != null || entry.used != null || entry.limit != null || entry.limitReached != null || entry.allowed != null)
       && !Object.values(observation.overage ?? {}).some((value) => typeof value === "number" || typeof value === "boolean")) throw new ProbeFailure("invalid_response");
-    return { ...base, ...observation, status: "ok", checkedAt: new Date().toISOString() };
+    return { usage: { ...base, ...observation, status: "ok", checkedAt: new Date().toISOString() }, retryAfterMs: null };
   } catch (error) {
     const errorCode = error instanceof ProbeFailure ? error.code : "provider_unavailable";
-    return { ...base, status: errorCode === "authentication_required" || errorCode === "permission_denied" ? "unavailable" : "error", errorCode, message: messages[errorCode] };
+    return {
+      usage: { ...base, status: errorCode === "authentication_required" || errorCode === "permission_denied" ? "unavailable" : "error", errorCode, message: messages[errorCode] },
+      retryAfterMs: error instanceof ProbeFailure ? error.retryAfterMs : null,
+    };
   }
 }
+
+const SECOND = 1000, MINUTE = 60 * SECOND, HOUR = 60 * MINUTE;
+const OK_TTL = MINUTE;
+/** [first delay, maximum delay] per failure; Retry-After is clamped to the same range. */
+const backoff: Partial<Record<NonNullable<AiConnectionUsage["errorCode"]>, [number, number]>> = {
+  rate_limited: [MINUTE, HOUR],
+  authentication_required: [5 * MINUTE, HOUR],
+  permission_denied: [5 * MINUTE, HOUR],
+};
+const defaultBackoff: [number, number] = [MINUTE, 15 * MINUTE];
+const clamp = (value: number, [min, max]: [number, number]) => Math.min(max, Math.max(min, value));
+
+/** Exponential backoff for consecutive failures, or a provider Retry-After, clamped. */
+export function usageRetryDelay(errorCode: AiConnectionUsage["errorCode"], failures: number, retryAfterMs: number | null = null) {
+  const range = (errorCode && backoff[errorCode]) || defaultBackoff;
+  if (errorCode === "rate_limited" && retryAfterMs != null) return clamp(retryAfterMs, range);
+  return clamp(range[0] * 2 ** Math.min(20, Math.max(0, failures - 1)), range);
+}
+
+/**
+ * Identifies one credential of one grant. A credential change (new secret,
+ * secret version, or grant update) yields a new key, so it never reuses a
+ * cached result, failure backoff, or last good observation of the old one.
+ */
+export function aiConnectionUsageCacheKey(parts: {
+  companyId: string; grantId: string; secretId: string | null; secretVersion: number | null; grantUpdatedAt: Date;
+}) {
+  return [parts.companyId, parts.grantId, parts.secretId ?? "-", parts.secretVersion ?? "-", parts.grantUpdatedAt.toISOString()].join(":");
+}
+
+interface UsageCacheEntry {
+  value: AiConnectionUsage;
+  expires: number;
+  failures: number;
+  lastGood?: AiConnectionUsageLastGood;
+}
+
+/**
+ * One bounded cache with in-flight coalescing for provider usage checks. Both
+ * the on-demand usage route and pool routing read through it, so concurrent or
+ * repeated callers share one provider call, and a backed-off failure is
+ * returned without calling the provider until its retry time.
+ */
+export function createAiConnectionUsageCache(options: { maxEntries?: number; now?: () => number; probeTimeoutMs?: number } = {}) {
+  const maxEntries = options.maxEntries ?? 1000;
+  // Bounds credential resolution plus the provider call, so a stuck check
+  // cannot hold the in-flight slot for every later caller.
+  const probeTimeoutMs = options.probeTimeoutMs ?? 30 * SECOND;
+  const now = options.now ?? Date.now;
+  const entries = new Map<string, UsageCacheEntry>();
+  const inFlight = new Map<string, Promise<AiConnectionUsage>>();
+
+  function store(key: string, entry: UsageCacheEntry) {
+    entries.delete(key);
+    entries.set(key, entry);
+    // Evict the least recently written credentials first.
+    while (entries.size > maxEntries) entries.delete(entries.keys().next().value!);
+  }
+
+  function settle(key: string, usage: AiConnectionUsage, retryAfterMs: number | null): AiConnectionUsage {
+    const at = now();
+    const previous = entries.get(key);
+    if (usage.status === "ok") {
+      const resets = usage.limits.map((entry) => Date.parse(entry.resetsAt ?? "")).filter((value) => Number.isFinite(value) && value > at);
+      const lastGood: AiConnectionUsageLastGood = {
+        stale: true, checkedAt: usage.checkedAt, source: usage.source, planType: usage.planType, limits: usage.limits, overage: usage.overage,
+      };
+      store(key, { value: usage, expires: Math.min(at + OK_TTL, ...resets), failures: 0, lastGood });
+      return usage;
+    }
+    // Unsupported results never reached the provider; there is nothing to back off.
+    if (usage.status === "unsupported" || usage.errorCode === "connection_unavailable") return usage;
+    const failures = (previous?.failures ?? 0) + 1;
+    const expires = at + usageRetryDelay(usage.errorCode, failures, retryAfterMs);
+    const lastGood = previous?.lastGood;
+    const value: AiConnectionUsage = {
+      ...usage,
+      // A failed check reports no limits of its own; old data lives only in lastGood.
+      limits: [], overage: null,
+      retryAt: new Date(expires).toISOString(),
+      ...(lastGood ? {
+        lastGood,
+        message: `${usage.message ?? "Usage unavailable."} The last successful reading is shown as stale data from ${lastGood.checkedAt}.`,
+      } : {}),
+    };
+    store(key, { value, expires, failures, lastGood });
+    return value;
+  }
+
+  return {
+    /** The current cached result, without calling the provider. */
+    peek(key: string): AiConnectionUsage | undefined {
+      const entry = entries.get(key);
+      return entry && entry.expires > now() ? entry.value : undefined;
+    },
+    /** Returns a cached result, joins an in-flight check, or runs one check. */
+    observe(key: string, probe: () => Promise<{ usage: AiConnectionUsage; retryAfterMs: number | null }>): Promise<AiConnectionUsage> {
+      const cached = this.peek(key);
+      if (cached) return Promise.resolve(cached);
+      let pending = inFlight.get(key);
+      if (!pending) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const started: Promise<AiConnectionUsage> = Promise.race([
+          probe(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Usage check timed out")), probeTimeoutMs); }),
+        ])
+          .then(({ usage, retryAfterMs }) => settle(key, usage, retryAfterMs))
+          .finally(() => { clearTimeout(timer); if (inFlight.get(key) === started) inFlight.delete(key); });
+        pending = started;
+        inFlight.set(key, started);
+      }
+      return pending;
+    },
+    clear() { entries.clear(); inFlight.clear(); },
+    get size() { return entries.size; },
+  };
+}
+
+/** The process-wide cache shared by every usage caller. */
+export const aiConnectionUsageCache = createAiConnectionUsageCache();
