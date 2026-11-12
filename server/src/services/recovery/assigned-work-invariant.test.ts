@@ -15,7 +15,8 @@ const now = new Date("2026-11-12T14:35:00Z");
 const ago = (ms: number) => new Date(now.getTime() - ms);
 const AGENT = "agent-1";
 
-function facts(overrides: Partial<AssignedWorkFacts> & { issue?: Partial<AssignedWorkFacts["issue"]> } = {}): AssignedWorkFacts {
+type Overrides = Omit<Partial<AssignedWorkFacts>, "issue"> & { issue?: Partial<AssignedWorkFacts["issue"]> };
+function facts(overrides: Overrides = {}): AssignedWorkFacts {
   const { issue, ...rest } = overrides;
   return {
     issue: {
@@ -60,7 +61,7 @@ describe("assigned-work invariant", () => {
   });
 
   describe("clause 2: a durable pending intent", () => {
-    const cases: Array<[string, Partial<AssignedWorkFacts> & { issue?: Partial<AssignedWorkFacts["issue"]> }]> = [
+    const cases: Array<[string, Overrides]> = [
       ["queued_wake", { pendingWakes: 1 }],
       ["scheduled_retry", { activeRuns: [{ id: "s", status: "scheduled_retry", scheduledRetryAt: new Date(now.getTime() + 60_000), owner: "alive" }] }],
       ["native_recovery", { nativeRecoveryPending: true }],
@@ -83,7 +84,7 @@ describe("assigned-work invariant", () => {
   });
 
   describe("clause 3: someone else's move", () => {
-    const cases: Array<[string, Partial<AssignedWorkFacts> & { issue?: Partial<AssignedWorkFacts["issue"]> }]> = [
+    const cases: Array<[string, Overrides]> = [
       ["question", { pendingInteractions: 1 }],
       ["approval", { pendingApprovals: 1 }],
       ["dependency", { openBlockers: 1 }],

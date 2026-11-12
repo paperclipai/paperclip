@@ -38,12 +38,12 @@ describePostgres("assigned-work invariant sweep", () => {
   /** A wake queue stand-in that records each wake as a durable pending row. */
   function wakeQueue() {
     const calls: Array<{ agentId: string; issueId: string; source: unknown }> = [];
-    const enqueueWakeup = vi.fn(async (agentId: string, opts: { payload?: Record<string, unknown> | null; contextSnapshot?: Record<string, unknown>; reason?: string | null }) => {
-      const issueId = String(opts.payload?.issueId);
+    const enqueueWakeup = vi.fn(async (agentId: string, opts?: { payload?: Record<string, unknown> | null; contextSnapshot?: Record<string, unknown>; reason?: string | null }) => {
+      const issueId = String(opts?.payload?.issueId);
       const [issue] = await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId));
       const [wake] = await db.insert(agentWakeupRequests).values({ companyId: issue.companyId, agentId, source: "automation",
-        triggerDetail: "system", reason: opts.reason ?? null, payload: opts.payload ?? null, status: "queued" }).returning();
-      calls.push({ agentId, issueId, source: opts.contextSnapshot?.source });
+        triggerDetail: "system", reason: opts?.reason ?? null, payload: opts?.payload ?? null, status: "queued" }).returning();
+      calls.push({ agentId, issueId, source: opts?.contextSnapshot?.source });
       return { id: wake.id } as never;
     });
     return { calls, enqueueWakeup };
@@ -116,10 +116,35 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(queue.calls).toHaveLength(1);
   }, 60_000);
 
-  it("a task blocked by a recovery outcome is restored and continued once; the recovery hold is resolved", async () => {
+  it("a task blocked after a legacy run's retries ran out, with no hold left, is restored and continued once", async () => {
+    // The shape the fresh-continuation fallback does not cover: retries spent
+    // on a restart-caused failure (controller lease lost), block written by
+    // the stranded sweep, and the hold already resolved.
     const f = await seedCompany();
     const blockedAt = new Date(Date.now() - 2 * HOUR);
     const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt });
+    const run = await f.run(issueId, { status: "failed", errorCode: "controller_lease_lost", livenessState: "failed" });
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId, kind: "stranded_assigned_issue",
+      status: "resolved", outcome: "blocked", ownerType: "board", cause: "stranded_assigned_issue",
+      fingerprint: `source_scoped_recovery:${f.companyId}:${issueId}:stranded_assigned_issue`,
+      evidence: { previousStatus: "in_progress", latestRunId: run.id, latestRunErrorCode: "controller_lease_lost" },
+      nextAction: "Inspect the retry history.", attemptCount: 3, resolvedAt: blockedAt });
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: "issue.updated",
+      entityType: "issue", entityId: issueId, details: { status: "blocked", previousStatus: "in_progress",
+        source: "recovery.reconcile_stranded_assigned_issue" }, createdAt: blockedAt });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
+
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id)).toContain(issueId);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
+      .toMatchObject({ outcome: "repaired", verdict: { reason: "recovery_block" } });
+    expect(queue.calls).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
+  }, 60_000);
+
+  it("leaves a task blocked under an active recovery hold to the hold's owner and reports it", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue({ status: "blocked", blockedTransitionAt: new Date(Date.now() - 2 * HOUR) });
     const run = await f.run(issueId, { status: "failed", errorCode: "process_lost", livenessState: "failed" });
     // Old-shaped row: a board-owned stranded action written by an older release.
     await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId, kind: "stranded_assigned_issue",
@@ -127,19 +152,50 @@ describePostgres("assigned-work invariant sweep", () => {
       evidence: { previousStatus: "in_progress", latestRunId: run.id, latestRunErrorCode: "process_lost" },
       nextAction: "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
       attemptCount: 1 });
-    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: "issue.updated",
-      entityType: "issue", entityId: issueId, details: { status: "blocked", previousStatus: "in_progress",
-        source: "recovery.reconcile_stranded_assigned_issue" }, createdAt: blockedAt });
     const queue = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
-
     expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
-      .toMatchObject({ outcome: "repaired", verdict: { reason: "recovery_block" } });
-    expect(queue.calls).toHaveLength(1);
-    const [restored] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(restored.status).toBe("in_progress");
-    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
-    expect(hold).toMatchObject({ status: "resolved", outcome: "restored" });
+      .toMatchObject({ outcome: "left_to_hold_owner", verdict: { kind: "violation", reason: "recovery_block" } });
+    expect(queue.calls).toHaveLength(0);
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id)).not.toContain(issueId);
+    expect(await recovery.assignedWork.report(f.companyId)).toMatchObject({ violationCount: 1, heldByRecoveryOwner: 1 });
+  }, 60_000);
+
+  it("Retry-started tasks the scheduler refused to revalidate get one continuation, even with a question asked before the Retry", async () => {
+    // Nine staging tasks: a person's Retry, stopped by a deploy during setup,
+    // certified as no provider work; the scheduler then refused with
+    // continuation_user_authorization_missing on every sweep. One of them
+    // also had a question the agent asked before the person pressed Retry.
+    const f = await seedCompany();
+    const plain = await f.issue();
+    const withQuestion = await f.issue();
+    for (const issueId of [plain, withQuestion]) {
+      await f.run(issueId, { resultJson: { stopReason: "interrupted", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        contextSnapshot: { issueId, taskId: issueId, explicitUserContinuation: { previousRunId: randomUUID() } },
+        createdAt: new Date(Date.now() - 4 * HOUR) });
+    }
+    await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: withQuestion, kind: "ask_user_questions",
+      status: "pending", continuationPolicy: "wake_assignee", payload: {}, createdAt: new Date(Date.now() - 12 * HOUR) } as never);
+    const queue = wakeQueue();
+    // On staging the refusal also left the sweep's escalation without effect
+    // (its stale-snapshot guard): the tasks stayed in_progress with nothing
+    // pending. Model that by changing the task under the sweep's snapshot.
+    const scheduleRecoveryRetry = vi.fn(async (runId: string, outcome?: { continuationRefused?: boolean }) => {
+      if (outcome) outcome.continuationRefused = true;
+      const [run] = await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, String(run.context?.issueId)));
+      return null;
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry });
+    await recovery.reconcileStrandedAssignedIssues({ companyId: f.companyId, skipRelatedRecovery: true });
+    expect(queue.calls).toHaveLength(0);
+
+    for (const issueId of [plain, withQuestion]) {
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
+      expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
+        .toMatchObject({ outcome: "repaired", verdict: { reason: "retry_offered" } });
+    }
+    expect(queue.calls.map(call => call.issueId).sort()).toEqual([plain, withQuestion].sort());
   }, 60_000);
 
   it("an unknown block reason is repaired, not treated as a reason to wait", async () => {
@@ -280,6 +336,10 @@ describePostgres("assigned-work invariant sweep", () => {
       nativeIssueId: reattach });
     await db.insert(nativeRunFinalizations).values({ runId: native.id, companyId: f.companyId, issueId: reattach, phase: "observed",
       recoveryState: "awaiting_runner_reattach" });
+    const retryable = await f.issue();
+    const failedNative = await f.run(retryable, { runtimeMode: "native", status: "failed", errorCode: "saved_native_failure", nativeIssueId: retryable });
+    await db.insert(nativeRunFinalizations).values({ runId: failedNative.id, companyId: f.companyId, issueId: retryable,
+      phase: "retryable_failure", nextAttemptAt: new Date(Date.now() - 1_000) });
     const unstamped = await f.issue();
     await f.run(unstamped, { status: "running", errorCode: null, finishedAt: null, controllerBootId: randomUUID(), controllerProcess: null,
       controllerLeaseExpiresAt: new Date(Date.now() - HOUR) });
@@ -290,6 +350,7 @@ describePostgres("assigned-work invariant sweep", () => {
     const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, settleLostRunProcess: settle,
       proveOwner: async () => ({ verdict: "gone", reason: "pid_dead" }) });
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId: reattach })).toMatchObject({ verdict: { intent: "native_recovery" } });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: retryable })).toMatchObject({ verdict: { intent: "native_recovery" } });
     // No recorded controller process: the owner is unprovable, so it stays live.
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId: unstamped })).toMatchObject({ verdict: { clause: "live_run" } });
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId: stale })).toMatchObject({ outcome: "stale_reported" });

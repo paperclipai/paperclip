@@ -783,7 +783,8 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.reportAssignedWorkInvariant).toHaveBeenCalledWith("company-1");
 
     mockHeartbeatService.reportAssignedWorkInvariant.mockClear();
-    const otherCompany = await request(await createApp()).get("/api/companies/company-2/assigned-work-invariant");
+    const member = { type: "board", userId: "member-1", companyIds: ["company-1"], source: "session", isInstanceAdmin: false };
+    const otherCompany = await request(await createApp({}, member)).get("/api/companies/company-2/assigned-work-invariant");
     expect(otherCompany.status).toBe(403);
     const agent = await request(await createApp({}, { type: "agent", agentId: routeAgentId, companyId: "company-1" }))
       .get("/api/companies/company-1/assigned-work-invariant");

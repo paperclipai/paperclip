@@ -75,8 +75,8 @@ export function registerIssueRecoveryWork(
     let enabled = false;
     return registerScopedDeadlineWork<Suspect, IssueRecoveryScope>(coordinator, {
       queue: DELIVERY_QUEUES.assignedWorkInvariant,
-      reconstructionIntervalMs: 60_000,
-      batchSize: 10,
+      reconstructionIntervalMs: 30_000,
+      batchSize: 25,
       beforePass: async () => { enabled = !(await owner.schedulingSuppressed()); },
       decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as IssueRecoveryScope,
       matches: (entry, scope) => !scope || (entry.companyId === scope.companyId && (!scope.issueId || entry.id === scope.issueId)),
