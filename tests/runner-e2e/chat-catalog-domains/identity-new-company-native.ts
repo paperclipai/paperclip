@@ -125,7 +125,9 @@ export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
     await expect(page.getByRole("button", { name: "Test again", exact: true })).toBeVisible({ timeout: remaining() }); await settleReads();
     if (probes.length !== 1 || probes[0]?.status !== "pass") throw new Error("The selected native account/model test did not pass");
     step("new-company-hire"); await page.getByRole("button", { name: "Finish setup", exact: true }).click();
-    await expect(page.getByRole("button", { name: new RegExp(`^Assign ${input.agentName} a Task$`) })).toBeVisible({ timeout: remaining() }); await settleReads();
+    // The button appears while Paperclip is still preparing the agent; a person
+    // assigns work only once it is enabled, when the agent is ready.
+    await expect(page.getByRole("button", { name: new RegExp(`^Assign ${input.agentName} a Task$`) })).toBeEnabled({ timeout: remaining() }); await settleReads();
   } finally { page.off("response", onResponse); }
   step("new-company-readback"); const agents = await get<NativeFirstAgent[]>(`/api/companies/${company.id}/agents`);
   if (agents.length !== 1 || agents[0]?.id !== provisional.id) throw new Error("Public setup duplicated or replaced the first agent");

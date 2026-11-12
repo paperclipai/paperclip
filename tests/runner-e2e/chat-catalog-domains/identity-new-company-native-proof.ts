@@ -1,5 +1,7 @@
 import type { AiConnectionBinding, AiConnectionList } from "../../../packages/shared/src/ai-connections.js";
 import type { ConnectionGrantsResponse, ToolConnectionInstall } from "../../../packages/shared/src/types/tool-access.js";
+import { AGENT_STATUSES } from "../../../packages/shared/src/constants.js";
+import { AGENT_LIFECYCLE_STATES } from "../../../packages/shared/src/types/agent-lifecycle.js";
 
 export const NEW_COMPANY_NATIVE_MODEL = "openrouter/deepseek/deepseek-v4.1-flash-1017";
 export const NEW_COMPANY_PROVIDER_MODEL = "deepseek/deepseek-v4.1-flash-1017";
@@ -37,10 +39,15 @@ export function nativeSetupRequest(input: { companyId: string; adapterType: stri
     binding: (body?.aiConnection ?? (body?.runtimeConfig as { aiConnection?: AiConnectionBinding } | undefined)?.aiConnection) as AiConnectionBinding | undefined,
     containsCredential: Boolean(credential && JSON.stringify(input.body).includes(credential)) };
 }
+// Step names use hyphens; product enum values may use underscores.
+function agentLifecycleReason(state: string) { return `agent-lifecycle-${state.replaceAll("_", "-")}` as `agent-lifecycle-${string}`; }
+function agentStatusReason(status: string) { return `agent-status-${status.replaceAll("_", "-")}` as `agent-status-${string}`; }
 export const NATIVE_PROOF_FAILURE_REASONS = ["environment", "probe-count", "hire-count",
   "probe-agent", "probe-environment", "probe-model", "probe-credential", "probe-binding", "probe-result", "probe-order",
   "hire-agent", "hire-environment", "hire-model", "hire-credential", "hire-binding", "hire-result",
-  "agent-identity", "agent-model", "agent-environment", "agent-state", "agent-heartbeat", "agent-binding", "responsible-user",
+  "agent-identity", "agent-model", "agent-environment",
+  ...[...AGENT_LIFECYCLE_STATES, "unknown"].map(state => agentLifecycleReason(state)),
+  ...[...AGENT_STATUSES, "unknown"].map(status => agentStatusReason(status)), "agent-heartbeat", "agent-binding", "responsible-user",
   "account", "account-routing", "grant", "install"] as const;
 export type NativeProofFailureReason = typeof NATIVE_PROOF_FAILURE_REASONS[number];
 export class NativeProofFailure extends Error {
@@ -80,7 +87,11 @@ export function requireNativeFirstAgentProof(input: {
   check(agent.id === savedSetupAgentId && agent.companyId === company.id && agent.role === "ceo", "agent-identity", configuration);
   check(agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "opencode" && agent.adapterConfig.model === NEW_COMPANY_NATIVE_MODEL, "agent-model", configuration);
   check(agent.defaultEnvironmentId === environment.id, "agent-environment", configuration);
-  check(agent.lifecycleState === "ready" && ["idle", "active"].includes(agent.status), "agent-state", configuration);
+  // The observed state is reported only through the closed product enums.
+  const lifecycle = (AGENT_LIFECYCLE_STATES as readonly string[]).includes(agent.lifecycleState) ? agent.lifecycleState : "unknown";
+  const status = (AGENT_STATUSES as readonly string[]).includes(agent.status) ? agent.status : "unknown";
+  check(agent.lifecycleState === "ready", agentLifecycleReason(lifecycle), configuration);
+  check(["idle", "active"].includes(agent.status), agentStatusReason(status), configuration);
   check(agent.runtimeConfig.heartbeat?.enabled === false, "agent-heartbeat", configuration);
   check(binding?.provider === "openrouter" && binding.method === "api_key" && binding.mode === "delegated"
     && binding.connectionId === connection.connectionId && binding.grantId === connection.grantId, "agent-binding", configuration);
