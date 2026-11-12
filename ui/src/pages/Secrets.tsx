@@ -885,13 +885,11 @@ export function Secrets() {
     [secrets, userDefinitions],
   );
 
-  const filteredRows = useMemo(() => {
+  const { filteredRows, statusHiddenRows } = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return unifiedRows.filter((row) => {
+    const matchesExceptStatus = (row: (typeof unifiedRows)[number]) => {
       const providedBy: SecretValueProvider = row.kind === "company" ? "company" : "user";
-      const status = row.kind === "company" ? row.secret.status : row.definition.status;
       if (providedByFilter !== "all" && providedBy !== providedByFilter) return false;
-      if (statusFilter !== "all" && status !== statusFilter) return false;
       if (providerFilter !== "all" && row.kind === "company" && row.secret.provider !== providerFilter) {
         return false;
       }
@@ -910,7 +908,20 @@ export function Secrets() {
         (row.definition.description?.toLowerCase().includes(needle) ?? false) ||
         (row.definition.usageGuidance?.toLowerCase().includes(needle) ?? false)
       );
-    });
+    };
+    const rowStatus = (row: (typeof unifiedRows)[number]) =>
+      row.kind === "company" ? row.secret.status : row.definition.status;
+    const rows: typeof unifiedRows = [];
+    const hidden: typeof unifiedRows = [];
+    for (const row of unifiedRows) {
+      if (!matchesExceptStatus(row)) continue;
+      if (statusFilter === "all" || rowStatus(row) === statusFilter) rows.push(row);
+      else hidden.push(row);
+    }
+    // Disabled and archived secrets are hidden by the default "Active" filter.
+    // Keep them so an empty list can point at the filter instead of looking
+    // as if the secret does not exist.
+    return { filteredRows: rows, statusHiddenRows: hidden };
   }, [providedByFilter, providerFilter, search, statusFilter, unifiedRows]);
   const activeSecretFilterCount =
     (statusFilter === "active" ? 0 : 1) +
@@ -988,6 +999,12 @@ export function Secrets() {
     () => buildSecretPathListing(filteredRows, folderPath),
     [filteredRows, folderPath],
   );
+  const statusHiddenMatchCount = useMemo(() => {
+    if (!showFolderView) return statusHiddenRows.length;
+    const hiddenListing = buildSecretPathListing(statusHiddenRows, folderPath);
+    return hiddenListing.secrets.length +
+      hiddenListing.folders.reduce((count, folder) => count + folder.secretCount, 0);
+  }, [folderPath, showFolderView, statusHiddenRows]);
   const breadcrumbs = useMemo(() => buildSecretPathBreadcrumbs(folderPath), [folderPath]);
   const parentFolderPath = useMemo(() => {
     const segments = folderPath ? folderPath.split("/") : [];
@@ -2007,7 +2024,7 @@ export function Secrets() {
                         <div key={index} className="h-14 animate-pulse rounded-md bg-muted/40" />
                       ))}
                     </div>
-                  ) : showFolderView && folderPath && activeSecretFilterCount === 0 ? (
+                  ) : showFolderView && folderPath && activeSecretFilterCount === 0 && statusHiddenMatchCount === 0 ? (
                     <EmptyState
                       icon={FolderOpen}
                       message="No secrets in this folder yet."
@@ -2018,6 +2035,14 @@ export function Secrets() {
                     <EmptyState
                       icon={Search}
                       message={searching ? "No secrets match your search." : "No secrets match your filters."}
+                      description={
+                        statusHiddenMatchCount > 0
+                          ? `${statusHiddenMatchCount} ${statusHiddenMatchCount === 1 ? "secret is" : "secrets are"} hidden by the status filter.`
+                          : undefined
+                      }
+                      action={statusHiddenMatchCount > 0 ? "Show all statuses" : undefined}
+                      onAction={statusHiddenMatchCount > 0 ? () => setStatusFilter("all") : undefined}
+                      hideActionIcon
                     />
                   )
                 ) : (
