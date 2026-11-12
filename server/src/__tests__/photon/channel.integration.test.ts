@@ -1,3 +1,9 @@
+import express from "express";
+import request from "supertest";
+import { createServer, type Server } from "node:http";
+import { toolAccessRoutes } from "../../routes/tool-access.js";
+import { errorHandler } from "../../middleware/error-handler.js";
+import { loadPaperclipCloudConnectorIdentity } from "../../services/paperclip-cloud-connector-enrollment.js";
 import { externalConversationSettlementWork } from "../../services/external-conversation-settlement-work.js";
 import { nativeStatusReassessmentWork } from "../../services/native-runtime/native-status-reassessment-work.js";
 import { nativeReviewResponseWork } from "../../services/native-runtime/native-review-response-work.js";
@@ -11,7 +17,7 @@ import { joinConnectionEventWakeEnrollment } from "../../services/connection-eve
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { Readable } from "node:stream";
 import type { StorageService } from "../../storage/types.js";
-import { createHash, randomUUID, generateKeyPairSync, verify } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, generateKeyPairSync, verify } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -692,6 +698,190 @@ describe("iMessage Photon channel control plane", () => {
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
   }, 30_000);
+  async function onlinePhotonEnrollment(activityFails = false) {
+    const home = await mkdtemp(path.join(tmpdir(), "photon-online-enrollment-"));
+    const keys = ["PAPERCLIP_HOME", "PAPERCLIP_CONFIG", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_PUBLIC_URL",
+      "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "BETTER_AUTH_URL", "BETTER_AUTH_BASE_URL",
+      "PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",
+      "PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY", "PAPERCLIP_CLOUD_CONNECTOR_BASE_URL", "PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT",
+      "PAPERCLIP_ID_CONNECTOR_INSTANCE_ID", "PAPERCLIP_ID_CONNECTOR_SIGN_PRIVATE_KEY", "PAPERCLIP_ID_CONNECTOR_SEAL_PRIVATE_KEY",
+      "PAPERCLIP_ID_CONNECTOR_BASE_URL", "PAPERCLIP_ID_CONNECTOR_ENVIRONMENT"];
+    const previous = new Map(keys.map(key => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    process.env.PAPERCLIP_HOME = home;
+    process.env.PAPERCLIP_CONFIG = path.join(home, "config.json");
+    process.env.PAPERCLIP_INSTANCE_ID = "online-enrollment";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
+    process.env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL = "https://cloud.example";
+    process.env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT = "test";
+    let t: Awaited<ReturnType<typeof setup>> | undefined;
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let eventWorker: ReturnType<typeof registerGitHubConnectionEventWork> | undefined;
+    let server: Server | undefined;
+    const trigger = `photon_enrollment_activity_${randomUUID().replaceAll("-", "")}`;
+    let installedTrigger = false;
+    let primary: { error: unknown } | undefined;
+    try {
+      expect(loadPaperclipCloudConnectorIdentity()).toBeNull();
+      expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+      const brokerOperations: Record<string, unknown>[] = [];
+      const negotiations: { subject: string; companyId: string }[] = [];
+      const transport: typeof fetch = async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        expect(url.origin).toBe("https://cloud.example");
+        if (url.pathname === "/v1/connector/enrollments") {
+          const body = JSON.parse(String(init?.body));
+          expect(body.origin).toBe("https://paperclip.example");
+          expect(body.returnUri).toBe("https://paperclip.example/api/tools/oauth/cloud-connector/enrollment-callback");
+          return Response.json({ enrollmentId: "online-case", verificationUrl: "https://cloud.example/connections/enroll?id=online-case",
+            expiresAt: new Date(Date.now() + 60_000).toISOString() }, { status: 201 });
+        }
+        const identity = loadPaperclipCloudConnectorIdentity();
+        if (!identity) throw new Error("Normal enrollment identity absent at controlled Cloud boundary");
+        const body = JSON.parse(String(init?.body));
+        const [header, payload, signature] = String(body.request).split(".");
+        const publicKey = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: identity.signPublicKey }, format: "jwk" });
+        expect(verify(null, Buffer.from(`${header}.${payload}`), publicKey, Buffer.from(signature, "base64url"))).toBe(true);
+        const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+        expect(claims).toMatchObject({ iss: identity.instanceId, env: "test", aud: url.toString() });
+        if (url.pathname === "/v1/connector/enrollment-claims") {
+          expect(claims.op).toBe("enroll");
+          expect(body).toMatchObject({ enrollmentId: "online-case", approvalCode: "controlled-approval" });
+          return Response.json({ id: identity.instanceId, environment: "test", origins: ["https://paperclip.example"] });
+        }
+        if (url.pathname === "/v1/connector/events/lease") {
+          expect(claims.ewv).toBe(1);
+          expect(typeof claims.sub).toBe("string"); expect(typeof claims.cid).toBe("string");
+          negotiations.push({ subject: claims.sub, companyId: claims.cid });
+          return Response.json({ events: [], eventWakeVersion: 1 });
+        }
+        if (url.pathname === "/v1/connector/instance-status")
+          return Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } });
+        throw new Error("Unexpected controlled normal Cloud request");
+      };
+      vi.spyOn(globalThis, "fetch").mockImplementation(transport);
+      let retirementRequested = false;
+      const createConnector = cloudConnectors.createPaperclipCloudConnector;
+      vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockImplementation(input => {
+        const connector = createConnector({ ...input, request: transport });
+        vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation }) => {
+          if (!t) throw new Error("Unexpected normal broker operation");
+          const saved = readPhotonExternalState(await photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id }).read(PHOTON_EXTERNAL_STATE));
+          if (!saved) throw new Error("Normal handoff intent absent before broker invocation");
+          expect(saved.identity.subject).toBe(t.userId);
+          expect(input.config.instanceId).toBe(loadPaperclipCloudConnectorIdentity()?.instanceId);
+          brokerOperations.push(structuredClone(operation));
+          if (operation.kind === "enroll") return { binding: saved.binding };
+          expect(operation.binding).toEqual(saved.binding);
+          if (operation.kind === "retire") { retirementRequested = true; return { binding: saved.binding }; }
+          if (operation.kind === "status") return { binding: saved.binding, handoffId: saved.handoffId,
+            phase: retirementRequested ? "retired" : "active" };
+          throw new Error("Unexpected controlled exact-owner retirement operation");
+        });
+        return connector;
+      });
+      t = await setup(); await t.start(); await t.qualify();
+      const localRuntime = t.service.runtime.get(t.endpoint.id);
+      expect(localRuntime).not.toBeNull();
+      const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(before.status).toBe("active");
+      expect(Reflect.get(before.setup, "photonExternalSubject"), "normal configuration retains its authorized subject without Cloud").toBe(t.userId);
+      const state = photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id });
+      expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toBeNull();
+      const errors: unknown[] = [];
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      coordinators.push(coordinator);
+      const eventService = githubConnectionEventService(db);
+      eventWorker = registerGitHubConnectionEventWork(db, coordinator, eventService, () => true);
+      connectionEventWorkers.push(eventWorker);
+      const receiverWorker = t.service.registerReceiverWork(coordinator, () => true);
+      await Promise.all([eventWorker.ready, receiverWorker.ready]);
+      await vi.waitFor(() => expect(coordinator?.nextWakeAt()).toBeNull(), { timeout: 5000 });
+      expect(t.service.runtime.get(t.endpoint.id)).toBe(localRuntime);
+      expect(errors).toEqual([]); expect(negotiations).toEqual([]); expect(brokerOperations).toEqual([]);
+      const app = express(); app.use(express.json());
+      const userId = t.userId, companyId = t.companyId;
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", source: "session", userId, companyIds: [companyId],
+          memberships: [{ companyId, membershipRole: "operator", status: "active" }], isInstanceAdmin: true };
+        next();
+      });
+      app.use("/api", toolAccessRoutes(db, { deploymentMode: "local_trusted", deploymentExposure: "private",
+        authPublicBaseUrl: "https://paperclip.example", paperclipCloudConnector: null }));
+      app.use(errorHandler);
+      const listener = createServer(app); server = listener;
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(0, "127.0.0.1", resolve); });
+      await request(listener).post("/api/tools/oauth/cloud-connector/enrollment").set("Connection", "close")
+        .send({ companyId }).expect(201);
+      const pending = loadPaperclipCloudConnectorIdentity();
+      if (!pending?.pending) throw new Error("Normal public enrollment did not save its pending owner");
+      expect(pending.status).toBe("pending");
+      expect(pending.pending).toMatchObject({ companyId, initiatedBy: `user:${userId}` });
+      await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+        .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: "wrong-state" }).expect(400);
+      expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+      expect(brokerOperations).toEqual([]);
+      if (activityFails) {
+        // Actual SQL write rollback after successful file enrollment. The fault
+        // is scoped to this company/action; no other lifecycle write is changed.
+        await db.execute(sql.raw(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.company_id = '${companyId}'::uuid AND NEW.action = 'paperclip_cloud_connector.enrollment_completed'
+          THEN RAISE EXCEPTION 'controlled enrollment activity rollback'; END IF; RETURN NEW; END $$`));
+        await db.execute(sql.raw(`CREATE TRIGGER ${trigger} BEFORE INSERT ON activity_log FOR EACH ROW EXECUTE FUNCTION ${trigger}()`));
+        installedTrigger = true;
+      }
+      await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+        .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: pending.pending.returnState })
+        .expect(activityFails ? 500 : 303);
+      expect(loadPaperclipCloudConnectorIdentity()).toMatchObject({ status: "active", instanceId: pending.instanceId });
+      expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toMatchObject({ instanceId: pending.instanceId, environment: "test" });
+      // Only the public callback may wake the already-settled owner. No manual
+      // changed(), forced discovery, connector replacement or service restart.
+      await vi.waitFor(async () => {
+        const recovered = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+        expect(recovered?.phase, "online enrollment must hand off the existing settled local receiver without restart").toBe("external");
+      }, { timeout: 10_000 });
+      const recovered = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(recovered).toMatchObject({ identity: { companyId, endpointId: t.endpoint.id, connectionId: t.endpoint.connectionId,
+        runtimeGeneration: Reflect.get(before.setup, "runtimeGeneration"), subject: userId }, localClosureConfirmed: true,
+        binding: { instanceId: pending.instanceId, environment: "test" } });
+      expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+      expect(t.f.client.close).toHaveBeenCalled();
+      expect(brokerOperations).toHaveLength(1);
+      expect(negotiations.some(row => row.subject === userId && row.companyId === companyId)).toBe(true);
+      const [after] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      const [afterConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(after.connectionId).toBe(before.connectionId);
+      expect(Reflect.get(after.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+      expect(Reflect.get(after.setup, "photonExternalSubject")).toBe(userId);
+      expect(afterConnection.credentialSecretRefs).toEqual(connection.credentialSecretRefs);
+      await vi.waitFor(() => expect(coordinator?.nextWakeAt()).toBeNull(), { timeout: 5000 });
+      expect(errors).toEqual([]);
+      expect(await db.select().from(chatEndpointLeases).where(and(eq(chatEndpointLeases.endpointId, t.endpoint.id),
+        eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")))).toEqual([]);
+    } catch (error) { primary = { error }; }
+    finally {
+      const cleanup: unknown[] = [];
+      try { if (server) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve())); } catch (error) { cleanup.push(error); }
+      try { await eventWorker?.stop(); } catch (error) { cleanup.push(error); }
+      try { await coordinator?.stop(); } catch (error) { cleanup.push(error); }
+      // Retire only this test's exact owned Cloud/local history through the
+      // normal authorized remove path, before restoring its identity context.
+      try { if (t) await t.service.configure(t.endpoint.id, { action: "remove" }, t.userId); } catch (error) { cleanup.push(error); }
+      try { await t?.service.shutdown(); } catch (error) { cleanup.push(error); }
+      if (installedTrigger) {
+        try { await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trigger} ON activity_log`)); } catch (error) { cleanup.push(error); }
+        try { await db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${trigger}()`)); } catch (error) { cleanup.push(error); }
+      }
+      for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      try { await rm(home, { recursive: true, force: true }); } catch (error) { cleanup.push(error); }
+      if (cleanup.length) throw new AggregateError([...(primary ? [primary.error] : []), ...cleanup], "Online Photon fixture cleanup remains owned");
+    }
+    if (primary) throw primary.error;
+  }
+  it("hands a settled local Photon receiver to Cloud after normal online enrollment without restart",
+    () => onlinePhotonEnrollment(), 30_000);
   async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
