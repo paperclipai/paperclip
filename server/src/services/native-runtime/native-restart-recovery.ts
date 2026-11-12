@@ -1498,8 +1498,12 @@ export async function claimNativeRestartRecoveries(input: {
             // Repeated scans of one ownership wait record it once, so the
             // bounded history keeps the drain record the next claim reads.
             ...(waitAlreadyRecorded ? {} : { recoveryHistory: appendBoundedRecoveryHistory(event) }),
-            updatedAt: waitAlreadyRecorded && row.coordinator.recoveryState === "awaiting_evidence"
-              && row.coordinator.recoveryRequestId === (input.recoveryRequestId ?? null) ? row.coordinator.updatedAt : now,
+            // updated_at is the owner's last sign of life: the ownership prover
+            // fences a dead boot only once it has been quiet past that write plus
+            // the lease and grace, and the fallback reads it as the owner's
+            // progress. A successor recording its own wait never moves it.
+            updatedAt: !ownControllerProcess || (waitAlreadyRecorded && row.coordinator.recoveryState === "awaiting_evidence"
+              && row.coordinator.recoveryRequestId === (input.recoveryRequestId ?? null)) ? row.coordinator.updatedAt : now,
           })
           .where(
             and(

@@ -994,6 +994,23 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       } finally { probe.restore(); resetControllerInstanceLeaseForTests(); }
     }, 60_000);
 
+    it("never moves the owner's last sign of life when a successor records its wait (fence time unchanged)", async () => {
+      // N1: the successor's awaiting-evidence write bumped updated_at, which the prover reads as the dead
+      // owner's last write, and the fence slipped from about 2 minutes to 3.5 after the crash.
+      const f = await seedClaim("CLAIM-SPACE-OWNER-TOUCH", "expired", "foreign-process-space");
+      const ownerLastWrite = new Date(Date.now() - 5 * 60_000);
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 60_000), updatedAt: ownerLastWrite })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      const probe = observeOwnerPid();
+      try {
+        expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() }))
+          .toMatchObject([{ kind: "awaiting_evidence", reason: "controller_process_space_unverified" }]);
+        const [after] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        expect(after!.recoveryState).toBe("awaiting_evidence");
+        expect(after!.updatedAt.getTime()).toBe(ownerLastWrite.getTime());
+      } finally { probe.restore(); }
+    }, 60_000);
+
     it("schedules the recheck for the end of the bound measured from the lease lapse", async () => {
       const f = await seedClaim("CLAIM-SPACE-LAPSED-RECENTLY", "expired", "foreign-process-space");
       const lapsedAt = Date.now() - 30_000;
