@@ -21,7 +21,7 @@ import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
 import { databaseOperationMiddleware } from "./middleware/database-operation.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
-import { isTransientStorageError, retainedUiAssets } from "./retained-ui-assets.js";
+import { publishRetainedUiAssetsAtStartup, retainedUiAssets } from "./retained-ui-assets.js";
 import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { loadStorageConfig } from "./storage/config.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
@@ -1106,15 +1106,8 @@ export async function createApp(
       );
       if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
         const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
-        try {
-          await retained.publish(path.join(uiDist, "assets"));
-        } catch (error) {
-          // This container still serves its own build from disk. A storage
-          // outage only costs an older tab its retained chunks; refusing to
-          // start would cost everyone the whole server.
-          if (!isTransientStorageError(error)) throw error;
-          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files");
-        }
+        await publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
+          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"));
         staticUi.use("/assets", retained.serve);
       }
       // Serve root/index through the same runtime HTML transform as SPA routes.

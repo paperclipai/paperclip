@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, expect, it } from "vitest";
-import { isTransientStorageError, retainedUiAssets } from "../retained-ui-assets.js";
+import { isTransientStorageError, publishRetainedUiAssetsAtStartup, retainedUiAssets } from "../retained-ui-assets.js";
 import type { StorageProvider } from "../storage/types.js";
 import { staticUiFiles } from "../middleware/static-ui.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
@@ -97,4 +97,48 @@ it("gives up on storage that stays throttled, and reports it as a storage outage
   expect(waits).toHaveLength(7);
   expect(isTransientStorageError(failure)).toBe(true);
   expect(isTransientStorageError(new Error("Static build asset name collides with different published bytes"))).toBe(false);
+});
+
+it("starts on local files when storage stays unavailable, and still refuses a build that collides", async () => {
+  const root = await directory(), { provider } = storage();
+  await fs.writeFile(path.join(root, "chunk-a.js"), "alpha");
+  const put = provider.putObjectConditional!.bind(provider);
+  provider.putObjectConditional = async () => { throw Object.assign(new Error("socket hang up"), { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) }); };
+  const retained = retainedUiAssets(provider, { sleep: async () => {} });
+  const reported: unknown[] = [];
+  await expect(publishRetainedUiAssetsAtStartup(retained, root, error => { reported.push(error); })).resolves.toBe(false);
+  expect(reported).toHaveLength(1);
+  // The server that started anyway serves the build from its own disk, and asks storage for nothing it lacks.
+  const app = express();
+  app.use("/assets", staticUiFiles(root), retained.serve);
+  await request(app).get("/assets/chunk-a.js").expect(200).expect("alpha");
+  await request(app).get("/assets/never-built.js").expect(404);
+  // Once storage answers, a published name with different bytes is a bad build, not an outage.
+  provider.putObjectConditional = put;
+  await expect(publishRetainedUiAssetsAtStartup(retained, root, () => {})).resolves.toBe(true);
+  await fs.writeFile(path.join(root, "chunk-a.js"), "collision");
+  await expect(publishRetainedUiAssetsAtStartup(retained, root, error => { reported.push(error); })).rejects.toThrow("collides");
+  expect(reported).toHaveLength(1);
+});
+
+it("retries an existing asset whose saved bytes storage could not serve, without accepting it unverified", async () => {
+  const root = await directory(), { provider } = storage();
+  await fs.writeFile(path.join(root, "chunk-a.js"), "alpha");
+  const waits: number[] = [];
+  const retained = retainedUiAssets(provider, { sleep: async ms => { waits.push(ms); } });
+  await retained.publish(root);
+  // A restart: the conditional write answers 412 and the verifying read is throttled twice.
+  const get = provider.getObject.bind(provider);
+  let refusals = 2, reads = 0;
+  provider.getObject = async input => {
+    reads++;
+    if (refusals > 0) { refusals--; throw Object.assign(new Error("Please reduce your request rate."), { name: "SlowDown", $metadata: { httpStatusCode: 503 } }); }
+    return get(input);
+  };
+  await retained.publish(root);
+  expect(waits).toEqual([500, 1_000]);
+  expect(reads).toBe(3);
+  // A deadline on the asset is an outage too; a read that says the object is gone is not.
+  expect(isTransientStorageError(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }))).toBe(true);
+  expect(isTransientStorageError(Object.assign(new Error("Object missing"), { status: 404 }))).toBe(false);
 });

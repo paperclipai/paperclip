@@ -20,15 +20,43 @@ async function digest(stream: Readable) {
 }
 
 const transientStatuses = new Set([429, 500, 502, 503, 504]);
-const transientNames = new Set(["SlowDown", "Throttling", "ThrottlingException", "RequestTimeout", "ServiceUnavailable", "InternalError", "TimeoutError"]);
+const transientNames = new Set(["SlowDown", "Throttling", "ThrottlingException", "RequestTimeout", "ServiceUnavailable", "InternalError",
+  // The 30-second deadline on one asset, and a connection that never completed.
+  "TimeoutError", "AbortError"]);
+const transientNetworkCodes = new Set(["ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
 const publishRetryDelaysMs = [500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000];
 
 /** Storage asked us to slow down or failed on its side; the same request can succeed later. */
 export function isTransientStorageError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const value = error as { name?: unknown; Code?: unknown; status?: unknown; $metadata?: { httpStatusCode?: unknown } };
-  return [value.name, value.Code].some(name => typeof name === "string" && transientNames.has(name))
-    || [value.status, value.$metadata?.httpStatusCode].some(status => typeof status === "number" && transientStatuses.has(status));
+  // The storage client wraps a socket failure; the reason is on the cause.
+  for (let current: unknown = error, depth = 0; current && typeof current === "object" && depth < 4; depth++) {
+    const value = current as { name?: unknown; Code?: unknown; code?: unknown; status?: unknown; cause?: unknown; $metadata?: { httpStatusCode?: unknown } };
+    if ([value.name, value.Code].some(name => typeof name === "string" && transientNames.has(name))
+      || (typeof value.code === "string" && transientNetworkCodes.has(value.code))
+      || [value.status, value.$metadata?.httpStatusCode].some(status => typeof status === "number" && transientStatuses.has(status))) return true;
+    current = value.cause;
+  }
+  return false;
+}
+
+/** Publish at startup. Returns false, after saying so, when storage itself is
+ * unavailable: this container still serves its build from disk, so a storage
+ * outage costs an older tab its retained chunks, not everyone the server. A
+ * build that cannot be published for any other reason still rejects. */
+export async function publishRetainedUiAssetsAtStartup(
+  retained: { publish(directory: string): Promise<void> },
+  directory: string,
+  report: (error: unknown) => void,
+): Promise<boolean> {
+  try {
+    await retained.publish(directory);
+    return true;
+  } catch (error) {
+    if (!isTransientStorageError(error)) throw error;
+    report(error);
+    return false;
+  }
 }
 
 /** Public, immutable build assets only. Publishing before readiness lets an
@@ -61,7 +89,10 @@ export function retainedUiAssets(provider: StorageProvider, options: { sleep?: (
             } catch (error) {
               // An existing key or uncertain upload may be accepted only if its
               // complete bytes match. Never overwrite a colliding build asset.
-              const existing = await provider.getObject({ objectKey, signal }).catch(() => { throw error; });
+              // A read that storage could not serve proves nothing either way:
+              // keep it, so the asset is tried again instead of being judged.
+              const existing = await provider.getObject({ objectKey, signal })
+                .catch(readError => { throw isTransientStorageError(readError) ? readError : error; });
               if (await digest(existing.stream) !== expected) throw new Error("Static build asset name collides with different published bytes");
             }
             break;
