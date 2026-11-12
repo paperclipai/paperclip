@@ -533,18 +533,43 @@ describe("issue validators", () => {
     expect(parsed.description).toBe("Line 1\n\nLine 2");
   });
 
-  it("normalizes escaped line breaks in thread summaries and documents", () => {
+  it("normalizes escaped line breaks in thread summaries", () => {
     const response = respondIssueThreadInteractionSchema.parse({
       answers: [],
       summaryMarkdown: "Summary\\n\\nNext action",
     });
-    const document = upsertIssueDocumentSchema.parse({
-      format: "markdown",
-      body: "# Plan\\n\\nShip it",
-    });
 
     expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
-    expect(document.body).toBe("# Plan\n\nShip it");
+  });
+
+  it("preserves issue-document body bytes including nested serialized Markdown", () => {
+    const nestedQueueBody = "# Queue\r\n\r\n```json\n{\"path\":\"C:\\dispatch\\queue\"}\n```";
+    const serializedEvidence = [
+      "{",
+      '  "originalAdmission": {',
+      '    "provenance": {',
+      '      "queueDocument": {',
+      '        "body": "# Queue\\r\\n\\r\\n```json\\n{\\"path\\":\\"C:\\\\dispatch\\\\queue\\"}\\n```",',
+      '        "note": "München 🐕"',
+      "      }",
+      "    }",
+      "  }",
+      "}",
+    ].join("\n");
+    const body = [
+      "## Dispatch receipt",
+      "",
+      "```json",
+      serializedEvidence,
+      "```",
+      "",
+      "Ordinary multiline Markdown remains unchanged.",
+    ].join("\n");
+
+    const parsed = upsertIssueDocumentSchema.parse({ format: "markdown", body });
+
+    expect(parsed.body).toBe(body);
+    expect(JSON.parse(serializedEvidence).originalAdmission.provenance.queueDocument.body).toBe(nestedQueueBody);
   });
 
   it("clamps oversized requestDepth values on create", () => {

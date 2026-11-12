@@ -2390,7 +2390,10 @@ export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
 export const upsertIssueDocumentSchema = z.object({
   title: z.string().trim().max(200).nullable().optional(),
   format: issueDocumentFormatSchema,
-  body: multilineTextSchema.pipe(z.string().max(524288)),
+  // Issue-document bodies can contain serialized evidence. Unlike reader-facing
+  // multiline fields, their escaped control sequences are data and must remain
+  // byte-for-byte stable across an upsert/readback round trip.
+  body: z.string().max(524288),
   changeSummary: z.string().trim().max(500).nullable().optional(),
   baseRevisionId: z.string().guid().nullable().optional(),
 });

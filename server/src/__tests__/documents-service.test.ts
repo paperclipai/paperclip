@@ -269,4 +269,47 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       lockedAt: null,
     }));
   });
+
+  it("stores and reads issue-document body bytes without normalizing nested evidence", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const serializedEvidence = [
+      "{",
+      '  "originalAdmission": {',
+      '    "provenance": {',
+      '      "queueDocument": {',
+      '        "body": "# Queue\\r\\n\\r\\n```json\\n{\\"path\\":\\"C:\\\\dispatch\\\\queue\\"}\\n```",',
+      '        "note": "München 🐕"',
+      "      }",
+      "    }",
+      "  }",
+      "}",
+    ].join("\n");
+    const body = [
+      "## Dispatch receipt",
+      "",
+      "```json",
+      serializedEvidence,
+      "```",
+      "",
+      "Ordinary multiline Markdown remains unchanged.",
+    ].join("\n");
+
+    const written = await svc.upsertIssueDocument({
+      issueId,
+      key: "dispatch-receipt",
+      title: "Dispatch receipt",
+      format: "markdown",
+      body,
+    });
+    const readBack = await svc.getIssueDocumentByKey(issueId, "dispatch-receipt");
+    const revisions = await svc.listIssueDocumentRevisions(issueId, "dispatch-receipt");
+
+    expect(written.document.body).toBe(body);
+    expect(readBack?.body).toBe(body);
+    expect(revisions[0]?.body).toBe(body);
+    expect(JSON.parse(serializedEvidence).originalAdmission.provenance.queueDocument).toMatchObject({
+      body: "# Queue\r\n\r\n```json\n{\"path\":\"C:\\dispatch\\queue\"}\n```",
+      note: "München 🐕",
+    });
+  });
 });
