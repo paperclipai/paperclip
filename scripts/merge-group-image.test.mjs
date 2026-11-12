@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  archiveImageDigest, createRecord, repositoryId, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
+  archiveImageDigest, assertPipelineUnchanged, createRecord, repositoryId, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
 } from "./merge-group-image.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,6 +100,14 @@ test("promotion proves commit, tree, architecture and archive digest", () => {
   assert.throws(() => verifyRecord({ record: { ...record, schema: "other" }, sha, tree, arch: "amd64", archiveDigest: digest }), /Unknown/);
   assert.throws(() => verifyRecord({ record: { ...record, repository: "fork/paperclip" }, sha, tree, arch: "amd64", archiveDigest: digest }));
   assert.throws(() => createRecord({ sha, tree: "HEAD", arch: "amd64", digest }));
+});
+
+test("a commit that changes the merge-group pipeline is built from source, not promoted", () => {
+  assert.doesNotThrow(() => assertPipelineUnchanged([]));
+  assert.doesNotThrow(() => assertPipelineUnchanged(["Dockerfile", "server/src/index.ts", ".github/workflows/docker.yml"]));
+  for (const file of [".github/workflows/docker-merge-group.yml", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"]) {
+    assert.throws(() => assertPipelineUnchanged(["server/src/index.ts", file]), /changes the merge-group image pipeline/, file);
+  }
 });
 
 test("the CLI refuses to record outside a merge group or promote outside a canonical master push", () => {

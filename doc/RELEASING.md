@@ -339,7 +339,10 @@ and probes the production image for each merge-group commit. It has no registry
 credentials and uploads an OCI archive with a record of the commit, tree,
 architecture and digest. The `master` push for that same commit then pushes
 those exact bytes by digest instead of rebuilding
-(`scripts/merge-group-image.mjs`). Without a matching successful merge-group
+(`scripts/merge-group-image.mjs`). A commit that changes that pipeline (the
+merge-group workflow, the promotion script or the PID 1 probe) is always built
+from source, so promotion trusts only a pipeline that master already ran.
+Without a matching successful merge-group
 run, or on any mismatch or error, the push builds from source. The PID 1 probe,
 exact-source gate and signing apply on both paths.
 

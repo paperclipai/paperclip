@@ -107,6 +107,21 @@ export function verifyRecord({ record, sha, tree, arch, archiveDigest }) {
   return record.digest;
 }
 
+/**
+ * Files that produce or vouch for a merge-group image. The merge-group run uses
+ * the queued commit's own copies, so a commit that changes any of them is
+ * built from source on master instead: promotion then trusts only a pipeline
+ * that master already ran before this commit.
+ */
+export const pipelineFiles = [workflowPath, "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"];
+
+export function assertPipelineUnchanged(changedFiles) {
+  const changed = changedFiles.filter(file => pipelineFiles.includes(file));
+  assert.equal(changed.length, 0, `This commit changes the merge-group image pipeline (${changed.join(", ")})`);
+}
+
+const changedSinceParent = () => execFileSync("git", ["diff", "--name-only", "HEAD^", "HEAD", "--", ...pipelineFiles], { encoding: "utf8" })
+  .split("\n").filter(Boolean);
 const tarReader = archive => entry => execFileSync("tar", ["-xOf", archive, entry], { maxBuffer: 16 * 1024 * 1024 });
 const gitTree = () => execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
 const option = name => {
@@ -151,6 +166,7 @@ async function main(command) {
   }
   if (command === "verify") {
     const directory = option("dir");
+    assertPipelineUnchanged(changedSinceParent());
     const record = JSON.parse(await readFile(`${directory}/record.json`, "utf8"));
     const archiveDigest = archiveImageDigest({ readEntry: tarReader(`${directory}/image.tar`), arch });
     return output("digest", verifyRecord({ record, sha, tree: gitTree(), arch, archiveDigest }));
