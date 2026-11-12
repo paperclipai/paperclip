@@ -51,7 +51,9 @@ describe("attentionApi.list", () => {
   it("requests canonical counts without requesting decision cards", async () => {
     await attentionApi.summary("company-1");
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/attention/summary");
-  });  it("keeps actionable selection consistent across feed, counts and membership", async () => {
+  });
+
+  it("keeps actionable selection consistent across feed, counts and membership", async () => {
     await attentionApi.list("company-1", { all: true, actionableOnly: true });
     await attentionApi.summary("company-1", { actionableOnly: true });
     await attentionApi.taskIndex("company-1", { actionableOnly: true });
@@ -61,5 +63,4 @@ describe("attentionApi.list", () => {
       "/companies/company-1/attention/tasks?actionableOnly=true",
     ]);
   });
-
 });

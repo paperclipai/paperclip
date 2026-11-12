@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
@@ -11,8 +10,6 @@ import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageService } from "../storage/types.js";
-import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, type WorkspaceSnapshotRef } from "./remote-workspace-snapshot-storage.js";
 
 type ReadDb = Pick<Db, "select">;
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -20,11 +17,6 @@ type SourceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type NestedVerificationInput = {
   db: Db; storage: StorageService; workspace: Workspace; scratch: string; signal?: AbortSignal;
   recordedChildren?: ImportedWorkspaceChild[]; gitSourceRoots?: string[];
-};
-type NestedVerification = {
-  abort(error: unknown): void;
-  immutable(reference: WorkspaceSnapshotRef, children: ImportedWorkspaceChild[], operationId: string,
-    archivePath: string, restored: string): Promise<void>;
 };
 export type ImportedWorkspaceChild = {
   workspaceId: string; snapshotId: string; operationId: string; relativePath: string; manifestDigest: string;
@@ -98,7 +90,7 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
   const root = await physicalPath(workspace.cwd);
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
   const parts = path.relative(instance, root).split(path.sep);
-  const isolated = workspace.sourceIssueId && workspace.mode === "isolated_workspace"
+  const isolated = workspace.sourceIssueId && ["isolated_workspace", "shared_workspace"].includes(workspace.mode)
     && parts[1] === workspace.companyId && parts[2] === workspace.sourceIssueId
     && (parts[0] === "isolated-workspaces" && parts.length === 3
       || parts[0] === "isolated-workspace-attempts" && parts.length === 4 && /^[a-zA-Z0-9_-]+$/.test(parts[3]));
@@ -202,7 +194,7 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
           and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
           and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and a.source_issue_id not in (${settledRecoveries}) and a.status in ('active','escalated'))
     union all select 'repository_preparation_unresolved' where exists (select 1 from execution_workspace_repositories r where r.company_id=${companyId}::uuid
-      and r.execution_workspace_id in (${workspaceIds}) and r.state<>'ready')`);
+      and r.execution_workspace_id in (${workspaceIds}) and r.execution_workspace_id<>${workspace.id}::uuid and r.state<>'ready')`);
   const services = await db.execute<{ cwd: string | null; provider: string }>(sql`
     select cwd, provider from workspace_runtime_services where company_id=${companyId}::uuid and status<>'stopped' limit 1001`);
   const reasons = rows.map(row => row.reason);
@@ -268,7 +260,7 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
   return [];
 }
 
-async function importedWorkspaceCandidates(db: ReadDb, workspace: Workspace) {
+async function importedWorkspaceCandidates(db: ReadDb, workspace: Workspace, linkedRoots: readonly string[] = []) {
   const sourceRoot = rootOf(workspace);
   if (!sourceRoot) return [];
   const root = await physicalPath(sourceRoot);
@@ -288,64 +280,34 @@ async function importedWorkspaceCandidates(db: ReadDb, workspace: Workspace) {
     if (!row.operation.cwd) continue;
     located.push({ ...row, sourcePath: await physicalPath(row.operation.cwd) });
   }
-  return located.filter(row => row.sourcePath.startsWith(`${root}/.paperclip/worktrees/`))
+  const linked = new Set(linkedRoots);
+  return located.filter(row => row.sourcePath.startsWith(`${root}/.paperclip/worktrees/`) || linked.has(row.sourcePath)
+    && row.operation.finishedAt !== null && row.operation.metadata?.manifestDigest === row.snapshot.manifestDigest)
     .sort((a, b) => a.sourcePath.length - b.sourcePath.length || a.operation.id.localeCompare(b.operation.id));
 }
 
-export async function inspectImportedWorkspaceSourcePaths(db: ReadDb, workspace: Workspace) {
-  return (await importedWorkspaceCandidates(db, workspace)).map(({ operation, snapshot, sourcePath }) => ({
+export async function inspectImportedWorkspaceSourcePaths(db: ReadDb, workspace: Workspace, linkedRoots: readonly string[] = []) {
+  return (await importedWorkspaceCandidates(db, workspace, linkedRoots)).map(({ operation, snapshot, sourcePath }) => ({
     workspaceId: snapshot.executionWorkspaceId, operationId: operation.id, snapshotId: snapshot.id,
     sourcePath, manifestDigest: snapshot.manifestDigest, operationManifestDigest: operation.metadata?.manifestDigest,
   }));
 }
 
-/** Runtime-created nested task folders can be omitted only after an exact
- * committed import covers their current bytes. Ordinary user folders stay in
- * the parent archive. The snapshot owner retains the resulting dependencies. */
 export function createNestedWorkspaceImportVerifier(input: {
   db: Db; storage: StorageService; companyId: string; sourceLock: SourceTransaction;
   projectIds: readonly string[]; issueIds: readonly string[]; signal?: AbortSignal;
 }) {
-  const stop = new AbortController(), signal = input.signal ? AbortSignal.any([input.signal, stop.signal]) : stop.signal;
-  const proofs = new Map<string, { etag: string; checked: Promise<boolean> }>();
   let closed = false, current: Promise<ImportedWorkspaceChild[]> | undefined;
-  const objectHead = async (reference: WorkspaceSnapshotRef) => {
-    try { return await input.storage.headObject(reference.companyId, reference.objectKey, { signal }); }
-    catch { signal.throwIfAborted(); return null; }
-  };
   const assertOwner = async () => {
     if (closed) throw new Error("nested_workspace_verifier_closed");
-    signal.throwIfAborted();
+    input.signal?.throwIfAborted();
     await withWorkspaceSourceLocks(input.db, { companyId: input.companyId, projectIds: input.projectIds, issueIds: input.issueIds }, async lock => {
       if (lock !== input.sourceLock) throw new Error("nested_workspace_source_fence_changed");
       await lock.execute(sql`select 1`);
     }, true);
   };
-  const verification: NestedVerification = {
-    abort: error => stop.abort(error),
-    immutable: async (reference, children, operationId, archivePath, restored) => {
-      const head = await objectHead(reference);
-      const etag = head?.exists && head.contentLength === reference.byteSize && typeof head.etag === "string"
-        && head.etag.replace(/^"|"$/g, "").trim() && !/^W\//i.test(head.etag) ? head.etag : null;
-      const key = createHash("sha256").update(JSON.stringify([reference, children, operationId])).digest("hex");
-      const previous = proofs.get(key);
-      if (previous && etag === previous.etag
-        && await previous.checked) return;
-      proofs.delete(key);
-      const checked = (async () => {
-        await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal });
-        await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal });
-        if (!etag) return false;
-        const after = await objectHead(reference);
-        return after !== null && after.exists && after.etag === etag && after.contentLength === reference.byteSize;
-      })();
-      const proof = etag ? { etag, checked } : null;
-      if (proof) proofs.set(key, proof);
-      try { if (!await checked && proofs.get(key) === proof) proofs.delete(key); }
-      catch (error) { if (proofs.get(key) === proof) proofs.delete(key); throw error; }
-    },
-  };
   return {
+    assertOwner,
     prepare(options: Omit<NestedVerificationInput, "db" | "storage" | "signal">): Promise<ImportedWorkspaceChild[]> {
       if (closed || current) return Promise.reject(new Error("nested_workspace_verifier_unavailable"));
       const work = (async () => {
@@ -353,33 +315,27 @@ export function createNestedWorkspaceImportVerifier(input: {
         if (options.workspace.companyId !== input.companyId) throw new Error("workspace_source_company_mismatch");
         const sourceRoot = rootOf(options.workspace);
         if (sourceRoot) await assertCurrentWorkspaceSourceHeld(sourceRoot);
-        const result = await prepareNestedWorkspaceImportsWithVerification({ ...options, db: input.db, storage: input.storage, signal }, verification);
+        const result = await prepareNestedWorkspaceImports({ ...options, db: input.db, storage: input.storage, signal: input.signal });
         await assertOwner();
         return result;
-      })().catch(error => { stop.abort(error); throw error; });
+      })();
       current = work;
       return work.finally(() => { current = undefined; });
     },
     async close() {
-      closed = true; stop.abort(new Error("nested_workspace_verifier_closed"));
+      closed = true;
       if (current) await Promise.allSettled([current]);
-      proofs.clear();
     },
   };
 }
 
-export function prepareNestedWorkspaceImports(input: NestedVerificationInput): Promise<ImportedWorkspaceChild[]> {
-  return prepareNestedWorkspaceImportsWithVerification(input);
-}
-
-async function prepareNestedWorkspaceImportsWithVerification(input: NestedVerificationInput, verification?: NestedVerification): Promise<ImportedWorkspaceChild[]> {
+export async function prepareNestedWorkspaceImports(input: NestedVerificationInput): Promise<ImportedWorkspaceChild[]> {
   const sourceRoot = rootOf(input.workspace);
   if (!sourceRoot || input.recordedChildren && !input.recordedChildren.length) return [];
   const root = await physicalPath(sourceRoot);
   const candidates = (await importedWorkspaceCandidates(input.db, input.workspace)).filter(row =>
     !input.recordedChildren || input.recordedChildren.some(child => child.operationId === row.operation.id));
   const covered: ImportedWorkspaceChild[] = [];
-  const selected: typeof candidates = [];
   for (const { operation, snapshot, sourcePath } of candidates) {
     input.signal?.throwIfAborted();
     const relativePath = path.relative(root, sourcePath).split(path.sep).join("/");
@@ -387,64 +343,11 @@ async function prepareNestedWorkspaceImportsWithVerification(input: NestedVerifi
     const entry = await fs.lstat(sourcePath).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
     if (!entry) { if (input.recordedChildren) throw new Error("nested_workspace_source_changed"); continue; }
     if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("nested_workspace_source_changed");
-    if (!verification) await verifyCoveredWorkspace({ ...input, sourcePath, snapshot, operationId: operation.id,
-      expectedDigest: operation.metadata?.manifestDigest, depth: 0 });
-    else selected.push({ operation, snapshot, sourcePath });
+    if (snapshot.manifestDigest !== operation.metadata?.manifestDigest) throw new Error("nested_workspace_snapshot_changed");
+    validateImportedWorkspaceChildren(snapshot.metadata?.importedWorkspaceChildren ?? []);
     covered.push({ workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.id, operationId: operation.id,
       relativePath, manifestDigest: snapshot.manifestDigest! });
   }
-  if (verification) {
-    let next = 0, failure: unknown;
-    const worker = async () => {
-      while (!input.signal?.aborted && next < selected.length) {
-        const { operation, snapshot, sourcePath } = selected[next++];
-        try { await verifyCoveredWorkspace({ ...input, sourcePath, snapshot, operationId: operation.id,
-          expectedDigest: operation.metadata?.manifestDigest, depth: 0 }, verification); }
-        catch (error) { failure ??= error; verification.abort(error); }
-      }
-    };
-    const peers = await Promise.allSettled(Array.from({ length: Math.min(2, selected.length) }, worker));
-    for (const peer of peers) if (peer.status === "rejected") failure ??= peer.reason;
-    if (failure) throw failure;
-    input.signal?.throwIfAborted();
-  }
   if (input.recordedChildren && !isDeepStrictEqual(covered, input.recordedChildren)) throw new Error("nested_workspace_scope_changed");
   return covered;
-}
-
-async function verifyCoveredWorkspace(input: {
-  db: Db; storage: StorageService; sourcePath: string; snapshot: typeof executionWorkspaceSnapshots.$inferSelect;
-  operationId: string; expectedDigest: unknown; scratch: string; signal?: AbortSignal; depth: number; gitSourceRoots?: string[];
-}, verification?: NestedVerification) {
-  input.signal?.throwIfAborted();
-  if (input.depth > 32) throw new Error("nested_workspace_coverage_invalid");
-  const { snapshot } = input;
-  const reference = await getWorkspaceSnapshot(input.db, { companyId: snapshot.companyId,
-    workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.id });
-  if (!reference || reference.manifestDigest !== input.expectedDigest || snapshot.sourceOperationId !== input.operationId)
-    throw new Error("nested_workspace_snapshot_changed");
-  const children = validateImportedWorkspaceChildren(snapshot.metadata?.importedWorkspaceChildren ?? []);
-  const area = await fs.mkdtemp(path.join(input.scratch, "covered-"));
-  for (const child of children) {
-    const [saved] = await input.db.select({ operation: workspaceOperations, snapshot: executionWorkspaceSnapshots })
-      .from(executionWorkspaceSnapshots).innerJoin(workspaceOperations, and(
-        eq(workspaceOperations.companyId, executionWorkspaceSnapshots.companyId), eq(workspaceOperations.id, executionWorkspaceSnapshots.sourceOperationId),
-      )).where(and(eq(executionWorkspaceSnapshots.companyId, snapshot.companyId), eq(executionWorkspaceSnapshots.id, child.snapshotId),
-        eq(executionWorkspaceSnapshots.executionWorkspaceId, child.workspaceId), eq(workspaceOperations.id, child.operationId),
-        eq(workspaceOperations.status, "succeeded"), eq(workspaceOperations.phase, "remote_workspace_migration"),
-        inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"])));
-    const sourcePath = path.join(input.sourcePath, child.relativePath);
-    if (!saved?.operation.cwd || await physicalPath(saved.operation.cwd) !== sourcePath) throw new Error("nested_workspace_coverage_invalid");
-    await verifyCoveredWorkspace({ ...input, sourcePath, snapshot: saved.snapshot, operationId: child.operationId,
-      expectedDigest: child.manifestDigest, scratch: area, depth: input.depth + 1 }, verification);
-  }
-  const archivePath = path.join(area, "saved.pcws"), restored = path.join(area, "restored");
-  if (verification) await verification.immutable(reference, children, input.operationId, archivePath, restored);
-  else {
-    await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal: input.signal });
-    await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal: input.signal });
-  }
-  const current = await captureRemoteWorkspaceDirectory({ cwd: input.sourcePath, archivePath: path.join(area, "current.pcws"),
-    exclude: children.map(child => child.relativePath), gitSourceRoots: input.gitSourceRoots, signal: input.signal });
-  if (current.manifestDigest !== reference.manifestDigest) throw new Error("nested_workspace_source_changed");
 }

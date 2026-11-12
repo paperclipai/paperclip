@@ -46,29 +46,6 @@ against the change summary from git history.
 - [ ] Commands are accurate (`pnpm dev`, `pnpm build`, etc.)
 - [ ] Link to DEVELOPING.md is correct
 
-## doc/SPEC.md
-
-### Company Model
-- [ ] Fields match current schema
-- [ ] Governance model description is accurate
-
-### Agent Model
-- [ ] Adapter types match what's actually supported
-- [ ] Agent configuration description is accurate
-- [ ] No features described as "not supported" or "not V1" that shipped
-
-### Task Model
-- [ ] Task hierarchy description is accurate
-- [ ] Status values match current implementation
-
-### Extensions / Plugins
-- [ ] If plugins are shipped, no "not in V1" or "future" language
-- [ ] Plugin model description matches implementation
-
-### Open Questions
-- [ ] Resolved questions removed or updated
-- [ ] No "TBD" items that have been decided
-
 ## doc/PRODUCT.md
 
 ### Core Concepts

@@ -10,11 +10,11 @@ export function useCoordinatorAttentionCount(companyId: string | null | undefine
   const feedPage = location.pathname.endsWith("/decisions");
   const taskPage = location.pathname.endsWith("/issues") && new URLSearchParams(location.search).get("view") === "needs_attention";
   const attention = useQuery({ queryKey: coordinatorAttentionQueryKey(companyId!),
-    queryFn: () => attentionApi.list(companyId!, { all: true, actionableOnly: true }), enabled: false });
+    queryFn: () => attentionApi.list(companyId!, { all: true }), enabled: false });
   const summary = useQuery({ queryKey: coordinatorAttentionSummaryQueryKey(companyId!),
-    queryFn: () => attentionApi.summary(companyId!, { actionableOnly: true }), enabled: enabled && !!companyId && !feedPage && !taskPage });
+    queryFn: () => attentionApi.summary(companyId!), enabled: enabled && !!companyId && !feedPage && !taskPage });
   const tasks = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!),
-    queryFn: () => attentionApi.taskIndex(companyId!, { actionableOnly: true }), enabled: false });
+    queryFn: () => attentionApi.taskIndex(companyId!), enabled: false });
   // These are three projections of the same company/person count. Keep the
   // newest known count during route changes, including an explicit fresh zero.
   // Server generation time wins over a delayed older response arriving later.

@@ -828,6 +828,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorCompanyId?: string;
   contextSnapshot?: Record<string, unknown>;
   issueStateGuard?: {
     statuses: string[];

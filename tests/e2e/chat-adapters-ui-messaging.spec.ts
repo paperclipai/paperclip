@@ -1072,6 +1072,9 @@ test.describe("Board send delivery refresh", () => {
           assignedAgentLocked: true,
         }),
       );
+      // The comment and attachment reads below are faked. The chat bootstrap
+      // would answer them from the server, so make the page read them itself.
+      await page.route(/\/chat-bootstrap(?:\?|$)/, (route) => route.abort());
       await page.route(
         new RegExp(
           `/api/issues/(${issue.id}|${issue.identifier})/(?:recent-comments|comments)(?:\\?|$)`,

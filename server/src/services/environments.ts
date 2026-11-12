@@ -1645,6 +1645,10 @@ export function environmentService(db: Db) {
                         "released",
                         "retained",
                       ]),
+                      // A source whose harness backup was restored into another
+                      // lease holds older session state. That claim and this
+                      // handoff compete on this row, so only one of them wins.
+                      sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'reusableSandboxLeaseSuperseded')`,
                     ),
                   )
                   .returning();

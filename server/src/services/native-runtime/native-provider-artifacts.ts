@@ -300,6 +300,8 @@ export async function retainNativeProviderArtifacts(input: {
         body: createReadStream(encrypted),
         byteSize: reference.byteSize,
         sha256: reference.sha256.slice(7),
+        // A file source can be resent after a request-rate limit; a stream cannot.
+        sourceFile: encrypted,
         signal: input.signal,
       });
       await receive(

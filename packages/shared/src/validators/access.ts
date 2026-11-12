@@ -104,6 +104,13 @@ export const updateMemberPermissionsSchema = z.object({
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
 
+export const updateAgentPermissionGrantSchema = z.object({
+  permissionKey: z.enum(PERMISSION_KEYS),
+  enabled: z.boolean(),
+}).strict();
+
+export type UpdateAgentPermissionGrant = z.infer<typeof updateAgentPermissionGrantSchema>;
+
 const editableMembershipStatuses = ["pending", "active", "suspended"] as const;
 
 export const updateCompanyMemberSchema = z.object({

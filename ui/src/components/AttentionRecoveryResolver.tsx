@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
+import { describeError } from "@/api/errors";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
@@ -34,7 +35,7 @@ export function AttentionRecoveryResolver({ item, companyId, agentMap, onResolve
   if (actions.isPending) return <p role="status">Loading recovery actions…</p>;
   if (!action || !["active", "escalated"].includes(action.status)) return <p role="status">This recovery is no longer awaiting an action.</p>;
   return <>
-    {resolution.error ? <p role="alert">{resolution.error.message}</p> : null}
+    {resolution.error ? <p role="alert" className="text-sm text-destructive">{describeError(resolution.error, { action: "resolve this recovery" }).body}</p> : null}
     <fieldset disabled={resolution.isPending} aria-busy={resolution.isPending}>
       <IssueRecoveryActionCard action={action} agentMap={agentMap} onResolve={resolve} resolvePending={resolution.isPending} />
     </fieldset>

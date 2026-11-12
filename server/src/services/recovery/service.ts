@@ -1,4 +1,5 @@
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
+import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
@@ -24,13 +25,14 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restriction.js";
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
+import { hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { pendingExternalConversationSettlement, settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { isIssueReviewPathRecoveryRun } from "./review-path-recovery.js";
 import { escalateExhaustedIssueReviewPathRecovery } from "./review-path-recovery-escalation.js";
-import { executionRetryAccounting } from "../execution-recovery-attempt.js";
+import { executionRetryAccounting, INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
 import { isExplicitContinuationRetryClaim } from "../explicit-continuation-retry-claim.js";
 import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
@@ -180,6 +182,7 @@ import {
 import { withRecoveryContext } from "./status-only-context.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
 import {
   collectDispositionRepairSourceState,
   readDispositionRepairDurableWaitingState,
@@ -297,6 +300,7 @@ export type StrandedRecoveryCause =
   | "deliberate_wait_without_target"
   | "process_lost"
   | "provider_quota"
+  | typeof ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
@@ -442,12 +446,24 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   );
 }
 
+/**
+ * Lease acquisition failed before any provider work, and its bounded retry
+ * budget is spent. Nothing needs inspection or repair by the board: the task
+ * rests on a system-owned action and the normal Retry, never on a board one.
+ */
+function isPreDispatchEnvironmentProviderFailure(latestRun: LatestIssueRun) {
+  if (latestRun?.errorCode !== ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE) return false;
+  const recovery = parseObject(parseObject(latestRun.resultJson).executionRecovery);
+  return recovery.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 function resolveStrandedRecoveryCause(
   latestRun: LatestIssueRun,
   explicitCause?: StrandedRecoveryCause,
 ): StrandedRecoveryCause {
   if (explicitCause) return explicitCause;
   if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
+  if (isPreDispatchEnvironmentProviderFailure(latestRun)) return ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
   if (latestRun?.errorCode === "process_lost") return "process_lost";
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
@@ -522,7 +538,9 @@ function didAutomaticRecoveryFail(
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
   return (
-    latestRetryReason === expectedRetryReason &&
+    (latestRetryReason === expectedRetryReason
+      || (expectedRetryReason === "issue_continuation_needed"
+        && latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)) &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -546,6 +564,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  INTERACTION_DELIVERY_DENIED,
   "project_access_denied",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
@@ -673,7 +692,8 @@ export function classifyAdapterFailureForRecovery(
   if (parsedClockReset) {
     return {
       kind: "provider_quota",
-      retryAt: parsedClockReset,
+      // A calendar reset read after it passed has released the wait.
+      retryAt: parsedClockReset > now ? parsedClockReset : now,
       parsedResetTime: true,
     };
   }
@@ -912,6 +932,7 @@ export function recoveryService(
     enqueueWakeup: RecoveryWakeup;
     scheduleRecoveryRetry?: (
       runId: string,
+      outcome?: { retryExhausted?: boolean },
     ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
     /** Settle retained explicit retry claims through the queue-first release policy. */
     settleExplicitContinuationRetry?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>;
@@ -1058,7 +1079,7 @@ export function recoveryService(
     for (const row of rows) {
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
-      if (retryReason !== "issue_continuation_needed") break;
+      if (retryReason !== "issue_continuation_needed" && retryReason !== INTERRUPTED_PREPARATION_RETRY_REASON) break;
       if (
         !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
@@ -1185,7 +1206,8 @@ export function recoveryService(
     const selfBlocked = row?.actorType === "agent" && row.agentId === agentId && details.status === "blocked";
     const nativeSelfBlocked = row?.actorType === "system" &&
       row.actorId === "native-status-committer" && row.runAgentId === agentId &&
-      details.source === "native_status_decision" && details.toStatus === "blocked";
+      details.source === "native_status_decision" && details.toStatus === "blocked" &&
+      details.reasonCode !== "durable_dependency_blocker_bound";
     if (!selfBlocked && !nativeSelfBlocked) return false;
     const newlyCompletedBlocker = await db.select({ id: issues.id }).from(issues).where(and(
       eq(issues.companyId, companyId),
@@ -1195,8 +1217,10 @@ export function recoveryService(
     if (newlyCompletedBlocker.length > 0) return false;
     const newlyFinalizedBlocker = await db.select({ id: workspaceOperations.id }).from(workspaceOperations)
       .innerJoin(issues, and(eq(issues.companyId, companyId), inArray(issues.id, blockerIssueIds),
-        eq(issues.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
-        eq(workspaceOperations.issueId, issues.id)))
+        eq(workspaceOperations.issueId, issues.id),
+        or(eq(issues.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
+          and(isNull(workspaceOperations.executionWorkspaceId),
+            sql`${workspaceOperations.metadata}->>'owningService' = 'workspace_recovery'`))))
       .where(and(eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.phase, "workspace_finalize"),
         eq(workspaceOperations.status, "succeeded"), gt(workspaceOperations.finishedAt, blockedTransitionAt)))
       .limit(1);
@@ -1245,6 +1269,7 @@ export function recoveryService(
       agentId: latestRun.agentId,
     };
     if (await hasCommittedNativePlanWait(db, binding)) return true;
+    if (issue.status === "in_progress" && await hasCommittedNativeResponseWakeWait(db, binding)) return true;
     const [receipt] = await db
       .select({
         run: heartbeatRuns,
@@ -1447,6 +1472,8 @@ export function recoveryService(
       (await listExternalReviewWaits(db, issue.companyId, [issue.id])).length > 0) return true;
     if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
       await hasCommittedNativePlanWait(db, { companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId: latestRun.agentId })) return true;
+    if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
+      await hasCommittedNativeResponseWakeWait(db, { companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId: latestRun.agentId })) return true;
     if (
       issue.status === "in_progress" &&
       latestRun?.status === "succeeded" &&
@@ -2016,14 +2043,15 @@ export function recoveryService(
           return null;
         }
         if (deps.scheduleRecoveryRetry) {
-          const retry = await deps.scheduleRecoveryRetry(predecessor.id);
+          const scheduling: { retryExhausted?: boolean } = {};
+          const retry = await deps.scheduleRecoveryRetry(predecessor.id, scheduling);
           if (retry) return retry;
           // A spent budget is the one "no retry" the sweeper must not wait
           // out: nothing else will ever queue a successor for this run, so
           // it reports the exhaustion instead of leaving the issue with no
           // live path (2026-09-25: three deploy restarts in a row spent the
           // budget and the issue sat in_progress with no run, unescalated).
-          if (input.outcome && deps.transientRetryBudgetSpent?.(predecessor)) {
+          if (input.outcome && (scheduling.retryExhausted || deps.transientRetryBudgetSpent?.(predecessor))) {
             input.outcome.retryExhausted = true;
           }
           return null;
@@ -2546,6 +2574,7 @@ export function recoveryService(
       latestRun: input.latestRun,
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota";
+    const isEnvironmentProviderWait = recoveryCause === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
     const now = new Date();
     const actions = database === db ? recoveryActionsSvc : issueRecoveryActionService(database);
     const action = await actions.upsertSourceScoped({
@@ -2558,7 +2587,7 @@ export function recoveryService(
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
-      ownerType: isProviderQuotaWait ? "system" : "board",
+      ownerType: isProviderQuotaWait || isEnvironmentProviderWait ? "system" : "board",
       ownerAgentId: null,
       ownerUserId: null,
       previousOwnerAgentId: input.issue.assigneeAgentId,
@@ -2580,7 +2609,7 @@ export function recoveryService(
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
       },
-      evidenceOnCreate: isProviderQuotaWait
+      evidenceOnCreate: isProviderQuotaWait || isEnvironmentProviderWait
         ? {}
         : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
       nextAction:
@@ -2590,6 +2619,8 @@ export function recoveryService(
             ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
             : recoveryCause === "provider_quota"
               ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+              : isEnvironmentProviderWait
+              ? "No agent work started. Retry the task once the environment provider is available."
               : recoveryCause === "codex_output_inactivity_monitor"
                 ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
                 : recoveryCause === "workspace_validation_failed"
@@ -2625,6 +2656,8 @@ export function recoveryService(
             type: "monitor_only",
             reason: recoveryCause,
           }
+        : isEnvironmentProviderWait
+        ? { type: "manual_retry", reason: recoveryCause, preservesSourceAssignee: true }
         : {
             type: "board_escalation",
             reason: recoveryCause,
@@ -3470,6 +3503,11 @@ export function recoveryService(
   }
 
   async function reconcileActiveRecoveryActions(opts?: { companyId?: string }) {
+    // A blocked subtask that an older release bound to a relative's held
+    // workspace moves to its own workspace and continues (its board escalation
+    // is an active recovery action, so this company-scoped sweep reaches it).
+    const rehome = await rehomeStrandedLegacyWorkspaceTasks(db, deps.enqueueWakeup, { companyId: opts?.companyId })
+      .catch(error => { logger.warn({ err: error }, "Legacy shared-workspace rehome deferred to the next sweep"); return null; });
     const rows = await db
       .select({
         action: issueRecoveryActions,
@@ -3641,8 +3679,10 @@ export function recoveryService(
     // A child or blocker stalled on a board-owned action: tell whoever waits on it, once per stall.
     const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup, { companyId: opts?.companyId });
     // A failed delivery is reported so the recovery worker retries this pass.
+    // The earliest owed wake of a moved legacy subtask is a deadline of this pass too.
+    const retryAts = [stalls.retryAt, rehome?.nextWakeRetryAt].filter((at): at is number => typeof at === "number");
     return { ...result, blockerStallWakes: stalls.woken, blockerStallWakeFailures: stalls.failed,
-      blockerStallRetryAt: stalls.retryAt };
+      blockerStallRetryAt: retryAts.length ? Math.min(...retryAts) : null };
   }
 
   async function escalateDispositionRepair(input: {
@@ -4612,7 +4652,8 @@ export function recoveryService(
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
-          if (await deliverConversationComments(db, issue, deps.enqueueWakeup) === "deferred") {
+          if (await deliverConversationComments(db, issue, deps.enqueueWakeup,
+            { onDeferredDeadline: opts?.onDeferredDeadline }) === "deferred") {
             result.skipped += 1;
             continue;
           }
@@ -4651,6 +4692,10 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (latestRun?.agentId === agentId && isInteractionDeliveryDeniedRun(latestRun)) {
+        result.skipped += 1;
+        continue;
+      }
       // Terminal run/wake rows survive a restart even if finalization never
       // reached the escalation transaction. Retry that idempotent disposition
       // before the participant-only review branch can skip pathless reviews.
@@ -4721,6 +4766,16 @@ export function recoveryService(
         latestRun?.agentId === agentId &&
         latestRun.status === "cancelled" &&
         (latestRun.errorCode === "agent_paused" || isOperatorCancelledRun(latestRun, agentId))
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+      if (
+        agent?.status === "paused" &&
+        agent.companyId === issue.companyId &&
+        agent.lifecycleHolds.includes("manual") &&
+        issue.status === "todo" &&
+        !latestRun
       ) {
         result.skipped += 1;
         continue;
@@ -4810,6 +4865,10 @@ export function recoveryService(
         issue.status === "in_review"
           ? participantLatestRunForRecovery
           : latestRun;
+      if (isInteractionDeliveryDeniedRun(executionRecoverySource)) {
+        result.skipped += 1;
+        continue;
+      }
       if (
         executionRecoverySource?.agentId === agentId &&
         (

@@ -35,6 +35,14 @@ import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import type { ToolRemoteHttp } from "../remote-http.js";
 import { normalizeToolDescriptor, type McpToolDescriptor } from "./descriptors.js";
 import { googleWorkspaceServicesUnavailable, unsupportedToolConnectionTransport } from "./failures.js";
+
+const URL_CREDENTIAL_PARAMETER = /token|secret|passw|api[-_]?key|^key$|auth|signature|^sig$|session|credential/i;
+
+/** Whether a sent URL carries a credential: user info, or a query parameter named like one. Plain settings such as `?region=us` do not. */
+export function urlCarriesCredential(url: URL): boolean {
+  if (url.username || url.password) return true;
+  return [...url.searchParams.keys()].some((key) => URL_CREDENTIAL_PARAMETER.test(key));
+}
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -263,9 +271,23 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
+      // A bare 401 to a request that carried no credential is the server's
+      // answer to "does it need a key?". Treat it like a challenge whose sign-in
+      // Paperclip cannot discover, so the person is asked for a key instead of
+      // seeing a raw HTTP status. A request that carried a credential (stored
+      // secret, header, or a token or user info in the URL) keeps the raw
+      // rejection: that credential needs replacing, not a new key.
+      const sentUrl = new URL(endpoint);
+      const bareCredentialChallenge =
+        !authenticate.trim() &&
+        connection.authKind === "none" &&
+        connection.credentialSecretRefs.length === 0 &&
+        Object.keys(headers).length === 0 &&
+        !urlCarriesCredential(sentUrl);
       if (
         response.status === 401 &&
-        /bearer|oauth|authorization/i.test(authenticate)
+        (/bearer|oauth|authorization/i.test(authenticate) ||
+          bareCredentialChallenge)
       ) {
         const endpoints = await discoverOAuthEndpoints(
           connection,

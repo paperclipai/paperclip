@@ -8,6 +8,7 @@ import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-c
 import { describeFailedAttachment } from "../native-runtime/remote-warm-session-recovery.js";
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
+import { INTERACTION_DELIVERY_DENIED, preparedRunInteractionDeliveryDenied } from "../agent-interaction-delivery.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
 import { environmentService } from "../environments.js";
@@ -250,7 +251,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
   const { providerTraceCapture, nativeRunnerPreparationSpans, attestedQuestionResponseAtMs, attemptStartedAtMs, environmentAcquireStartedAtMs, environmentRealizeEndedAtMs } = input.trace;
   const { executionControl, executionPhaseContext, dispatchResolvedInteractionContinuationWithAtomicGate } = input.control;
-  const dispatchWithTiming: HeartbeatRuntimeExecutionInput["control"]["dispatchResolvedInteractionContinuationWithAtomicGate"] = dispatch => {
+  const dispatchWithTiming: HeartbeatRuntimeExecutionInput["control"]["dispatchResolvedInteractionContinuationWithAtomicGate"] = async dispatch => {
+    if (await preparedRunInteractionDeliveryDenied(db, run)) {
+      await input.services.cancelRunInternal(run.id, "Queued agent input is no longer permitted.", {
+        errorCode: INTERACTION_DELIVERY_DENIED, suppressImmediateRecovery: true,
+      });
+      return { dispatched: false };
+    }
     const providerDispatch = AsyncLocalStorage.bind(dispatch);
     return measureRunPhase("execution.dispatch_admission", () => dispatchResolvedInteractionContinuationWithAtomicGate(providerDispatch));
   };
