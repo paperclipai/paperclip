@@ -4,10 +4,12 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns, issueComments } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, chatEndpoints, heartbeatRunEvents, heartbeatRuns, issueComments,
+  toolApplications, toolConnections } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
-import { requestInterruptedNativeTurnRetry, requestRestartInterruptedTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
+import { registerInterruptedTurnChatRetry, requestInterruptedNativeTurnRetry, requestRestartInterruptedTurnRetry }
+  from "./heartbeat/restart-interrupted-turn.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { reconcileRetainedWorkspaces } from "./workspace-recovery.js";
 import { useWorkspaceRecoveryFixture, action, db, run, seed } from "./__tests__/workspace-recovery-fixture.js";
@@ -167,6 +169,44 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
     expect((await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
       eq(agentWakeupRequests.reason, "task_retry")))).filter(retry => retry.id !== hookIntent.id)).toHaveLength(0);
   }, 30_000);
+
+  // The staging chat task runs through a connected Slack conversation, whose
+  // endpoint restricts external execution: its Retry goes through the chat service.
+  describe("an external chat message in a connected conversation", () => {
+    async function connectConversation(f: { companyId: string; issueId: string; agentId: string }) {
+      const [application] = await db.insert(toolApplications).values({ companyId: f.companyId, name: "Slack", type: "chat" }).returning();
+      const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
+        name: "Slack", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
+      const [endpoint] = await db.insert(chatEndpoints).values({ companyId: f.companyId, connectionId: connection.id,
+        provider: "slack", publicId: randomUUID(), assignedAgentId: f.agentId, status: "active" }).returning();
+      expect(endpoint.externalExecutionPolicy).toBe("restricted");
+      await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: endpoint.id, issueId: f.issueId,
+        externalConversationId: "channel", externalThreadId: randomUUID(), externalLabel: "#work", state: "waiting" });
+    }
+
+    it("continues through the chat service's Retry", async () => {
+      const f = await runnerLostMidTurn({ wake: "system_chat" });
+      await connectConversation(f);
+      const actionId = randomUUID();
+      const prepared: Array<{ failedRunId: string; initiatedByUserId: string }> = [];
+      registerInterruptedTurnChatRetry(async (_tx, scope) => { prepared.push(scope); return { actionId }; });
+      try {
+        const outcome = await requestRestartInterruptedTurnRetry(db, f.claim);
+        expect(outcome).toEqual({ requested: true, requestId: expect.any(String) });
+        expect(prepared).toEqual([expect.objectContaining({ failedRunId: f.runId, initiatedByUserId: "local-board" })]);
+        const [retry] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,
+          (outcome as { requestId: string }).requestId));
+        expect(retry.payload).toMatchObject({ taskRetry: { chatActionId: actionId } });
+        expect(await unknownOutcomeEvents(f.runId)).toHaveLength(1);
+      } finally { registerInterruptedTurnChatRetry(undefined); }
+    }, 30_000);
+
+    it("keeps the visible Retry when the chat service is not available", async () => {
+      const f = await runnerLostMidTurn({ wake: "system_chat" });
+      await connectConversation(f);
+      expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: false, reason: "retry_refused" });
+    }, 30_000);
+  });
 
   it.each([
     { title: "the refusal did not prove the Runner process gone", wake: "user" as const, refusal: "process_identity_changed" as const,

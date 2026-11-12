@@ -108,6 +108,15 @@ async function chainUsedAutomaticRetry(db: Db, run: { companyId: string; id: str
   return visited.size >= MAX_RETRY_CHAIN;
 }
 
+type PrepareChatRetry = NonNullable<Parameters<typeof requestTaskRetry>[0]["prepareChatRetry"]>;
+
+/** A connected conversation's Retry goes through the chat service, which the
+ * app registers at startup. Without it, a connected task keeps its Retry. */
+let interruptedTurnChatRetry: PrepareChatRetry | undefined;
+export function registerInterruptedTurnChatRetry(prepare: PrepareChatRetry | undefined) {
+  interruptedTurnChatRetry = prepare;
+}
+
 /** The chat or comment message that woke the run is still on the task and was
  * not written by a run, so the run still owes it an answer. */
 async function wakeMessageStillOwed(db: Db, companyId: string, issueId: string, reason: string | null | undefined,
@@ -212,7 +221,8 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
   try {
     const receipt = await requestTaskRetry({ db, companyId: run.companyId, issueId, actorId,
       actorSource: actorId === "local-board" ? "local_implicit" : "session",
-      idempotencyKey: `${RESTART_RETRY_KEY_PREFIX}${run.id}`, observedRunId: run.id, initiatedBy: "restart_recovery" });
+      idempotencyKey: `${RESTART_RETRY_KEY_PREFIX}${run.id}`, observedRunId: run.id, initiatedBy: "restart_recovery",
+      prepareChatRetry: interruptedTurnChatRetry });
     return receipt.accepted && receipt.requestId
       ? { requested: true, requestId: receipt.requestId } : { requested: false, reason: "retry_stale" };
   } catch (error) {
