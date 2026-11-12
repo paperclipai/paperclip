@@ -19928,8 +19928,8 @@ export function issueRoutes(
           issue.companyId,
           req.body.body,
         ));
-      const reopenRequested = req.body.reopen === true;
-      const resumeRequested = req.body.resume === true;
+      const reopenRequested = req.body.reopen === true && !isConversation(issue);
+      const resumeRequested = req.body.resume === true && !isConversation(issue);
       const interruptRequested = req.body.interrupt === true;
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";

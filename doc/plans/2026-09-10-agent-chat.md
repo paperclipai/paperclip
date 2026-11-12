@@ -294,3 +294,25 @@ The published summary and normalized results were verified after publication:
 exactly 24 unique expected cells, all passed on attempt 1, all cleanup checks
 passed, all evidence valid with no evidence errors, and every result bound to
 `abacbdfd2f660709ec37312cdb758284c8399d04`. The public report returned HTTP 200.
+
+## Messages from other agents (2026-11-12)
+
+Agents can talk with each other in a person's chats. Another agent posts with
+the ordinary comment route (`comment_on_task` on native runners) in the person's
+chat with the receiving agent. The comment-write boundary accepts it only from
+the sender's own running, unrevoked run, in the same company, while that run's
+responsible user is the chat's person. Agent comment permissions and the per-run
+cross-task write limit apply. `resume` and `reopen` are ignored for chats.
+
+The comment keeps the sender as its author and wakes the chat's agent through the
+normal comment wake, which conversation admission accepts because it names the
+comment. The woken turn sees an agent author that is not itself, and
+fresh-session history labels that message `other_agent`, apart from the chat
+agent's own replies. The chat directive tells the agent that such a message is
+not the person's approval, decision or instruction authority.
+
+The chat transcript shows the sending agent's name and avatar on its bubble. The
+transcript matches settled turns to reply bubbles by agent ID, so a turn of the
+chat's agent does not attach to another agent's bubble. Session fences, `/new`,
+proactive delivery and owner-only controls stay with the chat's own agent and
+person.

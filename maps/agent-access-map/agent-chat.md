@@ -47,8 +47,11 @@ run and atomically resolves the same per-agent/human conversation. This operatio
 is available independently of generic API tools, only to active standard task
 runs with standard credentials. Skill-test and task-bridge credentials, persisted
 skill-test runs, Ask/planning/review/watchdog, stale/stopped runs, revoked recipients and
-restricted source tasks are denied. The shared comment boundary rejects other
-agents and execution-task writes that bypass this path. Comment/audit persistence
+restricted source tasks are denied. The shared comment boundary rejects execution-task
+writes by the chat's own agent that bypass this path. Another agent may post in the
+chat through the ordinary comment route only from its own running run while that run
+acts for the chat's person; agent comment permissions apply and the chat's agent wakes
+to answer in its chat. Comment/audit persistence
 retains real agent/run attribution and server-owned source provenance.
 Credential scope, responsible human and external authorizer remain part of access
 checks. API keys are rechecked under a row lock before the delivery commits.
