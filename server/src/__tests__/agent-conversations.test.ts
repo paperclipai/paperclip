@@ -1005,7 +1005,9 @@ describe("chat prompt policy", () => {
   // instead of sending the person to the board-only company-creation flow.
   it("keeps the missing-name rule behind the board-only company-creation boundary", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("This name rule is for work you create yourself. It never comes before a board-only boundary");
-    expect(AGENT_CHAT_DIRECTIVE).toContain("tell the person to create it at [Create organization](/onboarding)");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Otherwise link [Create organization](/onboarding), which opens the new-organization wizard");
+    // Paperclip Cloud creates organizations in the Cloud portfolio; a bare /onboarding there opens the existing company's agent step.
+    expect(AGENT_CHAT_DIRECTIVE).toContain("when its response has a cloud field, this is a Paperclip Cloud stack, organizations are created in the person's Paperclip Cloud portfolio rather than in this app, so say that and do not link /onboarding");
     expect(AGENT_CHAT_DIRECTIVE).toContain("/onboarding takes no company prefix; /<prefix>/onboarding only adds an agent to this company");
     const nameRule = AGENT_CHAT_DIRECTIVE.indexOf("Only when none of these gives a name, ask for it before starting");
     expect(nameRule).toBeGreaterThan(-1);
