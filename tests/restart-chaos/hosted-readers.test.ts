@@ -105,7 +105,9 @@ describe("hosted API readers", () => {
       apiContinuity: { requests: 0, failures: 0, slow: 0, longestGapMs: 0, longestGap: null }, stopObserver: async () => {}, observedClicks: () => new Map(), lastReleaseAt: Date.now() - 10_000,
       settleMs: 5, drainMs: 5, dir, cancelled: () => false, record: () => {}, pollMs: 5 });
     expect(writes.filter(write => write.route.endsWith("/retry"))).toEqual([{ method: "POST", route: "/api/issues/i2/retry", body: { idempotencyKey: expect.any(String), observedRunId: "r2" } }]);
-    expect(graded.headline).toBe("1 / 3 tasks completed without human action");
+    expect(graded.headline).toBe("1 / 3 tasks completed hands-off");
+    expect(graded.markdown.split("\n").slice(0, 4)).toEqual(["1 / 3 tasks completed hands-off", "Retry banner shown: 1 (cleared by itself: 0)",
+      "Retry worked / clicked: 1 / 1", "Assigned-work invariant: not available on this build (HTTP no answer)."]);
     expect(graded.pass).toBe(false);
     const json = JSON.parse(await readFile(path.join(dir, "hosted-release-swap.json"), "utf8"));
     expect(json.result.byLabel).toEqual({ "needed Retry (click worked)": 1, "nothing pending": 1 });

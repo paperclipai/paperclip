@@ -16,6 +16,20 @@ export interface HostedTaskPlan {
   task: StagingMixTask;
 }
 
+export interface RetryBanner {
+  firstShownAt: number;
+  shown: boolean;
+  clearedAt: number | null;
+  clearedByItself: boolean;
+}
+
+export function trackBanner(banner: RetryBanner | null, offered: boolean, now: number): { banner: RetryBanner | null; cleared: boolean } {
+  if (offered && !banner) return { banner: { firstShownAt: now, shown: true, clearedAt: null, clearedByItself: false }, cleared: false };
+  if (offered && banner && !banner.shown) return { banner: { ...banner, shown: true, clearedAt: null, clearedByItself: false }, cleared: false };
+  if (!offered && banner?.shown) return { banner: { ...banner, shown: false, clearedAt: now, clearedByItself: true }, cleared: true };
+  return { banner, cleared: false };
+}
+
 export interface HostedTaskRecord {
   plan: HostedTaskPlan;
   issueId: string | null;
@@ -27,6 +41,7 @@ export interface HostedTaskRecord {
   followUp: { at: number; commentId: string | null; error: string | null } | null;
   retryClicks: RetryClick[];
   retriedRuns: string[];
+  banner: RetryBanner | null;
   doneAt: number | null;
 }
 
@@ -59,7 +74,7 @@ export class HostedWorkload {
 
   constructor(private readonly input: { api: WorkloadApi; label: string; companyId: string; projectId: string | null;
     agents: Partial<Record<AdapterId, { id: string; name: string }>>; plans: HostedTaskPlan[]; concurrency: number;
-    record: (kind: string, data: Record<string, unknown>) => void }) {}
+    record: (kind: string, data: Record<string, unknown>) => void; retryDuringWave?: boolean }) {}
 
   get remaining(): number { return this.input.plans.length - this.next; }
   get launched(): number { return this.next; }
@@ -76,7 +91,7 @@ export class HostedWorkload {
       launched += 1;
       const agent = this.input.agents[plan.adapter]!;
       const record: HostedTaskRecord = { plan, issueId: null, identifier: null, createdAt: null, createError: null, status: "todo", lastLiveAt: null,
-        followUp: null, retryClicks: [], retriedRuns: [], doneAt: null };
+        followUp: null, retryClicks: [], retriedRuns: [], banner: null, doneAt: null };
       this.records.push(record);
       try {
         const issue = await this.input.api.post<{ id: string; identifier?: string }>(`/api/companies/${this.input.companyId}/issues`, {
@@ -122,6 +137,13 @@ export class HostedWorkload {
       record.followUp = followUp;
       this.input.record("hosted_follow_up", { issueId: record.issueId, commentId: followUp.commentId, error: followUp.error });
     }
+    const offered = record.status !== "done" && issue.interruption?.canRetry === true && !issue.interruption?.retryWait;
+    const change = trackBanner(record.banner, offered, now);
+    if (change.banner !== record.banner) {
+      record.banner = change.cleared && record.retryClicks.length ? { ...change.banner!, clearedByItself: false } : change.banner;
+      this.input.record(change.cleared ? "hosted_retry_banner_cleared" : "hosted_retry_banner_shown", { issueId: record.issueId, observedRunId: issue.interruption?.observedRunId ?? null });
+    }
+    if (!this.input.retryDuringWave) return;
     const observedRunId = issue.interruption?.observedRunId ? String(issue.interruption.observedRunId) : null;
     if (record.status !== "done" && issue.interruption?.canRetry === true && !issue.interruption?.retryWait && !live && !record.retriedRuns.includes(observedRunId ?? "")) {
       record.retriedRuns.push(observedRunId ?? "");

@@ -104,6 +104,7 @@ function view(issue: Json): Omit<GradeTaskInput, "issueId" | "identifier" | "tit
   return {
     status: String(issue.status),
     scheduledRetry: Boolean(issue.scheduledRetry),
+    scheduledRetryAt: issue.scheduledRetry?.scheduledRetryAt ? Date.parse(String(issue.scheduledRetry.scheduledRetryAt)) : null,
     interruption: interruption ? { state: String(interruption.state), canRetry: interruption.canRetry === true, retryWait: Boolean(interruption.retryWait),
       userAction: text(interruption.userAction), responsibility: text(interruption.responsibility), providerFailureCategory: text(interruption.providerFailure?.category) } : null,
     activeRecoveryOwner: text(issue.activeRecoveryAction?.ownerType),

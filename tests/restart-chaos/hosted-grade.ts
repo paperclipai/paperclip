@@ -3,6 +3,8 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { HostedApi } from "./hosted-api.js";
+import { trackBanner, type RetryBanner } from "./hosted-workload.js";
+import { handsOffSummary, invariantLine, readAssignedWorkInvariant } from "./hosted-handsoff.js";
 import { releaseMarkdown, type ContinuityReport, type DetectedRelease } from "./hosted-release.js";
 import {
   duplicateAgentComments, duplicateChildren, failureChain, firstEventAfter, gradeRuns, hostedCompanyRuns, hostedIssues, issueViewFields,
@@ -24,7 +26,9 @@ export interface HostedGradeInput {
   health: ContinuityReport;
   apiContinuity: ContinuityReport;
   stopObserver: () => Promise<void>;
+  agentNames?: string[];
   observedClicks: () => ReadonlyMap<string, RetryClick[]>;
+  banners?: () => ReadonlyMap<string, RetryBanner>;
   lastReleaseAt: number;
   settleMs: number;
   drainMs: number;
@@ -73,6 +77,13 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   let runs = await hostedCompanyRuns(api, companyId, agentIds);
   let issues = startedIssues(await hostedIssues(api, companyId, agentIds), runs);
   await readViews(issues.map(issue => issue.id));
+  const banners = new Map<string, RetryBanner>(input.banners?.() ?? []);
+  for (const issue of issues) {
+    const view = views.get(issue.id)!;
+    const offered = view.status !== "done" && view.interruption?.canRetry === true && !view.interruption?.retryWait;
+    const next = trackBanner(banners.get(issue.id) ?? null, offered, now()).banner;
+    if (next) banners.set(issue.id, next);
+  }
   const retried: string[] = [];
   for (const issue of issues) {
     const current = views.get(issue.id)!;
@@ -126,12 +137,18 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const metrics = swapMetrics(windows, facts, firstEvents, waveEnd);
   const duplicates = { overlappingRuns: overlappingRuns(facts, waveEnd), doubleExecutors: [] as string[],
     duplicateComments: await duplicateAgentComments(api, issues.map(issue => issue.id)), duplicateChildren: duplicateChildren(allIssues) };
-  const result = summarizeGrades(grades, unreadable.length);
+  const result = summarizeGrades(grades, unreadable.length, drained.reason);
+  const handsOff = handsOffSummary(result, issues.map(issue => issue.id), banners);
+  const invariant = await readAssignedWorkInvariant(api, companyId, { identifiers: new Set(issues.flatMap(issue => issue.identifier ? [issue.identifier] : [])),
+    agentNames: new Set(input.agentNames ?? []) });
   const failed = runs.filter(run => ["failed", "timed_out", "interrupted"].includes(run.status));
   const failedRuns = [];
   for (const run of failed) failedRuns.push({ ...run, release: [...windows].reverse().find(window => (run.finishedAt ?? 0) >= window.requestedAt)?.index ?? null,
     chain: await failureChain(api, run.runId) });
   const markdown = [
+    ...handsOff.lines,
+    invariantLine(invariant),
+    "",
     releaseSwapMarkdown(result, metrics, windows.map(() => null), duplicates, grades).trimEnd(),
     "",
     "Hosted mode: releases came from the instance's own deploys, detected by polling /api/health. Lost-while-old-alive and late/preparation probes are not measured (see Unavailable).",
@@ -141,12 +158,12 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     ...UNAVAILABLE_OVER_API.map(item => `- ${item}`),
     "",
   ].join("\n");
-  await writeFile(path.join(input.dir, "hosted-release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.hosted-release-swap/v1", result,
+  await writeFile(path.join(input.dir, "hosted-release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.hosted-release-swap/v1", result, handsOff: { ...handsOff, banners: Object.fromEntries(banners) }, invariant,
     releases: input.releases, health: input.health, api: input.apiContinuity, metrics, duplicates, failedRuns, grades, drained,
     unavailable: UNAVAILABLE_OVER_API }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(path.join(input.dir, "SUMMARY.md"), markdown, { mode: 0o600 });
   input.record("hosted_graded", { headline: result.headline, byVerdict: result.byVerdict, byLabel: result.byLabel, retry: result.retry,
     failedPerRelease: metrics.map(metric => metric.failedRuns.length) });
-  return { headline: result.headline, markdown,
+  return { headline: handsOff.lines[0]!, markdown,
     pass: result.uncollected === 0 && result.stillRunning === 0 && result.started > 0 && result.completedWithoutHuman === result.started };
 }

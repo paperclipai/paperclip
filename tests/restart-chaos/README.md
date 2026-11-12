@@ -26,7 +26,7 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 `--faults K0` plans cells with no fault, for workloads whose shape is the fault (W2, below). `--fail-recovery-step`,
-`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home`, `--ephemeral-server`, `--runner-bind-fault`, `--release-swap` and `--workload staging-mix` are described in their own sections.
+`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home`, `--ephemeral-server`, `--runner-bind-fault`, `--workload staging-mix` and `--release-swap` are described in their own sections.
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 `--matrix` crosses every selected workload with every fault kind (below), and `--server-from <dir>`
@@ -579,7 +579,7 @@ so state saved during swap N is resumed after swaps N+1 and N+2.
 - **The outgoing server starts runs** (`release-swap-driver.ts`, `release-swap-setup.ts`). The harness hires one
   probe agent per adapter, a copy of the seeded agent with its own concurrency (10 locally, 4 on Daytona), so
   probes never queue behind the workload. It creates small probe tasks (the A1 brief) for it through A's own port,
-  not the edge: one when B is spawned, then one every 2 s locally (20 s on Daytona, at most 40 or 8) and one when B
+  not the edge: one when B is spawned, then one every 3 s locally (20 s on Daytona, at most 6 or 8) and one when B
   enters its startup recovery pass (`/api/ready` reports `recovering`) for as long as B boots, while the run sampler
   reads every 500 ms, and one timed so that its run
   starts about 20 s before A's SIGTERM (the wake goes out 20 s plus the swap's measured wake-to-start latency
@@ -647,15 +647,15 @@ identical agent comments and repeated subtask titles. The wave fails unless ever
 set -a; source ~/.secrets; set +a
 H=<name>.staging.paperclip.app
 # Read-only: watch one release of the instance (GET /api/health every 2 s) and report its shape. No writes.
-node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --hosted-base-url https://$H --hosted-allow $H --hosted-observe-only
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/hosted.ts --hosted-base-url https://$H --hosted-allow $H --hosted-observe-only
 # Smoke: 2 tasks, no release wait, 1-minute settle, then cleanup.
-node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --hosted-base-url https://$H --hosted-allow $H \
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/hosted.ts --hosted-base-url https://$H --hosted-allow $H \
   --hosted-releases 0 --hosted-tasks 2 --hosted-turn-minutes 3 --hosted-label rc-hosted-smoke1
 # A run across 3 real releases at 5 concurrent (default), then the same at 15.
-node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --hosted-base-url https://$H --hosted-allow $H --hosted-releases 3 --hosted-label rc-hosted-r3c5
-node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --hosted-base-url https://$H --hosted-allow $H --hosted-releases 3 --hosted-concurrency 15 --hosted-label rc-hosted-r3c15
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/hosted.ts --hosted-base-url https://$H --hosted-allow $H --hosted-releases 3 --hosted-label rc-hosted-r3c5
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/hosted.ts --hosted-base-url https://$H --hosted-allow $H --hosted-releases 3 --hosted-concurrency 15 --hosted-label rc-hosted-r3c15
 # Remove everything one run created (also run automatically at the end of every run unless --hosted-keep).
-node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --hosted-base-url https://$H --hosted-allow $H --hosted-cleanup-only --hosted-label rc-hosted-r3c5
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/hosted.ts --hosted-base-url https://$H --hosted-allow $H --hosted-cleanup-only --hosted-label rc-hosted-r3c5
 ```
 
 Hosted mode runs the release-swap proof against a real hosted instance that takes automatic releases, instead of
@@ -690,8 +690,9 @@ the ids.
 the seeded turn length (`--hosted-turn-minutes`, default 5–15), parents with two subtasks (`--hosted-subtask-share`,
 default 30%), and board follow-up comments during a run (`--hosted-follow-up-share`, default 50%). The harness keeps
 `--hosted-concurrency` tasks (default 5, at most 30) in flight. A task stops counting as in flight when it is done,
-cancelled, blocked or in review, or has had no live run for 10 minutes. A Retry the board offers during the run is
-clicked at once and counted for that task. Tasks keep arriving until the `--hosted-releases`-th release (default 3)
+cancelled, blocked or in review, or has had no live run for 10 minutes. Grading is hands-off: the harness never
+clicks Retry during the wave or the settle period. It records, per task, when a Retry banner first showed and whether
+it cleared by itself. `--hosted-retry-during-wave` restores the old behavior of clicking an offered Retry at once. Tasks keep arriving until the `--hosted-releases`-th release (default 3)
 is detected, then the run waits for it to settle. `--hosted-releases 0` runs a fixed batch (`--hosted-tasks`) with no
 release wait, for a smoke. `--hosted-max-hours` (default 8) bounds the wait.
 
@@ -711,8 +712,14 @@ before the new build answered. `--hosted-observe-only` does only this, read-only
 
 **Grade** (`hosted-grade.ts`, `hosted-readers.ts`). After the last release, the settle period (`--hosted-settle-minutes`,
 default 15) and a bounded drain (`--hosted-drain-minutes`), every started task of the run's agents is graded once
-with `gradeReleaseSwapTask` and `summarizeGrades` from `release-swap-grade.ts`, the same module as RS1. The first line
-of `SUMMARY.md` is the one number: `<pass> / <started> tasks completed without human action`. Each failing task
+with `gradeReleaseSwapTask` and `summarizeGrades` from `release-swap-grade.ts`, the same module as RS1. After the
+settle period the harness clicks Retry once on each task that is not done and offers it, and records whether it
+worked. A task that completed with no click passes. `SUMMARY.md` starts with three numbers:
+`<pass> / <started> tasks completed hands-off`, `Retry banner shown: <n>` and `Retry worked / clicked: <w> / <c>`.
+The next line gives the instance's assigned-work invariant (`GET /api/companies/:id/assigned-work-invariant`), read
+once: the company's violation counts by clause and agents with stalled slots, and the sampled violations and stalled
+slots that belong to this run. Builds without the endpoint answer 404, and the line says the invariant is not
+available. Each failing task
 carries one label: `nothing pending`, `blocked for a non-person reason` or `needed Retry` (with whether the click
 worked). Retry is clicked through the API where the board offers it, as in RS1. Everything RS1 reads from Postgres
 comes from the API here: runs from `/api/companies/:id/heartbeat-runs`, tasks from the issue list filtered to the
@@ -1891,7 +1898,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `daytona-runner-logs.ts` | K15 on Daytona: read-only capture of each wave sandbox's Runner stderr log, identity, state and process, memory and OOM evidence. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 | `staging-mix.ts`, `staging-mix-run.ts` | `--workload staging-mix`: options, the seeded plan (adapters, arrivals, fault slots), the SM task and its oracle, the follow-up and Retry step with the overlap probe, the arrival gate and the resource guard. |
-| `hosted-*.ts` | Hosted mode: target guard, authenticated API client and health probe, release detection, API-backed grade readers, setup and cleanup, workload driver and entry point. |
+| `hosted.ts`, `hosted-*.ts` | Hosted mode (entry point `hosted.ts`): target guard, authenticated API client and health probe, release detection, API-backed grade readers, setup and cleanup, workload driver and entry point. |
 
 ## Output (gitignored)
 

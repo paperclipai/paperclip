@@ -44,7 +44,7 @@ import { withT1CrossingCheck } from "./workloads.js";
 import { parseRecoveryStepReceipts, withRecoveryStepCheck } from "./recovery-step-faults.js";
 import { captureWaveRunnerLogs, executeInWaveSandboxes } from "./daytona-runner-logs.js";
 import { isClassRFault, killedPidsFromOutput, providerKillCommand, watchLabels, withClassRCheck, type ProviderKillRecord } from "./class-r.js";
-import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
+import { TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { planStagingMixWave } from "./staging-mix.js";
@@ -54,10 +54,7 @@ import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
-import { ReleaseSwapRun } from "./release-swap-schedule.js";
-import { startReleaseSwap } from "./release-swap-setup.js";
-import { finishReleaseSwap } from "./release-swap-finish.js";
-import { isHostedCommand } from "./hosted-config.js";
+import { ReleaseSwapWave, stormRunFor } from "./release-swap-setup.js";
 import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
 import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
@@ -312,8 +309,6 @@ async function main(): Promise<number> {
   let speedSection: string | null = null;
   let storageSection: string | null = null;
   let warmShutdownSection: string | null = null;
-  let releaseSwapSection: string | null = null;
-  let releaseSwapDb: ReturnType<typeof createDb> | null = null;
   let daytonaCleanup: WarmShutdownCleanup | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
@@ -468,11 +463,7 @@ async function main(): Promise<number> {
         };
       } });
     spendTarget = { api, companyId: lab.companyId };
-    if (plan.options.releaseSwap) releaseSwapDb = createDb(waveDatabaseUrl());
-    const releaseSwap = plan.options.releaseSwap && releaseSwapDb ? await startReleaseSwap({ options: plan.options.releaseSwap, env: plan.options.env,
-      adapters: plan.options.adapters, lab, api, db: releaseSwapDb, timeline, temporaryRoot: supervisor.paths.temporaryRoot,
-      freshHome: plan.options.k15FreshHome === true, cancelled: () => interrupted }) : null;
-    supervisor.swapHook = releaseSwap?.hook ?? null;
+    const releaseSwap = plan.options.releaseSwap ? await ReleaseSwapWave.start({ plan, lab, api, timeline, supervisor, databaseUrl: waveDatabaseUrl(), cancelled: () => interrupted }) : null;
     // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
     if (plan.options.dbPressure) {
       pressure = new RunRowPressure(waveDatabaseUrl(), lab.companyId, plan.options.dbPressure).start();
@@ -490,8 +481,7 @@ async function main(): Promise<number> {
     const active: TaskObserver[] = [];
     const lastPoll = new Map<TaskObserver, number>();
     let lastDoneAt = Date.now();
-    // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
-    const storm = plan.storm ? (plan.options.releaseSwap ? new ReleaseSwapRun(plan.storm, Date.now()) : new StormRun(plan.storm, Date.now())) : null;
+    const storm = stormRunFor(plan, Date.now());
     if (storageProxy && (plan.options.storageWindows?.length || plan.options.storageFaults?.length)) {
       const windows = plan.options.storageWindows ?? planStorageFaults({ kinds: plan.options.storageFaults!, seed: plan.seed,
         spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
@@ -662,12 +652,12 @@ async function main(): Promise<number> {
         }
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (!crashPoint && active.length < plan.options.concurrency && pending.length && (supervisor.serverReady && !supervisor.faultInProgress || releaseSwap?.launchOpen === true) && !storageTrigger?.busy && !nativeTrigger?.busy
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && (supervisor.serverReady && !supervisor.faultInProgress || releaseSwap?.driver.launchOpen === true) && !storageTrigger?.busy && !nativeTrigger?.busy
         && (!storm || storm.mayLaunch(Date.now())) && (!mix || mix.mayLaunch(Date.now(), pending[0]!.plan))
         // `--matrix`: no-fault baselines never share the server with a fault cell.
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
-        launched.push(next);
+        launched.push(next); releaseSwap?.noteLaunch(next);
         launching = next.launch().finally(() => { launching = null; });
         await launching;
         if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
@@ -779,14 +769,7 @@ async function main(): Promise<number> {
       for (const observer of launched) observer.markUnfinished();
     }
 
-    if (releaseSwap && releaseSwapDb) {
-      const graded = await finishReleaseSwap({ driver: releaseSwap, settleMs: plan.options.releaseSwap!.settleMs, companyId: lab.companyId, api, db: releaseSwapDb, board,
-        drainCapMs: plan.options.releaseSwap!.drainMs ?? Math.max(0, ...observers.map(observer => observer.definition.budgetMs)) + plan.options.releaseSwap!.settleMs,
-        timeline: timeline.entries, issueIdForTask: new Map(launched.flatMap(observer => observer.record.issueId ? [[observer.plan.taskId, observer.record.issueId] as const] : [])),
-        serverWindows: supervisor.serverWindows, waveDir, cancelled: () => interrupted, record: (kind, data) => timeline.add(kind, data) });
-      releaseSwapSection = graded.markdown;
-      if (!graded.pass) anyFailure = true;
-    }
+    if (releaseSwap && !(await releaseSwap.finish({ board, observers, launched, waveDir }))) anyFailure = true;
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
     if (quietFor < QUIET_BEFORE_SWEEP_MS) await delay(QUIET_BEFORE_SWEEP_MS - quietFor);
@@ -924,7 +907,6 @@ async function main(): Promise<number> {
     sandboxWatchStopped = true;
     await mix?.stop().catch(() => undefined);
     await stopPressure().catch(error => timeline.add("db_pressure_stop_failed", { error: String(error) }));
-    await releaseSwapDb?.$client.end({ timeout: 5 }).catch(() => undefined);
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
     await board?.close().catch(() => undefined);
@@ -1005,7 +987,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), [releaseSwapSection, summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [await readFile(path.join(waveDir, "release-swap-summary.md"), "utf8").catch(() => null), summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }
@@ -1015,5 +997,4 @@ async function main(): Promise<number> {
   return anyFailure ? 1 : 0;
 }
 
-process.exit(await (isHostedCommand(process.argv.slice(2)) ? import("./hosted-main.js").then(hosted => hosted.runHosted(process.argv.slice(2))) : main())
-  .catch(error => { console.error(error); return 2; }));
+process.exit(await main().catch(error => { console.error(error); return 2; }));

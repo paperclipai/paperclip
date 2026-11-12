@@ -40,7 +40,7 @@ describe("hosted run control", () => {
       stopObserver: async () => { stopped = true; record.retryClicks.push({ at: 0, accepted: true, via: "observer" }); },
       observedClicks: () => observedClicks([record]), lastReleaseAt: Date.now() - 1_000, settleMs: 5, drainMs: 5, dir, cancelled: () => false, record: () => {}, pollMs: 5 });
     expect(stopped).toBe(true);
-    expect(graded.headline).toBe("0 / 1 tasks completed without human action");
+    expect(graded.headline).toBe("0 / 1 tasks completed hands-off");
   });
 
   it("stops background polling promptly and never polls after stop", async () => {

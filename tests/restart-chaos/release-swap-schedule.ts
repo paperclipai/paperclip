@@ -134,6 +134,12 @@ export class ReleaseSwapRun {
   }
 
   exhaustedEarly(_now: number): boolean {
-    return !this.ended;
+    return !this.complete;
   }
+}
+
+export const OVERLAP_LAUNCH_READY_MARGIN_MS = 30_000;
+
+export function overlapLaunchExtensionMs(launchedAt: number, stoppedAt: number): number {
+  return Math.max(0, stoppedAt - launchedAt) + OVERLAP_LAUNCH_READY_MARGIN_MS;
 }

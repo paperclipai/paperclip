@@ -43,6 +43,7 @@ export interface GradeTaskInput {
   retryClicks: RetryClick[];
   now?: number;
   staleAfterMs?: number;
+  scheduledRetryAt?: number | null;
 }
 
 export type FailureLabel = "nothing pending" | "blocked for a non-person reason" | "needed Retry";
@@ -100,13 +101,22 @@ function liveOwner(task: GradeTaskInput): string | null {
   return null;
 }
 
+function retryPending(task: GradeTaskInput): boolean {
+  const stale = new Set(staleRuns(task).map(run => run.runId));
+  if (task.runs.some(run => LIVE_RUN.has(run.status) && !stale.has(run.runId))) return true;
+  if (task.queuedWakes > 0) return true;
+  if (task.scheduledRetry && (task.scheduledRetryAt == null || task.now === undefined || task.scheduledRetryAt > task.now)) return true;
+  const interruption = task.interruption;
+  return Boolean(interruption && (interruption.state === "working" || interruption.state === "retry_scheduled" || interruption.retryWait));
+}
+
 function retryOutcome(task: GradeTaskInput): TaskGrade["retry"] {
   if (!task.retryClicks.length) return null;
   const accepted = task.retryClicks.filter(click => click.accepted === true);
   const first = Math.min(...accepted.map(click => click.at));
   const worked = accepted.length === 0 ? false
     : task.status === "done" || task.runs.some(run => SUCCEEDED_RUN.has(run.status) && (run.createdAt ?? 0) >= first)
-      ? true : liveOwner(task) ? null : false;
+      ? true : retryPending(task) ? null : false;
   return { clicks: task.retryClicks.length, accepted: accepted.length, worked };
 }
 
