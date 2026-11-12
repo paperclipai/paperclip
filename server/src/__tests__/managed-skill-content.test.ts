@@ -383,6 +383,8 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     const selected = await materializeSelectedSkills(writePaperclipSkillSyncPreference({}, [{ key: skill.key, versionId: skill.currentVersionId }]), entries, false);
     const context = { ...nativeRuntimeContextFixture(), skills: selected };
     const binding = { companyId, agentId: agent!.id, runId: run!.id };
+    // A run saved before skill selections were recorded has no proof that preparation checked access.
+    const [older] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running", contextSnapshot: {} }).returning();
     const originalHome = process.env.PAPERCLIP_HOME!;
     // A newly deployed server: its skill cache is empty.
     process.env.PAPERCLIP_HOME = path.join(root, `reconnect-${randomUUID()}`);
@@ -399,6 +401,7 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     };
     let staging: Promise<unknown> | undefined;
     let fresh: Promise<unknown> | undefined;
+    let unpinned: Promise<unknown> | undefined;
     try {
       const reconnect = await settledWithin(prepareRuntimeContextSource(db, binding, context, { deferUntilStaged: true }), 2_000);
       expect(reconnect, "A live Runner reconnect must not wait on the skill cache").not.toBeNull();
@@ -408,6 +411,8 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       // Staging a relaunch, and every other start, still rehydrate under the cache lock.
       expect(await settledWithin(staging, 200)).toBeNull();
       expect(await settledWithin(fresh, 200)).toBeNull();
+      unpinned = prepareRuntimeContextSource(db, { ...binding, runId: older!.id }, context, { deferUntilStaged: true });
+      expect(await settledWithin(unpinned, 200), "An older reconnect still rehydrates and checks access first").toBeNull();
     } finally {
       release();
       await holder;
@@ -417,7 +422,10 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     expect(await fs.readFile(path.join(restaged.skills[0]!.bundle.rootPath, "SKILL.md"), "utf8")).toBe("# reconnect bytes");
     const started = await fresh as Awaited<ReturnType<typeof prepareRuntimeContextSource>>;
     expect(started.described.skills[0]!.bundle.digest).toBe(selected[0]!.bundle.digest);
+    expect((await unpinned as Awaited<ReturnType<typeof prepareRuntimeContextSource>>).described.skills[0]!.bundle.rootPath)
+      .not.toBe(selected[0]!.bundle.rootPath);
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, older!.id));
     process.env.PAPERCLIP_HOME = originalHome;
   });
 

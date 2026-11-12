@@ -302,7 +302,18 @@ export async function prepareRuntimeContextSource(
   context: NativeRuntimeContextSnapshot,
   options: { deferUntilStaged: boolean },
 ) {
-  let staged = options.deferUntilStaged ? null : await rehydratePinnedSkillAssets(db, binding, context);
+  // Defer only when preparation already checked access to every admitted skill:
+  // each one is pinned to its exact version in the run's saved selection.
+  const pinned = options.deferUntilStaged && context.skills.length > 0
+    ? await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.agentId, binding.agentId)))
+      .then(([run]) => {
+        const pins = run?.contextSnapshot?.skillVersions;
+        return Boolean(pins && typeof pins === "object" && !Array.isArray(pins)
+          && context.skills.every(skill => skill.versionId && (pins as Record<string, unknown>)[skill.key] === skill.versionId));
+      })
+    : options.deferUntilStaged;
+  let staged = pinned ? null : await rehydratePinnedSkillAssets(db, binding, context);
   return {
     described: staged ?? context,
     forStaging: async () => (staged ??= await rehydratePinnedSkillAssets(db, binding, context)),

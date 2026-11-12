@@ -3353,7 +3353,10 @@ versions or a runtime context, prepares its skills as before. The Runner
 controller follows the same rule for the same reconnect: it describes the
 Runner's skills by their admitted digests and rehydrates the pinned skill files
 on this server only if it must launch a Runner process and stage them again.
-The digest checks then run as before. The session
+The digest checks then run as before. It defers only when every admitted skill
+is pinned to its exact version in the run's saved selection, which preparation
+has just checked for access. An older run without that selection rehydrates
+first, so revoked access still stops the reconnect. The session
 configuration fingerprint is unchanged, because it uses each skill's key,
 runtime name, and version, not its local path.
 
