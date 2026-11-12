@@ -510,6 +510,29 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...f, source, lease, successor, deps, queue: createHeartbeatQueue(db, deps) };
   }
 
+  it.each([
+    ["issue_continuation_needed", "cancelled"], ["issue_recovery_action_restored", "cancelled"], ["issue_commented", "running"],
+  ] as const)("does not start a %s run whose task another run already finished (expected %s)", async (wakeReason, expected) => {
+    // Release-swap wave t011: a delivered continuation queued while its task was open started after
+    // another run marked the task done, and took an extra turn on a finished task.
+    const f = await fixture("queued");
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    const [queued] = await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issue.id, wakeReason } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    const queue = createHeartbeatQueue(db, deps);
+    const claimed = await queue.claimQueuedRun(queued);
+    if (expected === "cancelled") {
+      expect(claimed).toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0])
+        .toMatchObject({ status: "cancelled", errorCode: "issue_closed_before_start" });
+    } else {
+      // A person's message on a done task still runs (and reopens it through the normal path).
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0].errorCode).not.toBe("issue_closed_before_start");
+    }
+  });
+
   it("keeps an automatic continuation queued while its legacy predecessor still owns cleanup", async () => {
     const { successor, lease, queue, deps, ...f } = await pendingPredecessorFixture();
     expect(await queue.claimQueuedRun(successor)).toBeNull();

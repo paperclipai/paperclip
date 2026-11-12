@@ -192,7 +192,7 @@ import {
   type AgentOrgRow,
 } from "../agent-invokability.js";
 import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
-import { isUuidLike } from "@paperclipai/shared";
+import { ISSUE_BLOCKER_STALLED_WAKE_REASON, isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
 
 import type { HeartbeatServiceOptions } from "../heartbeat.js";
@@ -869,6 +869,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  /** System continuations that only make sense for an open task. */
+  const SYSTEM_CONTINUATION_WAKE_REASONS = new Set(["issue_recovery_action_restored", "issue_continuation_needed",
+    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON]);
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -884,6 +888,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const refreshing = refreshRunAdmission();
     if (refreshing) await refreshing;
     if (isRunAdmissionClosed()) return null;
+    // A system continuation queued while its task was open has nothing left to
+    // do once another run finished or cancelled the task before this one
+    // started. A person's message on a done task is not one of these reasons.
+    const systemContinuationReason = readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
+    const continuedIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    if (systemContinuationReason && SYSTEM_CONTINUATION_WAKE_REASONS.has(systemContinuationReason) && continuedIssueId) {
+      const [target] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, continuedIssueId)));
+      if (target && ["done", "cancelled"].includes(target.status)) {
+        const cancelled = await setRunStatus(run.id, "cancelled", { finishedAt: new Date(),
+          error: "The task was closed before this continuation started.", errorCode: "issue_closed_before_start" });
+        if (cancelled) {
+          await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: new Date(), error: "issue_closed_before_start" });
+          await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true, deferredPostCommitEffects });
+        }
+        return null;
+      }
+    }
     const interactionDelivery = await recheckQueuedRunInteractions(db, run);
     if (interactionDelivery.run.status !== "queued") return null;
     run = { ...run, contextSnapshot: interactionDelivery.run.contextSnapshot,
