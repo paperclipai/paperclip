@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "package.json": "e704ca28508fa7c887f704fc26603cf8fd623867",
+    "package.json": "f902bd77c22391fe7929123a898c469c89d299cd",
     "packages/plugins/sdk/package.json": "b7a4936e2803fd0d3b32dd7f17fc1ea86609ead0",
     "packages/plugins/sdk/src/bundlers.ts": "883bf3d9f2bd42877cfc0c3707cd882a6f6248d0",
     "packages/plugins/sdk/src/define-plugin.ts": "a99e07ce77ef72fcf1df1347346aacb8ba12e284",
@@ -33,7 +33,7 @@
     "packages/plugins/sdk/src/workspace-operation-error.ts": "2cd247d002d83b163239229e631bca4e519e5075",
     "packages/plugins/sdk/src/workspace-provider.ts": "dea90b92e5bf0c05062eb57598c70f370e207cea",
     "packages/plugins/sdk/tsconfig.json": "d62ebdff94bc4b75dabf1fcad187e1e7a90fc794",
-    "packages/shared/package.json": "6417ef8baef0cb9b836b14f453dc8bc5025709e0",
+    "packages/shared/package.json": "7ad3ff21dafa8b876818ee227280d5646b93dee3",
     "packages/shared/src/__snapshots__/slack-app-manifest.test.ts.snap": "79020ba3aa6662923f70aa44e2c483844e9901d9",
     "packages/shared/src/account-handle.test.ts": "fb77e08a68b8deb3ab5ebf271724a268ac6bae56",
     "packages/shared/src/account-handle.ts": "4bc5d6ec16b854497e83ce781bd900dfec599cbd",
@@ -56,7 +56,7 @@
     "packages/shared/src/agent-observability.test.ts": "36cd74a8a8d1947364ec96fa30deabff14658df2",
     "packages/shared/src/agent-observability.ts": "52dc94e13624adeaf1aafa8996099a5dc158ef4b",
     "packages/shared/src/agent-runner.test.ts": "d02d0bba0cf57838011d4ec5f1304b65c15cff56",
-    "packages/shared/src/agent-runner.ts": "c4e9a7206d8c5cba7d9d95e7b02389cc351f3ecb",
+    "packages/shared/src/agent-runner.ts": "83fde3083b93a5850498f38cc1d86dc6e3dced20",
     "packages/shared/src/agent-url-key.ts": "d0ec20b3ea1636a960bc5372a2c1e5a124bc5511",
     "packages/shared/src/aggregator-app-catalog.test.ts": "39ee377e55cc9565fce004b928bbe0998268e004",
     "packages/shared/src/aggregator-app-catalog.ts": "d6778b07a41356878c549d039ae316553ca9a22b",
