@@ -5,7 +5,7 @@ function valid() {
   const review = { id: "review", issueId: "primary", latestRevisionId: "reviewed", body: "Accepted: correction permits activation once and retains the Pay name." };
   const base = { scenarioId: "cases.close-case", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { case: original, task: { id: "primary", status: "done" }, worker: { id: "morgan" }, review, reviewRunId: "review-native", firstReplyTime: "2026-10-26T10:00:00Z",
       resultTurn: { questionCommentId: "question", commentIds: ["result-reply"], runIds: ["result-run"], readSavedCase: true,
-        replies: [{ id: "result-reply", authorAgentId: "ceo", createdByRunId: "result-run" }] } },
+        replies: [{ id: "result-reply", authorAgentId: "ceo", createdByRunId: "result-run" }], companyPrefix: "COM" } },
     tasks: [{ id: "primary", status: "done" }], projects: [], goals: [], documents: [], revisions: [], links: [], activity: [], humanQueries: [],
     // The observation's comments are the primary task's, never the standing chat's.
     comments: [{ id: "task-comment", authorAgentId: "morgan", createdByRunId: "terminal-native" }],
@@ -54,6 +54,7 @@ describe("explicit case terminal completion with normal review gates", () => {
     const silent = valid(); silent.state.resultTurn.commentIds = []; expect(gradeIntegratorCaseClose(silent).passed).toBe(false);
     const foreign = valid(); foreign.state.resultTurn.replies[0]!.authorAgentId = "morgan"; expect(gradeIntegratorCaseClose(foreign).passed).toBe(false);
     const unlinked = valid(); unlinked.renderedLinkEvidence[0]!.href = "/COM/issues/COM-1"; expect(gradeIntegratorCaseClose(unlinked).passed).toBe(false);
+    const wrongPrefix = valid(); wrongPrefix.renderedLinkEvidence[0]!.href = "/TYPO/cases/COM-C1"; expect(gradeIntegratorCaseClose(wrongPrefix).passed).toBe(false);
     const otherCase = valid(); otherCase.renderedLinkEvidence[0]!.href = "/COM/cases/COM-C2"; expect(gradeIntegratorCaseClose(otherCase).passed).toBe(false);
     const firstTurnLink = valid(); firstTurnLink.renderedLinkEvidence[0]!.commentId = "first-reply"; expect(gradeIntegratorCaseClose(firstTurnLink).passed).toBe(false);
     const open = valid(); open.state.acceptedResult.caseRecord = { ...open.state.acceptedResult.caseRecord, status: "in_progress", completedAt: "" }; expect(gradeIntegratorCaseClose(open).passed).toBe(false);
