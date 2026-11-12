@@ -15113,6 +15113,29 @@ async function cleanupRemoteRunnerAfterIdentityFailure(input: {
   return result?.exitCode === 0 && result.timedOut === false;
 }
 
+const injectedRunnerBindConflicts = new Set<string>();
+
+async function injectRunnerBindConflictForTest(runner: CommandManagedRuntimeRunner, runnerInstanceId: string,
+  args: readonly string[], onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>): Promise<void> {
+  if (process.env.NODE_ENV !== "test" || process.env.PAPERCLIP_TEST_RUNNER_BIND_FAULT !== "first_launch"
+    || injectedRunnerBindConflicts.has(runnerInstanceId)) return;
+  const option = (name: string) => args.includes(name) ? args[args.indexOf(name) + 1] ?? null : null;
+  const port = option("--listen-port");
+  const address = option("--listen-address") ?? "127.0.0.1";
+  if (!port || !/^\d+$/.test(port)) return;
+  injectedRunnerBindConflicts.add(runnerInstanceId);
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c",
+      'ready=$(mktemp); rm -f "$ready"; nohup node -e "const s = require(\'net\').createServer().listen(Number(process.argv[1]), process.argv[2], () => { require(\'fs\').writeFileSync(process.argv[3], \'\'); setTimeout(() => s.close(), 15000); })" "$1" "$2" "$ready" </dev/null >/dev/null 2>&1 & i=0; while [ ! -e "$ready" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; test -e "$ready" && rm -f "$ready"',
+      "paperclip-runner-test-bind-fault", port, address],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  }).catch(() => null);
+  const armed = result?.exitCode === 0 && !result.timedOut;
+  await onLog?.("stderr", `[paperclip-runner] test bind fault ${armed ? "armed" : "failed"} on port ${port}\n`).catch(() => undefined);
+}
+
 export function createRemoteRunnerProcessLauncher(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
@@ -15251,6 +15274,7 @@ export function createRemoteRunnerProcessLauncher(input: {
       // into its own session instead; its own bounded diagnostics directory and
       // durable PRP state remain the authorities, and the controller monitors
       // the exact persisted process identity below.
+      await injectRunnerBindConflictForTest(runner, input.runnerInstanceId, remoteArgs, input.onLog);
       launchDispatched = true;
       const launchResult = await runner.execute({
         command: "sh",
@@ -16525,6 +16549,18 @@ async function createRunnerdBackendWithinSessionClaim(
   const restartableBootstrapState = (state: { incompleteReason: string | null; notSuspendedRunId?: string | null }) =>
     (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
     && provenOwnBootstrapRestart(state.notSuspendedRunId);
+  const inspectOwnUnpreparedBootstrap = async (): Promise<string | null> => {
+    if (!remoteCommandRunner || !remoteStateDirectory || archivedRotationRunnerStatePath
+      || !provenOwnBootstrapRestart(input.execution.binding.runId)
+      || harnessBackupCandidates(root).some(candidate => existsSync(resolve(candidate, "manifest.json")))) return null;
+    const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory })
+      .then(record, () => null);
+    if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId
+      || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
+      || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended"
+      || !provenOwnBootstrapRestart(typeof runnerState.runId === "string" ? runnerState.runId : null)) return null;
+    return input.execution.binding.runId;
+  };
   const inspectRemoteHarnessState = async (
     source: "live" | "host_preparation" = "live",
   ): Promise<{
@@ -16569,6 +16605,16 @@ async function createRunnerdBackendWithinSessionClaim(
       timeoutMs: 10_000,
     });
     if (inspected.exitCode !== 0 || inspected.timedOut) {
+      const unpreparedBootstrapRunId = source === "host_preparation" ? await inspectOwnUnpreparedBootstrap() : null;
+      if (unpreparedBootstrapRunId) {
+        return {
+          complete: false,
+          runnerState: null,
+          providerSessionIdentity: null,
+          incompleteReason: "not_suspended",
+          notSuspendedRunId: unpreparedBootstrapRunId,
+        };
+      }
       return {
         complete: false,
         runnerState: null,

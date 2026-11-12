@@ -26,7 +26,7 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 `--faults K0` plans cells with no fault, for workloads whose shape is the fault (W2, below). `--fail-recovery-step`,
-`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home` and `--ephemeral-server` are described in their own sections.
+`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home`, `--ephemeral-server` and `--runner-bind-fault` are described in their own sections.
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 `--matrix` crosses every selected workload with every fault kind (below), and `--server-from <dir>`
@@ -517,6 +517,24 @@ workloads and refused when listed.
 `--k15-fresh-home` implies it (and defaults `--storage` to `s3`): a new instance home without the volume-free mode
 loses the agents' instruction bundles, which staging keeps in Postgres and object storage. Every restart replays the server's startup
 eligibility check, so a replacement that refuses to start fails the wave.
+
+### Runner exits before session.open (`--runner-bind-fault`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --storage s3 \
+  --ephemeral-server --adapters claude --workloads W2 --faults K1,K2,K15 --k15-fresh-home --runner-bind-fault --seed 6402
+```
+
+Staging's volume-free shape (wave `w-20261111T230537-s6402`) showed a reused warm sandbox whose Runner listen port
+was still held by another Runner. The new Runner wrote `runner-state.json` (`lifecycle: connecting`), failed with
+`runner_ingress_bind_conflict` and exited before `session.open`, so it never wrote its provider state. The same-run
+bootstrap retry then found that partial session root and failed with `runner_harness_state_mismatch: resumed_unavailable`.
+`--runner-bind-fault` gives every server of the wave `PAPERCLIP_TEST_RUNNER_BIND_FAULT=first_launch` (honoured only
+with `NODE_ENV=test`): before a run's first Runner launch on that server, a short-lived process in the sandbox holds
+the Runner's listen port for 15 s. The server waits until that listener has bound the port and writes
+`[paperclip-runner] test bind fault armed on port <n>` (or `failed`) to the run log, so a wave can count the runs that
+really took this path. Every run then takes it once per server generation, and the run must still finish without
+Retry. It needs `--env daytona`.
 
 ## Absolute symlink in the workspace (F1)
 
