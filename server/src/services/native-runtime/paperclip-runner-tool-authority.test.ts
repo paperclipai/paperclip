@@ -199,6 +199,11 @@ describe("PaperclipRunnerToolAuthority", () => {
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
       "search_skills", "load_skill",
     ]));
+    // The read-only response export is its own tool, so call_api offers no save flag on writes.
+    const save = authority.definitions().find(tool => tool.name === "save_api_response")!;
+    expect(Object.keys((save.inputSchema as { properties: object }).properties).sort()).toEqual(["operationId", "pathParams", "query"]);
+    const callApi = authority.definitions().find(tool => tool.name === "call_api")!;
+    expect((callApi.inputSchema as { properties: object }).properties).not.toHaveProperty("saveResponse");
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
     expect(questions.description).toContain("Never fabricate answers");
