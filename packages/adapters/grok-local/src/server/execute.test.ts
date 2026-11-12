@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => {
     ensureCommandMock: vi.fn(async () => {}),
     resolveCommandForLogsMock: vi.fn(async () => "grok"),
     runProcessMock: vi.fn(),
+    runSshCommandMock: vi.fn(
+      async (_spec: unknown, _command: string, _options?: unknown) => ({ stdout: "", stderr: "" }),
+    ),
     prepareRuntimeMock: vi.fn(
       async (input: { assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean }> }) => {
         const override = state.prepareRuntimeResult;
@@ -46,6 +49,7 @@ const {
   ensureCommandMock,
   resolveCommandForLogsMock,
   runProcessMock,
+  runSshCommandMock,
   prepareRuntimeMock,
 } = mocks;
 
@@ -72,6 +76,17 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
     (mocks.runProcessMock as (...args: unknown[]) => unknown)(...args),
 }));
 
+vi.mock("@paperclipai/adapter-utils/ssh", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/ssh")>(
+    "@paperclipai/adapter-utils/ssh",
+  );
+  return {
+    ...actual,
+    runSshCommand: (...args: unknown[]) =>
+      (mocks.runSshCommandMock as (...args: unknown[]) => unknown)(...args),
+  };
+});
+
 import { execute } from "./execute.js";
 import { resolveManagedGrokHomeDir } from "./grok-home.js";
 
@@ -85,6 +100,27 @@ async function makeTempRoot() {
 
 async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
+}
+
+async function promptFromArgs(args: string[]): Promise<string> {
+  const index = args.indexOf("--prompt-file");
+  expect(index).toBeGreaterThanOrEqual(0);
+  expect(args).not.toContain("--single");
+  const filePath = args[index + 1];
+  expect(filePath).toBeTruthy();
+  return fs.readFile(filePath!, "utf8");
+}
+
+function promptFileCommandResult() {
+  return {
+    pid: null,
+    startedAt: new Date().toISOString(),
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
+  };
 }
 
 const GROK_IDENTITY = "https://auth.x.ai::11111111-1111-1111-1111-111111111111";
@@ -226,6 +262,8 @@ describe("grok_local execute", () => {
     prepareRuntimeMock.mockClear();
     resolveCommandForLogsMock.mockClear();
     runProcessMock.mockReset();
+    runSshCommandMock.mockReset();
+    runSshCommandMock.mockResolvedValue({ stdout: "", stderr: "" });
   });
 
   afterEach(async () => {
@@ -235,7 +273,7 @@ describe("grok_local execute", () => {
   async function cancellableContext(stop: () => Promise<void>) {
     const ctx = await makeCtx("remote-cancellation", await makeTempRoot());
     const controller = new AbortController();
-    const remoteExecute = vi.fn(async () => makeSuccessfulRunResult());
+    const remoteExecute = vi.fn(async (_input?: { command?: string }) => makeSuccessfulRunResult());
     ctx.signal = controller.signal;
     ctx.stopRemoteStartup = vi.fn(stop);
     ctx.onCancellationReady = vi.fn(async () => {});
@@ -253,10 +291,13 @@ describe("grok_local execute", () => {
     let confirmStop!: () => void;
     const receipt = new Promise<void>(resolve => { confirmStop = resolve; });
     const f = await cancellableContext(() => receipt);
-    f.remoteExecute.mockImplementation(() => new Promise(() => {}));
+    f.remoteExecute.mockImplementation(async (input?: { command?: string }) => {
+      if (input?.command !== "grok") return promptFileCommandResult();
+      return new Promise(() => {});
+    });
     let settled = false;
     const execution = execute(f.ctx).finally(() => { settled = true; });
-    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(f.remoteExecute.mock.calls.some((call) => (call[0] as { command?: string })?.command === "grok")).toBe(true));
     f.controller.abort(new Error("Interrupted to send queued messages"));
     await vi.waitFor(() => expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce());
     expect(settled).toBe(false);
@@ -269,10 +310,13 @@ describe("grok_local execute", () => {
   it("keeps ownership of the command when remote termination cannot be verified", async () => {
     const f = await cancellableContext(async () => { throw new Error("stop unverified"); });
     let finishCommand!: (result: ReturnType<typeof makeSuccessfulRunResult>) => void;
-    f.remoteExecute.mockImplementation(() => new Promise(resolve => { finishCommand = resolve; }));
+    f.remoteExecute.mockImplementation(async (input?: { command?: string }) => {
+      if (input?.command !== "grok") return promptFileCommandResult();
+      return new Promise(resolve => { finishCommand = resolve; });
+    });
     let settled = false;
     const execution = execute(f.ctx).catch(error => error).finally(() => { settled = true; });
-    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(f.remoteExecute.mock.calls.some((call) => (call[0] as { command?: string })?.command === "grok")).toBe(true));
     f.controller.abort();
     await vi.waitFor(() => expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce());
     expect(settled).toBe(false);
@@ -304,9 +348,12 @@ describe("grok_local execute", () => {
     prepareRuntimeMock.mockImplementationOnce(async () => ({ workspaceRemoteDir: "/remote/workspace", assetDirs: {},
       restoreWorkspace: async () => { throw new Error("sandbox stopped during restore"); },
     }));
-    f.remoteExecute.mockImplementation(() => new Promise(() => {}));
+    f.remoteExecute.mockImplementation(async (input?: { command?: string }) => {
+      if (input?.command !== "grok") return promptFileCommandResult();
+      return new Promise(() => {});
+    });
     const execution = execute(f.ctx);
-    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(f.remoteExecute.mock.calls.some((call) => (call[0] as { command?: string })?.command === "grok")).toBe(true));
     f.controller.abort();
     const result = await execution;
     expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
@@ -1077,12 +1124,12 @@ describe("grok_local execute", () => {
       );
     });
 
-    it("delivers the owned assignment and ordered wake comments through --single", async () => {
+    it("delivers the owned assignment and ordered wake comments through --prompt-file", async () => {
       const root = await makeTempRoot();
       const fixture = createPromptContextFixture();
       let deliveredPrompt = "";
       runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
-        deliveredPrompt = String(args.at(-1) ?? "");
+        deliveredPrompt = await promptFromArgs(args as string[]);
         return makeSuccessfulRunResult();
       });
 
@@ -1109,7 +1156,7 @@ describe("grok_local execute", () => {
       const fixture = createPromptContextFixture();
       const prompts: string[] = [];
       runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
-        prompts.push(String(args.at(-1) ?? ""));
+        prompts.push(await promptFromArgs(args as string[]));
         if (prompts.length === 1) {
           return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "unknown session sess-stale" };
         }
@@ -1132,6 +1179,145 @@ describe("grok_local execute", () => {
       expect(prompts[1]).toContain(fixture.paperclipTaskMarkdownAssignment);
       expect(prompts[1]).toContain("comment-first");
       expect(prompts[1]).toContain("comment-scope");
+    });
+
+    it("passes a prompt over 128 KiB through --prompt-file and removes the file", async () => {
+      const root = await makeTempRoot();
+      const scratch = await makeTempRoot();
+      const previousTmp = process.env.PAPERCLIP_TMPDIR;
+      process.env.PAPERCLIP_TMPDIR = scratch;
+      const huge = `H${"x".repeat(128 * 1024)}`;
+      const fixture = createPromptContextFixture();
+      fixture.paperclipTaskMarkdownAssignment = huge;
+      let promptPath = "";
+      let delivered = "";
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        const argv = args as string[];
+        expect(argv.some((arg) => Buffer.byteLength(arg) > 128 * 1024)).toBe(false);
+        promptPath = argv[argv.indexOf("--prompt-file") + 1] ?? "";
+        expect(promptPath.startsWith(scratch)).toBe(true);
+        const stat = await fs.stat(promptPath);
+        expect(stat.mode & 0o777).toBe(0o600);
+        delivered = await fs.readFile(promptPath, "utf8");
+        return makeSuccessfulRunResult();
+      });
+
+      try {
+        const ctx = await makeCtx("run-long-prompt", root);
+        ctx.context = fixture;
+        await execute(ctx);
+      } finally {
+        if (previousTmp === undefined) delete process.env.PAPERCLIP_TMPDIR;
+        else process.env.PAPERCLIP_TMPDIR = previousTmp;
+      }
+
+      expect(Buffer.byteLength(delivered)).toBeGreaterThan(128 * 1024);
+      expect(delivered).toContain(huge);
+      expect(promptPath).not.toBe("");
+      await expect(fs.stat(promptPath)).rejects.toThrow();
+    });
+
+    it("writes an oversized prompt into the sandbox and deletes that file", async () => {
+      const huge = `S${"y".repeat(128 * 1024)}`;
+      const writes: Array<{ command?: string; args?: string[]; stdin?: string }> = [];
+      const remoteExecute = vi.fn(async (input: { command?: string; args?: string[]; stdin?: string }) => {
+        writes.push(input);
+        return promptFileCommandResult();
+      });
+      const ctx = await makeCtx("run-remote-long-prompt", await makeTempRoot());
+      ctx.executionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/remote/workspace",
+        runner: { execute: remoteExecute },
+      };
+      remoteState.isRemote = true;
+      const fixture = createPromptContextFixture();
+      fixture.paperclipTaskMarkdownAssignment = huge;
+      ctx.context = fixture;
+      let grokArgs: string[] = [];
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        grokArgs = args as string[];
+        return makeSuccessfulRunResult();
+      });
+
+      await execute(ctx);
+
+      const filePath = grokArgs[grokArgs.indexOf("--prompt-file") + 1] ?? "";
+      expect(filePath).toMatch(/^\/remote\/workspace\/\.paperclip-runtime\/grok\/prompt-.+\.txt$/);
+      expect(grokArgs.some((arg) => Buffer.byteLength(arg) > 128 * 1024)).toBe(false);
+      const write = writes.find((call) => call.stdin?.includes(huge));
+      expect(write?.args?.join(" ")).toContain(filePath);
+      expect(writes.some((call) => call.args?.join(" ").includes(`rm -f`) && call.args.join(" ").includes(filePath))).toBe(true);
+    });
+
+    function sshTarget() {
+      return {
+        kind: "remote" as const,
+        transport: "ssh" as const,
+        remoteCwd: "/remote/workspace",
+        spec: {
+          host: "ssh.example",
+          port: 22,
+          username: "paperclip",
+          remoteCwd: "/remote/workspace",
+          remoteWorkspacePath: "/remote/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      };
+    }
+
+    it("passes an SSH prompt file to Grok when the write resolves cleanly", async () => {
+      const commands: string[] = [];
+      runSshCommandMock.mockImplementation(async (_spec: unknown, command: string) => {
+        commands.push(command);
+        return { stdout: "", stderr: "" };
+      });
+      const ctx = await makeCtx("run-ssh-prompt-write", await makeTempRoot());
+      ctx.executionTarget = sshTarget();
+      remoteState.isRemote = true;
+      runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+      await execute(ctx);
+
+      const grokArgs = runProcessMock.mock.calls[0]?.[3] as string[];
+      const filePath = grokArgs[grokArgs.indexOf("--prompt-file") + 1] ?? "";
+      expect(filePath).toMatch(/^\/remote\/workspace\/\.paperclip-runtime\/grok\/prompt-.+\.txt$/);
+      expect(commands.some((command) => command.includes("cat >") && command.includes(filePath))).toBe(true);
+      expect(commands.some((command) => command.startsWith("rm -f ") && command.includes(filePath))).toBe(true);
+    });
+
+    it.each([
+      {
+        label: "a nonzero exit",
+        write: { stdout: "", stderr: "disk full", exitCode: 1, timedOut: false },
+      },
+      {
+        label: "a timeout",
+        write: { stdout: "", stderr: "", exitCode: 0, timedOut: true },
+      },
+    ])("does not start Grok when the SSH prompt write returns $label", async ({ write }) => {
+      const commands: string[] = [];
+      runSshCommandMock.mockImplementation(async (_spec: unknown, command: string) => {
+        commands.push(command);
+        if (command.startsWith("rm -f ")) return { stdout: "", stderr: "", exitCode: 0, timedOut: false };
+        return write;
+      });
+      const ctx = await makeCtx("run-ssh-prompt-write-failure", await makeTempRoot());
+      ctx.executionTarget = sshTarget();
+      remoteState.isRemote = true;
+      runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+      await expect(execute(ctx)).rejects.toThrow("Failed to write the Grok prompt file on the SSH host.");
+
+      expect(runProcessMock).not.toHaveBeenCalled();
+      const writeCommand = commands.find((command) => command.includes("cat >"));
+      expect(writeCommand).toBeTruthy();
+      const filePath = writeCommand?.match(/prompt-[0-9a-f-]+\.txt/)?.[0];
+      expect(filePath).toBeTruthy();
+      expect(commands.some((command) => command.startsWith("rm -f ") && command.includes(filePath!))).toBe(true);
     });
   });
 });

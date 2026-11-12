@@ -1,7 +1,9 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -19,6 +21,9 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
+  type AdapterExecutionTarget,
+  type AdapterSandboxExecutionTarget,
+  type AdapterSshExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asBoolean,
@@ -45,6 +50,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
+import { runSshCommand, shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
@@ -64,6 +70,141 @@ function firstNonEmptyLine(text: string): string {
 function hasNonEmptyEnvValue(env: Record<string, string | undefined>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
+}
+
+interface GrokPromptFile {
+  path: string;
+  cleanup: () => Promise<void>;
+}
+
+function localPromptTempRoot(): string {
+  for (const candidate of [process.env.PAPERCLIP_TMPDIR, process.env.TMPDIR]) {
+    if (typeof candidate === "string" && path.isAbsolute(candidate)) return candidate;
+  }
+  return os.tmpdir();
+}
+
+async function writeLocalGrokPromptFile(prompt: string): Promise<GrokPromptFile> {
+  const dir = await fs.mkdtemp(path.join(localPromptTempRoot(), "paperclip-grok-prompt-"));
+  const filePath = path.join(dir, "prompt.txt");
+  await fs.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
+  await fs.chmod(filePath, 0o600);
+  return {
+    path: filePath,
+    cleanup: async () => {
+      await fs.rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+function remotePromptLocation(cwd: string): { dir: string; filePath: string } {
+  const dir = path.posix.join(cwd, ".paperclip-runtime", "grok");
+  return { dir, filePath: path.posix.join(dir, `prompt-${randomUUID()}.txt`) };
+}
+
+function remotePromptWriteScript(dir: string, filePath: string): string {
+  return `umask 077 && mkdir -p ${shellQuote(dir)} && cat > ${shellQuote(filePath)}`;
+}
+
+async function writeSandboxGrokPromptFile(
+  target: AdapterSandboxExecutionTarget,
+  cwd: string,
+  prompt: string,
+): Promise<GrokPromptFile> {
+  const runner = target.runner;
+  if (!runner) throw new Error("Remote Grok execution has no sandbox runner to place the prompt file.");
+  const shell = target.shellCommand === "bash" ? "bash" : "sh";
+  const { dir, filePath } = remotePromptLocation(cwd);
+  const written = await runner.execute({
+    command: shell,
+    args: ["-c", remotePromptWriteScript(dir, filePath)],
+    cwd: target.remoteCwd,
+    stdin: prompt,
+    timeoutMs: 60_000,
+  });
+  const remove = () => runner.execute({
+    command: shell,
+    args: ["-c", `rm -f ${shellQuote(filePath)}`],
+    cwd: target.remoteCwd,
+    timeoutMs: 15_000,
+  }).catch(() => undefined);
+  if (written.timedOut || (written.exitCode ?? 1) !== 0) {
+    await remove();
+    throw new Error("Failed to write the Grok prompt file in the remote workspace.");
+  }
+  return { path: filePath, cleanup: async () => { await remove(); } };
+}
+
+function sshPromptWriteStatus(result: { stdout: string; stderr: string }): {
+  exitCode: number | null;
+  timedOut: boolean;
+} {
+  const status = result as { exitCode?: number | null; timedOut?: boolean };
+  const reportedExit = Object.prototype.hasOwnProperty.call(result, "exitCode");
+  return {
+    exitCode: reportedExit ? status.exitCode ?? null : 0,
+    timedOut: status.timedOut === true,
+  };
+}
+
+function sshPromptWriteFailure(error: unknown): { exitCode: number | null; timedOut: boolean } {
+  const failure = error as { code?: unknown; killed?: unknown };
+  return {
+    exitCode: typeof failure.code === "number" ? failure.code : null,
+    timedOut: failure.killed === true || failure.code === "ETIMEDOUT",
+  };
+}
+
+async function writeSshGrokPromptFile(
+  target: AdapterSshExecutionTarget,
+  cwd: string,
+  prompt: string,
+): Promise<GrokPromptFile> {
+  const { dir, filePath } = remotePromptLocation(cwd);
+  const remove = () => runSshCommand(target.spec, `rm -f ${shellQuote(filePath)}`, {
+    timeoutMs: 15_000,
+    maxBuffer: 64 * 1024,
+  }).catch(() => undefined);
+  let written: { exitCode: number | null; timedOut: boolean };
+  try {
+    written = sshPromptWriteStatus(await runSshCommand(target.spec, remotePromptWriteScript(dir, filePath), {
+      stdin: prompt,
+      timeoutMs: 60_000,
+      maxBuffer: 1024 * 1024,
+    }));
+  } catch (error) {
+    written = sshPromptWriteFailure(error);
+  }
+  if (written.timedOut || (written.exitCode ?? 1) !== 0) {
+    await remove();
+    throw new Error("Failed to write the Grok prompt file on the SSH host.");
+  }
+  return { path: filePath, cleanup: async () => { await remove(); } };
+}
+
+async function placeGrokPromptFile(
+  executionTarget: AdapterExecutionTarget | null | undefined,
+  executionTargetIsRemote: boolean,
+  cwd: string,
+  prompt: string,
+): Promise<GrokPromptFile> {
+  if (
+    executionTargetIsRemote &&
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "sandbox" &&
+    executionTarget.runner
+  ) {
+    return writeSandboxGrokPromptFile(executionTarget, cwd, prompt);
+  }
+  if (
+    executionTargetIsRemote &&
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "ssh" &&
+    executionTarget.spec
+  ) {
+    return writeSshGrokPromptFile(executionTarget, cwd, prompt);
+  }
+  return writeLocalGrokPromptFile(prompt);
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -524,7 +665,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     }
 
     const commandNotes = (() => {
-      const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
+      const notes: string[] = ["Prompt is passed to Grok via --prompt-file in headless mode."];
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
       if (stagedAssets.stagedInstructionsPath) {
         notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
@@ -551,7 +692,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
 
-    const buildArgs = (resumeSessionId: string | null, prompt: string) => {
+    const buildArgs = (resumeSessionId: string | null, promptFilePath: string) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
       if (model && model !== DEFAULT_GROK_LOCAL_MODEL) args.push("--model", model);
@@ -567,12 +708,12 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         return asStringArray(config.args);
       })();
       if (extraArgs.length > 0) args.push(...extraArgs);
-      args.push("--single", prompt);
+      args.push("--prompt-file", promptFilePath);
       return args;
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
-    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       ctx.signal?.throwIfAborted();
       const attemptSections = selectPaperclipPromptSections(context, {
         resumedSession: Boolean(resumeSessionId),
@@ -603,37 +744,47 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
         heartbeatPromptChars: attemptRenderedPrompt.length,
       };
-      const args = buildArgs(resumeSessionId, prompt);
-      if (onMeta) {
-        await onMeta({
-          adapterType: "grok_local",
-          command: resolvedCommand,
-          cwd: effectiveExecutionCwd,
-          commandNotes,
-          commandArgs: args.map((value, index) => (
-            index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-          )),
-          env: loggedEnv,
-          prompt,
-          promptMetrics: { ...promptMetrics, promptChars: prompt.length },
-          context,
-        });
-      }
+      const promptFile = await placeGrokPromptFile(
+        runtimeExecutionTarget,
+        executionTargetIsRemote,
+        effectiveExecutionCwd,
+        prompt,
+      );
+      try {
+        const args = buildArgs(resumeSessionId, promptFile.path);
+        if (onMeta) {
+          await onMeta({
+            adapterType: "grok_local",
+            command: resolvedCommand,
+            cwd: effectiveExecutionCwd,
+            commandNotes,
+            commandArgs: args.map((value) => (
+              value === promptFile.path ? `<prompt-file ${prompt.length} chars>` : value
+            )),
+            env: loggedEnv,
+            prompt,
+            promptMetrics: { ...promptMetrics, promptChars: prompt.length },
+            context,
+          });
+        }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        onProcessStopped: providerStop.beginInvocation(),
-        cwd,
-        env,
-        timeoutSec,
-        graceSec,
-        onSpawn,
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
-      });
-      return {
-        proc,
-        parsed: parseGrokJsonl(proc.stdout),
-      };
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          onProcessStopped: providerStop.beginInvocation(),
+          cwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          onLog,
+        });
+        return {
+          proc,
+          parsed: parseGrokJsonl(proc.stdout),
+        };
+      } finally {
+        await promptFile.cleanup();
+      }
     };
 
     const toResult = (

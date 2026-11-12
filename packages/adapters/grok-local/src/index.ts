@@ -47,7 +47,7 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use \`grok --single\` with \`--output-format streaming-json\`.
+- Runs use \`grok --prompt-file\` with \`--output-format streaming-json\`. The prompt is written to a file so a long task history is not one command argument.
 - Sessions resume with \`--resume <sessionId>\` when the saved session cwd matches the current cwd.
 - Paperclip stages desired runtime skills into \`.claude/skills\` inside the execution workspace so Grok discovers them as project skills.
 - Use \`grok models\` to inspect authentication and available models on the host.
