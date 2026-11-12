@@ -19,6 +19,16 @@ it("admits declared separate active work while rejecting active CEO, wrong scope
     expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, bad] }).passed).toBe(false);
   expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, worker, { ...worker, id: "extra" }] }).passed).toBe(false);
 });
+it("admits a lead run outside the source only as a declared case handback", () => {
+  const handback: ChatRun = { id: "handback", companyId: "company", agentId: "ceo", status: "running", runtimeMode: "native", contextSnapshot: { issueId: "task", wakeReason: "case_handoff" } };
+  const done = { ...worker, status: "succeeded" };
+  const declared = { expectedRunCount: 3, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1, maximumLeadCaseHandbackRuns: 1 } };
+  expect(gradeChatCatalogRuns({ ...scope, implementation: declared, runs: [succeeded, done, handback] }).passed).toBe(true);
+  // Undeclared (default 0), a lead run woken another way, and a second handback all stay rejected.
+  expect(gradeChatCatalogRuns({ ...scope, implementation: { ...declared, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1 } }, runs: [succeeded, done, handback] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...scope, implementation: declared, runs: [succeeded, done, { ...handback, contextSnapshot: { issueId: "task", wakeReason: "issue_commented" } }] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...scope, implementation: { ...declared, expectedRunCount: 4 }, runs: [succeeded, done, handback, { ...handback, id: "again" }] }).passed).toBe(false);
+});
 
 function reassignment() {
   const receipt = { runId: "worker-run", taskId: "task", workerId: "worker", sourceRunId: "final-source" };

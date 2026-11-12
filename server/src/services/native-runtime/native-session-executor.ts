@@ -123,7 +123,7 @@ import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
 import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PRIOR_OWNER_FENCE_REFUSED, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
-import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
 import { NATIVE_PREPARATION_FENCING_VERSION, setNativeExecutionActive } from "./native-active-runs.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
@@ -728,9 +728,41 @@ type WarmNativeSession = {
   lastActivityAt: string;
 };
 
+const WARM_CLOSE_FAILURE_DETAIL_MAX = 2_000;
+
+export function describeWarmCloseFailure(error: unknown): string {
+  const describe = (value: unknown): string => {
+    if (value instanceof AggregateError) return [value.message, ...value.errors.map(describe)].join("; ");
+    if (!(value instanceof Error)) return String(value);
+    const code = "code" in value && typeof value.code === "string" ? `${value.code}: ` : "";
+    const settlement = value instanceof NativeSessionCloseUnrecoverableError && value.settlement
+      ? ` ${JSON.stringify(value.settlement)}` : "";
+    const cause = value.cause === undefined ? "" : ` (cause: ${describe(value.cause)})`;
+    return `${code}${value.message}${settlement}${cause}`;
+  };
+  const text = describe(error).replaceAll(/[\r\n]+/g, " ");
+  return text.length > WARM_CLOSE_FAILURE_DETAIL_MAX ? `${text.slice(0, WARM_CLOSE_FAILURE_DETAIL_MAX)}…` : text;
+}
+
+export type WarmNativeSessionCloseFailure = {
+  runId: string;
+  issueId: string;
+  environmentId: string | null;
+  providerLeaseId: string | null;
+  reason: string;
+};
+
+export type WarmNativeSessionCloseResult = {
+  closed: number;
+  busy: number;
+  failed: number;
+  failures: WarmNativeSessionCloseFailure[];
+};
+
 async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, options?: {
   preserveInstructionsForRunId?: string;
   discardUnsettledSession?: boolean;
+  onForcedStopFailed?: (error: unknown) => void;
 }) {
   if (entry.controllerDetachedForRestart) return detachReleasedWarmNativeSession(entry);
   // Revoke before awaiting process retirement/checkpoint IO.
@@ -753,8 +785,16 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
       const discardable = options?.discardUnsettledSession === true;
       const owner = discardable ? pluginTaskSessionOwners.get(entry.session) : undefined;
       const retiredWithoutCheckpoint = discardable && (owner
-        ? owner.isRetired() || await owner.retireSupersededTask().catch(() => false)
+        ? owner.isRetired() || await owner.retireSupersededTask().catch(stopError => {
+          options?.onForcedStopFailed?.(stopError);
+          return false;
+        })
         : error instanceof NativeSessionCloseUnrecoverableError && error.settlement?.runnerSuspended === true);
+      if (retiredWithoutCheckpoint) {
+        logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+          providerLeaseId: entry.providerLeaseId ?? null, reason, closeFailure: describeWarmCloseFailure(error) },
+        "warm native session close did not settle; its Runner was stopped and the session discarded");
+      }
       if (!retiredWithoutCheckpoint) {
         try { await entry.instructionWorkingCopy?.retirementFailed?.(); }
         catch (receiptError) { throw new AggregateError([error, receiptError], "Warm instruction retirement and receipt both failed"); }
@@ -982,15 +1022,27 @@ export async function reserveWarmNativeInstructionDirectory(input: {
 export async function closeWarmNativeSessionsForEnvironment(input: {
   environmentId: string;
   reason: string;
-}): Promise<{ closed: number; busy: number; failed: number }> {
+  forceStopUnsettled?: boolean;
+  db?: Db;
+}): Promise<WarmNativeSessionCloseResult> {
   return closeIdleWarmNativeSessions(input);
+}
+
+async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<boolean> {
+  if (!entry.providerLeaseId || !entry.environmentId) return false;
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, entry.companyId),
+    eq(environmentLeases.environmentId, entry.environmentId),
+    eq(environmentLeases.providerLeaseId, entry.providerLeaseId),
+  ));
+  const resolved = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(db, lease)));
+  return resolved.some(lease => hasRemoteTerminationReceipt(lease)
+    && (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state === "destroyed");
 }
 
 /** Detach released owners and checkpoint unreleased owners before a controller
  * exits. Active turns keep their separate authenticated restart handoff. */
-export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
-  closed: number; busy: number; failed: number;
-}> {
+export async function closeIdleWarmNativeSessionsForRestart(): Promise<WarmNativeSessionCloseResult> {
   return closeIdleWarmNativeSessions({
     reason: "controller restart",
     closeBusyOnRelease: true,
@@ -1000,7 +1052,7 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
 
 export async function prepareIdleWarmNativeSessionsForSleep(input: {
   canRetire: () => boolean;
-}): Promise<{ closed: number; busy: number; failed: number }> {
+}): Promise<WarmNativeSessionCloseResult> {
   return closeIdleWarmNativeSessions({ reason: "tenant idle sleep", canRetire: input.canRetire });
 }
 
@@ -1010,10 +1062,13 @@ async function closeIdleWarmNativeSessions(input: {
   closeBusyOnRelease?: boolean;
   detachReleased?: boolean;
   canRetire?: () => boolean;
-}): Promise<{ closed: number; busy: number; failed: number }> {
+  forceStopUnsettled?: boolean;
+  db?: Db;
+}): Promise<WarmNativeSessionCloseResult> {
   let closed = 0;
   let busy = 0;
   let failed = 0;
+  const failures: WarmNativeSessionCloseFailure[] = [];
   for (const [sessionId, entry] of [...warmNativeSessions]) {
     if (input.canRetire && !input.canRetire()) break;
     if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
@@ -1036,17 +1091,39 @@ async function closeIdleWarmNativeSessions(input: {
     // Failure must not make a live directory eligible for a replacement owner.
     entry.busy = true;
     if (!detach) entry.closeOnReleaseReason = input.reason;
+    let forcedStopFailure: unknown;
     const closing = Promise.resolve().then(() =>
-      detach ? detachReleasedWarmNativeSession(entry) : closeWarmNativeSession(entry, input.reason),
+      detach ? detachReleasedWarmNativeSession(entry) : closeWarmNativeSession(entry, input.reason, input.forceStopUnsettled ? {
+        discardUnsettledSession: true,
+        onForcedStopFailed: error => { forcedStopFailure = error; },
+      } : undefined),
     );
     closingWarmNativeSessions.set(sessionId, closing);
     try {
       await closing;
       forgetWarmNativeSession(sessionId, entry);
       closed += 1;
-    } catch {
+    } catch (error) {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+      const destroyed = !detach && input.forceStopUnsettled && input.db
+        ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
+          logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
+          return false;
+        })
+        : false;
+      if (destroyed) {
+        logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+          providerLeaseId: entry.providerLeaseId ?? null, reason: input.reason, closeFailure: describeWarmCloseFailure(error) },
+        "warm native session's sandbox was already destroyed; released its owner");
+        forgetWarmNativeSession(sessionId, entry);
+        closed += 1;
+        continue;
+      }
       failed += 1;
+      const forced = forcedStopFailure === undefined ? "" : `; forced Runner stop failed: ${describeWarmCloseFailure(forcedStopFailure)}`;
+      failures.push({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+        providerLeaseId: entry.providerLeaseId ?? null,
+        reason: `${detach ? "released Runner detach failed" : "close failed"}: ${describeWarmCloseFailure(error)}${forced}` });
     } finally {
       entry.busy = false;
       if (closingWarmNativeSessions.get(sessionId) === closing) {
@@ -1055,7 +1132,8 @@ async function closeIdleWarmNativeSessions(input: {
     }
     if (input.canRetire && !input.canRetire()) break;
   }
-  return { closed, busy, failed };
+  if (failures.length > 0) logger.warn({ reason: input.reason, failures }, "idle warm native sessions did not close");
+  return { closed, busy, failed, failures };
 }
 
 function readBoundedNativeFile(
@@ -8522,8 +8600,11 @@ function armWarmNativeSessionIdleTimer(
     if (!released) current.closeOnReleaseReason = "warm native session idle timeout";
     const closing = (released ? detachReleasedWarmNativeSession(current) : closeWarmNativeSession(current, current.closeOnReleaseReason!))
       .then(() => { forgetWarmNativeSession(sessionId, current); })
-      .catch(() => {
+      .catch(error => {
         if (released) current.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+        logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
+          providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error) },
+        released ? "idle warm native session detach failed" : "idle warm native session close failed");
       })
       .finally(() => {
         current.busy = false;

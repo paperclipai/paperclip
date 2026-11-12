@@ -5168,6 +5168,26 @@ count is kept on the run's context so a resume claim does not reset it, and a
 Stop, a lost lease or a moved task leave it to normal settlement. A busy lock
 met while collecting files after a turn is not deferred this way.
 
+### Runner controller state on a restarted volume-free server
+
+A volume-free server keeps Runner controller files under
+`runtime/paperclip-runner/durable-sessions/` while it runs. Its durable record is
+the Postgres checkpoint, so those files are disposable. Early in startup, before
+any controller can write, a volume-free server claims an empty (or absent) state
+directory by writing `.volume-free-owner.json` there. A later start that finds
+this marker treats every file in the directory as its own, and the data
+eligibility gate does not count it as legacy volume data; normal restart
+recovery reconciles it as it would after a crash of a volume-backed server. A
+server started without `PAPERCLIP_EPHEMERAL_SERVER` removes the marker, because
+from then on it may write files that exist only on that disk.
+
+A volume-free server that finds files it did not claim (a mounted legacy volume,
+or a directory written before this marker existed) logs a warning and keeps the
+existing protection: if the native controller check finds state the database does
+not prove, startup refuses and the error names the run, the task and the file,
+because that file may be the only copy of the run's progress. Adopt it with the
+native controller migration first.
+
 ## Cloud startup configuration
 
 Cloud stores nonsecret startup choices in a private PostgreSQL singleton.
