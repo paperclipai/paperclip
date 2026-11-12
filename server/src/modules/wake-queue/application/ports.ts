@@ -185,6 +185,18 @@ export interface WakeQueueTransaction {
     wakeAgentId: string;
     commentIds: string[];
   }): Promise<boolean>;
+  /**
+   * True when every comment was posted by the agent watching the task (its
+   * creator or its parent's assignee) while the finishing run was active. That
+   * agent receives the completed result and can follow up; its comment does
+   * not need to reopen the task the run just closed.
+   */
+  isWatcherCommentDuringFinishingRun(input: {
+    companyId: string;
+    issueId: string;
+    finishingRunId: string;
+    commentIds: string[];
+  }): Promise<boolean>;
   /** Reopens to todo, or straight to in_progress for an owed answer, which continues the assignee's own execution. */
   reopenIssue(input: { companyId: string; issueId: string; runId: string; status?: "todo" | "in_progress" }): Promise<IssueSnapshot | null>;
   /** Verifies a Done onboarding parent's completion wake against its own completed children. */

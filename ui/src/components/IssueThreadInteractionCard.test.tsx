@@ -734,7 +734,7 @@ describe("IssueThreadInteractionCard", () => {
     interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
     const host = renderCard({ interaction, presentationVariant });
 
-    const link = host.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    const link = host.querySelector('a[href="/PAP/issues/PAP-42#document-preview"]');
     expect(link?.textContent).toBe("two screenshots");
     const prompt = link?.closest(".paperclip-markdown");
     expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
