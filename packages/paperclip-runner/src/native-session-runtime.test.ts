@@ -10996,8 +10996,9 @@ describe("remote Runner retention after a failed run", () => {
     void execution.catch(() => undefined);
     return { execution, close };
   };
-  const retainedOn = (close: ReturnType<typeof vi.spyOn>) =>
-    close.mock.calls.map(call => (call[1] as { retainUnsettledRemoteRunner?: boolean } | undefined)?.retainUnsettledRemoteRunner);
+  const retainedOn = (close: { mock: { calls: unknown[][] } }): Array<boolean | undefined> =>
+    close.mock.calls.map((call: unknown[]) =>
+      (call[1] as { retainUnsettledRemoteRunner?: boolean } | undefined)?.retainUnsettledRemoteRunner);
 
   it("keeps the Runner for same-run reattachment when the turn start fails", async () => {
     const transport = new FakeCodexTransport();
