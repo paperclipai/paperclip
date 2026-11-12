@@ -4,6 +4,9 @@ import { act, forwardRef, useImperativeHandle, useRef, type ReactNode } from "re
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hasPendingWrites } from "../lib/reload-safety";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockSession = vi.hoisted(() => ({ userId: "user-1", pending: null as Promise<{ user: { id: string } } | null> | null }));
@@ -217,6 +220,56 @@ describe("InlineEditor", () => {
     act(() => root.unmount());
   });
 
+  it.each([false, true])("checks a restored draft against a fresh field after session verification (multiline=%s)", async (multiline) => {
+    const key = "paperclip:inline-draft:v2:user-1:cached-field";
+    localStorage.setItem(key, JSON.stringify({ version: 1, draft: "My draft B", base: "Cached A" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    let releaseSession!: () => void;
+    mockSession.pending = new Promise(resolve => { releaseSession = () => resolve({ user: { id: "user-1" } }); });
+    let releaseRead!: (value: string) => void;
+    const readCurrentValue = vi.fn<() => Promise<string>>().mockImplementationOnce(() => new Promise(resolve => { releaseRead = resolve; })).mockResolvedValue("New server C");
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const render = (value: string) => root.render(<QueryClientProvider client={client}>
+      <InlineEditor value={value} multiline={multiline} draftKey="cached-field" onSave={onSave} readCurrentValue={readCurrentValue} />
+    </QueryClientProvider>);
+    try {
+      await act(async () => render("Cached A"));
+      expect(onSave).not.toHaveBeenCalled();
+      expect(readCurrentValue).not.toHaveBeenCalled();
+      await act(async () => releaseSession());
+      expect(readCurrentValue).toHaveBeenCalledOnce();
+      expect(onSave).not.toHaveBeenCalled();
+      await act(async () => releaseRead("New server C"));
+      await act(async () => render("New server C"));
+      expect(container.querySelector("textarea")?.value).toBe("My draft B");
+      expect(localStorage.getItem(key)).toContain("My draft B");
+      expect(onSave).not.toHaveBeenCalled();
+      if (!multiline) {
+        expect(container.querySelector("textarea")?.getAttribute("aria-invalid")).toBe("true");
+        expect(container.querySelector("textarea")?.getAttribute("aria-description")).toContain("This changed since you loaded it");
+        await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+        expect(readCurrentValue).toHaveBeenCalledTimes(2);
+        expect(onSave).not.toHaveBeenCalled();
+      }
+    } finally { act(() => root.unmount()); cache.dispose(); client.clear(); mockSession.pending = null; }
+  });
+
+  it("replays a restored draft after a fresh field confirms its base", async () => {
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:confirmed-field", JSON.stringify({ version: 1, draft: "Confirmed draft", base: "Original" }));
+    const readCurrentValue = vi.fn().mockResolvedValue("Original");
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(signedIn("user-1", <InlineEditor value="Original" draftKey="confirmed-field" onSave={onSave} readCurrentValue={readCurrentValue} />)));
+      expect(readCurrentValue).toHaveBeenCalledOnce();
+      expect(onSave).toHaveBeenCalledWith("Confirmed draft");
+    } finally { act(() => root.unmount()); }
+  });
+
   it("restores an unsaved edit and saves it when the server value has not moved", async () => {
     localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-1:description", JSON.stringify({ version: 1, draft: "Typed before reload", base: "Original" }));
     const onSave = vi.fn().mockResolvedValue(undefined);
@@ -253,6 +306,36 @@ describe("InlineEditor", () => {
       localStorage.clear();
       client.clear();
     }
+  });
+
+  it("releases a cancelled description debounce when switching cached tasks and keeps its stored draft", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const saveA = vi.fn().mockResolvedValue(undefined);
+    const saveB = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const renderTask = (id: string, onSave: typeof saveA) => root.render(
+      <QueryClientProvider client={client}>
+        <InlineEditor value={`Original ${id.toUpperCase()}`} multiline draftKey={`task-${id}:description`} onSave={onSave} />
+      </QueryClientProvider>,
+    );
+    try {
+      await act(async () => renderTask("a", saveA));
+      act(() => enterMultilineEdit(container));
+      act(() => {
+        const textarea = container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]')!;
+        textarea.focus();
+        setNativeTextareaValue(textarea, "A draft before navigation");
+      });
+      expect(hasPendingWrites()).toBe(true);
+      await act(async () => renderTask("b", saveB));
+      expect(hasPendingWrites()).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(saveA).not.toHaveBeenCalled();
+      expect(saveB).not.toHaveBeenCalled();
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-1:task-a:description")).toContain("A draft before navigation");
+    } finally { act(() => root.unmount()); client.clear(); localStorage.clear(); vi.useRealTimers(); }
   });
 
   it("restores an unsaved edit without overwriting a newer server value", async () => {
@@ -417,6 +500,30 @@ describe("InlineEditor", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("releases update blocking when a newer multiline edit is undone after an older save completes", async () => {
+    vi.useFakeTimers();
+    const root = createRoot(container);
+    let complete!: () => void;
+    const onSave = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+    try {
+      await act(async () => root.render(<InlineEditor value="Original" multiline defaultEditing onSave={onSave} />));
+      const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+      act(() => { textarea.focus(); setNativeTextareaValue(textarea, "First edit"); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(onSave).toHaveBeenCalledWith("First edit");
+      act(() => setNativeTextareaValue(textarea, "Newer edit"));
+      await act(async () => { complete(); await Promise.resolve(); });
+      expect(container.textContent).toContain("Saved");
+      expect(hasPendingWrites()).toBe(true);
+      act(() => setNativeTextareaValue(textarea, "Original"));
+      expect(container.textContent).toContain("Saved");
+      expect(hasPendingWrites()).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(container.textContent).not.toContain("Saved");
+    } finally { act(() => root.unmount()); vi.useRealTimers(); }
   });
 
   it("multiline nullable clear uses autosave path (shows Saved after blur)", async () => {

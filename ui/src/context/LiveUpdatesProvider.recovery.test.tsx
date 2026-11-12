@@ -17,7 +17,9 @@ vi.mock("../api/auth", () => ({
 }));
 vi.mock("../api/health", () => ({ healthApi: { get: healthRead } }));
 import { LiveUpdatesProvider, useHasCompanyLiveConnection, useTaskRunLiveUpdates } from "./LiveUpdatesProvider";
-import { liveRunRefetchInterval } from "../lib/live-runs-cache";
+import { CONNECTED_ACTIVE_RUN_REFETCH_MS, liveRunRefetchInterval } from "../lib/live-runs-cache";
+import { taskBrowsersQueryKey } from "../lib/task-browsers-refresh";
+import { taskBrowsersRefetchInterval } from "../hooks/useTaskBrowsers";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -184,9 +186,86 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(pollRead).toHaveBeenCalledTimes(readsAfterOpen);
   });
 
-  it.each([[{ id: "run-1" }], { id: "run-1" }])("keeps active work polling while connected for %j", async (data) => {
+  it.each([
+    ["a run list", [{ id: "run-1", status: "running" }]],
+    ["a single run", { id: "run-1", status: "running" }],
+  ])("slows active work polling to the safety interval while connected for %s", async (_label, data) => {
     vi.stubGlobal("WebSocket", Socket);
     pollRead.mockResolvedValue(data);
+    await renderPolling();
+    await act(async () => Socket.instances[0].onopen?.());
+    await advancePolls(1);
+    pollRead.mockClear();
+    // Lifecycle events refresh active runs while connected; no one-second reads.
+    await advancePolls(5);
+    expect(pollRead).not.toHaveBeenCalled();
+    await advancePolls(Math.ceil(CONNECTED_ACTIVE_RUN_REFETCH_MS / 1000));
+    expect(pollRead.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reads task browsers again when the connection opens during an older empty read", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    const started = [{ id: "browser-1", status: "running" }];
+    let release!: (value: unknown) => void;
+    const browsersRead = vi.fn<() => Promise<unknown>>().mockResolvedValue(started);
+    function Browsers() {
+      const connected = useHasCompanyLiveConnection("company-1");
+      useQuery({
+        queryKey: taskBrowsersQueryKey("task-1"), queryFn: browsersRead,
+        refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state as Parameters<typeof taskBrowsersRefetchInterval>[1]),
+      });
+      return null;
+    }
+    browsersRead.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><LiveUpdatesProvider><Browsers /></LiveUpdatesProvider></QueryClientProvider>,
+    ));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(browsersRead).toHaveBeenCalledTimes(1);
+    // The browser starts while the socket is closed; its activity is not replayed.
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => release([]));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(browsersRead).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(taskBrowsersQueryKey("task-1"))).toEqual(started);
+  });
+
+  it("reads an idle task browser list once when the connection opens", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    const browsersRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]);
+    function Browsers() {
+      const connected = useHasCompanyLiveConnection("company-1");
+      useQuery({
+        queryKey: taskBrowsersQueryKey("task-1"), queryFn: browsersRead,
+        refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state as Parameters<typeof taskBrowsersRefetchInterval>[1]),
+      });
+      return null;
+    }
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><LiveUpdatesProvider><Browsers /></LiveUpdatesProvider></QueryClientProvider>,
+    ));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    browsersRead.mockClear();
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    // The open reconcile reads it once; it is not followed up as an older read.
+    expect(browsersRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one-second polling for active work after the connection closes", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    pollRead.mockResolvedValue([{ id: "run-1", status: "running" }]);
+    await renderPolling();
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => Socket.instances[0].onclose?.());
+    pollRead.mockClear();
+    await advancePolls(3);
+    expect(pollRead.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps fallback polling for an unrecognized active result while connected", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    pollRead.mockResolvedValue({ id: "run-1" });
     await renderPolling();
     await act(async () => Socket.instances[0].onopen?.());
     pollRead.mockClear();

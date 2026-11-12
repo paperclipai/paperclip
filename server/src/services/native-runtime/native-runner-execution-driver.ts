@@ -7,6 +7,14 @@ import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeRunTrace } from "./native-run-trace.js";
 import type { Db } from "@paperclipai/db";
 import { nativeRunnerCheckpointRegistration } from "./native-runner-checkpoint.js";
+import { readEnvironmentRunnerIngressFailure, type PluginEnvironmentRunnerIngressFailure } from "@paperclipai/plugin-sdk";
+
+export class NativeRunnerIngressAcquisitionError extends Error {
+  constructor(readonly failure: PluginEnvironmentRunnerIngressFailure) {
+    super(`Runner connection endpoint could not be acquired (HTTP ${failure.httpStatus}).`);
+    this.name = "NativeRunnerIngressAcquisitionError";
+  }
+}
 
 type ConnectionRegistration = NonNullable<RunnerExecutionDriver["controlPlaneRegistration"]>;
 type RunnerIdentity = Parameters<ConnectionRegistration>[1];
@@ -107,12 +115,14 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
         }
       : undefined,
     controlPlaneRegistration: async (authority, attachmentIdentity) => {
-      await input.beforeConnect?.(attachmentIdentity, authority);
-      if (input.controllerPersistence && input.binding.issueId) {
-        await nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
-          binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },
-        })(authority, attachmentIdentity);
-      }
+      await measureNativeRunnerSpan(input.trace, "runner.checkpoint.register", async () => {
+        await input.beforeConnect?.(attachmentIdentity, authority);
+        if (input.controllerPersistence && input.binding.issueId) {
+          await nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
+            binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },
+          })(authority, attachmentIdentity);
+        }
+      }, { parentName: "runner.session.startup" });
       return measureNativeRunnerSpan(
         input.trace,
         "runner.transport.connect",
@@ -177,21 +187,25 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
             );
             // Provider endpoint acquisition happens only after runnerd is staged
             // and its listener capability has been verified.
-            transport = await measureNativeRunnerSpan(
-              input.trace,
-              "runner.ingress.acquire",
-              () =>
-                resolvePaperclipRunnerTransport({
-                  target: input.target,
-                  runId:
-                    attachmentIdentity?.runId ??
-                    input.binding.runId,
-                  localConnectUrl: "ws://127.0.0.1/unused",
-                  runnerPublicUrl: input.runnerPublicUrl,
-                  runnerCaBundlePath: input.runnerCaBundlePath,
-                  runnerIngressAuthorized: true,
-                }),
-            );
+            try {
+              transport = await measureNativeRunnerSpan(
+                input.trace,
+                "runner.ingress.acquire",
+                () =>
+                  resolvePaperclipRunnerTransport({
+                    target: input.target,
+                    runId: attachmentIdentity?.runId ?? input.binding.runId,
+                    localConnectUrl: "ws://127.0.0.1/unused",
+                    runnerPublicUrl: input.runnerPublicUrl,
+                    runnerCaBundlePath: input.runnerCaBundlePath,
+                    runnerIngressAuthorized: true,
+                  }),
+              );
+            } catch (error) {
+              const failure = readEnvironmentRunnerIngressFailure(error);
+              if (failure) throw new NativeRunnerIngressAcquisitionError(failure);
+              throw error;
+            }
           }
 
           const selectedAtMs = Date.now();

@@ -1,3 +1,4 @@
+import { slackDeliveryMeetsMentionRequirement } from "./chat-channels/slack/wake-authority.js";
 import { createHash } from "node:crypto";
 import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
 import { and, eq, exists, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
@@ -410,7 +411,5 @@ export async function slackMentionAllowsRunStart(
       ),
     ));
   return inputs.every(({ event }) =>
-    (event.conversation as { isDirectMessage?: boolean } | undefined)?.isDirectMessage === true ||
-    event.trigger === "mention" ||
-    (event.message as { mentionedBot?: boolean } | undefined)?.mentionedBot === true);
+    slackDeliveryMeetsMentionRequirement({ requireAtMention: true }, event));
 }

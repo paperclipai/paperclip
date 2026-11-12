@@ -3,8 +3,9 @@ import { notifyDeferredExecutionWork } from "../../../services/deferred-executio
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
+import { isAgentDirectoryPreparationWait } from "../../../services/pre-dispatch-execution-evidence.js";
 import { isUserCommentContinuationReason } from "../../../services/explicit-native-continuation.js";
-import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
+import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
@@ -12,6 +13,7 @@ import { notifyInstructionCollection } from "../../../services/instruction-colle
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
@@ -26,18 +28,23 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueTreeHolds,
   issues,
   nativeRunFinalizations,
   projects,
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON, isUuidLike } from "@paperclipai/shared";
-import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
+import { withOperationAccountingTransaction } from "../../../services/accounting-transaction.js";
+import { lockBudgetAdmissionControls } from "../../../services/budget-admission-controls.js";
 import type { ActivityPublication } from "../../../services/activity-log.js";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
+import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
+import { isVerifiedDependencyInteractionResponse } from "../../../services/queued-interaction-response.js";
+import { agentBlockingQuestionState } from "../../../services/blocked-question-answer.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -47,10 +54,13 @@ import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../..
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
+  ISSUE_PAUSED_ERROR_CODE,
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  pauseSuppressionResult,
 } from "../../../services/issue-tree-control.js";
 import {
   continuationSummaryParksExecutor,
@@ -66,6 +76,7 @@ import type {
 } from "../domain/policy.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
+  WORKSPACE_BUSY_RETRY_REASON,
   allowsIssueInteractionWake,
   deriveCommentId,
   isNonAssigneeWorkspaceBusyRetry,
@@ -88,6 +99,7 @@ import type {
   PromoteScheduledRetryOutcome,
 } from "../application/types.js";
 import { RunDispatchApplicationError } from "../application/types.js";
+import { parkWorkspaceBusyRetryInTx } from "./workspace-busy-wait.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
@@ -217,6 +229,7 @@ export function createPostgresRunDispatchAdapter(
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
     mode: "accounting" | "ownership",
+    isolation: "snapshot" | "read committed" = "snapshot",
   ): Promise<T> {
     // Queue editing and claiming already use issue -> wake -> run. Read the
     // immutable issue reference without a lock first, then acquire issue ->
@@ -224,8 +237,9 @@ export function createPostgresRunDispatchAdapter(
     // that owns the issue lock and is waiting for the run.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const hint = await db
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot, agentId: heartbeatRuns.agentId, projectId: budgetReservations.projectId })
         .from(heartbeatRuns)
+        .leftJoin(budgetReservations, and(eq(budgetReservations.runId, heartbeatRuns.id), eq(budgetReservations.companyId, heartbeatRuns.companyId)))
         .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!hint) return onMissing();
@@ -236,8 +250,13 @@ export function createPostgresRunDispatchAdapter(
         : readNonEmptyString(parseObject(hint.contextSnapshot).issueId);
 
       const locked = async (typedTx: Db, publications: ActivityPublication[]) => {
-        // Recovery always takes coordinator before issue/run. Only the
-        // accounting phase acquires the company lock and evaluates budgets.
+        if (mode === "accounting") {
+          await lockBudgetAdmissionControls(typedTx, input.companyId, hint.projectId);
+          await typedTx.select({ id: agents.id }).from(agents)
+            .where(and(eq(agents.id, hint.agentId), eq(agents.companyId, input.companyId))).for("share");
+        }
+        // Recovery keeps coordinator -> issue -> run order after the shared
+        // dispatch-control fences. Settlement never uses these authority locks.
         await lockRunBudgetRecoveryOwnerInTransaction(typedTx, input.companyId, input.runId, input.recoveryLeaseOwner);
         if (hintedIssueId) {
           await typedTx
@@ -266,7 +285,8 @@ export function createPostgresRunDispatchAdapter(
         return { kind: "value" as const, value: await operation(typedTx, run, publications) };
       };
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } = mode === "accounting"
-        ? await withAccountingTransaction(db, input.companyId, locked)
+        ? await withOperationAccountingTransaction(db, input.companyId, locked,
+          isolation === "read committed" ? { isolationLevel: "read committed" } : {})
         : await db.transaction(tx => locked(tx as unknown as Db, []));
 
       if (result.kind === "missing") return onMissing();
@@ -278,12 +298,21 @@ export function createPostgresRunDispatchAdapter(
     );
   }
 
+  /** Accounting phase under issue -> run locks. Gate decisions that combine
+   * many facts (retry promotion, stale-run cancellation) keep one repeatable-
+   * read snapshot. The final dispatch gate passes READ COMMITTED: run-log
+   * appends and output progress update a running row while it waits, and a
+   * snapshot taken before the run lock went stale on each one until every
+   * retry was spent. Its mutable reads all follow the admission fences and the
+   * issue/run locks, budget exposure is one statement, and its ownership phase
+   * re-reads the staleness facts at READ COMMITTED under the same locks. */
   function withIssueThenRunLocks<T>(
     input: { runId: string; companyId: string; recoveryLeaseOwner?: string; enforceContinuationOwnership?: boolean },
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
+    isolation: "snapshot" | "read committed" = "snapshot",
   ) {
-    return withRunOwnershipLocks(input, onMissing, operation, "accounting");
+    return withRunOwnershipLocks(input, onMissing, operation, "accounting", isolation);
   }
 
   async function loadGateFacts(
@@ -404,7 +433,7 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
-    if (input.conversationContinuation) {
+    if (input.conversationContinuation || retryReason === "interrupted_preparation") {
       facts.pendingResponse = await connectionContinuationPendingResponse(dbOrTx as unknown as Db,
         issue, input.responsibleUserId, input.runId);
     }
@@ -465,8 +494,25 @@ export function createPostgresRunDispatchAdapter(
 
     const dependencyReadiness = await issuesSvcForRead.listDependencyReadiness(input.companyId, [issueId]);
     const readiness = dependencyReadiness.get(issueId);
+    // A verified stall wake runs while its stalled dependency is unresolved,
+    // including after a resource wait replaced it with a scheduled retry.
+    const stallAdmitted = readiness && !readiness.isDependencyReady && input.contextSnapshot.blockerStall
+      ? await verifyBlockerStallWake(db, { companyId: input.companyId, issueId, contextSnapshot: input.contextSnapshot,
+          requestedByActorType: input.wakeupRequestId ? await db.select({ actor: agentWakeupRequests.requestedByActorType })
+            .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.id, input.wakeupRequestId))).then(rows => rows[0]?.actor ?? null) : null })
+      : false;
+    const responseAdmitted = readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId,
+        issueId, agentId: input.agentId, context: input.contextSnapshot });
+    const preparationWait = input.contextSnapshot.preparationWait;
+    const preparationWaitAdmitted = Boolean(readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && preparationWait && typeof preparationWait === "object" && !Array.isArray(preparationWait)
+      && typeof (preparationWait as Record<string, unknown>).kind === "string");
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady
+      readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted && !preparationWaitAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -632,9 +678,13 @@ export function createPostgresRunDispatchAdapter(
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
-    const readiness = issue && retryReasonKind === "native_safe_replacement"
+    const replacementReadiness = issue && retryReasonKind === "native_safe_replacement"
       ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
       : null;
+    const readiness = replacementReadiness && !replacementReadiness.isDependencyReady && context.blockerStall
+      && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
+        contextSnapshot: context, requestedByActorType: null })
+      ? null : replacementReadiness;
     return {
       runId: input.runId,
       runAgentId: input.agentId,
@@ -644,7 +694,7 @@ export function createPostgresRunDispatchAdapter(
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
-      pendingResponse: issue && (input.conversationContinuation || context.connectionIntentResolution === "existing_connection")
+      pendingResponse: issue && (input.conversationContinuation || retryReason === "interrupted_preparation" || context.connectionIntentResolution === "existing_connection")
         ? await connectionContinuationPendingResponse(dbOrTx as unknown as Db, issue, input.responsibleUserId, input.runId)
         : null,
       issueFound: issue !== null,
@@ -653,6 +703,15 @@ export function createPostgresRunDispatchAdapter(
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
+      isDependencyBlockedInteractionResponse: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && context.dependencyBlockedInteraction === true
+        && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
+      isAgentBlockingQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && await agentBlockingQuestionState(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
+      isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
+        await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
@@ -735,6 +794,17 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    // A retry a pause refused is owed one re-dispatch when that pause is released.
+    const pauseHoldId = input.errorCode === ISSUE_PAUSED_ERROR_CODE ? readNonEmptyString(input.details.holdId) : null;
+    if (pauseHoldId) {
+      // Hold the pause against a concurrent release until this refusal commits,
+      // so release either sees the refused retry or the retry sees no pause.
+      // Under a released pause the retry stays parked for the next promotion.
+      const [active] = await tx.select({ id: issueTreeHolds.id }).from(issueTreeHolds).where(and(
+        eq(issueTreeHolds.companyId, input.companyId), eq(issueTreeHolds.id, pauseHoldId),
+        eq(issueTreeHolds.status, "active"))).for("share");
+      if (!active) return { applied: false };
+    }
     await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyExternalAgentSettlement(tx, { companyId: input.companyId, runId: input.runId });
@@ -742,6 +812,9 @@ export function createPostgresRunDispatchAdapter(
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined, runId: input.runId });
+    const pauseSuppression = pauseHoldId ? pauseSuppressionResult({
+      holdId: pauseHoldId, rootIssueId: readNonEmptyString(input.details.rootIssueId),
+    }) : null;
     const [row] = await tx
       .update(heartbeatRuns)
       .set({
@@ -749,6 +822,9 @@ export function createPostgresRunDispatchAdapter(
         finishedAt: input.now,
         error: input.reason,
         errorCode: input.errorCode,
+        ...(pauseSuppression ? {
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(pauseSuppression)}::jsonb`,
+        } : {}),
         updatedAt: input.now,
       })
       .where(
@@ -905,6 +981,9 @@ export function createPostgresRunDispatchAdapter(
       if (issueId && (await deferRetryForCleanupInTx(tx, run, issueId, now))) {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
+      if (await parkWorkspaceBusyRetryInTx(tx, run, now)) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
 
       const promoted = await promoteDueRetryInTx(tx as unknown as Db, {
         runId: input.runId,
@@ -938,6 +1017,43 @@ export function createPostgresRunDispatchAdapter(
     return transactionResult.outcome;
   }
 
+  /**
+   * A system retry of an unstarted user turn (a workspace wait or an
+   * admission retry) still carries that user's message, but its own receipt
+   * is system-owned. Find the originating user receipt through a bounded chain
+   * of retries that never reached the provider, so the message can be saved
+   * under the user's authority instead of being dropped with the retry.
+   */
+  async function unstartedUserTurnOrigin(tx: Db, run: HeartbeatRun, issueId: string) {
+    let current = run;
+    // Comments can coalesce into any retry in the chain while it waits.
+    const chainRunIds: string[] = [], chainWakeIds: string[] = [];
+    for (let hop = 0; hop < 8 && current.retryOfRunId; hop++) {
+      const [parent] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
+        eq(heartbeatRuns.id, current.retryOfRunId), eq(heartbeatRuns.status, "cancelled"),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+      )).for("update");
+      if (!parent?.wakeupRequestId) return null;
+      const recovery = parseObject(parent.resultJson?.executionRecovery);
+      const unstarted = parent.errorCode === WORKSPACE_BUSY_RETRY_REASON
+        ? recovery.kind === "workspace_wait" && recovery.providerWorkStarted === false
+        : isAgentDirectoryPreparationWait(parent)
+        || (parent.errorCode === "execution_reconciliation_required" && await isPreDispatchExecutionWaitVerified(tx, parent));
+      if (!unstarted) return null;
+      const [wake] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+        eq(agentWakeupRequests.id, parent.wakeupRequestId), eq(agentWakeupRequests.runId, parent.id),
+      )).for("update");
+      if (!wake) return null;
+      chainRunIds.push(parent.id); chainWakeIds.push(wake.id);
+      if (wake.requestedByActorType === "user")
+        return ["cancelled", "skipped"].includes(wake.status) ? { run: parent, wake, chainRunIds, chainWakeIds } : null;
+      current = parent;
+    }
+    return null;
+  }
+
   async function deferUnstartedUserComment(tx: Db, run: HeartbeatRun, issueId: string, now: Date) {
     if (!run.wakeupRequestId || !await isPreDispatchExecutionWaitVerified(tx, run)) return null;
     const wait = parseObject(run.resultJson?.executionWait);
@@ -947,24 +1063,38 @@ export function createPostgresRunDispatchAdapter(
     )).for("update");
     const [source] = preservation ? await tx.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
-      eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "cancelled"),
+      eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["cancelled", "failed"]),
       sql`${heartbeatRuns.id}::text = ${preservation.evidence.runId}`,
     )) : [];
-    const baseline = readNativeWorkspaceSyncReference(source?.runnerProfileJson?.nativeWorkspaceSync);
-    if (!preservation || !source || !hasRequiredWorkspaceRecovery(source.resultJson) || !baseline || baseline.state === "finalized" ||
-        preservation.fingerprint !== `native-workspace:${source.id}`) return null;
-    const context = parseObject(run.contextSnapshot), commentId = deriveCommentId(context);
-    const commentIds = queuedCommentIdsFromRunContext(context);
-    if (!commentId || !commentIds.includes(commentId) || !isUserCommentContinuationReason(readNonEmptyString(context.wakeReason))) return null;
-    const [wake] = await tx.select().from(agentWakeupRequests).where(and(
+    // A user-stopped run can settle as failed when its unreachable runner's
+    // transport fails closed. Only that recorded Stop makes a failed source eligible.
+    if (!preservation || !source || (source.status === "failed" && !recordedUserStop(source))) return null;
+    const baseline = readNativeWorkspaceSyncReference(source.runnerProfileJson?.nativeWorkspaceSync);
+    // Copyback from a native baseline replays the saved turn. Without one, only
+    // a message sent after the Stop is saved; admission still applies all gates.
+    const copybackReplay = hasRequiredWorkspaceRecovery(source.resultJson) && !!baseline && baseline.state !== "finalized" &&
+      preservation.fingerprint === `native-workspace:${source.id}`;
+    const runContext = parseObject(run.contextSnapshot), commentId = deriveCommentId(runContext);
+    const commentIds = queuedCommentIdsFromRunContext(runContext);
+    if (!commentId || !commentIds.includes(commentId)) return null;
+    const [ownWake] = await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.runId, run.id),
       inArray(agentWakeupRequests.status, ["queued", "claimed"]),
-      eq(agentWakeupRequests.requestedByActorType, "user"),
     )).for("update");
-    const payload = parseObject(wake?.payload);
+    if (!ownWake) return null;
+    const origin = ownWake.requestedByActorType === "system" ? await unstartedUserTurnOrigin(tx, run, issueId) : null;
+    if (ownWake.requestedByActorType !== "user" && !origin) return null;
+    const wake = origin?.wake ?? ownWake;
+    const receiptRunId = origin?.run.id ?? run.id;
+    const runIds = [run.id, ...(origin?.chainRunIds ?? [])];
+    // A retry's context names the retry reason. Save the user's original wake
+    // context together with every message the retry carried.
+    const context = origin ? withQueuedCommentIdsInRunContext(parseObject(origin.run.contextSnapshot), commentIds) : runContext;
+    if (!isUserCommentContinuationReason(readNonEmptyString(context.wakeReason))) return null;
+    const payload = parseObject(wake.payload);
     const originalCommentId = readNonEmptyString(payload.commentId);
-    if (!wake?.requestedByActorId || payload.issueId !== issueId ||
+    if (!wake.requestedByActorId || payload.issueId !== issueId ||
         !originalCommentId || !commentIds.includes(originalCommentId)) return null;
     const comments = await tx.select().from(issueComments).where(and(
       eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
@@ -974,23 +1104,26 @@ export function createPostgresRunDispatchAdapter(
     if (comments.length !== commentIds.length || comments.some(comment =>
       !comment.body.trim() || !comment.authorUserId) ||
       comments.find(comment => comment.id === originalCommentId)?.authorUserId !== wake.requestedByActorId) return null;
-    const sourceIds = context.queuedCommentSourceWakeIds;
+    const latest = comments.find(comment => comment.id === commentId);
+    const stoppedAt = userStopBoundaryAt(source);
+    if (!copybackReplay && (!stoppedAt || !latest || latest.createdAt <= stoppedAt)) return null;
+    const sourceIds = runContext.queuedCommentSourceWakeIds;
     if (sourceIds !== undefined && (!Array.isArray(sourceIds) || sourceIds.some(id => typeof id !== "string" || !isUuidLike(id)))) return null;
     const sourceWakeIds = Array.isArray(sourceIds) ? [...new Set(sourceIds as string[])] : [];
     const adopted = sourceWakeIds.length ? await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
-      eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.status, "coalesced"),
+      inArray(agentWakeupRequests.runId, runIds), eq(agentWakeupRequests.status, "coalesced"),
       inArray(agentWakeupRequests.id, sourceWakeIds),
       sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
     )).for("update") : [];
     if (adopted.length !== sourceWakeIds.length) return null;
-    const mergeTargets = [wake.id, ...adopted.map(receipt => receipt.id)];
+    const mergeTargets = [...new Set([wake.id, ownWake.id, ...(origin?.chainWakeIds ?? []), ...adopted.map(receipt => receipt.id)])];
     const coalesced = await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.status, "coalesced"), eq(agentWakeupRequests.requestedByActorType, "user"),
       sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-      or(and(eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.reason, "issue_execution_same_name")),
-        and(or(isNull(agentWakeupRequests.runId), eq(agentWakeupRequests.runId, run.id)),
+      or(and(inArray(agentWakeupRequests.runId, runIds), eq(agentWakeupRequests.reason, "issue_execution_same_name")),
+        and(or(isNull(agentWakeupRequests.runId), inArray(agentWakeupRequests.runId, runIds)),
           inArray(sql<string>`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId'`, mergeTargets))),
     )).for("update");
     const authors = new Map(comments.map(comment => [comment.id, comment.authorUserId]));
@@ -1008,8 +1141,9 @@ export function createPostgresRunDispatchAdapter(
         executionWait: { ...parseObject(run.resultJson?.executionWait), reason: "execution_recovery",
           message: "Waiting for execution recovery. Your message is saved." } }, commentIds), updatedAt: now,
     }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId),
-      eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
-      inArray(agentWakeupRequests.status, ["queued", "claimed"]))).returning({ id: agentWakeupRequests.id });
+      eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, receiptRunId),
+      inArray(agentWakeupRequests.status, origin ? ["cancelled", "skipped"] : ["queued", "claimed"])))
+      .returning({ id: agentWakeupRequests.id });
     return deferred?.id ?? null;
   }
 
@@ -1067,7 +1201,9 @@ export function createPostgresRunDispatchAdapter(
 
       const deferredWakeRequestId = expectedStatus === "queued" && decision.errorCode === "execution_reconciliation_required"
         ? await deferUnstartedUserComment(tx, row, issueId, now) : null;
-      if (row.wakeupRequestId && !deferredWakeRequestId) {
+      // A retry's system receipt still settles when its user's message was
+      // saved on the originating user receipt.
+      if (row.wakeupRequestId && deferredWakeRequestId !== row.wakeupRequestId) {
         await tx
           .update(agentWakeupRequests)
           .set({ status: "skipped", finishedAt: now, error: decision.reason, updatedAt: now })
@@ -1152,7 +1288,12 @@ export function createPostgresRunDispatchAdapter(
         } };
       }
     }
-    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    // A native run's own scheduled resume is not a hold against that run: the
+    // same-run attempt is how its saved state (e.g. a governed wait) settles.
+    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, {
+      conversationResetCommentId: deriveCommentId(contextSnapshot),
+      resumingNativeRunId: run.runtimeMode === "native" ? run.id : null,
+    });
     if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },
@@ -1360,6 +1501,7 @@ export function createPostgresRunDispatchAdapter(
         );
       },
       dispatchLockedRun,
+      "read committed",
     );
     if (!admission.dispatched) return admission;
     // Accounting has committed. Close the separate issue/run ownership race
@@ -1412,7 +1554,8 @@ export function createPostgresRunDispatchAdapter(
         }
       }
       const budgetBlock = stopRecovery ? null : await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
-        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId });
+        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId,
+        admittedRecovery: Boolean(input.recoveryLeaseOwner) });
       if (budgetBlock) return { dispatched: false as const, admissionBlockReason: budgetBlock };
       if (input.recoveryLeaseOwner) {
         const [owner] = run.runtimeMode === "native" ? await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(

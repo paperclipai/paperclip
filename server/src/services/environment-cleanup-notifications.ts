@@ -4,6 +4,7 @@ import { notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js
 import { notifyNativeEnvironmentSettlement, type NativeEnvironmentSettlementScope } from "./native-environment-settlement-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyQueuedRunDispatch } from "./run-dispatch-notifications.js";
 
 export type EnvironmentCleanupWorkScope = NativeEnvironmentSettlementScope & { leaseId?: string };
 
@@ -28,6 +29,12 @@ export async function notifyEnvironmentCleanup(transaction: object, scope?: Envi
     }
   }
   await notifyNativeEnvironmentSettlement(transaction, scope);
+  await notifyQueuedRunDispatch(transaction, scope);
+  // A settled run lease can make that run's abandoned native owner releasable.
+  if (scope?.runId) {
+    await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionFinalization);
+    await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionReplacement);
+  }
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.environmentCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);
 }

@@ -23,8 +23,7 @@ export function useCoordinatorChatTaskHandoffs(issueId: string | null, conversat
       return api.get<ConversationTaskHandoffPage>(path, { signal, cache: "no-store" });
     },
     getNextPageParam: page => page.nextCursor,
-    retry: false,
-  });
+    });
   const accessUnavailable = !!query.error && "status" in query.error && [401, 403, 404].includes(Number(query.error.status));
   const handoffs = useMemo(() => {
     if (!enabled || !conversationMode || accessUnavailable) return [];

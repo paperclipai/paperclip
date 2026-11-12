@@ -18,6 +18,7 @@ import { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "@p
 import { usesManagedCloudSandboxImage } from "./sandbox-snapshot-qualification.js";
 import { environmentCustomImageTemplateMatchesBaseConfig } from "./environment-custom-image-runtime.js";
 import type { ExecutionPolicy } from "./execution-allowlist.js";
+import { pluginEnvironmentRunnerTaskDriver } from "./plugin-runner-ai-connection.js";
 
 export type RunnerTarget = {
   driver: string; platform?: string; architecture?: string; libc?: "glibc" | "musl" | "unknown"; glibcVersion?: string;
@@ -80,7 +81,7 @@ export function agentRunnerAvailability(harness: string, target: RunnerTarget = 
 }
 
 function incompatible(fields: string[]): never {
-  throw unprocessable(`Paperclip Runner cannot honor these settings: ${fields.join(", ")}. Remove them or select Legacy runner in Advanced.`, { code: "agent_runner_config_incompatible", fields });
+  throw unprocessable(`Paperclip Runner cannot honor these settings: ${fields.join(", ")}. Remove them before retrying.`, { code: "agent_runner_config_incompatible", fields });
 }
 
 function resolveGrokRunnerConfig(config: Record<string, unknown>): Record<string, unknown> {
@@ -137,7 +138,8 @@ function resolveOpenCodeRunnerConfig(config: Record<string, unknown>): Record<st
     provider: "opencode",
     model: typeof config.model === "string" ? config.model.trim() : "",
     opencodePermissionMode: config.opencodePermissionMode ?? "allow",
-    lifecycleMode: config.lifecycleMode ?? "per_turn",
+    // Absent means the product default: warm on a local target (native-lifecycle.ts).
+    ...(config.lifecycleMode === undefined ? {} : { lifecycleMode: config.lifecycleMode }),
   };
 }
 
@@ -172,7 +174,7 @@ function resolveClaudeRunnerConfig(config: Record<string, unknown>): Record<stri
   }
   const model = resolveClaudeModel(config.model, modelEnv);
   if (!model) incompatible(["model"]);
-  return { ...translated, ...(effort === undefined || effort === "" ? {} : { modelReasoningEffort: effort }), provider: "acpx", acpxAgent: "claude", model, acpxPermissionMode: translated.acpxPermissionMode ?? "approve-all", lifecycleMode: config.lifecycleMode ?? "per_turn" };
+  return { ...translated, ...(effort === undefined || effort === "" ? {} : { modelReasoningEffort: effort }), provider: "acpx", acpxAgent: "claude", model, acpxPermissionMode: translated.acpxPermissionMode ?? "approve-all", ...(config.lifecycleMode === undefined ? {} : { lifecycleMode: config.lifecycleMode }) };
 }
 
 export function resolveNewAgentRunner(input: AgentRunnerSelection): { adapterType: string; adapterConfig: Record<string, unknown> } {
@@ -261,8 +263,8 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
   }
   if (native && harness !== "codex_local" && choice === "paperclip") return { adapterType, adapterConfig: normalizeLegacyRunnerProvider(config) };
   if (!availability.supportedRunners.includes("paperclip")) throw unprocessable(input.target?.driver === "sandbox"
-    ? "Paperclip Runner is unavailable for this sandbox. Choose an immutable OCI image digest and run its environment connection probe to qualify the OS, architecture and libc, or select Legacy runner in Advanced."
-    : "Paperclip Runner is unavailable for this harness and environment. Select Legacy runner in Advanced.", { code: "agent_runner_unavailable" });
+    ? "Paperclip Runner is unavailable for this sandbox. Choose an immutable OCI image digest and run its environment connection probe to qualify the OS, architecture and libc."
+    : "Paperclip Runner is unavailable for this harness and environment. Choose a supported harness or environment.", { code: "agent_runner_unavailable" });
   if (native) return { adapterType, adapterConfig: normalizeLegacyRunnerProvider(config) };
   if (harness === "cursor_cloud") {
     const unsupported = ["promptTemplate", "bootstrapPromptTemplate"].filter(key => typeof config[key] === "string" && config[key].trim());
@@ -367,7 +369,7 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
   const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
   for (const key of ["engine", "command", "extraArgs", "args", "agentCommand", "mode", "nonInteractivePermissions", "stateDir", "warmHandleIdleMs", "dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "fastMode", "reasoningEffort", "effort"]) delete config[key];
   if (config.model !== undefined && typeof config.model !== "string") incompatible(["model"]);
-  config = { ...config, provider: "codex", model: typeof config.model === "string" && config.model.trim() ? config.model.trim() : PAPERCLIP_RUNNER_DEFAULT_MODELS.codex, codexPermissionMode: config.codexPermissionMode ?? "never", lifecycleMode: config.lifecycleMode ?? "per_turn", ...(effort === undefined ? {} : { modelReasoningEffort: effort }) };
+  config = { ...config, provider: "codex", model: typeof config.model === "string" && config.model.trim() ? config.model.trim() : PAPERCLIP_RUNNER_DEFAULT_MODELS.codex, codexPermissionMode: config.codexPermissionMode ?? "never", ...(config.lifecycleMode === undefined ? {} : { lifecycleMode: config.lifecycleMode }), ...(effort === undefined ? {} : { modelReasoningEffort: effort }) };
   try { resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: config }); }
   catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) throw unprocessable(error.message, { code: error.code });
@@ -450,7 +452,7 @@ export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: stri
     if (parsed.driver !== "ssh") throw unprocessable("The selected SSH environment is unavailable.");
     let output: string;
     try { output = (await runSshCommand(parsed.config, AGENT_RUNNER_SSH_PLATFORM_COMMAND, { timeoutMs: 10_000 })).stdout; }
-    catch { throw unprocessable("Could not check the SSH host's platform. Check its connection and retry, or select Legacy runner in Advanced.", { code: "agent_runner_platform_probe_failed" }); }
+    catch { throw unprocessable("Could not check the SSH host's platform. Check its connection and retry.", { code: "agent_runner_platform_probe_failed" }); }
     const [os = "", arch = "", libc, glibcVersion] = output.trim().split(/\r?\n/);
     target = { driver, platform: os === "Linux" ? "linux" : os === "Darwin" ? "darwin" : "unknown", architecture: arch === "x86_64" ? "x64" : ["aarch64", "arm64"].includes(arch) ? "arm64" : arch, ...(os === "Linux" && libc !== undefined ? { libc: libc === "glibc" || libc === "musl" ? libc : "unknown", ...(libc === "glibc" && glibcVersion !== undefined ? { glibcVersion } : {}) } : {}) };
   }
@@ -479,7 +481,7 @@ async function resolveAgentEnvironmentForCompany(db: Db, companyId: string, defa
   let environment = environmentId ? await envs.getById(environmentId) : null;
   if (settings.experimental?.enableManagedSandboxOnly && (!environment || environment.driver === "local")) {
     environment = await envs.findManagedSandboxEnvironment(companyId);
-    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", {
+    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Sandbox and retry.", {
       code: "managed_sandbox_unavailable", ...(executionMode ? { executionMode } : {}),
     });
   }
@@ -496,20 +498,3 @@ async function resolveAgentEnvironmentForCompany(db: Db, companyId: string, defa
   return { environment, driver: environment?.driver ?? "local", executionMode };
 }
 
-// The plugin's manifest declaration decides whether its environment runs
-// Runner tasks. Run admission separately verifies a ready plugin and a live
-// worker, so a plugin that is down still selects the Runner and fails its run.
-async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Parameters<typeof parseEnvironmentDriverConfig>[0]) {
-  let config: { pluginKey: string; driverKey: string };
-  try {
-    const parsed = parseEnvironmentDriverConfig(environment);
-    if (parsed.driver !== "plugin") return undefined;
-    config = parsed.config;
-  } catch {
-    return undefined;
-  }
-  const { pluginRegistryService } = await import("./plugin-registry.js");
-  const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
-  return plugin?.manifestJson.capabilities.includes("environment.drivers.register")
-    ? plugin.manifestJson.environmentDrivers?.find(driver => driver.driverKey === config.driverKey && driver.supportsTasks === true) : undefined;
-}

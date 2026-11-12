@@ -37,7 +37,7 @@ export function executionPartition(selection, context, jobRunId) {
   const size = [matrix, native, external, selection.cases.map(row => row.executionId)]
     .reduce((sum, value) => sum + JSON.stringify(value).length * 2, 0);
   if (size > 1_000_000) reject('matrix_size');
-  return { matrix, native, external, parallelism: small ? external.include.length ? '1' : '2' : '8' };
+  return { matrix, native, external, parallelism: small && external.include.length ? '1' : '2' };
 }
 async function readOwned(file, root, limit) {
   const absolute = path.resolve(file), base = await realpath(root);

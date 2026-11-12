@@ -104,6 +104,13 @@ export const updateMemberPermissionsSchema = z.object({
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
 
+export const updateAgentPermissionGrantSchema = z.object({
+  permissionKey: z.enum(PERMISSION_KEYS),
+  enabled: z.boolean(),
+}).strict();
+
+export type UpdateAgentPermissionGrant = z.infer<typeof updateAgentPermissionGrantSchema>;
+
 const editableMembershipStatuses = ["pending", "active", "suspended"] as const;
 
 export const updateCompanyMemberSchema = z.object({
@@ -192,6 +199,23 @@ export const currentUserProfileSchema = z.object({
 
 export type CurrentUserProfile = z.infer<typeof currentUserProfileSchema>;
 
+/**
+ * Browser performance tracing settings for a hosted Paperclip Cloud instance.
+ * The server sends a value only when the instance is cloud managed and an
+ * operator configured an endpoint; see `doc/browser-performance-tracing.md`.
+ * `ingestKey` is a Honeycomb ingest-only key (or null for a collector that
+ * needs no key); it is never a configuration key.
+ */
+export const browserTracingConfigSchema = z.object({
+  tracesUrl: z.string().url(),
+  ingestKey: z.string().min(1).nullable(),
+  serviceName: z.string().min(1),
+  environment: z.string().min(1).nullable(),
+  sampleRate: z.number().gt(0).max(1),
+});
+
+export type BrowserTracingConfig = z.infer<typeof browserTracingConfigSchema>;
+
 export const authSessionSchema = z.object({
   session: z.object({
     id: z.string().min(1),
@@ -207,6 +231,9 @@ export const authSessionSchema = z.object({
   sentryDsn: z.string().min(1).nullable(),
   // Optional for browser/server version skew; null leaves the SDK default.
   sentryEnvironment: z.string().nullable().optional(),
+  // Null or absent leaves browser performance tracing off. Optional for
+  // browser/server version skew.
+  browserTracing: browserTracingConfigSchema.nullable().optional(),
 });
 
 export type AuthSession = z.infer<typeof authSessionSchema>;

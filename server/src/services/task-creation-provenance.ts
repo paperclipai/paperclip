@@ -62,7 +62,7 @@ export async function readTaskCreationProvenance(db: Db, companyId: string, task
     if (!batch.length) break;
     if (depth >= MAX_DEPTH || visited.size + batch.length > MAX_TASKS) { complete = false; break; }
     batch.forEach(id => visited.add(id));
-    const tasks = await read(() => db.select({ id: issues.id, parentId: issues.parentId,
+    const tasks = await read(() => db.select({ id: issues.id, parentId: issues.parentId, originIssueId: issues.originIssueId,
       originKind: issues.originKind, originRunId: issues.originRunId, createdByAgentId: issues.createdByAgentId,
       visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId, projectId: issues.projectId,
     }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, batch))));
@@ -79,6 +79,8 @@ export async function readTaskCreationProvenance(db: Db, companyId: string, task
       if (task.id === taskId) shareable = publicTask;
       else if (!publicTask) shareable = false;
       if (task.parentId) connect(task.id, task.parentId);
+      // A task placed beside its requester keeps the requester as its origin.
+      if (task.originIssueId && task.originIssueId !== task.parentId) connect(task.id, task.originIssueId);
     }
     const originIds = [...new Set(tasks.flatMap(task => task.originRunId && isUuidLike(task.originRunId) ? [task.originRunId] : []))];
     const receipts = originIds.length ? await read(() => db.select({ id: routineRuns.id, routineId: routineRuns.routineId,

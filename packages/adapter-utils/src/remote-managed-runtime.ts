@@ -152,9 +152,9 @@ export async function prepareRemoteManagedRuntime(input: {
           ? [
               ...GIT_ARCHIVE_EXCLUDES,
               ".paperclip-runtime",
-              ...(projectRepositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : []),
+              ...(projectRepositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : preparedWorkspace.excludedPaths ?? []),
             ]
-          : [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+          : [".paperclip-runtime", ...(preparedWorkspace.excludedPaths ?? []), ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
       })
     : null;
   const repositoryBaselines: Array<{ path: string; baselineSnapshot: DirectorySnapshot }> = [];

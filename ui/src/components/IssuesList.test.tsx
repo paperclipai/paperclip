@@ -14,6 +14,8 @@ import {
 } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { ApiError } from "../api/client";
+import { ConnectivityProvider, createConnectivityStore } from "../lib/connectivity";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 import { readIssueSortParams } from "../lib/issue-sort";
 
@@ -731,10 +733,25 @@ describe("IssuesList", () => {
     });
   });
 
-  it("shows a retryable external-status filter error instead of a false empty task list", async () => {
+  it.each([false, true])("shows an owner-selected initial 429 with retry instead of an empty list (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    const container = document.createElement("div"); document.body.append(container);
+    const retry = vi.fn();
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={[]} error={new ApiError("rate_limited", 429, null)} onRetry={retry} onUpdateIssue={() => {}} viewStateKey="chosen-read-error" />, container);
+    try {
+      await waitForAssertion(() => expect(container.querySelector('[data-query-view="error"]')).not.toBeNull());
+      expect(container.textContent).not.toContain("No tasks match");
+      const button = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Retry");
+      expect(button).toBeDefined();
+      await act(() => button!.click());
+      expect(retry).toHaveBeenCalledOnce();
+    } finally { await act(() => root.unmount()); queryClient.clear(); container.remove(); }
+  });
+
+  it.each([null, 429, 503])("offers retry after a settled external-status failure while reachable (%s)", async status => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
     localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
-    mockExternalObjectsApi.getIssueSummaries.mockRejectedValue(new Error("Status lookup unavailable"));
+    mockExternalObjectsApi.getIssueSummaries.mockRejectedValue(status === null ? new Error("Status lookup unavailable") : new ApiError("temporarily_unavailable", status, null));
     const { root, queryClient } = renderWithQueryClient(<IssuesList
       issues={[createIssue({ id: "issue-failed", title: "Matching task after retry" })]}
       agents={[]} projects={[]} viewStateKey="paperclip:test-issues" rowPresentation="task"
@@ -742,6 +759,7 @@ describe("IssuesList", () => {
     />, container);
     await waitForAssertion(() => expect(container.textContent).toContain("Unable to filter tasks by external status"));
     expect(container.textContent).not.toContain("No tasks match");
+    expect(container.textContent).not.toContain("temporarily_unavailable");
     expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
     mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {
       "issue-failed": { total: 1, byStatusCategory: { failed: 1 }, objects: [] },
@@ -752,6 +770,87 @@ describe("IssuesList", () => {
     expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledTimes(2);
     act(() => root.unmount());
     queryClient.clear();
+  });
+
+  it("retries feature discovery before applying a saved external-status filter", async () => {
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(new ApiError("rate_limited", 429, null));
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: { "issue-failed": { total: 1, byStatusCategory: { failed: 1 }, objects: [] } } });
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[createIssue({ id: "issue-failed", title: "Recovered filtered task" })]} agents={[]} projects={[]} viewStateKey="paperclip:test-issues"
+      onUpdateIssue={() => undefined}
+    />, container);
+    try {
+      const retry = () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry external statuses");
+      await waitForAssertion(() => expect(retry()).toBeDefined());
+      expect(container.textContent).not.toContain("No tasks match");
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+      await act(() => retry()!.click());
+      await waitForAssertion(() => expect(container.textContent).toContain("Recovered filtered task"));
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it("keeps an initial external-status outage in a quiet loading state", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockRejectedValue(new ApiError("tenant_app_unavailable", 503, null));
+    const store = createConnectivityStore({ browserOnline: false });
+    const { root, queryClient } = renderWithQueryClient(<ConnectivityProvider store={store}><IssuesList
+      issues={[createIssue({ id: "issue-failed" })]} agents={[]} projects={[]} viewStateKey="paperclip:test-issues"
+      onUpdateIssue={() => undefined}
+    /></ConnectivityProvider>, container);
+    try {
+      await waitForAssertion(() => expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledOnce());
+      await waitForAssertion(() => expect(container.querySelector('[aria-label="Loading tasks"]')).not.toBeNull());
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.textContent).not.toContain("No tasks match");
+      expect(container.textContent).not.toContain("tenant_app_unavailable");
+    } finally { act(() => root.unmount()); queryClient.clear(); store.dispose(); }
+  });
+
+  it.each([429, 503])("retains filtered rows after a cached external-status %s", async status => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: { "issue-failed": { total: 1, byStatusCategory: { failed: 1 }, objects: [] } } });
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[createIssue({ id: "issue-failed", title: "Retained filtered task" })]} agents={[]} projects={[]} viewStateKey="paperclip:test-issues"
+      onUpdateIssue={() => undefined}
+    />, container);
+    try {
+      await waitForAssertion(() => expect(container.textContent).toContain("Retained filtered task"));
+      const row = container.querySelector('[data-issue-row-id="issue-failed"]');
+      expect(row).not.toBeNull();
+      mockExternalObjectsApi.getIssueSummaries.mockRejectedValue(new ApiError("temporarily_unavailable", status, null));
+      await queryClient.invalidateQueries({ queryKey: ["external-objects"] });
+      await waitForAssertion(() => expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledTimes(2));
+      expect(container.textContent).toContain("Retained filtered task");
+      expect(container.querySelector('[data-issue-row-id="issue-failed"]')).toBe(row);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it("offers hierarchy retry after a reachable first-read 429 while keeping matching tasks", async () => {
+    const parent = createIssue({ id: "human-root", title: "Readable root task", createdByUserId: "person" });
+    let failed = true;
+    mockIssuesApi.list.mockImplementation(async (_company, filters) => {
+      if (filters.parentIds && failed) throw new ApiError("rate_limited", 429, null);
+      return [];
+    });
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[parent]} agents={[]} projects={[]} viewStateKey="paperclip:test-tree"
+      enableAgentCreatedVisibilityFilter onUpdateIssue={() => undefined}
+    />, container);
+    try {
+      const retry = () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry hierarchy");
+      await waitForAssertion(() => expect(retry()).toBeDefined());
+      expect(container.textContent).toContain(parent.title);
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+      expect(container.textContent).not.toContain("rate_limited");
+      failed = false;
+      await act(() => retry()!.click());
+      await waitForAssertion(() => expect(retry()).toBeUndefined());
+      expect(container.textContent).toContain(parent.title);
+    } finally { act(() => root.unmount()); queryClient.clear(); }
   });
 
   it("renders server search results instead of filtering the full issue list locally", async () => {

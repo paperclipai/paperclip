@@ -1,7 +1,10 @@
 export {
   createDb,
   withDedicatedDbConnection,
+  createOwnedDatabaseListener,
+  type OwnedDatabaseListener,
   livenessDb,
+  controllerLeaseDb,
   closeLivenessDb,
   checkpointDb,
   closeCheckpointDb,

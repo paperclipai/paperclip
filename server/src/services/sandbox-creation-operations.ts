@@ -1,20 +1,36 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, lte, or, sql } from "drizzle-orm";
-import { companies, environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
+import { currentControllerProcess } from "./controller-process-identity.js";
+import { companies, environments, heartbeatRuns, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS, recoverableSandboxCreationCondition } from "./environment-cleanup-state.js";
 import { logger } from "../middleware/logger.js";
 import { notifyEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSelect;
+
+// A live creator may still be waiting for the provider, and a provider may still
+// materialize an aborted request. Absence is conclusive only after this delay.
+const CREATION_SETTLE_FLOOR_MS = 30 * 60_000;
+
+function creationAbsenceInconclusive(operation: SandboxCreationOperation): boolean {
+  const settleAt = Date.parse(typeof operation.metadata.creationSettleAt === "string" ? operation.metadata.creationSettleAt : "");
+  return operation.metadata.creationControllerLost === true && Number.isFinite(settleAt) && Date.now() < settleAt;
+}
 
 export function recoverableTaskCreation(operation: Pick<SandboxCreationOperation, "metadata">): boolean {
   const metadata = operation.metadata;
   return metadata.runnerTaskLease === true && metadata.creationOperationVersion === 1 &&
     typeof metadata.runnerTaskCreationContextId === "string" && metadata.runnerTaskCreationContextId.length > 0 &&
     metadata.providerMetadata !== null && typeof metadata.providerMetadata === "object" && !Array.isArray(metadata.providerMetadata);
+}
+
+/** Plugin allocations can return their exact creation lease after a lost reply. */
+export function recoverablePluginCreation(operation: Pick<SandboxCreationOperation, "metadata">): boolean {
+  return recoverableTaskCreation(operation) || (operation.metadata.driver === "plugin" && operation.metadata.purpose === "login");
 }
 
 type CreationOwner = {
@@ -52,6 +68,8 @@ export async function createOwnedSandbox(
   }
   const id = randomUUID();
   const runId = owner.heartbeatRunId ?? randomUUID();
+  const settleAt = new Date(Date.now() + Math.max(CREATION_SETTLE_FLOOR_MS, (owner.timeoutMs ?? 0) + 60_000));
+  const creationController = await currentControllerProcess();
   const operation = await db.transaction(async tx => {
     await notifyEnvironmentCleanup(tx, { companyId: owner.companyId, runId: owner.heartbeatRunId ?? undefined });
     await assertEnvironmentCompanyBinding(tx as unknown as Db, owner.environmentId, owner.companyId);
@@ -59,8 +77,9 @@ export async function createOwnedSandbox(
       id, companyId: owner.companyId, environmentId: owner.environmentId, originalEnvironmentId: owner.environmentId,
       runId, requestKey: owner.requestKey ?? "run", issueId: owner.issueId, executionWorkspaceId: owner.executionWorkspaceId,
       provider: owner.provider, pluginId: owner.pluginId, driverKey: owner.driverKey,
-      config: owner.config, metadata: { ...owner.metadata, creationCredentialHashes: credentialHashes },
-      nextAttemptAt: new Date(Date.now() + Math.max(30 * 60_000, (owner.timeoutMs ?? 0) + 60_000)),
+      config: owner.config, metadata: { ...owner.metadata, creationHeartbeatRunId: owner.heartbeatRunId ?? null, creationCredentialHashes: credentialHashes,
+        creationController, creationSettleAt: settleAt.toISOString() },
+      nextAttemptAt: settleAt,
     }).onConflictDoNothing().returning();
     if (inserted) return inserted;
     const [existing] = await tx.select().from(sandboxCreationOperations).where(and(
@@ -78,14 +97,16 @@ export async function createOwnedSandbox(
       metadata: { ...existing.metadata, creationOperationId: operation.id } };
   }
   try {
+    crashPoint("sandbox.create.after_intent_before_provider");
     const lease = await create({ id, runId });
+    crashPoint("sandbox.create.after_provider_before_lease");
     return { ...lease, metadata: { ...lease.metadata, creationOperationId: id } };
   } catch (error) {
-    if (recoverableTaskCreation(operation)) {
+    if (recoverablePluginCreation(operation)) {
       try {
         await writeEnvironmentCleanup(db, tx => tx.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(), updatedAt: new Date() })
           .where(and(eq(sandboxCreationOperations.id, id), recoverableSandboxCreationCondition())),
-        { companyId: operation.companyId, runId: operation.runId });
+        { companyId: operation.companyId, runId: owner.heartbeatRunId ?? undefined });
       } catch {
         logger.warn({ errorKind: "task_creation_recovery_wakeup_failed", operationId: id, companyId: operation.companyId },
           "Task creation recovery retains its saved deadline");
@@ -131,15 +152,28 @@ export async function queueSandboxCreationCleanup(db: Db, input: {
       ? operation.metadata.runnerTaskCreationContextId : null;
     if (operation.state !== "pending" && !(operation.state === "needs_reconciliation" && contextId &&
         operation.metadata.creationProviderLeaseId === input.providerLeaseId)) throw new Error("Sandbox creation cleanup ownership changed");
-    await notifyEnvironmentCleanup(tx, { companyId: operation.companyId, runId: operation.runId });
+    // The non-null runId also correlates agentless creation attempts. Only the
+    // original optional heartbeat reference belongs in the lease's foreign key.
+    // Older task intents predate that explicit field; retain their relationship
+    // only when an actual same-company heartbeat row still exists.
+    const heartbeatReference = Object.hasOwn(operation.metadata, "creationHeartbeatRunId")
+      ? operation.metadata.creationHeartbeatRunId : operation.runId;
+    const [heartbeat] = typeof heartbeatReference === "string"
+      ? await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, heartbeatReference), eq(heartbeatRuns.companyId, operation.companyId),
+        )).for("key share")
+      : [];
+    const heartbeatRunId = heartbeat?.id ?? null;
+    await notifyEnvironmentCleanup(tx, { companyId: operation.companyId, runId: heartbeatRunId ?? undefined });
     const lease = await environmentService(tx as unknown as Db).insertPendingCleanupLease({
       companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
-      heartbeatRunId: operation.runId, issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId,
+      heartbeatRunId, issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId,
       provider: operation.provider, providerLeaseId: input.providerLeaseId,
       metadata: { ...operation.metadata, creationOperationId: operation.id, environmentId: operation.originalEnvironmentId,
-        providerMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {}, runnerTaskRetiring: true,
+        providerMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {},
+        ...(operation.metadata.runnerTaskLease === true ? { runnerTaskRetiring: true } : {}),
         ...(contextId ? { runnerTaskStartupCleanup: { contextId, requiresPreparationStop: false } } : {}) },
-      failureReason: "interrupted_task_creation",
+      failureReason: operation.metadata.purpose === "login" ? "interrupted_login_creation" : "interrupted_task_creation",
     });
     await tx.update(sandboxCreationOperations).set({ state: "cleanup_pending", leaseId: lease.id, updatedAt: new Date(),
       metadata: { ...operation.metadata, creationProviderLeaseId: input.providerLeaseId,
@@ -152,6 +186,13 @@ export async function recoverSandboxCreations(db: Db,
   inspect: (operation: SandboxCreationOperation) => Promise<PluginEnvironmentLeaseObservation | null>,
   onTaskRecovered?: (operation: SandboxCreationOperation) => void | Promise<void>,
 ): Promise<void> {
+  // After a restart, an intent whose creator is proven gone cannot still be in
+  // flight there: the shared ownership path makes it due now. Absence stays
+  // inconclusive until the settle deadline (creationAbsenceInconclusive).
+  const { settleOwnableKind } = await import("./recovery/ownership-invariant-report.js");
+  await settleOwnableKind(db, "sandbox_creation_intent").catch(() => {
+    logger.warn({ errorKind: "sandbox_creation_intent_settle_failed" }, "Sandbox creation intents keep their saved deadlines");
+  });
   const due = await db.select().from(sandboxCreationOperations).where(and(
     recoverableSandboxCreationCondition(), lte(sandboxCreationOperations.nextAttemptAt, new Date()),
   )).limit(100);
@@ -166,11 +207,14 @@ export async function recoverSandboxCreations(db: Db,
       }
       const [existingCompany] = await db.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).limit(1);
       const observation = existingCompany ? await inspect(candidate) : null;
-      if (existingCompany && recoverableTaskCreation(candidate) && observation?.creationLease) {
+      if (existingCompany && recoverablePluginCreation(candidate) && observation?.creationLease) {
         const lease = observation.creationLease;
+        // The inspect call is scoped to this creation operation. Providers may
+        // assign a different resource ID; require the receipt/envelope to agree,
+        // then let the durable resource record reject any changed identity.
         if (typeof lease.providerLeaseId !== "string" || lease.providerLeaseId.length === 0 || lease.providerLeaseId !== observation.providerLeaseId ||
             !lease.metadata || typeof lease.metadata !== "object" || Array.isArray(lease.metadata)) {
-          throw new Error("Task creation recovery returned foreign ownership");
+          throw new Error("Plugin allocation creation recovery returned foreign ownership");
         }
         const identity = { id: candidate.id, companyId: candidate.companyId, environmentId: candidate.originalEnvironmentId,
           providerLeaseId: lease.providerLeaseId, providerMetadata: lease.metadata };
@@ -179,13 +223,24 @@ export async function recoverSandboxCreations(db: Db,
         await onTaskRecovered?.(candidate);
         continue;
       }
-      if (existingCompany && recoverableTaskCreation(candidate)) throw new Error("Task creation identity is not available yet");
+      if (existingCompany && candidate.metadata.purpose === "login" && observation?.state === "destroyed" && observation.providerLeaseId === candidate.id) {
+        const settledAt = Date.parse(typeof candidate.metadata.creationSettleAt === "string" ? candidate.metadata.creationSettleAt : "");
+        if (!Number.isFinite(settledAt) || Date.now() < settledAt) throw new Error("Login allocation creation has not settled yet");
+        await writeEnvironmentCleanup(db, tx => tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: new Date() })
+          .where(and(eq(sandboxCreationOperations.id, candidate.id), eq(sandboxCreationOperations.state, "pending"))), { companyId: candidate.companyId });
+        continue;
+      }
+      if (existingCompany && recoverablePluginCreation(candidate)) throw new Error("Plugin allocation creation identity is not available yet");
       const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
         schema: "paperclip/environment-creation-cleanup/v1", cleanup: observation.creationCleanup,
       } }) : null;
       if (cleanup && (cleanup.companyId !== candidate.companyId || cleanup.environmentId !== candidate.originalEnvironmentId ||
         cleanup.runId !== candidate.runId || cleanup.attemptId !== candidate.id || cleanup.providerLeaseId !== observation!.providerLeaseId)) {
         throw new Error("Sandbox creation recovery returned foreign ownership");
+      }
+      // An early lookup after a lost creator may precede provider materialization.
+      if (existingCompany && !cleanup && creationAbsenceInconclusive(candidate)) {
+        throw new Error("Sandbox creation has not settled yet");
       }
       await db.transaction(async tx => {
         const [company] = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).for("key share");

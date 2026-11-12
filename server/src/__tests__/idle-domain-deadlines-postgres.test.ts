@@ -29,6 +29,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { readIdleDeadlineProof } from "../services/idle-deadline-proof.js";
 import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-capability.js";
 import { claimDueTimerHeartbeatForAgent } from "../services/heartbeat/queue.js";
+import { createHeartbeatTimerPolicy } from "../services/heartbeat/timer-policy.js";
 import { pluginJobStore } from "../services/plugin-job-store.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_IDLE_DEADLINE_TEST_DATABASE_URL");
@@ -119,6 +120,29 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
   }, 30_000);
 
+  it.each([
+    ["2099-01-01T12:00:00.000Z", "2099-01-02T00:00:00.000Z"],
+    ["2099-01-01T23:59:06.888Z", "2099-01-02T00:06:36.888Z"],
+    ["2099-01-02T00:00:00.500Z", "2099-01-03T00:00:00.000Z"],
+  ])("preserves both the timer interval and UTC daily cap at %s", async (instant, deadline) => {
+    const now = new Date(instant), companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "UTC timer fixture", issuePrefix: `T${companyId.slice(0, 6)}` });
+    try {
+      const [agent] = await db.insert(agents).values({ id: agentId, companyId, name: "Capped timer", role: "engineer",
+        status: "idle", adapterType: "process", createdAt: now, lastHeartbeatAt: now,
+        runtimeConfig: { heartbeat: { enabled: true, intervalSec: 450, maxDailyRuns: 1 } } }).returning();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", invocationSource: "timer",
+        startedAt: now, finishedAt: now, costAccountingPending: false });
+      const schedule = await createHeartbeatTimerPolicy(db).readTimerHeartbeatSchedule(agent, now);
+      expect(schedule.deadline).toBe(Date.parse(deadline));
+      expect(schedule.cap).toMatchObject({ reason: "heartbeat.daily_run_limit", observed: 1, limit: 1 });
+    } finally {
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.delete(agents).where(eq(agents.id, agentId));
+      await db.delete(companies).where(eq(companies.id, companyId));
+    }
+  });
+
   it("projects durable timers across client reconnection and executes the original plugin and trace owners", async () => {
     const now = Date.now(), companyId = randomUUID(), agentId = randomUUID(), pluginId = randomUUID(), runId = randomUUID();
     let hold: { ownerId: string; expiresAt: number } = { ownerId: randomUUID(), expiresAt: now + 300_000 };
@@ -162,10 +186,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(claimed.filter(Boolean)).toHaveLength(1);
     expect((await read()).scheduledWake?.nextWakeAt).toBe(new Date(now + 450_000).toISOString());
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", invocationSource: "timer",
-      startedAt: new Date(now - 1000), finishedAt: new Date(now), costAccountingPending: false });
+      startedAt: new Date(now), finishedAt: new Date(now), costAccountingPending: false });
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: true, intervalSec: 450, maxDailyRuns: 1 } } }).where(eq(agents.id, agentId));
     const date = new Date(now);
-    expect((await read()).scheduledWake?.nextWakeAt).toBe(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1)).toISOString());
+    const nextDay = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1);
+    expect((await read()).scheduledWake?.nextWakeAt).toBe(new Date(Math.max(now + 450_000, nextDay)).toISOString());
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: true, intervalSec: 450, skipTimerWhenNoActionableWork: true } } }).where(eq(agents.id, agentId));
     expect((await read()).scheduledWake).toBeUndefined();
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: "true", intervalSec: 450 } } }).where(eq(agents.id, agentId));

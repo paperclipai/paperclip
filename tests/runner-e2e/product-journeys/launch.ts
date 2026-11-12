@@ -211,6 +211,13 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
       }
     }
   };
+  // Retain only an identifier-shaped adapter cause, never its message, so a
+  // generic cleanup failure can be traced to the target step that failed.
+  const recordCleanupCause = (error: unknown) => {
+    const cause = (error as { code?: unknown } | null)?.code;
+    if (typeof cause !== "string" || !/^[A-Za-z][A-Za-z0-9_]{1,79}$/.test(cause)) return;
+    failFinalization(`cause.${cause}`);
+  };
   const persist = async () => {
     try {
       await writeFile(path.join(outputDir, "normalized-results.tmp"), JSON.stringify({ schema: "paperclip.runner-e2e.campaign/v2", campaignId, generatedAt: new Date().toISOString(), expected, source, results }, null, 2), { mode: 0o600 });
@@ -404,10 +411,11 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
       for (const result of results) { if (result.cleanup !== "failed") result.cleanup = "passed"; result.productJourney!.resourceDisposition = disposition; result.productJourney!.phases.push({ phase: "cleanup", outcome: "passed" }); }
     } catch (error) {
       failFinalization(error instanceof JourneyError && error.code === "target_cleanup_timeout" ? error.code : "target_cleanup_failed");
+      if (!(error instanceof JourneyError && error.code === "target_cleanup_timeout")) recordCleanupCause(error);
       // A timed-out release may still have an in-flight request. Stop-only recovery
       // gets its own bounded signal and cannot delete resources or free the lease.
       try { await withinLifecycleDeadline(Math.min(cleanupDeadlineAt - browserCloseReserveMs, Date.now() + stopReserveMs), "target_stop_timeout", input => session?.stop?.(input) ?? Promise.resolve()); }
-      catch { failFinalization("target_stop_failed"); }
+      catch (stopError) { failFinalization("target_stop_failed"); if (!(stopError instanceof JourneyError && stopError.code === "target_stop_timeout")) recordCleanupCause(stopError); }
     }
     try { await withinLifecycleDeadline(Math.min(cleanupDeadlineAt, Date.now() + browserCloseReserveMs), "browser_cleanup_timeout", () => browser?.close() ?? Promise.resolve()); }
     catch (error) { failFinalization(error instanceof JourneyError && error.code === "browser_cleanup_timeout" ? error.code : "browser_cleanup_failed"); }

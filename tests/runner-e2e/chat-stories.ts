@@ -79,6 +79,23 @@ export async function prepareChatBrief(workspacePath: string, nonce: string, tim
   return { gate, ready, scriptPath };
 }
 
+/**
+ * A bounded brief wait that resolves only from the agent's working directory.
+ * Sandboxed native providers can read their own task directory but not agent
+ * homes or unrelated project roots, so the command names no host path. The
+ * fixture publishes to `at(<the run's workspace>)` once that directory is known.
+ */
+export function workspaceChatBrief(nonce: string, timeoutMs = 120_000) {
+  if (!/^[A-Za-z0-9_-]+$/.test(nonce)) throw new Error("Brief nonce must be a plain file name segment");
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new Error("Brief wait must be bounded between 1 and 300000ms");
+  const name = `chat-brief-${nonce}.txt`;
+  const script = `const fs=require("node:fs"),g="${name}",end=Date.now()+${Math.floor(timeoutMs)};fs.writeFileSync(g+".waiting","waiting");const t=setInterval(()=>{if(fs.existsSync(g)){console.log(fs.readFileSync(g,"utf8"));clearInterval(t)}else if(Date.now()>end){clearInterval(t);process.exitCode=1}},100)`;
+  return {
+    command: `node -e '${script}'`,
+    at: (workspacePath: string) => ({ gate: path.join(workspacePath, name), ready: path.join(workspacePath, `${name}.waiting`) }),
+  };
+}
+
 export async function runChatInterruption(context: Context & { refreshIssue(): Promise<void> }) {
   const { input, marker, idle, allRuns, comments } = context;
   // Unprojected host /tmp files are intentionally hidden from native Codex.

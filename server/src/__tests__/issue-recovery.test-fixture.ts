@@ -7,6 +7,7 @@ import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRu
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -218,9 +219,14 @@ export function issueRecoveryFixture() {
       conversationState: "waiting" });
     const message = withMessage ? await issueService(db).addComment(chat.id, "Keep this message", { userId: "recovery-user" }, { clientRequestId: randomUUID() }) : null;
     await settings.updateExperimental({ enableAgentChat: false });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
     await start(); await quiet();
     expect(replies).toEqual([]);
-    return { ...f, settings, chat, message, replies, failures };
+    const resume = async (owner = db) => owner.transaction(async tx => {
+      await notifyIssueRecovery(tx, { companyId: f.companyId });
+      await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
+    });
+    return { ...f, settings, chat, message, replies, failures, resume };
   }
   return {
     start, compete, fixture, completingProvider, settled, quiet, finish, completed, savedConversation,

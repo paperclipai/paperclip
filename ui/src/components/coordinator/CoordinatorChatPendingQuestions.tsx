@@ -21,8 +21,7 @@ export function useCoordinatorChatPendingQuestions(issueId: string | null, conve
       detachInflightGet(path);
       return api.get<AttentionItem[]>(path, { signal, cache: "no-store" });
     },
-    retry: false,
-  });
+    });
   const accessUnavailable = !!query.error && "status" in query.error && [401, 403, 404].includes(Number(query.error.status));
   return { ...query, enabled: active, questions: active && !accessUnavailable ? query.data ?? EMPTY_QUESTIONS : EMPTY_QUESTIONS };
 }

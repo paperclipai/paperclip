@@ -1,3 +1,4 @@
+import { settleOperatorContainedNativeOwner } from "./native-runtime/native-failed-run-owner-release.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -14,6 +15,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
 import { and, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   chatActions,
   environmentLeases,
   heartbeatRuns,
@@ -33,10 +35,35 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
+  settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
-export async function validateExecutionReconciliation(input: {
+/**
+ * The user-facing note for a settled recovery hold. A restart-recovery hold
+ * names its own cause: a workspace export retried after that hold does not
+ * mean the user must repair the workspace.
+ */
+export function executionRecoverySettlementNote(input: {
+  current: boolean; cause: string; workspaceRestoreFailed: boolean;
+  /** The hold's recorded trigger; a same-run retry is not a server restart. */
+  trigger?: unknown;
+}): string {
+  if (!input.current) return "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+  if (input.cause === "native_restart_recovery_blocked" && input.trigger === "same_run_retry") {
+    return "Automatic retry of this run stopped. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
+  if (input.cause === "native_restart_recovery_blocked") {
+    return "Automatic recovery stopped after a server restart because the previous execution could not be verified. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
+  return input.workspaceRestoreFailed
+    ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
+    : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated.";
+}
+
+type ExecutionReconciliationInput = {
   db: Db;
   companyId: string;
   issueId: string;
@@ -45,12 +72,36 @@ export async function validateExecutionReconciliation(input: {
   decision: ExecutionReconciliation | undefined;
   /** Board-only source repair: never authorize a continuation of this run. */
   workspaceRepairOnly?: boolean;
-}) {
+  controllerContainment?: { actionId: string; actorId: string };
+};
+
+export async function validateExecutionReconciliation(input: ExecutionReconciliationInput) {
+  if (input.controllerContainment) {
+    // Validation and contained-owner settlement must roll back together even
+    // when a caller is not already inside the board route's transaction.
+    return input.db.transaction(tx => validateExecutionReconciliationInScope({ ...input, db: tx as unknown as Db }));
+  }
+  return validateExecutionReconciliationInScope(input);
+}
+
+async function validateExecutionReconciliationInScope(input: ExecutionReconciliationInput) {
   const { db, companyId, issueId, agentId, decision } = input;
   if (!decision || decision.runId !== input.sourceRunId || (!agentId && !input.workspaceRepairOnly)) {
     throw conflict(
       "Reconcile the recorded execution and its action outcomes before continuing this task.",
     );
+  }
+  let operatorContained = false;
+  if (decision.controllerStopped !== undefined || decision.controllerAuthorityDigest !== undefined) {
+    if (!decision.controllerStopped || !decision.controllerAuthorityDigest || !input.controllerContainment
+      || input.workspaceRepairOnly) throw conflict("Original-host controller containment requires its exact board recovery action.");
+    operatorContained = await settleOperatorContainedNativeOwner(db, {
+      companyId, issueId, runId: decision.runId, actionId: input.controllerContainment.actionId,
+      actorId: input.controllerContainment.actorId, authorityDigest: decision.controllerAuthorityDigest,
+      actionOutcome: decision.actionOutcome, outcomeEvidence: decision.outcomeEvidence,
+    });
+    if (!operatorContained) throw conflict("The recorded controller authority changed, is still leased, or its cleanup is unsettled. Refresh before recording containment.",
+      { code: "native_controller_containment_stale" });
   }
   const [run] = await db
     .select()
@@ -93,7 +144,7 @@ export async function validateExecutionReconciliation(input: {
       (!decision.workspaceRepairEvidence || decision.workspaceRepairEvidence.trim().length < 20)) {
     throw conflict("Verify safe workspace staging or repair and record workspaceRepairEvidence before continuing this run.");
   }
-  let checkLocalProcesses = true;
+  let checkLocalProcesses = !operatorContained;
   if (retainedWorkspace) {
     const leases = await db.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -111,7 +162,7 @@ export async function validateExecutionReconciliation(input: {
           : !hasRemoteTerminationReceipt(lease))) {
       throw conflict("The retained workspace environment has not confirmed that it stopped. Wait for cleanup before recording workspace repair.");
     }
-    checkLocalProcesses = leases.some(lease => lease.provider === "local");
+    checkLocalProcesses = !operatorContained && leases.some(lease => lease.provider === "local");
   }
   // A retained remote source's PIDs belong to its sandbox, not this server.
   // Its exact lease receipts above replace host-local process probes.
@@ -182,8 +233,10 @@ export async function markExecutionReconciliation(
   decision: ExecutionReconciliation,
   actorId: string,
   deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
-  options?: { workspaceRepairOnly?: boolean },
+  options?: { workspaceRepairOnly?: boolean; controllerContainmentOnly?: boolean },
 ) {
+  if (options?.controllerContainmentOnly && (!decision.controllerStopped || !decision.controllerAuthorityDigest || deliveryOwner))
+    throw conflict("Controller containment records no automatic continuation.");
   if (options?.workspaceRepairOnly && (deliveryOwner || !hasRequiredWorkspaceRecovery(action.evidence))) {
     throw conflict("Workspace repair must target the retained source without a continuation owner.");
   }
@@ -224,7 +277,7 @@ export async function markExecutionReconciliation(
           eq(nativeRunFinalizations.runId, decision.runId),
         ),
       );
-    await tx
+    const [source] = await tx
       .update(issueRecoveryActions)
       .set({
         evidence: {
@@ -235,7 +288,7 @@ export async function markExecutionReconciliation(
             actorId,
             recordedAt: new Date().toISOString(),
           },
-          continuationDelivery: options?.workspaceRepairOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
+          continuationDelivery: options?.workspaceRepairOnly || options?.controllerContainmentOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
           ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
         },
       })
@@ -244,7 +297,59 @@ export async function markExecutionReconciliation(
           eq(issueRecoveryActions.companyId, action.companyId),
           eq(issueRecoveryActions.id, action.id),
         ),
-      );
+      ).returning({
+        cause: issueRecoveryActions.cause,
+        fingerprint: issueRecoveryActions.fingerprint,
+        kind: issueRecoveryActions.kind,
+        evidence: issueRecoveryActions.evidence,
+      });
+    if (options?.controllerContainmentOnly) {
+      // A Retry clicked before the operator reviewed the effects must not turn
+      // into an automatic replay after containment. Retain only that exact,
+      // unadmitted source receipt as skipped; newer/accepted intents are untouched.
+      await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: new Date(), updatedAt: new Date(),
+        error: "controller_containment_requires_new_retry" }).where(and(
+        eq(agentWakeupRequests.companyId, action.companyId), isNull(agentWakeupRequests.runId),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${action.sourceIssueId}`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'schema' = 'paperclip.task-retry.v1'`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'sourceRunId' = ${decision.runId}`,
+      ));
+      return;
+    }
+    if (
+      !source || options?.workspaceRepairOnly ||
+      source.cause !== "legacy_execution_requires_reconciliation" ||
+      source.fingerprint !== `legacy-execution:${decision.runId}` ||
+      ["workspaceRestoreFailure", "workspaceRestoreRecovery", "systemRecovery"].some(key => key in source.evidence)
+    ) return;
+    const now = new Date();
+    const siblings = await tx.update(issueRecoveryActions).set({
+      status: "resolved", outcome: "cancelled", resolvedAt: now, updatedAt: now,
+      wakePolicy: null, monitorPolicy: null,
+      resolutionNote: "The same source execution was reconciled through another recovery action.",
+      evidence: sql`(${issueRecoveryActions.evidence} - 'automaticRecovery') || ${JSON.stringify({
+        executionReconciliation: { ...decision, actorId, recordedAt: now.toISOString() },
+        continuationDelivery: "invalidated",
+        coalescedIntoRecoveryActionId: action.id,
+      })}::jsonb`,
+    }).where(and(
+      eq(issueRecoveryActions.companyId, action.companyId),
+      eq(issueRecoveryActions.sourceIssueId, action.sourceIssueId),
+      not(eq(issueRecoveryActions.id, action.id)),
+      eq(issueRecoveryActions.kind, source.kind),
+      eq(issueRecoveryActions.cause, source.cause),
+      eq(issueRecoveryActions.fingerprint, source.fingerprint),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${decision.runId}`,
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+      sql`not (${issueRecoveryActions.evidence} ?| array['executionReconciliation', 'workspaceRestoreFailure', 'workspaceRestoreRecovery', 'systemRecovery'])`,
+    )).returning({ id: issueRecoveryActions.id });
+    if (siblings.length) await persistActivity(tx as unknown as Db, {
+      companyId: action.companyId, actorType: "user", actorId,
+      action: "issue.recovery_action_resolved", entityType: "issue", entityId: action.sourceIssueId,
+      details: { reason: "same_source_execution_reconciled", recoveryActionId: action.id,
+        coalescedRecoveryActionIds: siblings.map(sibling => sibling.id), runId: decision.runId },
+    });
   });
 }
 
@@ -294,7 +399,27 @@ export async function deliverReconciledExecutions(
             evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
           })
           .where(pendingDecision);
+        await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id, delivery: "invalidated" });
         continue;
+      }
+      // A fresh continuation is the task's next run only while nothing else
+      // started one: a person's Retry or saved input that ran since it was
+      // recorded already continues the task, so it is never a second run.
+      const fresh = action.evidence.freshContinuation as { recordedAt?: unknown } | undefined;
+      if (fresh && typeof fresh.recordedAt === "string") {
+        const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text <> ${decision.runId}`,
+          or(eq(heartbeatRuns.nativeIssueId, task.id), eq(heartbeatRuns.issueId, task.id),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}::text`),
+          sql`${heartbeatRuns.createdAt} >= ${fresh.recordedAt}::timestamptz`)).limit(1);
+        if (newer) {
+          await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+            { continuationDelivery: "delivered", continuationRunId: newer.id, continuationSupersededByRun: true })}::jsonb` })
+            .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: newer.id });
+          continue;
+        }
       }
       const run = await wake(action.returnOwnerAgentId, {
         source: "automation",
@@ -313,6 +438,8 @@ export async function deliverReconciledExecutions(
           forceFreshSession: true,
           wakeReason: "issue_recovery_action_restored",
           source: "execution.reconciled",
+          ...((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace"
+            ? { freshContinuationIsolation: action.id } : {}),
         },
       });
       if (run)
@@ -340,6 +467,8 @@ export async function deliverReconciledExecutions(
               )}::jsonb`,
             })
             .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: run.id });
         });
     } catch {
       logger.warn(
@@ -396,6 +525,8 @@ export function unresolvedExecutionDispositions(db: Db, limit: number) {
         sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
+        // A fresh continuation that backed off is checked again when due.
+        freshContinuationCheckDue(new Date()),
         or(inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]), and(
           eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
           eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
@@ -486,6 +617,7 @@ export async function settleUnrecoverableExecutions(
   for (const { action: candidate } of candidates) {
     const runId = candidate.evidence.runId;
     if (typeof runId !== "string") continue;
+    const goneControllerBootId = await provenGoneLegacyControllerBootId(db, candidate.companyId, runId).catch(() => null);
     try {
       await db.transaction(async (tx) => {
         await tx.execute(
@@ -562,6 +694,17 @@ export async function settleUnrecoverableExecutions(
           });
           return;
         }
+        // A legacy executor still holding its controller lease may be unwinding
+        // a Stop and can prove that no adapter started. Let it settle first,
+        // unless its recorded process is proven gone (a drained server): then
+        // expire that exact lease so every later preparation check sees it.
+        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) {
+          if (goneControllerBootId === null || run.controllerBootId !== goneControllerBootId) return;
+          await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: now }).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.controllerBootId, goneControllerBootId)));
+          run.controllerLeaseExpiresAt = now;
+        }
         // Adoption transfers maintenance to the retained-workspace owner.
         // This compatibility resolver must not close its hold or relabel it
         // as a user repair merely because old return-owner metadata is absent.
@@ -585,14 +728,26 @@ export async function settleUnrecoverableExecutions(
           !["done", "cancelled"].includes(task.status) &&
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
-        const note = current
-          ? hasWorkspaceRestoreFailure(run.resultJson)
-            ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
-            : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
-          : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+        // Exact recovery is ruled out. Unless the cause is the person's, the
+        // task continues in a fresh run from its last saved work instead of
+        // waiting for a person.
+        // A preparation that never started provider work keeps its own replay
+        // lane, which takes over the settled hold; the held sweep follows it.
+        if (current && !isInterruptedNativePreparationCandidate(run)) {
+          const fresh = await continueFreshInTransaction(tx as unknown as Db, { companyId: task.companyId, runId: run.id,
+            trigger: "recovery_refused", now });
+          if (["continued", "already_continued", "successor_exists"].includes(fresh.kind)) return;
+          if (fresh.kind === "backoff" || fresh.kind === "exact_recovery_pending") {
+            await recordFreshContinuationCheck(tx as unknown as Db, { companyId: task.companyId, actionId: action.id }, fresh, now);
+            return;
+          }
+        }
+        const note = executionRecoverySettlementNote({ current, cause: action.cause,
+          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson), trigger: action.evidence.trigger });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
+        let legacyCancellationBlock = action.evidence.legacyCancellationBlock;
         if (current) {
           await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
           if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
@@ -613,6 +768,9 @@ export async function settleUnrecoverableExecutions(
           if (task.status !== "blocked" && run.runtimeMode === "native") {
             nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
           }
+          if (task.status !== "blocked" && run.runtimeMode === "legacy" && run.status === "cancelled") {
+            legacyCancellationBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
+          }
           if (task.status !== "blocked" && isInterruptedNativePreparationCandidate(run)) {
             nativeBootstrapFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
           }
@@ -632,6 +790,7 @@ export async function settleUnrecoverableExecutions(
               ...action.evidence,
               ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
               ...(nativeBootstrapFailureBlock ? { nativeBootstrapFailureBlock } : {}),
+              ...(legacyCancellationBlock ? { legacyCancellationBlock } : {}),
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,
@@ -686,4 +845,7 @@ export async function settleUnrecoverableExecutions(
       );
     }
   }
+  // Tasks already held by settled records (including those older releases
+  // saved) continue from their saved work on this worker too.
+  await continueHeldExecutions(db, now);
 }

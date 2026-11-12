@@ -41,7 +41,7 @@ function fixture(boundary?: string) {
   ];
   const scopes = [{ scopeType: "company", scopeId: "company" }, ...["ceo", "morgan"].map(scopeId => ({ scopeType: "agent", scopeId }))];
   const api = {
-    baseURL: "http://fixture.invalid",
+    baseURL: "http://fixture.invalid", getRunObservation: vi.fn(async () => []),
     get: vi.fn(async (path: string) => {
       if (path.endsWith("issues?includeAgentCreatedTasks=true")) return [];
       if (path.includes("issues?includeAgentCreatedTasks=true&limit=100")) return [task];
@@ -70,9 +70,9 @@ function fixture(boundary?: string) {
     api, nonce: "fixture", workspacePath: "/fixture",
     page: { locator: () => locator, getByTestId: () => locator, reload: vi.fn(), goto: vi.fn(), url: () => "http://fixture.invalid/chat" },
     fixtures: { company: { id: "company" }, agent: { id: "ceo" }, environment: { id: "local" }, secretRefs: {} },
-    execution: { environment: { id: "local" }, task: { id: caseId, expectedRunCount: boundary ? 3 : 1,
-      buildVisibleMarker: () => "ACORN123", turnTimeoutMs: 120_000 },
-      profile: { credential: "OPENROUTER_API_KEY", buildAgent: () => ({ adapterConfig: {} }) } },
+    execution: { id: "chat-features.runner-opencode.local." + caseId, suite: { id: "chat-features" }, environment: { id: "local" }, task: { id: caseId, flow: "agent_chat", expectedRunCount: boundary ? 3 : 1,
+      buildVisibleMarker: () => "ACORN123", turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000 } },
+      profile: { id: "runner-opencode", provider: "opencode", model: "fixture", credential: "OPENROUTER_API_KEY", buildAgent: () => ({ adapterConfig: {} }) } },
     evidence, capture, check: (id: string, passed: boolean) => checks.push({ id, passed }),
   } as unknown as ChatFlowInput;
   let refreshes = 0;

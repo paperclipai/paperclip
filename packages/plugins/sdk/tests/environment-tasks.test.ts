@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {environmentTaskOperationSchema} from "../src/environment-tasks.js";
+import {environmentTaskOperationSchema,environmentTaskResultSchema} from "../src/environment-tasks.js";
 const submit={kind:"submit",projectIds:[],bootstrapTicket:"synthetic",runner:{harness:"codex",protocolMin:1,protocolMax:3,runnerId:"runner",leaseId:"lease",runId:"run",sessionId:"session",turnId:"turn",itemId:"item"},
  launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}};
 describe("task lifecycle policy",()=>{
@@ -23,6 +23,31 @@ const prepare = {
     preparedConversation: false, includeCollaborationModeInstructions: false,
   },
 };
+
+describe("retained source launch fields", () => {
+  it("uses the existing source identity and resume reference without a recovery mode", () => {
+    for (const operation of [prepare, submit]) {
+      const recovery = { ...operation, accountIdentity: "selected-account", resumeFrom: "source-task" };
+      expect(environmentTaskOperationSchema.parse(recovery)).toEqual(recovery);
+      expect(environmentTaskOperationSchema.safeParse({ ...recovery, recoveryPurpose: "source_reconcile" }).success).toBe(false);
+    }
+  });
+});
+
+describe("provider-specific source recovery capability", () => {
+  const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+  it.each(["codexSourceRecoveryVersion", "acpxSourceRecoveryVersion"] as const)("accepts %s independently", key => {
+    const advertised = { ...description, [key]: 1 };
+    expect(environmentTaskResultSchema.parse(advertised)).toEqual(advertised);
+    expect(environmentTaskResultSchema.safeParse({ ...description, [key]: 2 }).success).toBe(false);
+  });
+  it("accepts both or neither and rejects an unqualified recovery flag", () => {
+    const both = { ...description, codexSourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1 };
+    expect(environmentTaskResultSchema.parse(both)).toEqual(both);
+    expect(environmentTaskResultSchema.parse(description)).toEqual(description);
+    expect(environmentTaskResultSchema.safeParse({ ...description, sourceRecoveryVersion: 1 }).success).toBe(false);
+  });
+});
 
 describe("task hosted search restriction", () => {
   it("preserves Core's explicit restriction through plugin launch preparation", () => {

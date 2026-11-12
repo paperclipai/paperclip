@@ -38,11 +38,10 @@ import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
-import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
-import { attentionBadgeCount } from "../lib/attention";
+import { useAttentionBadge } from "../hooks/useAttentionViews";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -99,16 +98,11 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   const liveIssueIds = new Set(
     (liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
   );
-  // PAP-670 splits the nav reorganization across two experimental flags.
-  // Agent Chat: Chat leads Work as one row with its own agent rail (the
-  // streamlined shell only — the legacy shell keeps per-agent rows), and
-  // Workspaces leaves to make room. Combined Inbox + Task List: Inbox becomes
-  // views inside Tasks, so its row goes and its badge rides on Tasks.
   const chatRail = agentChatEnabled && streamlinedUiEnabled;
   // The merged Tasks page only exists in the streamlined shell, so the legacy
   // shell keeps its Inbox row even with the flag on.
   const combinedInboxTasks = streamlinedUiEnabled && experimentalSettings?.enableCombinedInboxTasks === true;
-  const showWorkspacesLink = !chatRail && experimentalSettings?.enableIsolatedWorkspaces === true;
+  const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showStatusCards = experimentalSettings?.enableStatusCards === true;
   const goalsLinkPending = experimentalSettings === undefined;
   const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
@@ -116,13 +110,12 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   // item is hidden entirely until the flag is enabled (same no-flash pattern as
   // showWorkspacesLink — it defaults hidden, so no placeholder is needed).
   const showDecisions = experimentalSettings?.enableDecisions === true;
-  const { data: attentionFeed } = useQuery({
-    queryKey: queryKeys.attention(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && showDecisions,
+  // The shared "For you" badge (PAP-749 Rule 5): same query as the Decisions
+  // page and the coordinator navigation, with no midnight reset.
+  const { count: attentionCount } = useAttentionBadge(selectedCompanyId, {
+    enabled: showDecisions,
     refetchInterval: 60_000,
   });
-  const attentionCount = attentionBadgeCount(attentionFeed);
   const showCases = experimentalSettings?.enableCases === true;
   // Conference Room Chat flag (PAP-136/PAP-137): the Conference Room nav item
   // is a new surface, hidden entirely while the flag is off (same no-flash

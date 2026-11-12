@@ -48,6 +48,8 @@ export async function writeConnectionCredential(
     /** OAuth shares one definition per connection/path, with one value per owner. */
     definitionKey?: string;
     actor?: SecretActor;
+    /** Only the OAuth refresh owner may retain the existing credential identity. */
+    preserveOAuthIdentity?: boolean;
   },
 ) {
   const vault = secretService(db);
@@ -63,8 +65,9 @@ export async function writeConnectionCredential(
       ? existing.scope === "user" && Boolean(existing.userSecretDefinitionId)
       : existing.scope === "company")) {
       const secret = input.ownerUserId
-        ? await vault.rotateCurrentUserSecretValue(input.companyId, input.ownerUserId, existing.id, { value: input.value }, input.actor)
-        : await vault.rotate(existing.id, { value: input.value }, input.actor);
+        ? await vault.rotateCurrentUserSecretValue(input.companyId, input.ownerUserId, existing.id,
+          { value: input.value, preserveAiSessionEpoch: input.preserveOAuthIdentity }, input.actor)
+        : await vault.rotate(existing.id, { value: input.value, preserveAiSessionEpoch: input.preserveOAuthIdentity }, input.actor);
       return { secret, created: false, definitionId: null };
     }
     // Re-entering a credential is fresh consent. Replace a legacy company

@@ -77,7 +77,11 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
       const [saved] = await db.select().from(budgetIncidents).where(eq(budgetIncidents.id, incident!.id));
       expect(saved).toMatchObject({ ...preserved, status: "dismissed", resolvedAt: expect.any(Date) });
       expect((await db.select().from(approvals).where(eq(approvals.id, approval!.id)))[0]).toMatchObject({ status: "rejected" });
-      expect(await db.select().from(budgetPolicies)).toEqual(before.policies);
+      const policiesAfter = await db.select().from(budgetPolicies);
+      // Incident mutation can advance the evaluator fence without changing
+      // the historical policy configuration or its spending controls.
+      expect(policiesAfter.map(({ evaluationVersion: _version, ...policy }) => policy))
+        .toEqual(before.policies.map(({ evaluationVersion: _version, ...policy }) => policy));
       expect(await db.select().from(agents)).toEqual(before.agents);
       expect(await db.select().from(costEvents)).toEqual(before.costs);
       expect((await service.overview(companyId)).activeIncidents.some(row => row.id === incident!.id)).toBe(false);

@@ -23,13 +23,27 @@ Metrics, raw API bodies and Codex Guardian assessments are disabled.
 
 Native OpenCode 1.18.34 uses a runner-owned HTTP/JSON exporter. Each completed,
 failed or cancelled turn produces a trace with Paperclip company, agent, run and
-turn IDs. Tool outcomes and message-level token/cost receipts are child spans;
+turn IDs. Authenticated Paperclip tool dispatch outcomes, native tool outcomes and
+message-level token/cost receipts are child spans;
 repeated usage updates replace the same message receipt. Missing prices remain
 unknown. This projection excludes hidden reasoning, raw provider payloads and
 system instructions. Prompt, response, tool-detail and tool-content switches
 apply before export. Content is bounded to 8 KiB per field and 64 tools plus 64
-usage records per turn; truncation is marked. Tool inputs and full model request
-bodies are not captured. OpenCode's performance-only OTLP sink stays separate.
+usage records per turn; truncation is marked. With both tool-detail and tool-content
+capture enabled, Paperclip tool spans include `braintrust.input` diagnostics
+(`paperclip.opencode.tool-diagnostics.v1`): the upstream `tools/call` method,
+argument JSON type and types for a fixed list of envelope fields. These are
+shape diagnostics, not a copy of the arguments. Arbitrary field names, argument
+values, nested payloads and full model request bodies are not captured.
+Authenticated schema rejections also produce failed tool spans without invoking
+the controller handler. Conflicting request IDs produce separate failed items,
+so a rejection cannot overwrite a previous dispatch outcome.
+Paperclip tool spans use authenticated dispatch IDs and the name `tool <name>`.
+Provider SSE records for those declared tools use `opencode tool <name>` and
+remain available when failure occurs before dispatch, such as an oversized
+request. These are separate observations, not correlated calls. The
+`paperclip.tool.source` attribute distinguishes dispatch and provider records.
+Native tools retain their provider spans without submitted-argument diagnostics. OpenCode's performance-only OTLP sink stays separate.
 
 The exporter sends once at turn completion with a three-second deadline, at most
 four requests in flight and no idle polling or persistent queue. Closing drains

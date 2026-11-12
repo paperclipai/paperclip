@@ -126,12 +126,12 @@ test("Coordinator Inbox retains aggregate Mine reads when Streamlined UI is disa
   expect(reads.filter(url => url.pathname.endsWith("/attention") && url.searchParams.get("all") === "true")).toEqual([]);
 });
 
-test("Needs You owns one complete feed and no redundant summary read", async ({ page }) => {
+test("Inbox owns one complete feed and no redundant summary read", async ({ page }) => {
   await coordinatorPreference(page);
   const reads: URL[] = [];
   page.on("request", request => { if (request.url().includes("/api/")) reads.push(new URL(request.url())); });
   await page.goto(`/${fixture.company.issuePrefix}/decisions`);
-  await expect(page.getByRole("main").getByRole("heading", { name: "Needs You", exact: true })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
   await expect.poll(() => reads.filter(url => url.pathname.endsWith("/attention") && url.searchParams.get("all") === "true").length).toBe(1);
   expect(reads.filter(url => url.pathname.endsWith("/attention/summary"))).toEqual([]);
 });

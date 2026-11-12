@@ -12,6 +12,7 @@ import {
 } from "../adapter-auth-session.js";
 import {
   adapterAuthSessionResponseSchema,
+  adapterAuthSessionOwnerResponseSchema,
   startAdapterAuthSessionRequestSchema,
 } from "../validators/adapter-auth-session.js";
 
@@ -93,6 +94,10 @@ describe("adapter auth session contract", () => {
       prompt: { url: "https://auth.openai.com/codex/device", code: "ABCD-EFGHI" },
     };
     expect(owner.prompt?.code).toBe("ABCD-EFGHI");
+    const target = "33333333-3333-4333-8333-333333333333";
+    expect(adapterAuthSessionOwnerResponseSchema.parse({ ...owner, agentId: target }).agentId).toBe(target);
+    expect(adapterAuthSessionOwnerResponseSchema.safeParse({ ...owner, agentId: "invalid" }).success).toBe(false);
+    expect(adapterAuthSessionResponseSchema.safeParse({ ...owner, agentId: target }).success).toBe(false);
   });
 
   it("maps the internal promoting state to the public waiting_for_user state", () => {

@@ -3,13 +3,13 @@ import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@
 import { parseObject } from "../adapters/utils.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { validatePrpEvent } from "../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { isConfirmedCursorCloudTerminalObservation } from "./native-runtime/cursor-cloud-runtime.js";
+import { isAgentLifecycleStopRecord } from "./governance-pause-stop.js";
 
-/** A server-recorded run-only Stop must not manufacture a recovery incident. */
-export function hasAcknowledgedNativeRunStopReceipt(run: {
+export function hasAcknowledgedNativeRunStopRequest(run: {
   id: string; companyId: string; status: string; nativeIssueId: string | null;
   resultJson: Record<string, unknown> | null;
 }): boolean {
@@ -18,15 +18,24 @@ export function hasAcknowledgedNativeRunStopReceipt(run: {
   return intent?.schema === "paperclip.native-cancellation.v1" && intent.runId === run.id &&
     intent.companyId === run.companyId && intent.issueId === run.nativeIssueId &&
     intent.scope === "run" && intent.reasonCode === "cancellation_run_only" &&
-    intent.dispatchState === "acknowledged" && intent.dispatched === true &&
+    intent.dispatchState === "acknowledged" && typeof intent.dispatched === "boolean" &&
     typeof intent.intentAuditId === "string" && Boolean(intent.intentAuditId) &&
     typeof intent.acknowledgementAuditId === "string" && Boolean(intent.acknowledgementAuditId);
+}
+
+export function hasAcknowledgedNativeRunStopReceipt(run: Parameters<typeof hasAcknowledgedNativeRunStopRequest>[0]): boolean {
+  return hasAcknowledgedNativeRunStopRequest(run) &&
+    (run.resultJson?.nativeCancellation as Record<string, unknown>).dispatched === true;
 }
 
 export function hasAcknowledgedNativeStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
   return run.resultJson?.cancelledByActorType === "user" &&
     typeof run.resultJson.cancelledByUserId === "string" && Boolean(run.resultJson.cancelledByUserId) &&
     hasAcknowledgedNativeRunStopReceipt(run);
+}
+
+export function hasAcknowledgedNativeLifecycleStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
+  return isAgentLifecycleStopRecord(run.resultJson) && hasAcknowledgedNativeRunStopReceipt(run);
 }
 
 /** An intentional handoff retains task state and deferred work for its successor. */
@@ -92,8 +101,10 @@ export async function acknowledgedNativeStopExecutionHasStopped(db: Db, run: Pic
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
-  // Provider PIDs are meaningful only on their own host.
-  if (leases.some(lease => lease.provider !== "local")) return leases.every(hasRemoteTerminationReceipt);
+  // Provider PIDs are meaningful only on their own host. A recovered sandbox
+  // queued for destroy keeps its verified stop; the destroy is only cleanup.
+  if (leases.some(lease => lease.provider !== "local"))
+    return leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease));
   if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return false;
   if (!run.processPid && !run.processGroupId) return hasNativeLocalProcessStop(db, run.companyId, run.id);
   const absent = (pid: number) => {

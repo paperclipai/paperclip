@@ -8,7 +8,7 @@ import { subscribeDatabaseWork, authUsers, companyMemberships, agents, approvals
 import { attentionRetentionService, registerAttentionRetentionWork } from "../services/attention-retention.js";
 import { workspaceOperationService } from "../services/workspace-operations.js";
 import * as workspaceOperationLogs from "../services/workspace-operation-log-store.js";
-import { budgetService } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { writeExecutionControl } from "../services/execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { attentionService } from "../services/attention.js";
@@ -912,6 +912,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       billingType: "metered_api", model: "fixture", inputTokens: 100, outputTokens: 20,
       costCents: 90, occurredAt: new Date() }).returning();
     await service.evaluateCostEvent(event);
+    await flushBudgetEvaluationWork(db, { companyId });
     await settle(); expect(coordinator!.nextWakeAt()).not.toBeNull();
     const [incident] = await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, companyId));
     expect(incident).toMatchObject({ status: "open", thresholdType: "soft" });

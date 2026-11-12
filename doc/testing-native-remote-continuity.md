@@ -68,7 +68,7 @@ without target tool dispatch or a fabricated response. The staged restart helper
 and classifier tests cover target discovery before its first session snapshot,
 exact encrypted source/header/artifact bindings and the existing compatibility
 rebinder. Source accounting tests use real PostgreSQL to distinguish immutable
-receipt replay, equal finalized usage and late usage requiring reconciliation.
+receipt replay, equal finalized usage and late usage posted to its owning run.
 Handoff crash tests must restore the exact queued command or authenticated
 receipt, reuse the verified physical Runner and preserve endpoint binding. Test
 both direct callbacks and the same guest listener when that ingress is enabled;
@@ -154,15 +154,60 @@ The checkpoint owner authenticates/decrypts that header and delegates version an
 inspection to Runner; the identity must match the run, session and runner. Ordinary
 sandbox runs bind their workspace identity; plugin tasks bind their active dispatched
 environment lease and need no workspace-sync descriptor.
+Accepted terminal results can also qualify through their existing finalization
+owner. This requires the exact accepted result and contract, a remote workspace,
+and its retained provider lease or successful workspace barrier. Committed work
+also needs its applied decision and assessment. Unknown physical owners and
+finalizer leases beyond the five-minute budget remain blockers. The observation
+does not request stop proof or take a lease. Copyback still requires the old
+worker's signed stop receipt and an atomic owner claim. Committed projections
+use the existing accepted-result and decision receipts.
 Legacy/local executions, missing identities/checkpoints, foreign/expired owners,
 in-flight admission, and an incomplete census prevent a positive report. It
 returns aggregate counts only. The request does not stop admission, detach a
 runner, or authorize new work. Ordinary drain reads do not perform this SQL.
-The explicit probe uses a read-only transaction, a two-second statement timeout,
-and at most 1,001 run rows. Header reads are capped at 256 KiB each and 8 MiB total;
+The explicit probe uses read-only transactions, a two-second statement timeout,
+and at most 1,001 run rows. Post-result inspections share a two-second scheduling
+budget; after it expires, unchecked candidates remain blocking. An in-flight
+inspection retains its SQL statement timeout. Header reads are capped at 256 KiB each and 8 MiB total;
 oversized, malformed, legacy-format or local evidence falls back to the ordinary drain.
 This bounded header probe does not validate every journal record or prove a live sandbox. This is an observation; the existing shutdown and
 startup owners still perform the actual handoff and enforce Stop and fencing.
+
+The report also carries an additive `handoff` object, which a deployer can adopt
+in place of the top-level `ready`. The top-level version 1 fields keep their
+meaning: `blockingRuns` counts every execution without adoption evidence, and
+`ready` is false while any exists or an admission is in flight. `handoff`
+(its own `version: 1`) separates work a graceful server replacement would lose
+from work that is only in flight:
+
+| Field | Meaning |
+| --- | --- |
+| `recoverableRuns` | Same count as the top level: a successor adopts these running executions. |
+| `restartableRuns` | Runs marked `running` that have launched no agent work. Restart recovery starts the same work again without a Retry. |
+| `blockingRuns` | Executions that are neither. A swap would interrupt started agent work that no successor can adopt. |
+| `pendingWakes` | Same count as the top level, reported for information. It does not affect `handoff.ready`. |
+| `unsavedWakes` | The pending wakes that have not committed their wake request and queued run. They exist only in this process, so a swap can lose them. |
+| `ready` | `true` when the instance is not draining, the census is complete, and `handoff.blockingRuns` and `handoff.unsavedWakes` are 0. |
+
+A run is restartable only when all of this holds: the agent uses the
+`paperclip_runner` adapter; the run has no process identity, no provider session
+before or after, no checkpoint header and no dispatched runner task; no
+execution-start event exists (`native.process_start_requested`,
+`native.process_identity_recorded`, `adapter.invoke`, `tool.execution.started` or
+any runner-sourced event); and it is either a native run in the `observed` phase
+with preparation fencing and an unsettled finalization record, or a legacy run
+still in the `preparing` stage under a recorded controller. Follow-up runs that
+carry a previous provider session, local adapters and legacy runs with a child
+process stay blocking. An execution the census could not observe also blocks.
+
+`pendingWakes` counts wake admissions in flight inside this process, not queue
+rows. An admission commits its wake request and its queued run in one
+transaction; after that it only dispatches saved rows, and the next server
+dispatches queued runs at startup. Before that commit, for example while it
+waits on the agent row lock, nothing is saved. Shutdown waits at most 30 seconds
+for in-flight admissions and then exits, so an unsaved admission can be lost.
+`handoff.unsavedWakes` counts those and keeps `handoff.ready` false.
 A positive report alone does not prove hosted upgrade continuity.
 
 Retain Postgres and the instance secret encryption key across deployments. The

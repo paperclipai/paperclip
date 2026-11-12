@@ -1,4 +1,5 @@
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
+import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
@@ -12,6 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 import { taskChatComposerSurfaceClasses } from "./composer-surface";
 import { useComposerStop } from "@/hooks/useComposerStop";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
@@ -352,7 +354,7 @@ type ComposerAttachment = {
 type QueuedEditBackup = {
   body: string;
   attachments: ComposerAttachment[];
-  pendingMode: IssueWorkMode;
+  pendingMode: IssueWorkMode | null;
   pendingAssignee: string | null;
 };
 
@@ -425,6 +427,7 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const submitKey = useComposerSubmitKey();
   const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
@@ -448,8 +451,10 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
     useState<HTMLElement | null>(null);
-  const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
-  const pendingMode = creation ? workMode : localPendingMode;
+  const [pendingModeOverride, setPendingMode] = useState<IssueWorkMode | null>(null);
+  const modeChoiceGeneration = useRef(0);
+  const sentModeChoice = useRef<{ attemptId: string; generation: number } | null>(null);
+  const pendingMode = creation ? workMode : pendingModeOverride ?? workMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
@@ -468,6 +473,9 @@ export function TaskChatComposer({
         : [],
   );
   const attachmentsRef = useRef(attachments);
+  // Keep upload receipts durable while the optimistic message owns the preview.
+  // A rejected or uncertain send returns these same attachments to the draft.
+  const [sendingAttachmentIds, setSendingAttachmentIds] = useState<ReadonlySet<string> | null>(null);
   function setAttachments(
     update:
       | ComposerAttachment[]
@@ -544,13 +552,15 @@ export function TaskChatComposer({
     const previousId = previousQueuedEditIdRef.current;
     const nextEdit = queuedEdit;
     const nextId = nextEdit?.commentId ?? null;
+    // A save error belongs to the edit that produced it.
+    if (previousId !== nextId) setActionError(null);
 
     if (nextEdit && previousId !== nextId) {
       if (!queuedEditBackupRef.current) {
         queuedEditBackupRef.current = {
           body: bodyRef.current,
           attachments: attachmentsRef.current,
-          pendingMode,
+          pendingMode: pendingModeOverride,
           pendingAssignee: pendingAssigneeRef.current,
         };
         if (draftKey) saveDraft(draftKey, bodyRef.current);
@@ -578,7 +588,7 @@ export function TaskChatComposer({
     }
 
     previousQueuedEditIdRef.current = nextId;
-  }, [draftKey, pendingMode, queuedEdit]);
+  }, [draftKey, pendingModeOverride, queuedEdit]);
 
   useEffect(() => {
     if (!draftKey || queuedEdit) return;
@@ -698,8 +708,16 @@ export function TaskChatComposer({
   }
 
   function changeMode(mode: IssueWorkMode) {
+    modeChoiceGeneration.current += 1;
     setPendingMode(mode);
     if (creation) void onWorkModeChange?.(mode);
+  }
+
+  function settleSentMode(attemptId: string) {
+    const choice = sentModeChoice.current;
+    if (choice?.attemptId !== attemptId) return;
+    if (modeChoiceGeneration.current === choice.generation) setPendingMode(null);
+    sentModeChoice.current = null;
   }
 
   async function uploadImage(file: File): Promise<string> {
@@ -866,8 +884,9 @@ export function TaskChatComposer({
   const attachedRefs = attachments.filter(
     (item) => item.status === "attached" && item.contentPath && !item.inline,
   );
-  const imageAttachments = attachments.filter(item => isImage(item) && !item.inline);
-  const visibleAttachments = attachments.filter(
+  const draftAttachments = attachments.filter(item => !sendingAttachmentIds?.has(item.id));
+  const imageAttachments = draftAttachments.filter(item => isImage(item) && !item.inline);
+  const visibleAttachments = draftAttachments.filter(
     (item) => (!item.inline || item.status !== "attached") && !isImage(item),
   );
   // Sending mid-upload would silently drop the pending file from the comment;
@@ -919,6 +938,7 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
+    const submittedModeGeneration = modeChoiceGeneration.current;
     const trimmed = submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
@@ -1027,6 +1047,7 @@ export function TaskChatComposer({
       else clearDraft(draftKey);
     }
     setBody("");
+    setSendingAttachmentIds(new Set(submittedAttachments.map(item => item.id)));
     setSubmitting(true);
     let attemptId: string | null = null;
     let request: ComposerSendRequest | null = null;
@@ -1034,7 +1055,15 @@ export function TaskChatComposer({
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
-        await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        setActionError(null);
+        try {
+          await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        } catch (error) {
+          // A rejected edit keeps its text below; say why it was not saved.
+          if (mountedTaskKey.current === draftKey && queuedEditRef.current?.commentId === queuedEdit.commentId)
+            setActionError(describeError(error, { action: "save this queued message" }).body);
+          throw error;
+        }
         onCancelQueuedEdit?.();
         return;
       }
@@ -1080,6 +1109,7 @@ export function TaskChatComposer({
         pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds, request, requestOwner };
         changeBody(bodyRef.current);
       }
+      sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
       if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
@@ -1090,6 +1120,7 @@ export function TaskChatComposer({
       if (draftKey) settleDraftSubmission(draftKey, attemptId,
         mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
       if (mountedTaskKey.current !== draftKey) return;
+      settleSentMode(attemptId);
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
@@ -1130,6 +1161,7 @@ export function TaskChatComposer({
       setBody(restoredBody);
     } finally {
       if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
+      setSendingAttachmentIds(null);
       setSubmitting(false);
     }
   }
@@ -1140,6 +1172,7 @@ export function TaskChatComposer({
     const settlementKey = JSON.stringify([draftKey, submission.attemptId]);
     if (settledSubmissionIds.current.has(settlementKey)) return;
     settledSubmissionIds.current.add(settlementKey);
+    settleSentMode(submission.attemptId);
     const nextDraft = submission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(submission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, submission.attemptId, nextDraft);
@@ -1243,6 +1276,14 @@ export function TaskChatComposer({
 
   return (
     <div className={cn("flex min-w-0 flex-col", creation?.contextBar ? "gap-0" : "gap-2")}>
+      <ComposerFileDropTarget
+        enabled={canAcceptFiles && !disabled && !submitting && !creation?.readOnly}
+        newTask={Boolean(creation)}
+        onFiles={(files) => {
+          if (creation) creation.onSelectFiles(files);
+          else for (const file of files) void attachPickedFile(file);
+        }}
+      />
       {takeoverVisible && takeover ? (
         <section
           className={cn(
@@ -1317,6 +1358,7 @@ export function TaskChatComposer({
         </TaskChatComposerBar>
       ) : null}
       <div
+        data-editor-autocomplete-anchor=""
         className={taskChatComposerSurfaceClasses(mobile, streamlined)}
         onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
@@ -1335,17 +1377,6 @@ export function TaskChatComposer({
         }
       }}
         onPasteCapture={handlePasteCapture}
-        onDragOver={(event) => {
-          if (canAcceptFiles && !disabled && !creation && event.dataTransfer.types.includes("Files")) event.preventDefault();
-        }}
-        onDropCapture={(event) => {
-          if (!canAcceptFiles || disabled || creation) return;
-          const files = Array.from(event.dataTransfer.files);
-          if (!files.length) return;
-          event.preventDefault();
-          event.stopPropagation();
-          for (const file of files) void attachPickedFile(file);
-        }}
       >
         {creation?.header}
         {uncertainSubmission ? (
@@ -1411,6 +1442,7 @@ export function TaskChatComposer({
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
+              submitKey={submitKey}
               fileDropTarget="parent"
               bordered={false}
               className={cn(disabled && "opacity-60")}
@@ -1426,7 +1458,7 @@ export function TaskChatComposer({
             <p
               className="px-1 text-xs text-destructive"
               role="alert"
-              data-testid={creation ? "task-chat-create-error" : "task-chat-goal-error"}
+              data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-goal-error"}
             >
               {actionError}
             </p>
@@ -1650,7 +1682,7 @@ export function TaskChatComposer({
                       ? "Waiting for upload to finish"
                       : uploadFailed
                         ? "Remove the failed attachment to send"
-                        : creation ? `${creation.submitLabel} (⌘+Enter)` : "Send (⌘+Enter)"
+                        : `${creation?.submitLabel ?? "Send"} (${submitKey === "mod-enter" ? "⌘/Ctrl+Enter" : "Enter"})`
               }
               aria-label={
                 showStop

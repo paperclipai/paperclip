@@ -5,9 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import {
-  createDb, companies, agents, companyMemberships, companyDecisionModels, costEvents, decisionInvocations,
+  createDb, companies, agents, companyMemberships, companyDecisionModels, costEvents, costAdjustments, decisionInvocations,
   connectionGrants, connectionGrantMembers, toolConnectionInstalls, budgetPolicies, budgetReservations,
-  heartbeatRuns, issues, projects, runIdentityContexts, secretAccessEvents, companySecrets,
+  heartbeatRuns, issues, projects, runIdentityContexts, secretAccessEvents, companySecrets, activityLog,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { DECISION_TEST_REQUEST, updateDecisionModelSchema, createCostEventSchema } from "@paperclipai/shared";
@@ -18,11 +18,12 @@ import { decisionReceipt, type DecisionProviderOutcome } from "../services/decis
 import { costService } from "../services/costs.js";
 import { billingReconciliationService } from "../services/billing-reconciliation.js";
 import { withAccountingTransaction } from "../services/accounting-transaction.js";
+import { deleteAgentDependencies } from "../services/agent-deletion.js";
 import express from "express";
 import request from "supertest";
 import { decisionModelRoutes } from "../routes/decision-models.js";
 import { errorHandler } from "../middleware/index.js";
-import { deliverBudgetEnforcement } from "../services/budgets.js";
+import { deliverBudgetEnforcement, flushBudgetEvaluationWork } from "../services/budgets.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
@@ -75,6 +76,7 @@ describe("company decision service", () => {
       const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ usageKind: "decision", costCents: 2 });
+      await flushBudgetEvaluationWork(db, { companyId: f.companyId });
       const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, f.companyId));
       expect(policy.enforcementVersion).toBeGreaterThan(policy.enforcementDeliveredVersion);
       delivery = deliverBudgetEnforcement(db, { cancelWorkForScope }, f.companyId);
@@ -83,6 +85,170 @@ describe("company decision service", () => {
       release(); await delivery;
       expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementVersion);
     } finally { release(); await pending.catch(() => undefined); await delivery?.catch(() => undefined); }
+  });
+  it.each(["company", "agent", "policy"] as const)("settles while an unrelated %s accounting row is locked", async locked => {
+    const f = await fixture(), runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
+      status: "running", invocationSource: "on_demand", responsibleUserId: "alice" });
+    const [policy] = await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 100, notifyEnabled: false }).returning();
+    let providerEntered!: () => void, finishProvider!: () => void, unlock!: () => void, lockedRow!: () => void;
+    const entered = new Promise<void>(resolve => { providerEntered = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProvider = resolve; });
+    const lockGate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { lockedRow = resolve; });
+    f.provider.mockImplementationOnce(async () => { providerEntered(); await providerGate; return structuredClone(outcome); });
+    const context: DecisionContext = { ...f.context, actor: { type: "agent", companyId: f.companyId, agentId: f.agentId, runId, source: "agent_jwt" } };
+    const pending = f.service.decide(context, DECISION_TEST_REQUEST);
+    await entered;
+    const blocker = db.transaction(async tx => {
+      if (locked === "company") await tx.select().from(companies).where(eq(companies.id, f.companyId)).for("no key update");
+      if (locked === "agent") await tx.select().from(agents).where(eq(agents.id, f.agentId)).for("no key update");
+      if (locked === "policy") await tx.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)).for("no key update");
+      lockedRow(); await lockGate;
+    });
+    let finished = false;
+    void pending.finally(() => { finished = true; }).catch(() => undefined);
+    try {
+      await acquired; finishProvider();
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await pending).toMatchObject({ status: "succeeded" });
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0].state).toBe("settled");
+    } finally { unlock(); finishProvider(); await blocker; await pending.catch(() => undefined); }
+  });
+  it.each(["company", "project"] as const)("denies paid admission when %s manual pause wins its control fence", async scope => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Control fence" }).returning();
+    let unlock!: () => void, locked!: (pid: number) => void;
+    const gate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<number>(resolve => { locked = resolve; });
+    const holding = db.transaction(async tx => {
+      if (scope === "company") await tx.select().from(companies).where(eq(companies.id, f.companyId)).for("no key update");
+      else await tx.select().from(projects).where(eq(projects.id, project.id)).for("no key update");
+      const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      locked(row.pid); await gate;
+      if (scope === "company") await tx.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+      else await tx.update(projects).set({ pauseReason: "manual", pausedAt: new Date() }).where(eq(projects.id, project.id));
+    });
+    const pid = await acquired;
+    const pending = f.service.decide({ ...f.context, projectId: project.id }, DECISION_TEST_REQUEST);
+    try {
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
+        expect(row.count).toBeGreaterThan(0);
+      }, { timeout: 3000 });
+      unlock(); await holding;
+      expect(await pending).toMatchObject({ status: "unavailable" });
+      expect(f.provider).not.toHaveBeenCalled();
+      expect(await db.select().from(decisionInvocations).where(eq(decisionInvocations.companyId, f.companyId))).toHaveLength(0);
+    } finally { unlock(); await holding; await pending.catch(() => undefined); }
+  });
+  it("settles an independent decision for the same agent while another invocation is locked", async () => {
+    const f = await fixture(), runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
+      status: "running", invocationSource: "on_demand", responsibleUserId: "alice" });
+    const context: DecisionContext = { ...f.context, actor: { type: "agent", companyId: f.companyId, agentId: f.agentId, runId, source: "agent_jwt" } };
+    let firstEntered!: () => void, finishFirst!: () => void, unlock!: () => void, lockedRow!: () => void;
+    const entered = new Promise<void>(resolve => { firstEntered = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishFirst = resolve; });
+    const lockGate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { lockedRow = resolve; });
+    f.provider.mockImplementationOnce(async () => { firstEntered(); await providerGate; return structuredClone(outcome); });
+    const first = f.service.decide(context, DECISION_TEST_REQUEST);
+    await entered;
+    const [invocation] = await db.select().from(decisionInvocations).where(eq(decisionInvocations.companyId, f.companyId));
+    const blocker = db.transaction(async tx => {
+      await tx.select().from(decisionInvocations).where(eq(decisionInvocations.id, invocation.id)).for("update");
+      lockedRow(); await lockGate;
+    });
+    let second: ReturnType<typeof f.service.decide> | undefined;
+    try {
+      await acquired; finishFirst();
+      second = f.service.decide(context, DECISION_TEST_REQUEST);
+      let finished = false;
+      void second.finally(() => { finished = true; }).catch(() => undefined);
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await second).toMatchObject({ status: "succeeded" });
+    } finally { unlock(); finishFirst(); await blocker; await first; await second; }
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(2);
+  });
+  it("retries a rolled-back settlement without repeating the provider or charge", async () => {
+    const f = await fixture(), suffix = randomUUID().replaceAll("-", "");
+    const sequenceName = `decision_rollback_${suffix}`, functionName = `fail_decision_${suffix}`, triggerName = `decision_retry_${suffix}`;
+    await db.execute(sql.raw(`CREATE SEQUENCE ${sequenceName}`));
+    await db.execute(sql.raw(`CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.company_id = '${f.companyId}'::uuid AND NEW.status <> 'running' AND nextval('${sequenceName}') = 1 THEN
+          RAISE EXCEPTION 'retry injected after ledger insert' USING ERRCODE = '40001';
+        END IF;
+        RETURN NEW;
+      END $$`));
+    await db.execute(sql.raw(`CREATE TRIGGER ${triggerName} BEFORE UPDATE ON decision_invocations FOR EACH ROW EXECUTE FUNCTION ${functionName}()`));
+    try {
+      expect(await f.service.decide(f.context, DECISION_TEST_REQUEST)).toMatchObject({ status: "succeeded" });
+      expect(f.provider).toHaveBeenCalledOnce();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect((await db.select().from(decisionInvocations).where(eq(decisionInvocations.companyId, f.companyId)))[0].costEventId).toBe(events[0].id);
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0].state).toBe("settled");
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER ${triggerName} ON decision_invocations`));
+      await db.execute(sql.raw(`DROP FUNCTION ${functionName}()`));
+      await db.execute(sql.raw(`DROP SEQUENCE ${sequenceName}`));
+    }
+  });
+  it.each([
+    { recoveryFirst: true, priced: true, corrected: false }, { recoveryFirst: false, priced: true, corrected: false },
+    { recoveryFirst: true, priced: false, corrected: false }, { recoveryFirst: false, priced: false, corrected: false },
+    { recoveryFirst: true, priced: true, corrected: true },
+  ])("keeps a real result with recovery first: $recoveryFirst, priced: $priced, corrected: $corrected", async ({ recoveryFirst, priced, corrected }) => {
+    const f = await fixture();
+    const realOutcome: DecisionProviderOutcome = priced ? structuredClone(outcome) : { ...structuredClone(outcome), receipt: {
+      ...outcome.receipt, costCents: null, costStatus: "unpriced", pricingProvenance: { source: "unknown" } } };
+    let finishProvider!: () => void, providerEntered!: () => void;
+    const gate = new Promise<void>(resolve => { finishProvider = resolve; });
+    const entered = new Promise<void>(resolve => { providerEntered = resolve; });
+    f.provider.mockImplementationOnce(async () => { providerEntered(); await gate; return realOutcome; });
+    const pending = f.service.decide(f.context, DECISION_TEST_REQUEST);
+    await entered;
+    await db.update(decisionInvocations).set({ startedAt: new Date(Date.now() - 180_000) }).where(eq(decisionInvocations.companyId, f.companyId));
+    let originalHash: string | null = null;
+    try {
+      if (recoveryFirst) {
+        await Promise.all([f.service.recoverInterrupted(), f.service.recoverInterrupted()]);
+        const [event] = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+        expect(event.costStatus).toBe("unpriced"); originalHash = event.receiptHash;
+        if (corrected) await billingReconciliationService(db).adjust(f.companyId, event.id, { idempotencyKey: "invoice-before-receipt",
+          expectedCents: "0", correctedCents: "0.005", reason: "Verified invoice before provider completed", pricing: { source: "operator" } }, "alice");
+      }
+      finishProvider();
+      expect(await pending).toMatchObject({ status: "succeeded" });
+      await f.service.recoverInterrupted();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ costStatus: corrected ? "reported" : priced ? "estimated" : "unpriced", costCents: corrected ? 0.005 : priced ? 0.001 : 0 });
+      expect(events[0]).toMatchObject({ inputTokens: 100, cachedInputTokens: 0, outputTokens: 0,
+        providerRequestId: outcome.receipt.providerRequestId });
+      const corrections = await db.select().from(costAdjustments).where(eq(costAdjustments.companyId, f.companyId));
+      expect(corrections).toHaveLength(recoveryFirst ? corrected ? 2 : 1 : 0);
+      if (recoveryFirst) {
+        expect(events[0]).toMatchObject({ receiptHash: originalHash, reportedCostCents: "0.0000000",
+          reportedUsageJson: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, providerRequestId: null } });
+        expect(corrections.find(row => row.idempotencyKey.endsWith(":late-receipt") || row.idempotencyKey.endsWith(":late-usage"))?.previousUsageJson)
+          .toMatchObject({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, providerRequestId: null });
+        if (priced && !corrected) expect(JSON.parse(corrections[0].pricing.evidence as string)).toMatchObject({ inputTokens: 100, outputTokens: 0 });
+      }
+      if (corrected) {
+        expect(events[0].pricingProvenance).toEqual({ source: "operator" });
+        const observed = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "accounting.late_receipt_observed")));
+        expect(observed).toHaveLength(1);
+        expect(observed[0].details).toMatchObject({ effectiveCostCents: "0.0050000", costCents: "0.0010000", inputTokens: 100 });
+      }
+      expect((await db.select().from(decisionInvocations).where(eq(decisionInvocations.companyId, f.companyId)))[0]).toMatchObject({
+        status: "succeeded", costEventId: events[0].id, inputTokens: 100, outputTokens: 0 });
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0].state).toBe(priced ? "settled" : "held");
+      expect(f.provider).toHaveBeenCalledOnce();
+    } finally { finishProvider(); await pending.catch(() => undefined); }
   });
   it("starts unconfigured with background sponsorship on and makes availability free", async () => {
     const f = await fixture();
@@ -146,13 +312,14 @@ describe("company decision service", () => {
     await f.service.configure(f.companyId, "alice", { ...f.config, enabled: false });
     expect(await f.service.availability(f.context)).toEqual({ available: false, reason: "disabled" }); expect(f.provider).not.toHaveBeenCalled();
   });
-  it.each(["disabled", "rotated"])("rejects a secret %s while admission waits for accounting", async change => {
+  it.each(["disabled", "rotated"])("rejects a secret %s while final admission waits for configuration", async change => {
     const f = await fixture();
     const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.companyId, f.companyId));
     let release!: () => void, locked!: (pid: number) => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const acquired = new Promise<number>(resolve => { locked = resolve; });
-    const holding = withAccountingTransaction(db, f.companyId, async tx => {
+    const holding = db.transaction(async tx => {
+      await tx.select().from(companyDecisionModels).where(eq(companyDecisionModels.companyId, f.companyId)).for("no key update");
       const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       locked(row.pid); await gate;
     });
@@ -201,7 +368,38 @@ describe("company decision service", () => {
     await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
     expect(await f.service.availability(context)).toMatchObject({ available: false, reason: "responsible_user_missing" });
   });
-  it("serializes budget admission against concurrent requests", async () => {
+  it("admits concurrent work from the same budget observation and records both obligations", async () => {
+    const f = await fixture();
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 1, reservationCents: "1", notifyEnabled: false });
+    let unlock!: () => void, locked!: (pid: number) => void, finishProviders!: () => void;
+    const lockGate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<number>(resolve => { locked = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProviders = resolve; });
+    const holding = db.transaction(async tx => {
+      await tx.select().from(companyDecisionModels).where(eq(companyDecisionModels.companyId, f.companyId)).for("no key update");
+      const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      locked(row.pid); await lockGate;
+    });
+    const pid = await acquired;
+    f.provider.mockImplementation(async () => { await providerGate; return structuredClone(outcome); });
+    const first = f.service.decide(f.context, DECISION_TEST_REQUEST), second = f.service.decide(f.context, DECISION_TEST_REQUEST);
+    try {
+      // Both admission snapshots exist before either independent reservation commits.
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
+        expect(row.count).toBe(2);
+      }, { timeout: 3000 });
+      unlock(); await holding;
+      await vi.waitFor(() => expect(f.provider).toHaveBeenCalledTimes(2));
+      const holds = await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId));
+      expect(holds).toHaveLength(2);
+      expect(holds.every(row => row.state === "held" && row.amountCents === "1.0000000")).toBe(true);
+    } finally { unlock(); finishProviders(); await holding; await Promise.allSettled([first, second]); }
+    expect((await first).status).toBe("succeeded"); expect((await second).status).toBe("succeeded");
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(2);
+  });
+  it("denies new work when an already committed reservation consumes the observed budget", async () => {
     const f = await fixture();
     await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId, windowKind: "calendar_month_utc", amount: 1, reservationCents: "1", notifyEnabled: false });
     let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
@@ -212,6 +410,45 @@ describe("company decision service", () => {
     try { expect(await f.service.decide(f.context, DECISION_TEST_REQUEST)).toMatchObject({ status: "unavailable", reason: "budget_blocked" }); }
     finally { release(); }
     expect((await first).status).toBe("succeeded"); expect(f.provider).toHaveBeenCalledTimes(1);
+  });
+  it("checks deletion holds after an admission waiting on its scoped identity fence commits", async () => {
+    const f = await fixture(), runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
+      status: "running", invocationSource: "on_demand", responsibleUserId: "alice" });
+    let unlock!: () => void, locked!: (pid: number) => void, finishProvider!: () => void;
+    const gate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<number>(resolve => { locked = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProvider = resolve; });
+    // Keep the admitted reservation held while deletion checks it. A provider
+    // that already settled may legitimately allow deletion past this guard.
+    f.provider.mockImplementationOnce(async () => { await providerGate; return structuredClone(outcome); });
+    const blocker = db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("no key update");
+      const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      locked(row.pid); await gate;
+    });
+    const blockerPid = await acquired;
+    const context: DecisionContext = { ...f.context, actor: { type: "agent", companyId: f.companyId, agentId: f.agentId, runId, source: "agent_jwt" } };
+    const pending = f.service.decide(context, DECISION_TEST_REQUEST);
+    let deletion: Promise<unknown> | undefined;
+    try {
+      let admissionPid: number | undefined;
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ pid: number }>(sql`select pid from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`);
+        expect(row).toBeDefined(); admissionPid = row?.pid;
+      }, { timeout: 3000 });
+      deletion = withAccountingTransaction(db, f.companyId, tx => deleteAgentDependencies(tx, f.companyId, f.agentId)).catch(error => error);
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${admissionPid} = any(pg_blocking_pids(pid))`);
+        expect(row.count).toBeGreaterThan(0);
+      }, { timeout: 3000 });
+      unlock(); await blocker;
+      expect(await deletion).toMatchObject({ status: 409, details: { code: "agent_decision_accounting_pending" } });
+      finishProvider();
+      expect(await pending).toMatchObject({ status: "succeeded" });
+      expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]).toBeDefined();
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(1);
+    } finally { unlock(); finishProvider(); await blocker; await deletion; await pending.catch(() => undefined); }
   });
   it("blocks agent deletion while an in-flight or unknown decision retains a budget hold", async () => {
     const f = await fixture(), runId = randomUUID();

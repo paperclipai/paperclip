@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Issue } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentChat } from "./AgentChat";
@@ -102,4 +102,30 @@ it("does not display a historical agent from another company", async () => {
   await waitFor(() => expect(container.textContent).toContain("Agent not found"));
   expect(container.textContent).not.toContain("Private helper");
   expect(api.getChat).not.toHaveBeenCalled();
+});
+
+
+it("opens a stale navigation conversation immediately while revalidating in the background", async () => {
+  client.setDefaultOptions({ queries: { retry: false, staleTime: 30_000, gcTime: Infinity } });
+  client.setQueryData(queryKeys.agents.list("company-a"), [{ id: agentId, companyId: "company-a", name: "Helper" }]);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "viewer-a"), [{
+    id: "existing-chat", companyId: "company-a", conversationAgentId: agentId,
+  } as Issue], { updatedAt: Date.now() - 60_000 });
+  api.getChat.mockImplementation(() => new Promise(() => {}));
+  render();
+  expect(container.textContent).toContain("History for Helper");
+  expect(container.textContent).not.toContain("Loading conversation");
+  await waitFor(() => expect(api.getChat).toHaveBeenCalledWith("company-a", agentId));
+  expect(api.ensure).not.toHaveBeenCalled();
+});
+
+it("does not reuse another account's cached conversation", async () => {
+  client.setQueryData(queryKeys.agents.list("company-a"), [{ id: agentId, companyId: "company-a", name: "Helper" }]);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "viewer-b"), [{
+    id: "private-chat", companyId: "company-a", conversationAgentId: agentId,
+  } as Issue]);
+  api.getChat.mockImplementation(() => new Promise(() => {}));
+  render();
+  expect(container.textContent).toContain("Loading conversation");
+  await waitFor(() => expect(api.getChat).toHaveBeenCalled());
 });

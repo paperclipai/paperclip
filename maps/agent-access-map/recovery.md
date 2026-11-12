@@ -100,6 +100,17 @@ Gaps: Component host test doesn't prove actual filesystem/provider repair.
 
 ## `bounded-continuation`
 
+Original-host Native controller containment requires board-only
+`runtime:confirm_owner_stop` authority on the existing recovery resolution route:
+a company owner, company administrator, or instance administrator. Agents cannot submit it.
+It requires separate controller/provider stop confirmations, reviewed outcomes,
+a server-bound exact authority digest, elapsed lease and unchanged locked
+source/assignee/cleanup fences. It records containment without queuing work; a
+separate ordinary task Retry is required. Unknown process space never authorizes
+a local PID probe or automatic physical takeover, even after expiry.
+Evidence: `source-only` — candidate authority, route, UI and real-owner controls;
+no deployed/original-host stop verification is claimed.
+
 Capability ID: `recovery/bounded-continuation`.
 
 Ordinary task Retry uses `POST /api/issues/{id}/retry`. This is authenticated
@@ -304,8 +315,8 @@ no external inbound authority or permission to replay a terminal result; an
 uncertifiable source directs the user to send a new task message. The real
 HTTP/queue regression proves this boundary locally, not hosted provider recovery.
 
-For external chat, the same canonical Retry owner may certify the structured
-isolated-directory binding failure that occurs before environment allocation.
+For external chat, the same canonical Retry owner may certify an isolated-directory
+binding failure or a fully recorded setup failure before provider dispatch.
 It requires exact task/source authority and trusted settlement with no process,
 lease, native result or unknown execution evidence. Other validation reasons and
 the older direct chat-retry entry point remain denied. Local HTTP/dispatch proof

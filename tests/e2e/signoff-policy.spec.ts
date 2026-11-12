@@ -646,6 +646,9 @@ test.describe("Signoff execution policy", () => {
     });
 
     // Step 2: Navigate to issue in UI and verify execution label
+    await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+      userId: "local-board", coordinatorWorkspaceEnabled: false, updatedAt: null,
+    } }));
     await page.goto(`/${ctx.companyPrefix}/issues/${issue.identifier}`);
     await expect(page.locator("text=Review pending")).toBeVisible({ timeout: 10_000 });
 

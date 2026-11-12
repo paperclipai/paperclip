@@ -117,3 +117,52 @@ it("does not block event delivery when a receiver stalls and cancels the request
   expect(aborted).toBe(true);
   expect(diagnostics).toEqual(["Company observability export unavailable (export_failed)."]);
 }, 5000);
+
+it("bounds dispatch diagnostics without traversing arbitrary keys or nested values", async () => {
+  const { observer, bodies } = setup();
+  observer.observe(event("turn.submitted"));
+  const args = { name: "provider-secret", arguments: { secret: "x".repeat(100000) }, ["private-key".repeat(10000)]: true };
+  observer.observe(event("item.started", { kind: "dynamicToolCall", item: { name: "paperclip_call_assigned_tool", arguments: args } }, "run-one", "call"));
+  observer.observe(event("item.completed", { kind: "dynamicToolCall", item: { result: { message: "provider-secret secret-canary" } } }, "run-one", "call"));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const spans = bodies[0].resourceSpans[0].scopeSpans[0].spans;
+  const attributes = spanAttributes(spans[1]);
+  expect(JSON.parse(String(attributes["braintrust.input"]))).toEqual({ schema: "paperclip.opencode.tool-diagnostics.v1", method: "tools/call", argumentType: "object", fields: { name: "string", arguments: "object" } });
+  expect(attributes["braintrust.output"]).toBe('{"message":"[REDACTED] [REDACTED]"}');
+  expect(Buffer.byteLength(String(attributes["braintrust.input"]))).toBeLessThan(1024);
+  expect(JSON.stringify(bodies)).not.toContain("private-key");
+});
+it.each([null, [], "private-string"])("exports only the type for non-object arguments %j", async args => {
+  const { observer, bodies } = setup();
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("item.started", { kind: "dynamicToolCall", item: { name: "tool", arguments: args } }, "run-one", "call"));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const spans = bodies[0].resourceSpans[0].scopeSpans[0].spans;
+  expect(JSON.parse(String(spanAttributes(spans[1])["braintrust.input"])).fields).toEqual({});
+  expect(JSON.stringify(bodies)).not.toContain("private-string");
+});
+it("does not export dispatch spans when tool details are disabled", async () => {
+  const { observer, bodies } = setup({ ...environment, OTEL_LOG_TOOL_DETAILS: "0" });
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("item.started", { kind: "dynamicToolCall", item: { name: "tool", arguments: { name: "private-name" } } }, "run-one", "call"));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  expect(bodies[0].resourceSpans[0].scopeSpans[0].spans).toHaveLength(1);
+  expect(JSON.stringify(bodies)).not.toContain("private-name");
+});
+
+it("retains provider failures for declared tools even before any dispatch", async () => {
+  const bodies: any[] = [];
+  const observer = createOpenCodeCompanyObservability({ environment, model: "test", sensitiveValues: [], managedToolNames: ["paperclip_call_assigned_tool"],
+    fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response("{}"); } })!;
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("tool.execution.completed", { name: "paperclip_call_assigned_tool", status: "failed", output: "request exceeded limit" }, "run-one", "native-rejection"));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const spans = bodies[0].resourceSpans[0].scopeSpans[0].spans;
+  expect(spans[1].name).toBe("opencode tool paperclip_call_assigned_tool");
+  expect(spans[1].status.code).toBe(2);
+  expect(spanAttributes(spans[1])).toMatchObject({ "paperclip.tool.source": "provider", "braintrust.output": "request exceeded limit" });
+});

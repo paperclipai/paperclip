@@ -15,9 +15,11 @@ export function healthScope(hint: string): HealthScope {
   throw new Error("Invalid tool connection health scope");
 }
 
-export const notifyToolConnectionHealth = (transaction: object, target: HealthChange) =>
-  notifyDeliveryWork(transaction, DELIVERY_QUEUES.toolConnectionHealth, typeof target === "string" ? target
+export const notifyToolConnectionHealth = async (transaction: object, target: HealthChange) => {
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.toolReviewRecovery, typeof target === "string" ? target : target.companyId);
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.toolConnectionHealth, typeof target === "string" ? target
     : "id" in target ? `${target.companyId}:connection:${target.id}` : `${target.companyId}:application:${target.applicationId}`);
+};
 
 export function writeToolConnectionHealthChange<T>(db: Db, target: HealthChange, write: (transaction: Db) => Promise<T>): Promise<T> {
   return db.transaction(async tx => {

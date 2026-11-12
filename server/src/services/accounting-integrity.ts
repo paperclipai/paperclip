@@ -1,10 +1,9 @@
-import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, agentRuntimeState, companies, heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { normalizeCents, usdToCents, type AccountingFinding, type AccountingHealth, type AccountingInspection } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
-import { withAccountingReadSnapshot, withAccountingTransaction } from "./accounting-transaction.js";
+import { withAccountingReadSnapshot, withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { logActivity } from "./activity-log.js";
 import { accountRunCost } from "./run-cost-accounting.js";
 import type { BudgetServiceHooks } from "./budgets.js";
@@ -12,31 +11,20 @@ import type { BudgetServiceHooks } from "./budgets.js";
 /** Independent aggregation: deliberately does not reuse writer projections. */
 async function inspect(tx: Db, companyId: string): Promise<AccountingInspection> {
   const findings: AccountingFinding[] = [];
-  const monthly = await tx.execute<{ kind: "company_projection" | "agent_projection"; id: string; actual: string; expected: string }>(sql`
-    with month_events as (select agent_id, cost_cents from cost_events where company_id = ${companyId}
-      and occurred_at >= date_trunc('month', now() at time zone 'UTC') at time zone 'UTC'
-      and occurred_at < (date_trunc('month', now() at time zone 'UTC') + interval '1 month') at time zone 'UTC')
-    select 'company_projection' as kind, id, spent_monthly_cents::text as actual,
-      (select coalesce(sum(cost_cents),0)::text from month_events) as expected from companies where id = ${companyId}
-    union all select 'agent_projection', a.id, a.spent_monthly_cents::text,
-      coalesce((select sum(e.cost_cents) from month_events e where e.agent_id = a.id),0)::text from agents a where a.company_id = ${companyId}`);
-  for (const row of monthly) if (normalizeCents(row.actual) !== normalizeCents(row.expected)) findings.push({ kind: row.kind, entityId: row.id, repairable: true,
-    actual: { cents: normalizeCents(row.actual) }, expected: { cents: normalizeCents(row.expected) } });
-  const runtime = await tx.execute<{ id: string; baseline: string | null; actual: Record<string, string>; expected: Record<string, string> }>(sql`
-    with totals as (select r.agent_id, sum(e.cost_cents) as cents, sum(e.input_tokens) as input, sum(e.cached_input_tokens) as cached, sum(e.output_tokens) as output
-      from heartbeat_runs r join cost_events e on e.heartbeat_run_id = r.id and e.company_id = r.company_id
-      where r.company_id = ${companyId} and r.accounting_projection_version = 'v2' and r.cost_accounted_at is not null group by r.agent_id)
-    select a.agent_id as id, b.agent_id as baseline,
-      jsonb_build_object('cents', a.total_cost_cents::text, 'input', a.total_input_tokens::text, 'cached', a.total_cached_input_tokens::text, 'output', a.total_output_tokens::text) as actual,
-      jsonb_build_object('cents', (coalesce(b.cost_cents,0) + coalesce(t.cents,0))::text, 'input', (coalesce(b.input_tokens,0) + coalesce(t.input,0))::text,
-        'cached', (coalesce(b.cached_input_tokens,0) + coalesce(t.cached,0))::text, 'output', (coalesce(b.output_tokens,0) + coalesce(t.output,0))::text) as expected
-      from agent_runtime_state a left join accounting_runtime_baselines b on b.agent_id = a.agent_id and b.company_id = a.company_id
-      left join totals t on t.agent_id = a.agent_id where a.company_id = ${companyId} order by a.agent_id`);
-  for (const row of runtime) {
-    if (!row.baseline) { findings.push({ kind: "legacy_runtime", entityId: row.id, repairable: false, actual: row.actual, expected: {} }); continue; }
-    row.actual.cents = normalizeCents(row.actual.cents); row.expected.cents = normalizeCents(row.expected.cents);
-    if (Object.keys(row.expected).some(key => row.actual[key] !== row.expected[key])) findings.push({ kind: "runtime_projection", entityId: row.id, repairable: true, actual: row.actual, expected: row.expected });
-  }
+  // Monthly/runtime stored counters are retired compatibility fields. Inspect
+  // the evidence that remains authoritative, not differences from those fields.
+  const missingBaselines = await tx.execute<{ id: string }>(sql`
+    select distinct r.agent_id as id from heartbeat_runs r
+    left join accounting_runtime_baselines b on b.agent_id = r.agent_id and b.company_id = r.company_id
+    where r.company_id = ${companyId} and r.cost_accounted_at is not null
+      and r.accounting_projection_version = 'v2' and b.agent_id is null`);
+  for (const row of missingBaselines) findings.push({ kind: "legacy_runtime", entityId: row.id, repairable: false,
+    actual: { baseline: "missing" }, expected: { baseline: "reconciled" } });
+  const late = await tx.select({ id: heartbeatRuns.id, error: heartbeatRuns.accountingLastError })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+      sql`${heartbeatRuns.usageJson}->>'accountingLateReceiptPending' = 'true'`));
+  for (const row of late) findings.push({ kind: "receipt_mismatch", entityId: row.id, repairable: false,
+    actual: { error: row.error ?? "late_usage_requires_reconciliation" }, expected: { lateReceipt: "reconciled" } });
   const incomplete = await tx.execute<{ id: string; acknowledged: boolean; events: number }>(sql`
     select r.id, r.cost_accounted_at is not null as acknowledged, count(e.id)::int as events from heartbeat_runs r
       left join cost_events e on e.heartbeat_run_id = r.id and e.company_id = r.company_id and e.idempotency_key like ('heartbeat:' || r.id::text || ':%')
@@ -72,19 +60,12 @@ async function inspect(tx: Db, companyId: string): Promise<AccountingInspection>
 export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {}) {
   return {
     inspect: (companyId: string) => withAccountingReadSnapshot(db, companyId, tx => inspect(tx, companyId)),
-    repair: (companyId: string, fingerprint: string, reason: string, actorId: string) => withAccountingTransaction(db, companyId, async (tx, publications) => {
+    repair: (companyId: string, fingerprint: string, reason: string, actorId: string) => withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
       if (!reason.trim()) throw conflict("A repair reason is required");
       const before = await inspect(tx, companyId);
       if (before.fingerprint !== fingerprint) throw conflict("Accounting changed since inspection; inspect again before repairing");
-      if (before.findings.some(f => f.repairable && f.kind === "agent_projection"))
-        await notifyAttentionRetentionWork(tx, { companyId, sourceKind: "agent_error_alert" });
-      for (const finding of before.findings.filter(f => f.repairable)) {
-        if (finding.kind === "company_projection") await tx.update(companies).set({ spentMonthlyCents: sql`${finding.expected.cents}::numeric`, updatedAt: new Date() }).where(eq(companies.id, companyId));
-        if (finding.kind === "agent_projection") await tx.update(agents).set({ spentMonthlyCents: sql`${finding.expected.cents}::numeric`, updatedAt: new Date() }).where(and(eq(agents.id, finding.entityId), eq(agents.companyId, companyId)));
-        if (finding.kind === "runtime_projection") await tx.update(agentRuntimeState).set({ totalCostCents: sql`${finding.expected.cents}::numeric`,
-          totalInputTokens: sql`${finding.expected.input}::bigint`, totalCachedInputTokens: sql`${finding.expected.cached}::bigint`, totalOutputTokens: sql`${finding.expected.output}::bigint`, updatedAt: new Date(),
-        }).where(and(eq(agentRuntimeState.agentId, finding.entityId), eq(agentRuntimeState.companyId, companyId)));
-      }
+      // Ledger valuation changes use audited cost adjustments. Retired stored
+      // counters must never be written back into accounting authority.
       await logActivity(tx, { companyId, actorType: "user", actorId, action: "accounting.projections_repaired", entityType: "company", entityId: companyId,
         details: { fingerprint, reason, repairs: before.findings.filter(f => f.repairable) } }, publications);
       return inspect(tx, companyId);

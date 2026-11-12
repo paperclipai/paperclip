@@ -1,3 +1,5 @@
+import { groupImageResources } from "./image-resources";
+import { McpAppTurnViews } from "@/components/mcp-app/McpAppTurnViews";
 import { TaskBrowserActivity } from "../task-side-panel/TaskBrowserActivity";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
@@ -19,6 +21,7 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatSubagentTree } from "./TaskChatSubagentCard";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
@@ -157,7 +160,11 @@ function renderItem(
           }
         />
       ) : undefined;
-      return (
+      // MCP Apps views ride with the reply, outside the folded tool history.
+      const appViews = item.author === "agent" && item.sourceRunId
+        ? <McpAppTurnViews runId={item.sourceRunId} notBeforeMs={item.createdAtIso ? Date.parse(item.createdAtIso) : undefined} />
+        : null;
+      const bubble = (
         <TaskChatBubble
           item={item}
           // Hydration and live-to-durable reconciliation may move a logical
@@ -171,7 +178,7 @@ function renderItem(
                 : actions
           }
           queuedAction={renderQueuedAction?.(item)}
-          beforeTurn={item.attachedTurn?.standaloneHeader ? turn : undefined}
+          beforeTurn={item.attachedTurn?.standaloneHeader ? <>{turn}{appViews}</> : undefined}
           attachedTurn={item.attachedTurn?.standaloneHeader ? undefined : turn}
           hideAgentIdentity={Boolean(item.attachedTurn?.standaloneHeader)}
           onTryAgainNoLiveExecutionPath={onTryAgainNoLiveExecutionPath}
@@ -181,6 +188,7 @@ function renderItem(
           attachments={attachments}
         />
       );
+      return appViews && !item.attachedTurn?.standaloneHeader ? <>{appViews}{bubble}</> : bubble;
     }
     case "marker":
       return (
@@ -236,6 +244,8 @@ function renderItem(
       );
     case "brief":
       return renderBrief ? renderBrief() : null;
+    case "subagent_group":
+      return <TaskChatSubagentTree subagents={item.subagents} />;
     case "turn":
       return (
         <TaskChatTurn
@@ -328,7 +338,8 @@ export function TaskChatThreadView({
   onOpenBrowser,
 }: TaskChatThreadViewProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  const { items: visibleItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
+  const { items: compactedItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
+  const visibleItems = useMemo(() => groupImageResources(compactedItems), [compactedItems]);
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath
       ? [...visibleItems]

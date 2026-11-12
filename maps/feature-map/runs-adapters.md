@@ -129,7 +129,8 @@ own login keys must remain unavailable. Verify the same delivery without an
 agent identity. Shell-policy metadata must contain names rather than values.
 
 Choose Codex as the harness; the UI displays its name/icon for both runners.
-Advanced identifies the automatic default and offers Paperclip Runner or Legacy.
+Setup selects the runner automatically, and edits preserve saved execution.
+The UI has no runner dropdown; Advanced appears only when other settings remain.
 New Codex agents default to the native runner on supported macOS or GNU/Linux
 targets; the [shared selection contract](../../packages/shared/src/agent-runner.ts)
 and [runtime prerequisites](../../packages/paperclip-runner/README.md) define the

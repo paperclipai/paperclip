@@ -23,6 +23,8 @@ afterEach(async () => {
   await Promise.all(bridges.splice(0).map((bridge) => bridge.close()));
 });
 
+type ToolCallBody = { result: { content: unknown } };
+
 async function rpc(
   bridge: RunnerToolBridge,
   body: Record<string, unknown>,
@@ -563,7 +565,7 @@ describe("Copilot semantic receipt opt-in", () => {
       } });
       bridges.push(bridge);
       const request = { id: 3, method: "tools/call", params: { name: "paperclip_finish", arguments: rawFinish } };
-      const body = await (await rpc(bridge, request)).json();
+      const body = await (await rpc(bridge, request)).json() as ToolCallBody;
       expect(receipts).toHaveLength(1);
       expect(readNativeSemanticReceipt({ contents: body.result.content })).toEqual(receipts[0]);
       expect(receipts[0]).toMatchObject({ schema: "paperclip.semantic_tool_receipt.v2", inputSha256: semanticInputSha256(rawFinish),
@@ -587,11 +589,11 @@ describe("Copilot semantic receipt opt-in", () => {
     const normalizedFirst = validatePrpStructuredRunResult(rawFinish); const normalizedSecond = validatePrpStructuredRunResult(secondInput);
     if (!normalizedFirst.ok || !normalizedSecond.ok) throw new Error("Invalid fixture");
     pending.get("second")!.capture(normalizedSecond.result)(); pending.get("second")!.settle();
-    const secondReceipt = readNativeSemanticReceipt({ contents: (await (await second).json()).result.content });
+    const secondReceipt = readNativeSemanticReceipt({ contents: (await (await second).json() as ToolCallBody).result.content });
     expect(secondReceipt).toMatchObject({ inputSha256: semanticInputSha256(secondInput), normalizedInputSha256: semanticInputSha256(normalizedSecond.result) });
     pending.get("second")!.capture(normalizedFirst.result)();
     pending.get("first")!.capture(normalizedFirst.result)(); pending.get("first")!.settle();
-    const firstReceipt = readNativeSemanticReceipt({ contents: (await (await first).json()).result.content });
+    const firstReceipt = readNativeSemanticReceipt({ contents: (await (await first).json() as ToolCallBody).result.content });
     expect(firstReceipt).toMatchObject({ inputSha256: semanticInputSha256(rawFinish), normalizedInputSha256: semanticInputSha256(normalizedFirst.result) });
     expect(receipts).toEqual([secondReceipt, firstReceipt]);
   });
@@ -600,10 +602,10 @@ describe("Copilot semantic receipt opt-in", () => {
     const withEvidence = await startRunnerToolBridge({ tools: [tool("documents.read")], captureSemanticReceipt: () => () => {}, handler: async call => {
       expect(call.captureNormalizedInput).toBeUndefined(); return modelMetadata;
     } }); bridges.push(withEvidence);
-    const body = await (await rpc(withEvidence, { id: 1, method: "tools/call", params: { name: "documents.read", arguments: modelMetadata } })).json();
+    const body = await (await rpc(withEvidence, { id: 1, method: "tools/call", params: { name: "documents.read", arguments: modelMetadata } })).json() as ToolCallBody;
     expect(readNativeSemanticReceipt({ contents: body.result.content })).toHaveProperty("normalizedInputSha256", null);
     const plain = await startRunnerToolBridge({ handler: async call => { expect(call.captureNormalizedInput).toBeUndefined(); return { accepted: true }; } }); bridges.push(plain);
-    const plainBody = await (await rpc(plain, { id: 2, method: "tools/call", params: { name: "paperclip_finish", arguments: rawFinish } })).json();
+    const plainBody = await (await rpc(plain, { id: 2, method: "tools/call", params: { name: "paperclip_finish", arguments: rawFinish } })).json() as ToolCallBody;
     expect(readNativeSemanticReceipt({ contents: plainBody.result.content })).toBeNull();
   });
   it.each(["small", "chunked", "tagged", "error"])("preserves %s result encoding and captures scope before dispatch", async encoding => {
@@ -644,4 +646,25 @@ describe("Copilot semantic receipt opt-in", () => {
     expect(JSON.parse(body.result.content[0].text)).toEqual({ ok: true });
     expect(readNativeSemanticReceipt({ contents: body.result.content })).not.toBeNull();
   });
+});
+
+// The schema owner supplies scope policy; the transport only returns its guidance.
+it("returns missing-field guidance before dispatch and accepts an explicit retry", async () => {
+  const guidance = "Use the requested task UUID. For the active task, use read_document with key only.";
+  const handler = vi.fn(async () => ({ accepted: true }));
+  const bridge = await startRunnerToolBridge({ tools: [{ name: "read_task_document", inputSchema: {
+    type: "object", required: ["taskId", "key"], additionalProperties: false,
+    properties: { taskId: { type: "string", description: guidance }, key: { type: "string" } },
+  } }], handler });
+  bridges.push(bridge);
+  const request = { id: "scope-retry", method: "tools/call", params: { name: "read_task_document", arguments: { key: "sentry-case" } } };
+  type ScopeResponse = { result: { isError?: boolean; content: Array<{ text: string }> } };
+  const rejected = await (await rpc(bridge, request)).json() as ScopeResponse;
+  expect(rejected).toMatchObject({ result: { isError: true } });
+  expect(handler).not.toHaveBeenCalled();
+  expect(rejected.result.content[0].text).toContain(guidance);
+  const taskId = "00000000-0000-4000-8000-000000000005";
+  const accepted = await (await rpc(bridge, { ...request, params: { ...request.params, arguments: { key: "sentry-case", taskId } } })).json() as ScopeResponse;
+  expect(accepted.result.isError).not.toBe(true);
+  expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { key: "sentry-case", taskId } }));
 });

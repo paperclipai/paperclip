@@ -111,6 +111,19 @@ describe("captureRunFailure", () => {
     sentryModule.captureTaskInterruptionFailure({ ...event, intentId: "next-intent" });
     sentryModule.captureTaskInterruptionFailure({ ...event, runId: "next-run" });
     expect(captureException).toHaveBeenCalledTimes(3);
+    expect(captureException.mock.calls[2]![1]?.tags).not.toHaveProperty("run_error_code");
+  });
+
+  it("tags a saved-message report with a valid run error code without splitting its group", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = { companyId: "company", agentId: "agent", taskId: "task", agentAdapter: "process",
+      runStatus: "failed" as const, intentId: null };
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "run", runErrorCode: "native_workspace_sync_out_failed" });
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "other", runErrorCode: "token=abc secret" });
+    expect(captureException.mock.calls[0]![1]).toMatchObject({
+      tags: { run_error_code: "native_workspace_sync_out_failed" }, fingerprint: ["task_attempt_failed", "process"] });
+    expect(captureException.mock.calls[1]![1]?.tags).not.toHaveProperty("run_error_code");
+    expect(JSON.stringify(captureException.mock.calls[1])).not.toContain("secret");
   });
 
   it("does not consume a saved-message report while reporting is off or capture fails", async () => {
@@ -188,6 +201,60 @@ describe("captureRunFailure", () => {
 
     expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["timeout", "codex"]);
     expect(captureException.mock.calls[1]![1]?.fingerprint).toEqual(["timeout", "codex"]);
+  });
+
+  it("separates setup failures without a usable root code by the root exception", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const setupFailure = (exceptions: NonNullable<RunFailureEvent["diagnostics"]>["exceptions"]) => baseEvent({
+      errorCode: "setup_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: { failurePhase: "setup" }, adapter: {}, provider: {}, exceptions, truncatedFields: [] },
+    });
+
+    sentryModule.captureRunFailure(setupFailure([{ name: "LegacyControllerLeaseLostError", message: "Legacy controller lease lost" }]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "Error", message: "The workspace still has an unfinished writer", status: 409 }]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "Error", message: "Workspace ownership changed", status: 409 }]));
+    sentryModule.captureRunFailure(setupFailure([
+      { name: "EnvironmentRunError", message: "Failed to acquire lease", code: "lease_acquire_failed" },
+      { name: "JsonRpcCallError", message: "Daytona lease acquisition timed out", code: "-32002" },
+    ]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "JsonRpcCallError", message: "RPC call timed out", code: "-32003" }]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "Error", message: "plain failure" }]));
+
+    const fingerprints = captureException.mock.calls.map(([, context]) => context?.fingerprint);
+    const prefix = ["setup_failed", "paperclip_runner", "setup"];
+    expect(fingerprints).toEqual([
+      [...prefix, "exception:LegacyControllerLeaseLostError"],
+      [...prefix, "exception:Error", "status:409"],
+      [...prefix, "exception:Error", "status:409"],
+      [...prefix, "exception:JsonRpcCallError", "code:-32002"],
+      [...prefix, "exception:JsonRpcCallError", "code:-32003"],
+      [...prefix, "exception:Error"],
+    ]);
+    expect(JSON.stringify(fingerprints)).not.toMatch(/workspace|timed out|plain failure/i);
+  });
+
+  it("keeps an identifier root code as the only root grouping element", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+
+    sentryModule.captureRunFailure(baseEvent({
+      errorCode: "setup_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: { failurePhase: "setup" }, adapter: {}, provider: {},
+        exceptions: [{ name: "Error", code: "ECONNRESET", status: 503 }], truncatedFields: [] },
+    }));
+
+    expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["setup_failed", "paperclip_runner", "setup", "ECONNRESET"]);
+  });
+
+  it("drops unbounded root exception names and codes from the fallback", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+
+    sentryModule.captureRunFailure(baseEvent({
+      errorCode: "setup_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: { failurePhase: "setup" }, adapter: {}, provider: {},
+        exceptions: [{ name: "Error: token=secret value", code: "not a code 123" }], truncatedFields: [] },
+    }));
+
+    expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["setup_failed", "paperclip_runner", "setup"]);
   });
 
   it("sets the fingerprint element \"unknown\" when the error code is absent", async () => {

@@ -604,6 +604,18 @@ test("release verification builds native test binaries in a required Rust-cached
   assert.doesNotMatch(cloud, /continue-on-error|always\(\)/);
 });
 
+test("chaos verification prepares native Runner binaries before fault suites", () => {
+  const workflow = readWorkflow("runner-chaos-evals.yml");
+  const steps = workflow.split(/\n(?=      - )/);
+  const install = steps.find(step => /run:\s*pnpm install\b/.test(step));
+  const prepare = steps.find(step => /run:\s*pnpm --filter @paperclipai\/paperclip-runner build:rust\b/.test(step));
+  const faults = steps.find(step => /src\/native-session-runtime\.test\.ts/.test(step));
+  assert.ok(install && prepare && faults, "the real Runner fault suite needs its native build prerequisite");
+  assert.ok(steps.indexOf(install) < steps.indexOf(prepare));
+  assert.ok(steps.indexOf(prepare) < steps.indexOf(faults));
+  assert.doesNotMatch(prepare, /^\s+(?:if|continue-on-error):/m);
+});
+
 test("Runner eval workflows pin actions and gate paid live execution", () => {
   const actionPinWorkflows = [
     readWorkflow("release-verify.yml"),
@@ -655,6 +667,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "runner-protocol-live-evals.yml",
     "chat-catalog-testops.yml",
     "chat-catalog-testops-case.yml",
+    // On-demand crash-point suite (durable ownership plan, Phase 5).
+    "crash-points.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
@@ -878,7 +892,7 @@ test("direct protocol concurrency override only lowers the configured ceiling", 
   const script = workflow.slice(start, end) + '\nprintf "%s" "$MAX_PARALLEL"\n';
   for (const [requested, expected] of [["", "8"], ["2", "2"], ["8", "8"], ["1", null], ["9", null], ["0", null], ["-1", null], ["2.5", null], ["garbage", null], ["9999999999999999999999", null]]) {
     const result = spawnSync("bash", ["-eu", "-c", script], {
-      env: { ...process.env, MAX_PARALLEL: "8", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
+      env: { ...process.env, MAX_PARALLEL: "8", MAX_PARALLEL_LIMIT: "57", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
     });
     assert.equal(result.status, expected === null ? 1 : 0, requested);
     if (expected !== null) assert.equal(result.stdout, expected);
@@ -909,9 +923,12 @@ test("release daemon production uses exact-source native hosts and no publisher 
   assert.match(runner.scripts['build:binary'], /cargo build --release --manifest-path runner\/Cargo.toml --locked/);
   assert.match(runner.scripts['build:binary'], /&& node scripts\/stage-runner-binary.mjs$/);
   assert.match(producer, /stage-release-runner-binaries.mjs record/);
-  for (const job of ["runner_chaos_evals", "typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"]) {
+  for (const job of ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"]) {
     assert.ok(workflow.includes(`${job}:\n    if: \${{ !inputs.runner_binaries_only }}`));
   }
+  // Binary-only calls still skip the chaos evals; Cloud readiness also turns
+  // them off here and runs them as its own non-gating job (2026-11-12).
+  assert.ok(workflow.includes("runner_chaos_evals:\n    if: ${{ !inputs.runner_binaries_only && inputs.runner_chaos_evals }}"));
   const release = readWorkflow("release.yml");
   const source = release.split("  release_runner_source:\n")[1].split(/\n  [a-z_]+:\n/)[0];
   const binaries = release.split("  release_runner_binaries:\n")[1].split(/\n  [a-z_]+:\n/)[0];

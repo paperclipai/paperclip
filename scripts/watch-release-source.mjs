@@ -1,7 +1,7 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createActionsReader, readSourceVerification, SourceVerificationFailed, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
-import { requestDeferredProducer, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
+import { requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
 const repository = "paperclipai/paperclip";
 
@@ -43,7 +43,6 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
   const deadline = now() + timeoutMs;
   const warned = new Set();
   const requested = new Set();
-  let migratorAdmitted = !rerun;
   const reportWaits = async jobs => {
     for (const wait of runnerWaits(jobs, now())) {
       if (wait.seconds > 60 && !warned.has(wait.id)) {
@@ -54,15 +53,15 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
     }
   };
   while (now() < deadline) {
-    if (!migratorAdmitted) {
-      migratorAdmitted = await requestDeferredProducer({ file: "cloud-migrator-artifacts.yml", sha, admissionJob: migratorAdmissionJob, api, rerun, requested }) !== "pending";
-    }
+    // Keep observing until publication, even after a build appeared admitted.
+    // GitHub may transiently label a job in progress before skipping it.
+    if (rerun) await requestDeferredProducer({ file: "cloud-migrator-artifacts.yml", sha, admissionJob: migratorAdmissionJob, api, rerun, requested });
     const batch = await api(`/repos/${repository}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`);
     if (!Array.isArray(batch.jobs) || batch.total_count > 100) throw new Error("Incomplete image job listing.");
     await reportWaits(batch.jobs);
     try {
       const proof = await readSourceVerification(sha, api, { failFast: true, onJobs: reportWaits });
-      if (proof && migratorAdmitted) {
+      if (proof && (!rerun || await readMigratorPublication(sha, api))) {
         await summary(`Exact source verified: ${sha}; readiness run ${proof.runId}, attempt ${proof.attempt}.\n`);
         return proof;
       }
@@ -82,8 +81,8 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
   // This early failure observer is not the publication deadline. Healthy
   // checks can outlive a Spot worker; a separate exact-source gate still
   // waits for proof before publishing any image.
-  if (requireProof) throw new Error("Exact-source verification did not become ready before the publication deadline.");
-  await summary("Source monitoring window ended; final publication still requires exact-source verification.\n");
+  if (requireProof) throw new Error("Exact-source verification and migrator publication did not become ready before the publication deadline.");
+  await summary("Source monitoring window ended; final publication still requires exact-source verification and migrator publication.\n");
   return undefined;
 }
 
@@ -104,5 +103,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     summary: text => process.env.GITHUB_STEP_SUMMARY ? appendFile(process.env.GITHUB_STEP_SUMMARY, text) : Promise.resolve(),
   });
   if (checkProof && !proof) throw new Error("Exact-source proof changed before publication.");
+  if (checkProof && !await readMigratorPublication(process.env.GITHUB_SHA, api)) throw new Error("Exact-source migrator has not published.");
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `verified=${Boolean(proof)}\n`);
 }

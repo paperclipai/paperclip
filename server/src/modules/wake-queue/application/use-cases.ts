@@ -1,5 +1,6 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
+import { QUEUED_MESSAGES_DELIVERED_REASON } from "../domain/policy.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
@@ -54,6 +55,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
+const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -70,7 +72,8 @@ function didAutomaticRecoveryFail(
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
-  return latestRetryReason === expectedRetryReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
+  return (latestRetryReason === expectedRetryReason || latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
+    && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
 }
 
 function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | null {
@@ -169,6 +172,11 @@ async function runReleaseDrain(
     }
     processedWakeIds.add(candidate.id);
 
+    if (locked.handoffAssigneeAgentId && candidate.agentId !== locked.handoffAssigneeAgentId) {
+      preservedWakeIds.push(candidate.id);
+      continue;
+    }
+
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original
     // comment ID so coalesced human or unrelated input is never hidden.
@@ -221,7 +229,8 @@ async function runReleaseDrain(
       continue;
     }
 
-    let liveness = { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
+    let liveness: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean; deliveredCommentIds?: string[] } =
+      { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
     if (
       !candidate.authorizedFailedChatRetry &&
       candidate.queuedCommentIds.length > 0
@@ -265,7 +274,9 @@ async function runReleaseDrain(
         agentId: candidate.agentId,
         reason: commentAction.selfAuthored
           ? "Deferred wake contained only comments authored by the finishing run"
-          : "Queued messages were discarded before promotion",
+          : liveness.deliveredCommentIds?.length
+            ? QUEUED_MESSAGES_DELIVERED_REASON
+            : "Queued messages were discarded before promotion",
         now: input.now,
       });
       continue;
@@ -318,6 +329,9 @@ async function runReleaseDrain(
     return promoted;
   }
 
+  // A stopped run never plans recovery for itself, including after a handoff.
+  if (locked.handoffAssigneeAgentId) return { outcome: { kind: "released" }, postCommitEffects };
+
   return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
 }
 
@@ -349,15 +363,50 @@ async function promoteDeferredWake(
       finishingRunId: run.id,
       commentIds: workingCandidate.deferredCommentIds,
     });
+    const agentFeedbackAfterCompletion =
+      currentIssue.status === "done" &&
+      workingCandidate.agentId === currentIssue.assigneeAgentId &&
+      workingCandidate.requestedByActorType === "agent" &&
+      workingCandidate.deferredContextSeed.resumeIntent === true &&
+      workingCandidate.queuedCommentIds.length > 0;
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
-        (currentIssue.status === "done" &&
-          workingCandidate.agentId === currentIssue.assigneeAgentId &&
-          workingCandidate.requestedByActorType === "agent" &&
-          workingCandidate.deferredContextSeed.resumeIntent === true &&
-          workingCandidate.queuedCommentIds.length > 0));
+        // The agent watching the task posted it while the run that closed the
+        // task was active. That agent receives the completed result and can
+        // follow up from it; reopening would only repeat finished work. A
+        // person's message (handled above) always reopens.
+        (agentFeedbackAfterCompletion && run.agentId === currentIssue.assigneeAgentId &&
+          !await ports.transaction.isWatcherCommentDuringFinishingRun({
+            companyId: run.companyId, issueId: currentIssue.id, finishingRunId: run.id,
+            commentIds: workingCandidate.queuedCommentIds,
+          })));
+  }
+
+  // A person's answer saved while the task was still open is owed input. The
+  // worker may have finished its turn without reading it; closing the task
+  // must not silently drop it. It reopens the task straight to in_progress,
+  // because an answer continues the assignee's own execution. While
+  // unresolved blockers forbid in_progress, an answer continuation cannot run
+  // (it requires in_progress), so the task stays done and the wake is
+  // cancelled with that reason; it never fails or stalls this drain.
+  let reopenForAnswer = false;
+  if (
+    !shouldReopen &&
+    currentIssue.status === "done" &&
+    workingCandidate.requestedByActorType === "user" &&
+    workingCandidate.agentId === currentIssue.assigneeAgentId
+  ) {
+    const owed = await ports.transaction.owedInteractionAnswer({ companyId: run.companyId, issueId: currentIssue.id, payload: workingCandidate.payload });
+    if (owed === "blocked") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId, wakeId: workingCandidate.id, agentId: workingCandidate.agentId,
+        reason: "Queued answer cannot continue a task with unresolved blockers", now: input.now,
+      });
+      return null;
+    }
+    if (owed === "deliver") shouldReopen = reopenForAnswer = true;
   }
 
   // Agent continuations can outlive the work they addressed. Live,
@@ -398,6 +447,7 @@ async function promoteDeferredWake(
       companyId: run.companyId,
       issueId: currentIssue.id,
       runId: run.id,
+      ...(reopenForAnswer ? { status: "in_progress" as const } : {}),
     });
     if (reopened) {
       postCommitEffects.push({
@@ -614,6 +664,7 @@ async function runReleaseRecoveryTail(
         run,
         expectedRetryReason,
       ),
+      automaticRecoveryRetryableBeforeProviderWork: run.retryableBeforeProviderWork === true,
       sourceRequiresExplicitRecovery,
     },
     shared: {
@@ -708,6 +759,7 @@ async function runReleaseRecoveryTail(
     retryReason,
     source: recoverySource,
     retryOfRunId: run.id,
+    ...(run.executionRetryAccounting ? { executionRetryAccounting: run.executionRetryAccounting } : {}),
   };
 
   const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(
@@ -852,7 +904,8 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       isSameExecutionAgent,
       shouldDeferFollowupWake,
       shouldQueueFollowupForRunningWake,
-      availableActiveExecutionRunPresent: availableActiveExecutionRun !== null,
+      availableActiveExecutionRunPresent: availableActiveExecutionRun !== null || (shouldDeferFollowupWake &&
+        isSameExecutionAgent && input.activeExecutionRun.status === "running" && Boolean(input.wakeCommentId)),
     });
 
     if (decision.kind === "proceed") return { kind: "proceed" };

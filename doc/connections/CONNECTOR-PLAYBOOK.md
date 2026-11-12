@@ -24,8 +24,11 @@ to an internal issue tracker.
 Inline task connection cards must use the same provider setup controller and
 fields as Apps: URL guidance, authentication options, validation, and recovery.
 Keep dialogs bounded to the form width on wide screens and scrollable on narrow
-screens. A task request locks agent access to its requester and returns to the
-card after completion; reusing an account must preserve its existing access.
+screens. New tool connections default to all agents in both hosts, subject to
+the human's connection-management authority. The human can select fewer agents.
+Task OAuth saves that audience before sign-in and applies it atomically at
+completion. AI authentication and inbox setup remain agent-scoped. Reusing an
+account must preserve its existing access.
 OAuth popups need a normal sign-in link fallback, and callback messages must be
 verified against durable server state before accepting the request.
 
@@ -786,8 +789,8 @@ This is the implementation sequence an autonomous coding agent should follow.
 
 ### Phase 0: Establish scope and preserve the worktree
 
-1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`,
-   `doc/SPEC-implementation.md`, `doc/DEVELOPING.md`, and `doc/DATABASE.md`.
+1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`, `doc/DEVELOPING.md`,
+   and `doc/DATABASE.md`.
 2. Read this runbook, [the connections overview](./README.md), and
    [the security threat model](./SECURITY-THREAT-MODEL.md).
 3. Inspect `git status --short`. Existing changes belong to the user or another

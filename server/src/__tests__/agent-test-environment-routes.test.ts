@@ -48,6 +48,11 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
 const mockPluginEnvironmentRequiresAgent = vi.hoisted(() => vi.fn(async () => false));
+const mockPluginRunnerTaskDriver = vi.hoisted(() => vi.fn(async (): Promise<{ driverKey: string } | undefined> => undefined));
+vi.mock("../services/plugin-runner-ai-connection.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/plugin-runner-ai-connection.js")>(),
+  pluginEnvironmentRunnerTaskDriver: mockPluginRunnerTaskDriver,
+}));
 vi.mock("../services/plugin-environment-driver.js", async importOriginal => ({
   ...(await importOriginal<typeof import("../services/plugin-environment-driver.js")>()),
   pluginEnvironmentRequiresAgent: mockPluginEnvironmentRequiresAgent,
@@ -1300,6 +1305,25 @@ describe("agent test-environment route", () => {
         status: "fail",
         checks: [expect.objectContaining({ detail: "Plugin environment does not provide native Runner task execution" })],
       });
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: "without a managed AI connection", adapterConfig: { provider: "codex" }, message: "Choose an AI connection" },
+      { name: "with a preconfigured Runner home", adapterConfig: { provider: "codex", homeMode: "preconfigured" }, message: "isolated Runner home" },
+    ])("refuses a Runner-task environment $name before secrets or a lease", async ({ adapterConfig, message }) => {
+      mockPluginRunnerTaskDriver.mockResolvedValueOnce({ driverKey: "tasks" });
+      mockResolveNewAgentRunnerForCompany.mockResolvedValueOnce({ adapterType: "paperclip_runner", adapterConfig });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/codex_local/test-environment")
+        .send({ adapterConfig: {}, environmentId: pluginEnvironment.id });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ adapterType: "paperclip_runner", status: "fail",
+        checks: [{ code: "ai_connection_required", level: "error", message: expect.stringContaining(message) }] });
+      expect(mockPluginRunnerTaskDriver).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: pluginEnvironment.id }));
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
       expect(testEnvironmentSpy).not.toHaveBeenCalled();
     });
 

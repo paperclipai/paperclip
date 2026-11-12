@@ -1,15 +1,21 @@
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
+import { readContextCompactionRequest } from "../context-compaction.js";
+import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
+import { readNativePostResultFailureDiagnostic } from "../native-runtime/native-post-result-failure.js";
+import { acceptedNativeAdapterResult } from "../native-runtime/native-accepted-result-settlement.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
+import { describeFailedAttachment } from "../native-runtime/remote-warm-session-recovery.js";
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
+import { INTERACTION_DELIVERY_DENIED, preparedRunInteractionDeliveryDenied } from "../agent-interaction-delivery.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
 import { environmentService } from "../environments.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { measureRunPhase } from "../execution-preparation-timing.js";
+import { drainRunPreparationPhases, measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import {
@@ -100,6 +106,7 @@ import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import type { NativeExecutionInput, NativeSessionBackend } from "../../vendor/paperclip-runner/index.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
+import { resolvePluginWorkspaceFinalization } from "../plugin-workspaces.js";
 import type { RealizedExecutionWorkspace } from "../workspace-runtime.js";
 import type { reserveWarmNativeInstructionDirectory } from "../native-runtime/index.js";
 
@@ -122,7 +129,7 @@ export interface HeartbeatRuntimeExecutionInput {
     issueId: string | null;
     taskKey: string | null;
   };
-  runtime: Pick<Selected, "nativeExecution" | "nativeRunnerInstanceId" | "getNativeFreshSessionHandoff"> & {
+  runtime: Pick<Selected, "nativeExecution" | "nativeRunnerInstanceId" | "pluginTaskDescription" | "toolRefreshOnResume" | "getNativeFreshSessionHandoff"> & {
     nativeRuntimeResolution: Selection["nativeRuntimeResolution"];
     adapter: ServerAdapterModule;
     runtimeForAdapter: AdapterExecutionContext["runtime"];
@@ -245,7 +252,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
   const { providerTraceCapture, nativeRunnerPreparationSpans, attestedQuestionResponseAtMs, attemptStartedAtMs, environmentAcquireStartedAtMs, environmentRealizeEndedAtMs } = input.trace;
   const { executionControl, executionPhaseContext, dispatchResolvedInteractionContinuationWithAtomicGate } = input.control;
-  const dispatchWithTiming: HeartbeatRuntimeExecutionInput["control"]["dispatchResolvedInteractionContinuationWithAtomicGate"] = dispatch => {
+  const dispatchWithTiming: HeartbeatRuntimeExecutionInput["control"]["dispatchResolvedInteractionContinuationWithAtomicGate"] = async dispatch => {
+    if (await preparedRunInteractionDeliveryDenied(db, run)) {
+      await input.services.cancelRunInternal(run.id, "Queued agent input is no longer permitted.", {
+        errorCode: INTERACTION_DELIVERY_DENIED, suppressImmediateRecovery: true,
+      });
+      return { dispatched: false };
+    }
     const providerDispatch = AsyncLocalStorage.bind(dispatch);
     return measureRunPhase("execution.dispatch_admission", () => dispatchResolvedInteractionContinuationWithAtomicGate(providerDispatch));
   };
@@ -285,15 +298,15 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
   let preserveRunGatewayTokens = false;
   let pluginWorkspaceFinalization: Record<string, unknown> | null = null;
-  const inspectFinalizeWorkspaceBranch = async () => {
-    const workspaceRecord = persistedExecutionWorkspace?.id
-      ? await executionWorkspacesSvc.getStoredById(
-          agent.companyId,
-          persistedExecutionWorkspace.id,
-        )
-      : persistedExecutionWorkspace;
+  let pluginWorkspaceFinalizationPlan: Awaited<ReturnType<typeof resolvePluginWorkspaceFinalization>>;
+  let pluginWorkspaceFinalizationRecord: typeof persistedExecutionWorkspace;
+  let pluginWorkspacePlacementFailed = false;
+  const inspectFinalizeWorkspaceBranch = async (
+    workspaceRecord: typeof persistedExecutionWorkspace,
+    plan: Awaited<ReturnType<typeof resolvePluginWorkspaceFinalization>>,
+  ) => {
     pluginWorkspaceFinalization = workspaceRecord
-      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
+      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id, { taskLease: null, plan })
       : null;
     if (pluginWorkspaceFinalization || readRemoteWorkspaceAuthority(workspaceRecord?.metadata)
       || workspaceRecord?.strategyType !== "git_worktree") return null;
@@ -320,9 +333,23 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     restore?: () => Promise<void>,
   ) => {
     if (adapterFinalizeOutcome) return;
+    const workspaceRecord = pluginWorkspaceFinalizationRecord ??
+      ((status === "succeeded" || persistedExecutionWorkspace?.providerType === "plugin") && persistedExecutionWorkspace?.id
+        ? await executionWorkspacesSvc.getStoredById(agent.companyId, persistedExecutionWorkspace.id).catch(error => {
+            if (persistedExecutionWorkspace.providerType === "plugin") pluginWorkspacePlacementFailed = true;
+            throw error;
+          })
+        : persistedExecutionWorkspace);
+    const plan = pluginWorkspaceFinalizationPlan ??= workspaceRecord
+      ? await resolvePluginWorkspaceFinalization(db, workspaceRecord, { runId: run.id, agentId: agent.id })
+        .catch(error => { pluginWorkspacePlacementFailed = true; throw error; })
+      : undefined;
+    if (plan) pluginWorkspaceFinalizationRecord = workspaceRecord;
+    const pluginWorkspaceTaskLease = plan?.kind === "finalize" ? plan.taskLease : undefined;
     await workspaceOperationRecorder.recordOperation({
       phase: "workspace_finalize", cwd: executionWorkspace.cwd,
       metadata: { adapterType: agent.adapterType, executionTargetKind: executionTarget?.kind ?? "local",
+        ...(pluginWorkspaceTaskLease ? { pluginWorkspaceTaskLease } : {}),
         ...(restore ? { owningService: "native_workspace_finalizer" } : {}), ...metadata },
       run: async () => {
         await restore?.();
@@ -330,7 +357,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         let finalizeBranchRepairMetadata: Record<string, unknown> | null =
           null;
         if (status === "succeeded") {
-          const branchInspection = await inspectFinalizeWorkspaceBranch();
+          const branchInspection = await inspectFinalizeWorkspaceBranch(workspaceRecord, plan);
           if (branchInspection) {
             let inspection = branchInspection.inspection;
             const initialManagedGitWorktreeBranch =
@@ -596,6 +623,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       });
       if (wakeIngressSpan)
         nativeRunnerPreparationSpans.unshift(wakeIngressSpan);
+      // Named preparation phases (workspace, configuration, runner staging)
+      // that ran before dispatch, as run-log spans under task.prepare.
+      nativeRunnerPreparationSpans.push(...drainRunPreparationPhases(run.id).map(phase => ({
+        name: phase.name, startedAtMs: phase.startedAtMs, endedAtMs: phase.endedAtMs,
+        ...(phase.outcome === "failed" ? { outcome: "failed" as const } : {}),
+      })));
       nativeRunnerPreparationSpans.push(
         ...buildNativeHeartbeatPreparationSpans({
           runCreatedAtMs,
@@ -618,9 +651,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               observability,
               getFreshSessionHandoff: getNativeFreshSessionHandoff,
               refreshTools: context.refreshTools === true,
+              toolRefreshOnResume: input.runtime.toolRefreshOnResume,
               conversationMode: isConversation(issueContext),
               turnTimeoutMs: Math.max(0, asNumber(runtimeConfig.timeoutSec, 0)) * 1_000,
               runnerInstanceId: nativeRunnerInstanceId,
+              pluginTaskDescription: input.runtime.pluginTaskDescription,
               leaseOwner: runOptions.nativeLeaseOwner,
               restartRecovery: runOptions.nativeRestartRecovery,
               onExecutionLeaseAcquired: runOptions.onNativeExecutionLeaseAcquired,
@@ -631,6 +666,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               useRunnerd: agent.adapterType === "paperclip_runner",
               adapterType: agent.adapterType,
               sessionGoalControl,
+              sessionCompaction: readContextCompactionRequest(context),
               resumeSessionGoalHeartbeat:
                 context.resumeSessionGoalHeartbeat === true ||
                 completedGoalControl,
@@ -918,6 +954,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                       ? meta.processGroupId
                       : null,
                   startedAt: meta.startedAt,
+                  // A sandbox runner's spawn metadata names a sandbox PID.
+                  targetKind: executionTarget?.kind ?? "local",
                 });
               },
               authToken: authToken ?? undefined,
@@ -1143,6 +1181,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         : false;
     if (nativeResumeScheduled) {
       input.effects.onNativeSessionResumeScheduled();
+      const failedAttachment = describeFailedAttachment(adapterErr instanceof Error ? adapterErr.message : null);
+      if (failedAttachment) await Promise.resolve(onLog("stderr", `[paperclip] ${failedAttachment}\n`)).catch(() => undefined);
       throw new NativeSessionResumeScheduledError(adapterErr);
     }
     // Adapter (or its restore finally) threw — or the finalize record
@@ -1150,13 +1190,42 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // state. Best-effort record finalize=failed so the dependent readiness
     // check keeps the gate closed instead of waking on stale local state,
     // and surface the original error to the caller.
+    // The control code can be a fencing label; the closed diagnostic says
+    // what actually failed after an accepted result (no provider text).
+    const postResultFailure = readNativePostResultFailureDiagnostic(adapterErr);
+    // A runner that could not prove suspension after an accepted result left a
+    // local workspace untouched: there is nothing to copy back. Settle the
+    // accepted result instead of failing the run over runner bookkeeping.
+    // Rebuild the accepted result before writing any finalize status: only a
+    // proven, complete accepted result may record workspace finalization as
+    // succeeded.
+    let acceptedResult = nativeRuntimeResolution.kind === "native"
+      && postResultFailure?.category === "runner_settlement_incomplete"
+      && !nativeWorkspaceSync && !remoteWorkspaceAuthority
+      ? await (async () => {
+          const resultId = await db.select({ resultId: nativeRunFinalizations.resultId }).from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, run.id)).limit(1).then(rows => rows[0]?.resultId ?? null);
+          return resultId ? acceptedNativeAdapterResult(db, {
+            runId: run.id, companyId: run.companyId, resultId,
+            model: nativeExecution?.provider.model ?? null, driverKind: nativeExecution?.session.driverKind ?? "unknown",
+            postResultFailure: postResultFailure!,
+          }) : null;
+        })().catch((readErr: unknown) => {
+          logger.warn({ err: readErr, runId: run.id }, "accepted native result could not be read; keeping the failure path");
+          return null;
+        })
+      : null;
+    let settleAcceptedResult = acceptedResult !== null;
     try {
-      await recordWorkspaceFinalize("failed", {
-        errorMessage:
-          adapterErr instanceof Error
-            ? adapterErr.message
-            : String(adapterErr),
-      });
+      await recordWorkspaceFinalize(settleAcceptedResult ? "succeeded" : "failed", settleAcceptedResult
+        ? { runnerSettlementDiagnostic: postResultFailure }
+        : {
+            errorMessage:
+              adapterErr instanceof Error
+                ? adapterErr.message
+                : String(adapterErr),
+            ...(postResultFailure ? { failureDiagnostic: postResultFailure } : {}),
+          });
     } catch (recordErr) {
       logger.warn(
         {
@@ -1167,6 +1236,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         "failed to record workspace_finalize=failed operation; dependents may remain gated",
       );
     }
+    // Settle only when the workspace finalization record itself succeeded. A
+    // failed branch or plugin workspace check keeps the failure path.
+    if (adapterFinalizeOutcome !== "succeeded") { settleAcceptedResult = false; acceptedResult = null; }
     if (nativeRuntimeResolution.kind === "native") {
       const proposedResult = await db
         .select({ resultId: nativeRunFinalizations.resultId })
@@ -1174,7 +1246,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         .where(eq(nativeRunFinalizations.runId, run.id))
         .limit(1)
         .then((rows) => rows[0]?.resultId ?? null);
-      if (proposedResult && (nativeWorkspaceSync || remoteWorkspaceAuthority)) {
+      if (proposedResult && (nativeWorkspaceSync || remoteWorkspaceAuthority || pluginWorkspacePlacementFailed ||
+          (pluginWorkspaceFinalizationPlan?.kind === "finalize" && pluginWorkspaceFinalizationPlan.taskLease))) {
         const workspaceFailureMessage =
           adapterErr instanceof Error ? adapterErr.message : "";
         const unrecoverable =
@@ -1192,6 +1265,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           projectRunStatus: true,
           failureScope: "workspace",
           permanent: unrecoverable,
+          failureCause: postResultFailure
+            ? `native_post_result_failure: category=${postResultFailure.category}`
+            : remoteWorkspaceFailureCause(adapterErr),
         });
         input.effects.onNativeWorkspaceFinalizeScheduled();
         throw new NativeWorkspaceFinalizeScheduledError(
@@ -1201,6 +1277,24 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             ? "workspace_sync_out_unrecoverable"
             : "workspace_sync_out_failed",
         );
+      }
+      if (settleAcceptedResult && acceptedResult) {
+        // Finalize exactly as a returned result would, then let the ordinary
+        // completion path settle the run, session, accounting and agent.
+        await onLog("stderr", "[paperclip] runner settlement was incomplete after the result was accepted; finalizing the accepted result\n")
+          .catch(() => undefined);
+        try {
+          await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
+            db, runId: run.id, workspaceFinalizeStatus: "succeeded",
+          }));
+          await dispatchPendingNativeStatusWakeups({ companyId: run.companyId });
+        } catch (finalizeErr) {
+          logger.warn(
+            { err: finalizeErr, runId: run.id },
+            "native result persisted but finalization did not apply; the reconciliation loop will retry",
+          );
+        }
+        return { dispatched: true, adapterResult: acceptedResult };
       }
       try {
         await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({

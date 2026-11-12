@@ -12,7 +12,7 @@ import {
   declinedToolActionInteraction,
   expiredToolActionInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
-import { within, userEvent } from "storybook/test";
+import { expect, within, userEvent } from "storybook/test";
 import { toolsApi } from "@/api/tools";
 import { issuesApi } from "@/api/issues";
 import { ReviewQueueCard } from "@/pages/apps/ReviewQueueCard";
@@ -303,6 +303,24 @@ export const Approved: Story = {
 export const Executing: Story = {
   render: () => <TaskScreen initial={[runningToolActionInteraction]} />,
 };
+export const ApprovedWaitingForConnection: Story = {
+  parameters: { paperclip: { capabilities: ["questions-and-approvals/tool-review", "connection-setup/task-request"],
+    implementation: "production", boundary: "fixtures",
+    notes: "Saved approval awaiting app sign-in. Uses the production task thread and repair link; OAuth repair and provider execution are verified separately by the server integration fixture." } },
+  render: () => <TaskScreen initial={[{
+    ...readRequest,
+    status: "accepted",
+    payload: { ...readRequest.payload, toolAction: { ...readRequest.payload.toolAction!, expiresAt: null } },
+    result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "approved",
+      errorCode: "approved_action_connection_required", updatedAt: "2026-11-09T12:00:00Z" } },
+  }]} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Your approval is saved.", { exact: false })).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "Reconnect Notion" })).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Approve & run" })).not.toBeInTheDocument();
+  },
+};
 export const Succeeded: Story = {
   render: () => <TaskScreen initial={[executedToolActionInteraction]} />,
 };
@@ -323,6 +341,20 @@ export const ResultDetails: Story = {
 };
 export const ExecutionFailed: Story = {
   render: () => <TaskScreen initial={[failedToolActionInteraction]} />,
+};
+export const GitHubAccessNeeded: Story = {
+  render: () => <TaskScreen initial={[{
+    ...failedToolActionInteraction,
+    payload: { ...failedToolActionInteraction.payload, toolAction: {
+      ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub", toolDisplayName: "Create repository",
+      previewMarkdown: "Create a private repository for the storefront prototype.",
+      argumentsSummaryJson: '{"name":"storefront-prototype","private":true}',
+    } },
+    result: { ...failedToolActionInteraction.result!, toolAction: {
+      ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_access_denied",
+      errorMessage: "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []",
+    } },
+  }]} />,
 };
 export const Declined: Story = {
   render: () => <TaskScreen initial={[declinedToolActionInteraction]} />,

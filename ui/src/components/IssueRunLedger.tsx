@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "@paperclipai/shared";
 import {
   isResponsibleUserDenialCode,
+  normalizeRunFailureCause,
   responsibleUserLabel,
 } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -329,7 +330,11 @@ function stopReasonLabel(run: RunForIssue) {
   if (stopReason === "process_lost") return "process lost";
   if (stopReason === "unmanaged_background_task_stopped")
     return "unmanaged background task stopped";
-  if (stopReason === "adapter_failed") return "adapter failed";
+  if (stopReason === "adapter_failed") {
+    // Older runs have no recorded cause and keep the plain label.
+    const failureCause = normalizeRunFailureCause(run.failureCause);
+    return failureCause ? `adapter failed (${failureCause})` : "adapter failed";
+  }
   if (stopReason === "completed")
     return timeoutText ? `completed (${timeoutText})` : "completed";
   return timeoutText;
@@ -448,7 +453,6 @@ export function IssueRunLedger({
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
@@ -484,7 +488,6 @@ export function IssueRunLedger({
     queryKey: queryKeys.providerTraceMetadata(companyId, traceRunIds),
     queryFn: () => heartbeatsApi.providerTraceMetadata(companyId, traceRunIds),
     enabled: canInspectProviderTrace && traceRunIds.length > 0,
-    retry: false,
   });
   const providerTraceMetadata = useMemo(
     () => new Map((providerTraceRows ?? []).map((trace) => [trace.runId, trace])),

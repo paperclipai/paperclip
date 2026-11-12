@@ -20,6 +20,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  reportAssignedWorkInvariant: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -653,6 +654,48 @@ describe("agent live run routes", () => {
     });
   });
 
+  it.each([
+    ["was never written", async () => { throw Object.assign(Error("missing"), { name: "NoSuchKey" }); }, 404],
+    ["cannot be read from storage", async () => { throw Error("storage offline"); }, 500],
+  ] as const)("answers an object run log that %s", async (_case, getObject, status) => {
+    const { createObjectRunLogStore } = await vi.importActual<typeof import("../services/object-run-log-store.js")>("../services/object-run-log-store.js");
+    const store = createObjectRunLogStore({
+      provider: {
+        id: "s3",
+        getObject,
+        putObject: async () => { throw Error("unused"); },
+        putObjectConditional: async () => { throw Error("unused"); },
+        headObject: async () => ({ exists: false }),
+        deleteObject: async () => undefined,
+        listObjects: async () => ({ keys: [] }),
+      },
+      keyPrefix: "logs",
+      assertWriterAuthority: async () => undefined,
+    });
+    const handle = { store: "s3_segments" as const, logRef: "company-1/agent-1/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      logStore: handle.store, logRef: handle.logRef,
+    });
+    mockHeartbeatService.readLog.mockImplementation(async () => store.read(handle));
+
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(status);
+    if (status === 404) expect(res.body).toEqual({ error: "Run log not found" });
+  });
+
+  it("does not read an object run log for another company", async () => {
+    const res = await requestApp(await createApp({}, {
+      type: "board", userId: "board-user", companyIds: ["company-2"], source: "session", isInstanceAdmin: false,
+    }), (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log"));
+
+    expect(res.status).toBe(404);
+    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+  });
+
   it.each(["skill_test", "task_bridge"])(
     "denies %s keys from company-wide run and workspace logs",
     async (kind) => {
@@ -730,6 +773,23 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.getRunWorkspaceAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockWorkspaceOperationService.listForRun).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "workspace-one");
+  });
+
+  it("lets a board operator read the assigned-work invariant for their company only", async () => {
+    mockHeartbeatService.reportAssignedWorkInvariant.mockResolvedValue({ checked: 3, violationCount: 1, violations: { no_pending_path: 1 } });
+    const board = await request(await createApp()).get("/api/companies/company-1/assigned-work-invariant");
+    expect(board.status).toBe(200);
+    expect(board.body).toMatchObject({ checked: 3, violationCount: 1 });
+    expect(mockHeartbeatService.reportAssignedWorkInvariant).toHaveBeenCalledWith("company-1", { readCondition: expect.anything() });
+
+    mockHeartbeatService.reportAssignedWorkInvariant.mockClear();
+    const member = { type: "board", userId: "member-1", companyIds: ["company-1"], source: "session", isInstanceAdmin: false };
+    const otherCompany = await request(await createApp({}, member)).get("/api/companies/company-2/assigned-work-invariant");
+    expect(otherCompany.status).toBe(403);
+    const agent = await request(await createApp({}, { type: "agent", agentId: routeAgentId, companyId: "company-1" }))
+      .get("/api/companies/company-1/assigned-work-invariant");
+    expect(agent.status).toBe(403);
+    expect(mockHeartbeatService.reportAssignedWorkInvariant).not.toHaveBeenCalled();
   });
 
   it("caps company live run polling by default", async () => {
@@ -1159,7 +1219,7 @@ describe("agent live run routes", () => {
         type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
       }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
       expect(res.status).toBe(409);
-      expect(res.body).toMatchObject({ error: expect.stringContaining("cleanup and reconciliation") });
+      expect(res.body).toMatchObject({ error: expect.stringContaining("still shutting down") });
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
       expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
     });
@@ -1938,6 +1998,28 @@ describe("agent live run routes", () => {
         details: expect.objectContaining({ providerActionsReplayed: 0 }),
       }),
     );
+  });
+
+  it("returns a retryable busy response for workspace-diff repair and permits a later retry", async () => {
+    const app = await createApp();
+    const { ObjectJournalBusyError } = await import("../services/object-byte-journal.js");
+    mockProviderTraceStore.getByRun.mockResolvedValue({
+      id: "trace-1", status: "complete", deletedAt: null,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    });
+    mockProviderTraceStore.readExactEntries.mockRejectedValueOnce(new ObjectJournalBusyError());
+    const route = "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs";
+    const busy = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(busy.status).toBe(503);
+    expect(busy.headers["retry-after"]).toBe("2");
+    expect(busy.body.code).toBe("object_journal_io_busy");
+    expect(mockWorkspaceDiffReprojection.project).not.toHaveBeenCalled();
+    expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    const retried = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(retried.status).toBe(200);
+    expect(mockWorkspaceDiffReprojection.persist).toHaveBeenCalledOnce();
   });
 
   it.each([

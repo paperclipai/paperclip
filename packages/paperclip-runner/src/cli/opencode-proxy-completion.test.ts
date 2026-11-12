@@ -10,7 +10,17 @@ describe("OpenCode controller completion feedback", () => {
     const feedback = "Include [Saved document](/PAP/issues/PAP-1#document-plan) in your final response.";
     const request = vi.fn().mockResolvedValue({ success: true, contentItems: [{ type: "inputText", text: feedback }] });
     await expect(openCodeProxyCompletionFeedback(request)(result, { ...call, tool })).resolves.toBe(feedback);
-    expect(request).toHaveBeenCalledExactlyOnceWith("item/tool/call", { ...call, tool, arguments: result });
+    expect(request).toHaveBeenCalledExactlyOnceWith("item/tool/call", { ...call, tool, arguments: result }, undefined);
+  });
+
+  it("withdraws an abandoned completion through its signal without sending the signal as data", async () => {
+    const client = new AbortController();
+    const request = vi.fn((_method: string, _params: Record<string, unknown>, signal?: AbortSignal) =>
+      new Promise((_resolve, reject) => signal?.addEventListener("abort", () => reject(new Error("abandoned before dispatch")))));
+    const pending = openCodeProxyCompletionFeedback(request)(result, { ...call, signal: client.signal });
+    client.abort();
+    await expect(pending).rejects.toThrow("abandoned before dispatch");
+    expect(request).toHaveBeenCalledExactlyOnceWith("item/tool/call", { ...call, arguments: result }, client.signal);
   });
 
   it("preserves the controller rejection for same-turn correction", async () => {
