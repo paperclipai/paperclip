@@ -60,9 +60,9 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
       target: { type: "issue_document", issueId: task.id, documentId: plan.id, key: "plan", revisionId: plan.latestRevisionId, revisionNumber: plan.latestRevisionNumber } } }));
   await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
   const acceptPaths = issueApiPaths(task, `/interactions/${confirmation.id}/accept`);
-  const accept = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && acceptPaths.has(new URL(r.url()).pathname));
-  await clickInteractionAction(ctx.input.page, confirmation, "Approve");
-  if ((await accept).status() !== 200) throw new Error("Actual human simpler-plan approval did not succeed");
+  const [accept] = await Promise.all([ctx.input.page.waitForResponse(r => r.request().method() === "POST" && acceptPaths.has(new URL(r.url()).pathname)),
+    clickInteractionAction(ctx.input.page, confirmation, "Approve")]);
+  if (accept.status() !== 200) throw new Error("Actual human simpler-plan approval did not succeed");
   const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
   const approved = (await ctx.input.api.get<IssueThreadInteraction[]>(`/api/issues/${task.id}/interactions`)).find(row => row.id === confirmation.id)!;
   const queue = await pollUntil({ label: "Real accepted plan response requires a fresh native turn but has not interrupted old work", deadlineAt: Date.now() + 20_000,
@@ -94,9 +94,10 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
     await ctx.input.page.waitForURL(url => { const parts = url.pathname.split("/").map(decodeURIComponent), at = parts.indexOf("issues"); return at >= 0 && [task.id, task.identifier].includes(parts[at + 1]); });
     state.humanFollowedReplyTaskLink = true;
     const interruptPaths = issueApiPaths(task, "/queued-comments/interrupt");
-    const interrupted = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && interruptPaths.has(new URL(r.url()).pathname));
     chatCatalogNativePhaseRemainingBudget(ctx)?.();
-    await ctx.input.page.getByTestId(`task-chat-queued-interrupt-${confirmation.id}`).click(); state.humanInterrupted = true; state.interruptStatus = (await interrupted).status();
+    const [interrupted] = await Promise.all([ctx.input.page.waitForResponse(r => r.request().method() === "POST" && interruptPaths.has(new URL(r.url()).pathname)),
+      ctx.input.page.getByTestId(`task-chat-queued-interrupt-${confirmation.id}`).click().then(() => { state.humanInterrupted = true; })]);
+    state.interruptStatus = interrupted.status();
     const stopped = await pollUntil({ label: "Matching native cancellation ACK after actual supported Interrupt", deadlineAt: Date.now() + 90_000,
       load: () => ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${state.workerRunId}`),
       accept: run => run.status === "cancelled" && (run.resultJson?.nativeCancellation as { dispatchState?: string } | undefined)?.dispatchState === "acknowledged" });
