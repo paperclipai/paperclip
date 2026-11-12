@@ -74,7 +74,7 @@ import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { casesDisabledError } from "../cases-disabled.js";
-import { runnerApiCatalog, searchRunnerApi } from "./runner-api-catalog.js";
+import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
@@ -913,7 +913,7 @@ export class PaperclipRunnerToolAuthority {
           conversation: Boolean(context.issue.conversationAgentId),
           companyPrefix: call.tool === "list_projects" ? await this.#companyPagePrefix() : null });
       }
-      case "search_api": return searchRunnerApi(call.arguments);
+      case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {
         return hireAgentResult(await this.#callApi(call.callId, hireAgentApiRequest(input, this.binding)), context.actor.adapterConfig?.provider);
       }

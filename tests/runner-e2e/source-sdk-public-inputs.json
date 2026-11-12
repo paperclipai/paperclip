@@ -54,7 +54,7 @@
     "packages/shared/src/agent-eligibility.ts": "bf658da7e9de17719fd1cf1e151c5d231e766805",
     "packages/shared/src/agent-interaction-permissions.ts": "cdcca2078580c0774807bdee62753bea73044840",
     "packages/shared/src/agent-observability.test.ts": "36cd74a8a8d1947364ec96fa30deabff14658df2",
-    "packages/shared/src/agent-observability.ts": "4e71f2ca92ff7eb5720b01b5568b26f46f21c5e3",
+    "packages/shared/src/agent-observability.ts": "52dc94e13624adeaf1aafa8996099a5dc158ef4b",
     "packages/shared/src/agent-runner.test.ts": "d02d0bba0cf57838011d4ec5f1304b65c15cff56",
     "packages/shared/src/agent-runner.ts": "c4e9a7206d8c5cba7d9d95e7b02389cc351f3ecb",
     "packages/shared/src/agent-url-key.ts": "d0ec20b3ea1636a960bc5372a2c1e5a124bc5511",
