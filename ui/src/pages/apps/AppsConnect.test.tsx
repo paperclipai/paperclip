@@ -1862,6 +1862,48 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("GitHub token");
   });
 
+  it("connects GitHub with a PAT without enrolling the instance in Cloud", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(unconfiguredConnectorEnrollment());
+
+    await render();
+    await act(async () => { buttonByText("Use a GitHub personal access token")!.click(); });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    const token = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(token).not.toBeNull();
+    await act(async () => { setInputValue(token!, "github_pat_test"); });
+    await flushReact();
+    await act(async () => { buttonByText("Connect")!.click(); });
+    await flushReact();
+
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    expect(connectAppMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      galleryKey: "github", connectionMethodKey: "mcp-key",
+      credentialValues: { "credentials.authorization": "github_pat_test" },
+    }));
+  });
+
+  it("closes the enrollment popup and ignores a late enrollment response when switching to a PAT", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(unconfiguredConnectorEnrollment());
+    let finishEnrollment!: (value: { verificationUrl: string }) => void;
+    startCloudConnectorEnrollmentMock.mockReturnValue(new Promise((resolve) => { finishEnrollment = resolve; }));
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    await render();
+    await act(async () => { buttonByText("Connect with Paperclip")!.click(); });
+    await act(async () => { buttonByText("Use a GitHub personal access token")!.click(); });
+    expect(popup.close).toHaveBeenCalledOnce();
+    await act(async () => { finishEnrollment({ verificationUrl: "https://my.paperclip.app/connections/enroll?id=test" }); });
+    await flushReact();
+    expect(popup.location.assign).not.toHaveBeenCalled();
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+  });
+
   it("restores the setup step after the one-time enrollment callback", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({ apps: [GITHUB_MANAGED] });
@@ -1893,6 +1935,36 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     expect(container.textContent).toContain("Continue to GitHub");
     expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
+  });
+
+  it("offers a PAT when the managed GitHub profile is unavailable", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+
+    await render();
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    await act(async () => { buttonByText("Use a GitHub personal access token")!.click(); });
+    await flushReact();
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves the chosen GitHub PAT when a pending gallery refresh enables managed sign-in", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    await render();
+    let finishRefresh!: (value: { apps: typeof GITHUB_MANAGED[] }) => void;
+    listGalleryMock.mockReturnValueOnce(new Promise((resolve) => { finishRefresh = resolve; }));
+    await act(async () => { buttonByText("Try again")!.click(); });
+    await act(async () => { buttonByText("Use a GitHub personal access token")!.click(); });
+    await flushReact();
+    const token = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(token).not.toBeNull();
+    await act(async () => { setInputValue(token!, "github_pat_test"); });
+    await act(async () => { finishRefresh({ apps: [GITHUB_MANAGED] }); });
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("github_pat_test");
+    expect(container.textContent).not.toContain("Continue to GitHub");
   });
 
   it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {

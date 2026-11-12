@@ -1,6 +1,7 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   companyMemberships,
+  companySecrets,
   connectionGrants,
   heartbeatRuns,
   issues,
@@ -22,6 +23,11 @@ import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAcc
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { isCurrentCloudOwnerInstanceAdmin, loadCurrentCloudOwnerAuthority } from "./cloud-tenant-authority.js";
+import { ghFetch } from "./github-fetch.js";
+
+function isGitHubPat(connection: typeof toolConnections.$inferSelect): boolean {
+  return connection.authKind === "api_key" && connection.config?.connectionMethodKey === "mcp-key";
+}
 
 function transientGitToken(token: string | undefined): string {
   if (!token || token.length > 4096 || /[\0\r\n]/.test(token) || token.startsWith("secret://")) {
@@ -83,8 +89,9 @@ export function projectGitAuthorizationService(db: Db) {
       ({ grant, connection }) =>
         (connection.config?.sourceTemplateKey === "github" ||
           connection.transportConfig?.sourceTemplateKey === "github") &&
-        grant.providerTenant?.github?.repositoryCount &&
-        grant.providerTenant.github.installationCount > 0,
+        (isGitHubPat(connection)
+          ? grant.credentialSecretRefs.some((ref) => ref.configPath === "credentials.authorization")
+          : Boolean(grant.providerTenant?.github?.repositoryCount && grant.providerTenant.github.installationCount > 0)),
     );
   }
   async function read(companyId: string, projectId: string, userId: string): Promise<ProjectGitAuthorization> {
@@ -95,7 +102,7 @@ export function projectGitAuthorizationService(db: Db) {
       options: (await eligible(companyId, userId)).map(({ grant, connection }) => ({
         grantId: grant.id,
         connectionName: connection.name,
-        login: grant.providerTenant!.github!.login,
+        login: grant.providerTenant?.github?.login ?? "Personal access token",
       })),
     };
   }
@@ -136,7 +143,7 @@ export function projectGitAuthorizationService(db: Db) {
       return read(companyId, projectId, userId);
     },
     async resolve(
-      input: { companyId: string; projectId: string; workspaceId: string; expectedRepository?: string },
+      input: { companyId: string; projectId: string; workspaceId: string; expectedRepository?: string; expectedRepositoryId?: string; requireConnected?: boolean },
       scope?: {
         projectId: string;
         workspaceId?: string;
@@ -168,7 +175,19 @@ export function projectGitAuthorizationService(db: Db) {
       const repo = normalizeProjectRepositoryUrl(workspace.repoUrl);
       if (input.expectedRepository && repo.fullName.toLowerCase() !== input.expectedRepository.toLowerCase())
         throw forbidden("Project repository changed before GitHub authorization");
-      const isPrivate = await projectRepositoryIsPrivate(db, input.companyId, workspace);
+      let isPrivate: boolean;
+      try {
+        isPrivate = await projectRepositoryIsPrivate(db, input.companyId, workspace);
+      } catch (error) {
+        // A private PAT-only repository may not have a catalog visibility snapshot.
+        // Continue only with explicit background consent; GitHub verifies it below.
+        if (scope.runId || scope.agentId || !row.gitAuthorizationGrantId ||
+          !(error instanceof Error) || !error.message.startsWith("Repository visibility is unavailable")) throw error;
+        const fallback = row.gitAuthorizedByUserId && (await eligible(input.companyId, row.gitAuthorizedByUserId))
+          .find(({ grant }) => grant.id === row.gitAuthorizationGrantId);
+        if (!fallback || !isGitHubPat(fallback.connection)) throw error;
+        isPrivate = true;
+      }
       if (scope.runId || scope.agentId) {
         if (!scope.runId || !scope.agentId) throw forbidden("Incomplete foreground Git identity");
         const [run] = await db
@@ -205,7 +224,7 @@ export function projectGitAuthorizationService(db: Db) {
         }, input.companyId, {
           issueId, workspaceId: issue.executionWorkspaceId, projectWorkspaceId: workspace.id,
         });
-        if (!isPrivate) return null;
+        if (!isPrivate && !input.requireConnected) return null;
         const result = await resolveGitHubOperationCredentials(db, {
           companyId: input.companyId,
           runId: scope.runId,
@@ -214,7 +233,7 @@ export function projectGitAuthorizationService(db: Db) {
         if (result.status !== "available") throw forbidden(result.reason ?? "Run GitHub authorization unavailable");
         return transientGitToken(result.env.PAPERCLIP_GIT_TOKEN);
       }
-      if (!isPrivate) return null;
+      if (!isPrivate && !input.requireConnected) return null;
       if (!row.gitAuthorizationGrantId)
         throw forbidden("Authorize this project's GitHub connection before provisioning private repositories");
       const selected =
@@ -232,10 +251,40 @@ export function projectGitAuthorizationService(db: Db) {
       }, input.companyId, row.id);
       if (resolveCoreTrustPreset({ companyId: input.companyId, workspaceSourceProject: row }).kind !== "standard")
         throw forbidden("GitHub credentials are not available to low-trust or unverified projects");
+      if (isGitHubPat(selected.connection)) {
+        const ref = selected.grant.credentialSecretRefs.find((item) => item.configPath === "credentials.authorization");
+        const [secret] = ref ? await db.select({ definitionId: companySecrets.userSecretDefinitionId }).from(companySecrets).where(and(
+          eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, input.companyId),
+          eq(companySecrets.ownerUserId, row.gitAuthorizedByUserId), eq(companySecrets.scope, "user"),
+          eq(companySecrets.status, "active"), isNull(companySecrets.deletedAt),
+        )).limit(1) : [];
+        if (!ref || !secret?.definitionId) throw forbidden("Project GitHub credential unavailable; reconnect the selected authorization");
+        const value = await secretService(db).resolveUserSecretValue(input.companyId, {
+          definitionId: secret.definitionId, responsibleUserId: row.gitAuthorizedByUserId,
+          version: ref.versionSelector ?? "latest", required: true,
+        }, { consumerType: "system", consumerId: "workspace-git-credential", actorType: "system", responsibleUserId: row.gitAuthorizedByUserId });
+        const token = transientGitToken(value?.value);
+        const response = await ghFetch(`https://api.github.com/repos/${repo.fullName}`, {
+          headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
+          redirect: "error", signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) throw forbidden("Project GitHub authorization does not include this repository");
+        const repository = await response.json() as { id?: number; full_name?: string; private?: boolean; permissions?: { pull?: boolean } };
+        const storedRepositoryId = workspace.metadata?.githubRepositoryId;
+        if (repository.full_name?.toLowerCase() !== repo.fullName.toLowerCase() || repository.permissions?.pull !== true ||
+          ((storedRepositoryId != null || input.expectedRepositoryId !== undefined) && !Number.isSafeInteger(repository.id)) ||
+          (input.expectedRepositoryId !== undefined && String(repository.id) !== input.expectedRepositoryId) ||
+          (storedRepositoryId != null && String(repository.id) !== storedRepositoryId))
+          throw forbidden("Project GitHub authorization does not include this repository");
+        if (repository.private === false && !input.requireConnected) return null;
+        if (typeof repository.private !== "boolean") throw forbidden("Repository visibility is unavailable");
+        return token;
+      }
       // Project consent follows this connection's repository access, including future project sources.
       if (
         !selected.grant.providerTenant?.github?.repositories?.some(
-          (r) => r.fullName.toLowerCase() === repo.fullName.toLowerCase(),
+          (r) => r.fullName.toLowerCase() === repo.fullName.toLowerCase() &&
+            (input.expectedRepositoryId === undefined || r.id === input.expectedRepositoryId),
         )
       ) {
         throw forbidden("Project GitHub authorization does not include this repository; refresh Connector access");

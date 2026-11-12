@@ -67,7 +67,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         "paperclip-github-operation-",
       );
       db = createDb(external ?? database!.connectionString);
-    }, 30_000);
+    }, 90_000);
     afterAll(async () => {
       await db?.$client.end({ timeout: 1 });
       await database?.cleanup();

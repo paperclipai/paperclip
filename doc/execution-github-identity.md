@@ -56,7 +56,7 @@ Read-only access must use separately authorized tools that enforce that boundary
 
 Server-side Git operations and GitHub gateway calls follow the same selection rules. Approved gateway operations retain their signed originating identity. Connection audience and tool policies continue to apply to the selected person's connection. Native catalogs remain stable across identity changes, but each invocation resolves the selected grant again. Personal OAuth secret declarations survive connection pauses and metadata edits.
 
-Managed commands disable ambient Git credential helpers, Git global/system configuration, host GitHub CLI configuration, and host SSH identity access. Per-operation GitHub CLI configuration is isolated in a writable configuration directory beneath the managed launcher directory. Missing credentials clear previous author and token values; no teammate, standing delegation, host token, or company-default user's account is substituted. Anonymous/local operations remain available where supported.
+Managed commands disable ambient Git credential helpers, Git global/system configuration, host GitHub CLI configuration, and host SSH identity access. Per-operation GitHub CLI configuration is isolated in a writable configuration directory beneath the managed launcher directory. Missing credentials clear previous author and token values; no teammate, standing delegation, host token, or company-default user's account is substituted. A shared company GitHub grant is used only as the explicit last tier of selection, never as a substitute for an unavailable personal or dedicated grant. Anonymous/local operations remain available where supported.
 
 OpenCode retains the controller-projected GitHub broker environment through
 runner startup and provider startup. Shell operations acquire credentials for
@@ -154,6 +154,10 @@ a reconnect requirement.
 
 An explicit dedicated-agent grant overrides personal selection. Revoked, disabled, unavailable, or ambiguous dedicated grants do not fall back to a person's account. Removing the dedicated configuration restores personal selection.
 
+Selection order is: a dedicated-agent grant, then the responsible person's own grant, then a standing delegation (ownerless runs only), then a shared company (organization) grant. Only the first tier that has a grant is used; an unavailable or ambiguous grant in that tier never falls back to a lower tier.
+
+Personal access token grants work for every managed operation, like sign-in grants. Paperclip records the token's GitHub account (`GET /user`) at setup and reconnect, or on first use for older tokens. That account authors managed commits and de-duplicates connections for the same account. Reconnecting a dedicated agent's token rotates the agent grant's own secret in place.
+
 Connection setup and permissions display: “This agent uses this GitHub account for everyone's work, instead of the person giving instructions.”
 
 The GitHub permissions page shows repositories across all connected accounts in one scrollable list. It has no account filter or repository search. Repository icons, private-repository indicators, refresh, and GitHub configuration links remain available. The “Add More Repos on GitHub” button opens GitHub’s app installation and repository-access setup.
@@ -162,14 +166,14 @@ Multiple eligible connections for the same GitHub account are treated as one
 identity, using GitHub's stable account ID rather than its login. The resolver
 selects an available grant, preferring the newest authorization with a stable
 ID tie-breaker. Duplicate eligibility includes an active credential record with
-the correct owner, the OAuth access-token reference, and repository access
-metadata. It keeps that grant's credential and connection policy together;
+the correct owner, the OAuth access-token reference with repository access
+metadata, or a personal access token reference. It keeps that grant's credential and connection policy together;
 it does not combine repository access or bypass connection audiences. Distinct
 accounts or unidentifiable duplicate grants remain ambiguous. Managed commands
 print the redacted reason when GitHub access is unavailable, while unrelated
 local operations can still proceed without credentials.
 
-Run details show identity revisions and redacted GitHub results: responsible person, selected login when available, personal/dedicated source, and an unavailable reason. Tasks do not receive an additional identity indicator or takeover action.
+Run details show identity revisions and redacted GitHub results: responsible person, selected login when available, personal/dedicated/shared source, and an unavailable reason. Tasks do not receive an additional identity indicator or takeover action.
 
 ## Deployment and verification
 
@@ -207,7 +211,10 @@ event so subscribed providers can reconcile the change.
 viewer's eligible personal grants. `PUT` accepts `{ grantId }` or `{ grantId: null }`.
 Agents cannot create this standing consent. Project workspace writers can remove it.
 Core rechecks membership, Connector installation/enablement, grant status, and
-repository metadata on each background use. Public repositories never require
+repository access on each background use. GitHub App grants use their installation
+repository metadata; personal access tokens are resolved from the instance vault
+and verified against the exact repository through GitHub's API before export.
+Public repositories never require
 a connection or credential. Private repositories wait for authorization before
 provisioning starts, so missing consent cannot leave a failed anonymous clone.
 Repository selections retain the same visibility metadata used by the UI lock.
@@ -242,7 +249,7 @@ inspection and removal. New provisioning and new consent remain blocked.
 
 The provider receives a transient GitHub token with its existing provider
 permissions. This is not a repository-scoped or read-only token minting API.
-Only grant-listed repositories can trigger background export. Plugins must never
+Only repositories authorized by the selected grant can trigger background export. Plugins must never
 save tokens in entities, state, configuration, operation receipts, or logs, and
 must send them only to trusted execution infrastructure over HTTPS. Revocation
 prevents subsequent credential acquisition; it cannot recall a token already
