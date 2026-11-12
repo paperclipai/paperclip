@@ -600,6 +600,10 @@ async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof
   prior: typeof issueRecoveryActions.$inferSelect; holds: Array<typeof issueRecoveryActions.$inferSelect>; now: Date }) {
   const { companyId, issue, run, prior, holds, now } = input;
   if (!holds.length) return;
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
+  await notifyStatusCardIssueChange(tx, companyId);
+  await notifyRoutineExecutionStatus(tx, issue.id, companyId);
+  const ownsBlock = issue.status === "blocked" && holds.some(hold => holdOwnsBlockedStatus(hold, issue, run));
   const delivery = String(prior.evidence.continuationDelivery);
   const followed = ["delivered", "invalidated"].includes(delivery) ? delivery : "coalesced";
   for (const hold of holds) {
@@ -612,7 +616,7 @@ async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof
         ...(typeof prior.evidence.continuationRunId === "string" ? { continuationRunId: prior.evidence.continuationRunId } : {}) },
     }).where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.id, hold.id)));
   }
-  if (issue.status === "blocked") {
+  if (ownsBlock) {
     await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
       blockedOwnerNotifiedAt: null, updatedAt: now }).where(and(eq(issues.companyId, companyId), eq(issues.id, issue.id)));
     await logActivity(tx, { companyId, actorType: "system", actorId: FRESH_CONTINUATION_ACTOR, action: "issue.updated",
@@ -620,9 +624,6 @@ async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof
       details: { status: "todo", previousStatus: "blocked", reason: "fresh_continuation", recoveryActionId: prior.id,
         _previous: { status: "blocked" } } });
   }
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
-  await notifyStatusCardIssueChange(tx, companyId);
-  await notifyRoutineExecutionStatus(tx, issue.id, companyId);
 }
 
 /** Records why a hold was not continued yet, and when to look again. */

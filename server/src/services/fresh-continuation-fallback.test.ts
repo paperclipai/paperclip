@@ -179,6 +179,22 @@ suite("fresh-continuation fallback", () => {
     expect(await successors(f.runId)).toHaveLength(1);
   }, 60_000);
 
+  it("keeps a person's newer block when the failed run's exhaustion hold lands after the continuation was recorded", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_runner_process_exited",
+      error: "native_session_recovery_failed: Error: runner_local_connect_failed: runnerd exited unexpectedly" });
+    await settleUnrecoverableExecutions(db);
+    const decisionId = randomUUID();
+    await db.update(issues).set({ status: "blocked", statusVersion: 9, lastStatusDecisionId: decisionId, blockedTransitionAt: new Date() })
+      .where(eq(issues.id, f.issueId));
+    const [late] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog", status: "active",
+      ownerType: "board", returnOwnerAgentId: agentId, cause: "native_session_retry_exhausted", fingerprint: `native-retry:${f.runId}`,
+      nextAction: "Automatic recovery stopped.", maxAttempts: 3,
+      evidence: { runId: f.runId, coordinatorAttempt: 3, recoveryDisposition: "native_session_retry_exhausted", nativeFailureBlock: { runId: f.runId, statusVersion: 4 } } }).returning();
+    await settleUnrecoverableExecutions(db);
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked", lastStatusDecisionId: decisionId });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, late!.id)))[0]).toMatchObject({ status: "resolved", ownerType: "system" });
+  }, 60_000);
+
   it("continues a task whose automatic retry lost the person's continuation authorization", async () => {
     expect(PERSON_OWNED_FAILURE_CODES).not.toContain("continuation_user_authorization_missing");
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "continuation_user_authorization_missing",
