@@ -263,6 +263,9 @@ describe("Codex app-server Codex driver", () => {
       vi.spyOn(recoveryTransport, "request").mockImplementation(async (method, params) =>
         fail(method) ?? request(method, params));
       const close = vi.spyOn(recoveryTransport, "close");
+      // The runnerd transport's restart detach: no turn stop, no suspend, no signal.
+      const detach = vi.fn(async () => {});
+      Object.assign(recoveryTransport, { detachControllerForRestart: detach });
       const driver = makeDriver([originalTransport, recoveryTransport]);
       const original = await driver.openSession({
         runId: "run-runner-kept", normalizedSessionId: "session-runner-kept", workingDirectory: WORKSPACE,
@@ -271,29 +274,45 @@ describe("Codex app-server Codex driver", () => {
       const checkpoint = await original.snapshot();
       await original.close({ reason: "controller detached for restart" });
       const recovery = driver.recoverSession!(checkpoint, { signal: signal ?? new AbortController().signal });
-      return { recovery, close, recoveryTransport };
+      return { recovery, close, detach, recoveryTransport };
     }
+    const rejectRead = (error: Error) => (method: string) => method === "thread/read" ? Promise.reject(error) : null;
 
-    it("keeps the Runner for the same run's reattachment when its snapshot times out", async () => {
-      const { recovery, close, recoveryTransport } = await recoverWith(method => method === "thread/read"
-        ? Promise.reject(new Error("provider_transport_failed: PRP command session.snapshot timed out")) : null);
-      expect(await recovery).toMatchObject({ recovered: false,
-        reason: expect.stringContaining("session.snapshot timed out") });
-      expect(close).toHaveBeenCalledTimes(1);
-      expect(close).toHaveBeenCalledWith(undefined, { retainUnsettledRemoteRunner: true });
-      expect(recoveryTransport.calls.some(call => call.method === "turn/start" || call.method === "thread/start")).toBe(false);
+    it.each([
+      ["the runner snapshot timed out", new Error("provider_transport_failed: PRP command session.snapshot timed out")],
+      ["the history read failed behind a snapshot timeout (the staging message)", new HarnessReconciliationError(
+        "codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out")],
+    ])("detaches and keeps the Runner and its turn when %s", async (_title, error) => {
+      const { recovery, close, detach, recoveryTransport } = await recoverWith(rejectRead(error));
+      expect(await recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("session.snapshot timed out") });
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+      expect(recoveryTransport.calls.some(call => ["turn/start", "thread/start", "turn/interrupt"].includes(call.method))).toBe(false);
     });
 
-    it("keeps the Runner when the recovery deadline aborts a hung read", async () => {
+    it("detaches and keeps the Runner when the recovery deadline aborts a hung read", async () => {
       const controller = new AbortController();
-      const { recovery, close } = await recoverWith(method => {
+      const { recovery, close, detach } = await recoverWith(method => {
         if (method !== "thread/read") return null;
         setTimeout(() => controller.abort(new Error("native session provider recovery timed out")), 0);
         return new Promise<never>(() => {});
       }, controller.signal);
       await expect(recovery).rejects.toThrow("native session provider recovery timed out");
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a thrown different-session refusal", new HarnessReconciliationError("thread/read returned a different driver session")],
+      ["an adopted provider identity mismatch", new Error("native_adopted_provider_identity_mismatch")],
+      ["an identity refusal that also timed out", new Error("provider_transport_failed: PRP command session.snapshot timed out; native_adopted_provider_identity_mismatch")],
+      ["an unclassified failure", new Error("codex_history_incomplete: thread/turns/list omitted data")],
+    ])("still stops the Runner after %s", async (_title, error) => {
+      const { recovery, close, detach } = await recoverWith(rejectRead(error));
+      expect(await recovery).toMatchObject({ recovered: false });
+      expect(detach).not.toHaveBeenCalled();
       expect(close).toHaveBeenCalledTimes(1);
-      expect(close).toHaveBeenCalledWith(undefined, { retainUnsettledRemoteRunner: true });
+      expect(close.mock.calls[0]).toEqual([]);
     });
   });
 

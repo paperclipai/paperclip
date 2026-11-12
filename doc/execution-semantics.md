@@ -1753,13 +1753,14 @@ The runtime's own cleanup after a failed turn start or a failed event stream
 (for example `runnerd did not report the provider turn identity` or the
 execution timeout) revokes the turn's output but is not a Stop, so it keeps the
 Runner for the same-run reattachment too. A protocol integrity fault, which
-needs an operator, still stops the Runner. The same applies to a reattachment
-after a restart: when its recovery read fails or times out (for example
-`PRP command session.snapshot timed out`) or the recovery deadline aborts it,
-the cleanup keeps the reattached Runner for the next same-run reattachment
-instead of killing it, because that Runner can still own the in-flight turn. A
-recovery that the provider refuses by identity (a different session, working
-directory or turn history) still stops it.
+needs an operator, still stops the Runner. A reattachment after a restart whose recovery read
+times out or loses its transport (for example
+`PRP command session.snapshot timed out`), or that the recovery deadline aborts,
+detaches from the Runner the same way a server restart does: it sends no turn
+stop and no suspend and does not signal the process. The Runner and its
+in-flight turn stay for the next same-run reattachment. Any identity or
+authority refusal, any other recovery failure, and a protocol integrity fault
+still stop it.
 
 A remote native run can lose its original runner or sandbox before reattachment.
 This happens after a server restart, and for a same-run retry after a turn ends
