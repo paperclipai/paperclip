@@ -71,6 +71,9 @@ export function safeExternalUrl(value: unknown): string | null {
 
 export function createMcpAppHost(options: McpAppHostOptions) {
   let initialized = false;
+  // Set once this document has sent `ui/initialize`. Requests that act on the
+  // user's behalf are refused before it.
+  let handshakeStarted = false;
   let toolDataSent = false;
   let nextRequestId = 1;
   let disposed = false;
@@ -91,8 +94,13 @@ export function createMcpAppHost(options: McpAppHostOptions) {
 
   async function handleRequest(message: JsonRpcMessage & { id: JsonRpcId; method: string }) {
     const params = record(message.params) ?? {};
+    if (!handshakeStarted && message.method !== "ui/initialize" && message.method !== "ping") {
+      fail(message.id, SERVER_ERROR, "The view must call ui/initialize first");
+      return;
+    }
     switch (message.method) {
       case "ui/initialize":
+        handshakeStarted = true;
         respond(message.id, {
           protocolVersion: MCP_APPS_PROTOCOL_VERSION,
           hostInfo: { name: "Paperclip", version: "1.0.0" },
@@ -201,5 +209,19 @@ export function createMcpAppHost(options: McpAppHostOptions) {
 export function mcpAppDocument(html: string, csp: McpAppResourceCsp): string {
   const policy = buildMcpAppCsp(csp).replace(/"/g, "&quot;");
   const body = html.replace(/^﻿?\s*<!doctype[^>]*>/i, "");
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer">${body}`;
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"><script>${MCP_APP_NAVIGATION_GUARD}</script>${body}`;
 }
+
+/**
+ * Runs before the view's own scripts. The view's frame must never load another
+ * document: that document would inherit the frame's message channel. A
+ * cross-document navigation of the frame is cancelled (Navigation API, with a
+ * link-click fallback) and http(s) destinations open in a new tab through the
+ * host instead. Same-document navigations (pushState, hashes) still work.
+ */
+export const MCP_APP_NAVIGATION_GUARD = `(function(){
+var n=0;function open(u){if(/^https?:/i.test(u))parent.postMessage({jsonrpc:"2.0",id:"paperclip-link-"+(++n),method:"ui/open-link",params:{url:u}},"*");}
+var nav=window.navigation;
+if(nav&&nav.addEventListener)nav.addEventListener("navigate",function(e){var d=e.destination;if(!d||d.sameDocument||e.downloadRequest||!e.cancelable)return;e.preventDefault();open(d.url);});
+document.addEventListener("click",function(e){var t=e.target,a=t&&t.closest?t.closest("a[href]"):null;if(!a||e.defaultPrevented)return;var g=(a.getAttribute("target")||"").toLowerCase();if(g&&g!=="_self"&&g!=="_parent"&&g!=="_top")return;if((a.getAttribute("href")||"").charAt(0)==="#")return;e.preventDefault();open(a.href);},true);
+})();`;

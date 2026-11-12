@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createMcpAppHost, mcpAppDocument, safeExternalUrl, type McpAppHostContext } from "./mcp-app-host";
+import { createMcpAppHost, MCP_APP_NAVIGATION_GUARD, mcpAppDocument, safeExternalUrl, type McpAppHostContext } from "./mcp-app-host";
 
 const hostContext: McpAppHostContext = {
   theme: "dark",
@@ -54,6 +54,7 @@ describe("createMcpAppHost", () => {
       .mockResolvedValueOnce({ content: [{ type: "text", text: "called" }] })
       .mockRejectedValueOnce(new Error("denied"));
     const { host, posted } = setup({ callTool });
+    host.receive({ jsonrpc: "2.0", id: "init", method: "ui/initialize", params: {} });
     host.receive({ jsonrpc: "2.0", id: "a", method: "tools/call", params: { name: "ReadMeetings", arguments: { ids: ["m1"] } } });
     host.receive({ jsonrpc: "2.0", id: "b", method: "tools/call", params: { name: "DeleteTag" } });
     await flush();
@@ -64,6 +65,7 @@ describe("createMcpAppHost", () => {
 
   it("opens only http(s) links and rejects unknown methods", async () => {
     const { host, posted, options } = setup();
+    host.receive({ jsonrpc: "2.0", id: 0, method: "ui/initialize", params: {} });
     host.receive({ jsonrpc: "2.0", id: 1, method: "ui/open-link", params: { url: "https://app.circleback.ai/meetings/m1" } });
     host.receive({ jsonrpc: "2.0", id: 2, method: "ui/open-link", params: { url: "javascript:alert(1)" } });
     host.receive({ jsonrpc: "2.0", id: 3, method: "ui/message", params: { role: "user", content: { type: "text", text: "hi" } } });
@@ -72,6 +74,20 @@ describe("createMcpAppHost", () => {
     expect(options.openLink).toHaveBeenCalledWith("https://app.circleback.ai/meetings/m1");
     expect(posted.find((message) => message.id === 2)).toMatchObject({ error: { code: -32000 } });
     expect(posted.find((message) => message.id === 3)).toMatchObject({ error: { code: -32601 } });
+  });
+
+  it("refuses tool calls and links before the view's ui/initialize", async () => {
+    const callTool = vi.fn(async () => ({ content: [] }));
+    const { host, posted, options } = setup({ callTool });
+    host.receive({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "DeleteTag", arguments: {} } });
+    host.receive({ jsonrpc: "2.0", id: 2, method: "ui/open-link", params: { url: "https://evil.example" } });
+    host.receive({ jsonrpc: "2.0", id: 3, method: "ping" });
+    await flush();
+    expect(callTool).not.toHaveBeenCalled();
+    expect(options.openLink).not.toHaveBeenCalled();
+    expect(posted.find((message) => message.id === 1)).toMatchObject({ error: { code: -32000 } });
+    expect(posted.find((message) => message.id === 2)).toMatchObject({ error: { code: -32000 } });
+    expect(posted.find((message) => message.id === 3)).toMatchObject({ result: {} });
   });
 
   it("reports size changes, ignores malformed messages and stops after teardown", () => {
@@ -97,6 +113,12 @@ describe("mcpAppDocument", () => {
     expect(doc.indexOf("Content-Security-Policy")).toBeLessThan(doc.indexOf("<script>"));
     expect(doc.match(/<!doctype/gi)).toHaveLength(1);
     expect(doc).toContain("connect-src https://api.circleback.ai");
+  });
+
+  it("runs the navigation guard before any of the view's scripts", () => {
+    const doc = mcpAppDocument("<html><head><script>window.viewStarted = true</script></head></html>", {});
+    expect(doc.indexOf(MCP_APP_NAVIGATION_GUARD)).toBeGreaterThan(doc.indexOf("Content-Security-Policy"));
+    expect(doc.indexOf(MCP_APP_NAVIGATION_GUARD)).toBeLessThan(doc.indexOf("window.viewStarted"));
   });
 
   it("allows only http(s) external urls", () => {

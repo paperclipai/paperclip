@@ -51,6 +51,9 @@ export interface McpAppFrameProps {
 export function McpAppFrame({ title, viewId, toolName, resource, toolInput, toolResult, callTool, className }: McpAppFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(INITIAL_HEIGHT);
+  // One mount is one iframe element and one document. A second `load` means the
+  // frame left the view's document: that frame and its channel are discarded.
+  const [generation, setGeneration] = useState(0);
   const srcDoc = useMemo(() => mcpAppDocument(resource.html, resource.csp), [resource.html, resource.csp]);
   const callToolRef = useRef(callTool);
   callToolRef.current = callTool;
@@ -86,8 +89,19 @@ export function McpAppFrame({ title, viewId, toolName, resource, toolInput, tool
         }
       },
     });
+    let loads = 0;
+    let navigatedAway = false;
+    const onLoad = () => {
+      loads += 1;
+      if (loads > 1 && !navigatedAway) {
+        navigatedAway = true;
+        host.teardown("The view left its document");
+        setGeneration((value) => value + 1);
+      }
+    };
+    iframe.addEventListener("load", onLoad);
     const onMessage = (event: MessageEvent) => {
-      if (event.source !== iframe.contentWindow) return;
+      if (navigatedAway || event.source !== iframe.contentWindow) return;
       host.receive(event.data);
     };
     window.addEventListener("message", onMessage);
@@ -95,13 +109,15 @@ export function McpAppFrame({ title, viewId, toolName, resource, toolInput, tool
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => {
       themeObserver.disconnect();
+      iframe.removeEventListener("load", onLoad);
       host.teardown();
       window.removeEventListener("message", onMessage);
     };
-  }, [srcDoc, viewId, toolName, toolInput, toolResult]);
+  }, [srcDoc, viewId, toolName, toolInput, toolResult, generation]);
 
   return (
     <iframe
+      key={generation}
       ref={iframeRef}
       title={title}
       srcDoc={srcDoc}
