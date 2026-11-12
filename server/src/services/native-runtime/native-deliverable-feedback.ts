@@ -99,6 +99,66 @@ async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts:
  * an output requirement or erase a user's request for a file.
  */
 export function explicitlyRequestsFileOutput(objective: string): boolean {
+  return deliverableLabelNamesFile(objective) || explicitlyRequestsFileOutputBySentence(objective);
+}
+
+function deliverableLabelNamesFile(objective: string): boolean {
+  const lines = objective.replaceAll("\\_", "_").split(/\r?\n/u);
+  const named = /(?:^|[\s(`'"*:])((?:\.{0,2}\/)?(?:[\w.-]+\/)*[^\s/()`'"*:,;]+\.(?:html?|css|md|txt|json|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip))\b/giu;
+  const repositoryChange = /\b(?:[Rr]epo(?:sitory)?|[Pp]ull [Rr]equest|PR|[Cc]ommit|[Bb]ranch)\b/u;
+  const inputReference = /\b(?:of|about|from|using|reading|comparing|between|no|without)\s+(?:(?:the|a|an|this|that)\s+)?[`'"*]*(?:[^\s,;]+[`'"*]*(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|vs\.?|versus)\s+)(?:(?:the|a|an|this|that)\s+)?[`'"*]*)*$/iu;
+  const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu;
+  const noFiles = /\b(?:(?:do not|don['’]t|never)\s+(?:create|make|write|save|produce)\s+(?:any\s+)?(?:new\s+)?files?|(?:no|without(?:\s+(?:any|creating(?:\s+any)?))?)\s+(?:new\s+)?files?)\b/iu;
+  const negated = /\b(?:do not|don['’]t|never|no need to)\s+(?:\w+\s+)?$/iu;
+  const forbiddenFile = /\b(?:do not|don['’]t|never|no need to)\s+(?:create|make|write|save|produce|generate|build|export|prepare|attach|upload|publish)\s+(?:(?:a|an|the|any|new|separate|extra|additional)\s+)*[`'"*]*$/iu;
+  const editedFile = /\b(?:update|edit|modify|fix|change|refactor|patch)\s+(?:(?:the|existing|current)\s+)*[`'"*]*$/iu;
+  const publicationVerb = /\b(?:publish|attach|export|upload|send|share|deliver|register)\b/giu;
+  const conjunction = /\b(?:and|plus|then|alongside|as well as|with)\b/giu;
+  const sameOutput = /^\s*(?:(?:its|their|the)\s+(?:full\s+)?(?:contents?|source|code|markup|text)|it|them)\s*$/iu;
+  const namesFile = (text: string) => {
+    const matches = [...text.matchAll(named)];
+    if (matches.length === 0 || noFiles.test(text) || repositoryChange.test(text.replace(named, " "))) return false;
+    const publishes = (name: string) => {
+      const object = new RegExp(`^\\s+(?:(?:it|them|both)\\b|(?:(?:the|a|an|updated|edited|new|final)\\s+)*(?:files?\\b|[\`'"*]*${name.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&")}))`, "iu");
+      return [...text.matchAll(publicationVerb)].some(verb => !negated.test(text.slice(0, verb.index))
+        && object.test(text.slice(verb.index! + verb[0].length)));
+    };
+    const ownsInline = (between: string) => {
+      const last = [...between.matchAll(conjunction)].at(-1);
+      const rest = between.slice(last ? last.index! + last[0].length : 0);
+      return !last || sameOutput.test(rest) || [...rest.matchAll(named)].length > 0;
+    };
+    return matches.some(match => {
+      const start = match.index! + match[0].indexOf(match[1]!);
+      const before = text.slice(0, start);
+      if (inputReference.test(before) || forbiddenFile.test(before)) return false;
+      if (editedFile.test(before) && !publishes(match[1]!)) return false;
+      const end = start + match[1]!.length;
+      const clauseStart = Math.max(text.lastIndexOf(",", start), text.lastIndexOf(";", start)) + 1;
+      const next = text.slice(end).search(/[,;]/u);
+      const clauseEnd = next < 0 ? text.length : end + next;
+      const after = inlineDestination.exec(text.slice(end, clauseEnd));
+      if (after && ownsInline(text.slice(end, end + after.index))) return false;
+      const lead = text.slice(clauseStart, start);
+      const leading = [...lead.matchAll(new RegExp(inlineDestination.source, "giu"))].at(-1);
+      return !(leading && ownsInline(lead.slice(leading.index! + leading[0].length)));
+    });
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const label = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?(?:requested\s+)?deliverables?(?:\*\*|__)?\s*(?::(?:\*\*|__)?\s*(.*)|(?:\*\*|__)?\s*)$/iu.exec(lines[index]!);
+    if (!label) continue;
+    if (namesFile(label[1] ?? "")) return true;
+    for (let item = index + 1; item < lines.length; item += 1) {
+      if (!lines[item]!.trim()) continue;
+      const bullet = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/u.exec(lines[item]!);
+      if (!bullet) break;
+      if (namesFile(bullet[1]!)) return true;
+    }
+  }
+  return false;
+}
+
+function explicitlyRequestsFileOutputBySentence(objective: string): boolean {
   const sentences = objective.replaceAll("\\_", "_").split(/(?:[.!?](?:\s|$)|\n)/iu);
   let precedingFileOutput = false;
   return sentences.some((sentence, index) => {
@@ -264,6 +324,20 @@ export async function publishedTaskDocuments(db: Db, binding: { companyId: strin
     href: `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueIdentifier ?? binding.issueId)}#document-${encodeURIComponent(key)}` }));
 }
 
+/** A parent that delegated a file to a child links the child's delivered file
+ * instead of publishing a copy, because native register_deliverable is bound to
+ * its current task. A completed direct child's attachment is a valid citation,
+ * but not this run's publication of a file that the parent itself requests.
+ */
+async function completedChildAttachment(db: Db, binding: { companyId: string; issueId: string; lockSources?: boolean }, id: string): Promise<boolean> {
+  const query = db.select({ id: issueAttachments.id }).from(issueAttachments)
+    .innerJoin(issues, and(eq(issues.id, issueAttachments.issueId), eq(issues.companyId, binding.companyId),
+      eq(issues.parentId, binding.issueId), eq(issues.status, "done")))
+    .where(and(eq(issueAttachments.id, id), eq(issueAttachments.companyId, binding.companyId))).limit(1);
+  const [attachment] = await (binding.lockSources ? query.for("share", { of: [issueAttachments, issues], noWait: true }) : query);
+  return attachment !== undefined;
+}
+
 /** Files cited as completed output must be reachable outside the agent workspace. */
 export async function validateNativeDeliverableEvidence(
   db: Db,
@@ -298,7 +372,8 @@ export async function validateNativeDeliverableEvidence(
       const [attachment] = uuid.test(id)
         ? await (binding.lockSources ? query.for("share", { of: [issueAttachments, assets], noWait: true }) : query) : [];
       if (!attachment) {
-        throw new NativeDeliverableEvidenceError("Completion cites no registered attachment on this task. Use register_deliverable for the requested file and cite deliverable:<attachmentId> from its receipt. No human completion approval was created.");
+        if (uuid.test(id) && await completedChildAttachment(db, binding, id)) continue;
+        throw new NativeDeliverableEvidenceError("Completion cites no registered attachment on this task or its completed child tasks. Use register_deliverable for the requested file and cite deliverable:<attachmentId> from its receipt. No human completion approval was created.");
       }
       // A prior output (or user input) can be useful context, but does not prove
       // this run published the newly requested output. The receipt survives a

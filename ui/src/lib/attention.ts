@@ -9,14 +9,14 @@ import type {
   AttentionSourceKind,
   AttentionWorkspaceRef,
 } from "@paperclipai/shared";
+import { formatCents } from "./utils";
 
 export type AttentionListOptions = AttentionFeedQuery;
 
 /**
  * Source kinds the queue can fully resolve in-row. Everything else deep-links
- * to its native surface — the state-derived sources (recovery, failures,
- * budget) expose verbs too rich to safely inline here, so they open their
- * surface.
+ * to its native surface — recovery, blockers and agent errors keep their
+ * verbs on their own pages, so they open that surface.
  *
  * `review` is inline *only when stalled* (PAP-16080 §4.4): a stalled review has
  * no interaction/approval/monitor to open, so the three review verbs
@@ -24,6 +24,10 @@ export type AttentionListOptions = AttentionFeedQuery;
  * `inlineResolvable` on for exactly those rows (`isInlineResolvable` still ANDs
  * that flag). A *covered* review keeps deep-linking, since its real action
  * lives on the issue (the pending card, a monitor, a live run).
+ *
+ * `failed_run` (Retry, when the run has a task) and `budget_alert` (Raise
+ * budget, Keep paused) are inline since PAP-749 Rule 7: the server offers only
+ * verbs that work, and the server flag still decides each row.
  */
 export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
   "approval",
@@ -31,6 +35,8 @@ export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = 
   "issue_thread_interaction",
   "join_request",
   "review",
+  "failed_run",
+  "budget_alert",
 ]);
 
 export function isInlineResolvable(item: AttentionItem): boolean {
@@ -240,7 +246,8 @@ export function attentionDetailLine(item: AttentionItem): string | null {
       return b.title ? `Blocked by ${id}${b.title}` : b.identifier ? `Blocked by ${b.identifier}` : null;
     }
     case "budget":
-      return `${Math.round(detail.observedPercent)}% of budget used ($${detail.amountObserved} / $${detail.amountLimit})`;
+      // Budget amounts are cents, like the Spend line of the budget card.
+      return `${Math.round(detail.observedPercent)}% of budget used (${formatCents(detail.amountObserved)} / ${formatCents(detail.amountLimit)})`;
     case "generic":
       return quote(detail.summaryExcerpt);
     default:
@@ -264,10 +271,9 @@ export function attentionImageUrl(assetId: string): string {
 }
 
 /**
- * The sidebar badge: distinct items that either surfaced today or carry an
- * explicit decide-by deadline that is due today/past. The server computes this
- * before pagination (`deskBadgeCount`), so badge polling can fetch a small
- * first page without losing the company-wide signal.
+ * The shared badge: current "For you" cards (PAP-749 plan §1, Rule 5). The
+ * server counts it before pagination (`deskBadgeCount`), so a small first page
+ * still carries the full count. It has no day boundary.
  */
 export function attentionBadgeCount(feed: AttentionFeed | null | undefined): number {
   return feed?.deskBadgeCount ?? 0;
@@ -282,11 +288,10 @@ export function attentionBadgeCount(feed: AttentionFeed | null | undefined): num
 //     is due today/past. No deadline set anywhere → no shelf, no claim.
 //   • "New today"   — decisions that surfaced today (arrival grouping).
 //   • "Earlier"     — everything else, older arrivals.
-// The server owns the authoritative decide-by ranking (`sort=decide`) and the
-// badge (`deskBadgeCount`); these client helpers mirror that logic *exactly*
-// (same UTC day boundaries) so the on-page split and the badge never disagree.
-// Keep in lockstep with `server/src/services/attention.ts`
-// (`decideOrder`/`isDecideNow`/`isNewToday`).
+// The server owns the authoritative decide-by ranking (`sort=decide`); these
+// client helpers mirror its UTC day boundaries exactly. Keep in lockstep with
+// `decideOrder` in `server/src/services/attention.ts`. The shelves only group
+// the desk; the badge counts "For you" cards and ignores the day (PAP-749).
 // ---------------------------------------------------------------------------
 
 const MS_PER_DAY_DECIDE = 24 * 60 * 60 * 1_000;

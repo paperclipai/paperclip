@@ -53,7 +53,7 @@ describe("MarkdownBody external object decoration", () => {
     const markdown = "[View saved recommendations](/TES/issues/TES-6#document-skill-recommendations&revision=reviewed-rev)";
     const html = render(markdown, undefined, true);
     expect(html).toContain('data-sidebar-document-link="true"');
-    expect(html).toContain('href="/issues/TES-6#document-skill-recommendations&amp;revision=reviewed-rev"');
+    expect(html).toContain('href="/TES/issues/TES-6#document-skill-recommendations&amp;revision=reviewed-rev"');
     expect(html).toContain("View saved recommendations");
     expect(html).not.toContain('data-mention-kind="issue"');
     expect(render(markdown)).not.toContain("data-sidebar-document-link");
@@ -75,7 +75,8 @@ describe("MarkdownBody external object decoration", () => {
 
   it("decorates a known URL with the external status icon and metadata attributes", () => {
     const html = render("Take a look: https://github.com/acme/web/pull/241", successReference);
-    expect(html).toContain('class="paperclip-markdown-external-ref"');
+    expect(html).toContain('data-link-state="merged"');
+    expect(html).toContain("lucide-git-merge");
     expect(html).toContain('data-external-link="resolved"');
     expect(html).toContain('data-external-status="succeeded"');
     expect(html).toContain('data-external-liveness="fresh"');

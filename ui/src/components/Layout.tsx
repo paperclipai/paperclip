@@ -1,6 +1,7 @@
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { CoordinatorChatReferencesProvider } from "./coordinator/CoordinatorChatReferences";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { useBrowserTimeZoneSync } from "@/hooks/useBrowserTimeZoneSync";
 import { useDesignSandbox } from "@/context/DesignSandboxContext";
 import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
 import { BoardDialogs } from "./BoardDialogs";
@@ -12,7 +13,7 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
-import { AppsSidebar } from "./AppsSidebar";
+import { AppsSidebar, AppsMobileNav } from "./AppsSidebar";
 import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { AgentContextualSidebar } from "./AgentContextualSidebar";
 import { RoutineContextualSidebar } from "./RoutineContextualSidebar";
@@ -123,7 +124,8 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const location = useLocation();
   const navigationType = useNavigationType();
   const { enabled: classicStreamlinedUiEnabled } = useStreamlinedUiEnabled();
-  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
+  const { enabled: coordinatorWorkspaceEnabled, userId: workspacePreferenceUserId } = useCoordinatorWorkspaceEnabled();
+  useBrowserTimeZoneSync(selectedCompanyId, workspacePreferenceUserId);
   const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
   const shellRoute = classifyShellRoute(location.pathname, companyPrefix);
   const isCompanySettingsRoute = shellRoute.builtInContextualSurface === "settings";
@@ -750,6 +752,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
+              {isMobile && isAppsRoute && (!companyPathSegments[1] || companyPathSegments[1] === "review") ? <AppsMobileNav /> : null}
               {hasUnknownCompanyPrefix ? (
                 <NotFoundPage
                   scope="invalid_company_prefix"
@@ -762,7 +765,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               )}
               </main>
             </div>
-            <PropertiesPanel taskDetailLayout={!isMobile && useStreamlinedTaskDetailShell} />
+            <PropertiesPanel taskDetailLayout={!isMobile && (useStreamlinedTaskDetailShell || (coordinatorWorkspaceEnabled && companyPathSegments[0]?.toLowerCase() === "decisions"))} />
           </div>
         </div>
       </div>

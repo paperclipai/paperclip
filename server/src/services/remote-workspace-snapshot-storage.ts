@@ -1,17 +1,20 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { isStorageUnavailableError, sendThroughStorageOutage, storageOutageWaitFor, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { measureRunPhase, type ExecutionPhase } from "./execution-preparation-timing.js";
+import { collectStorageRequestStats, newStorageRequestStats, type StorageRequestStats } from "../storage/request-stats.js";
 import { constants, createReadStream, createWriteStream } from "node:fs";
 import { link, lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { Transform } from "node:stream";
+import { pipeline as streamPipeline, Readable, Transform } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import type { StorageService } from "../storage/types.js";
-import { notifyRemoteWorkspaceSnapshots, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
+import { abortSnapshotAttemptUploads, notifyRemoteWorkspaceSnapshots, snapshotAttemptKeys, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
 import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 const SCHEMA = "paperclip.workspace-snapshot.v1";
@@ -102,16 +105,39 @@ export async function getWorkspaceSnapshot(db: Db, input: { companyId: string; w
   return row && ["uploaded", "committed", "superseded"].includes(row.status) ? reference(row) : null;
 }
 
-export async function recoverWorkspaceSnapshotArchive(input: {
+export async function findUnchangedWorkspaceSnapshot(input: {
+  db: Db; storage: StorageService; snapshot: SnapshotRow; manifestDigest: string; archiveSha256: string; archiveBytes: number;
+  timing?: WorkspaceSnapshotStorageTiming;
+}): Promise<WorkspaceSnapshotRef | null> {
+  return withRequestStats(input.timing, async () => {
+    const { snapshot } = input;
+    if (!snapshot.parentSnapshotId || snapshot.status !== "pending" || snapshot.objectKey !== null
+      || snapshot.sha256 !== null || snapshot.byteSize !== null || snapshot.key !== null || snapshot.manifestDigest !== null
+      || snapshot.metadata?.uploads !== undefined
+        && (!Array.isArray(snapshot.metadata.uploads) || snapshot.metadata.uploads.length !== 0)) return null;
+    const [parent] = await input.db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.companyId, snapshot.companyId),
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, snapshot.executionWorkspaceId),
+      eq(executionWorkspaceSnapshots.id, snapshot.parentSnapshotId),
+      eq(executionWorkspaceSnapshots.status, "committed"),
+      eq(executionWorkspaceSnapshots.manifestDigest, input.manifestDigest)));
+    if (!parent) return null;
+    const ref = reference(parent);
+    const key = await snapshotKey(ref);
+    if (key.plaintextSha256 !== input.archiveSha256 || key.plaintextBytes !== input.archiveBytes) return null;
+    const head = await input.storage.headObject(ref.companyId, ref.objectKey);
+    return head.exists && head.contentLength === ref.byteSize ? ref : null;
+  });
+}
+
+export async function recoverWorkspaceSnapshotUpload(input: {
   db: Db; storage: StorageService; snapshotId: string; companyId: string; workspaceId: string;
-  targetPath: string; signal?: AbortSignal;
+  signal?: AbortSignal;
 }): Promise<WorkspaceSnapshotRef | null> {
   const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
   if (!row) failure("missing");
   if (["uploaded", "committed", "superseded"].includes(row!.status)) {
-    const ref = reference(row!);
-    await loadWorkspaceSnapshotArchive({ ...input, reference: ref });
-    return ref;
+    return reference(row!);
   }
   if (row!.status !== "pending") failure("not_writable");
   const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
@@ -121,10 +147,50 @@ export async function recoverWorkspaceSnapshotArchive(input: {
       workspaceId: row!.executionWorkspaceId, generation: row!.generation };
     validateReference(ref);
     if (!(await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) continue;
-    await loadWorkspaceSnapshotArchive({ ...input, reference: ref });
     return ref;
   }
   return null;
+}
+
+export async function recoverWorkspaceSnapshotArchive(input: {
+  db: Db; storage: StorageService; snapshotId: string; companyId: string; workspaceId: string;
+  targetPath: string; signal?: AbortSignal;
+}): Promise<WorkspaceSnapshotRef | null> {
+  const ref = await recoverWorkspaceSnapshotUpload(input);
+  if (ref) await loadWorkspaceSnapshotArchive({ ...input, reference: ref });
+  return ref;
+}
+
+/**
+ * Where a workspace snapshot save or restore spends its time. Each step is
+ * also a `storage.snapshot.*` run phase, which reaches the run log when it runs
+ * inside run preparation (a restore before the turn). Durations in ms; counts
+ * only, no keys or paths.
+ */
+export type WorkspaceSnapshotStorageTiming = {
+  priorAttemptCheckMs?: number; encryptMs?: number; digestMs?: number; putMs?: number; verifyMs?: number;
+  downloadMs?: number; decryptMs?: number; plaintextVerifyMs?: number; publishMs?: number;
+  bytes?: number; requests: StorageRequestStats;
+};
+
+export function newWorkspaceSnapshotStorageTiming(): WorkspaceSnapshotStorageTiming {
+  return { requests: newStorageRequestStats() };
+}
+
+type TimedStep = "priorAttemptCheckMs" | "encryptMs" | "digestMs" | "putMs" | "verifyMs"
+  | "downloadMs" | "decryptMs" | "plaintextVerifyMs" | "publishMs";
+
+/** Runs one snapshot step as a run phase and adds its duration to `timing`. */
+async function timedStep<T>(timing: WorkspaceSnapshotStorageTiming | undefined, key: TimedStep, phase: ExecutionPhase,
+  work: () => Promise<T>): Promise<T> {
+  const started = performance.now();
+  try { return await measureRunPhase(phase, work); }
+  finally { if (timing) timing[key] = (timing[key] ?? 0) + Math.max(0, Math.round(performance.now() - started)); }
+}
+
+/** Collects the storage requests `work` sends into `timing`, when there is one. */
+function withRequestStats<T>(timing: WorkspaceSnapshotStorageTiming | undefined, work: () => Promise<T>): Promise<T> {
+  return timing ? collectStorageRequestStats(timing.requests, work) : work();
 }
 
 type WorkspaceSnapshotUpload = {
@@ -134,10 +200,19 @@ type WorkspaceSnapshotUpload = {
   // unpublished capture. A recoverable or concurrently published attempt wins,
   // and its returned manifest may differ from the new physical capture.
   unpublishedRecapture?: { sourceOperationId: string };
+  /** Receives per-step durations and storage request counts. */
+  timing?: WorkspaceSnapshotStorageTiming;
+  verification?: "readback" | "upload";
 };
 
 /** Upload attempts are journaled before remote I/O. The caller owns publication. */
 export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): Promise<WorkspaceSnapshotRef> {
+  return withRequestStats(input.timing, () => waitOutStorageOutages(() => storageOutageWaitFor("saving the workspace", () => uploadWorkspaceSnapshotTimed(input))));
+}
+
+async function uploadWorkspaceSnapshotTimed(input: WorkspaceSnapshotUpload): Promise<WorkspaceSnapshotRef> {
+  if (input.verification === "upload")
+    return uploadVerifiedWorkspaceSnapshot(input, assertWorkspaceSnapshotKeyReadable, { acceptServerVerifiedUpload: false });
   if (input.verifiedArchivePath === undefined)
     return uploadVerifiedWorkspaceSnapshot(input, ref => verifyObject(input.storage, ref, input.signal), { acceptServerVerifiedUpload: true });
   input.signal?.throwIfAborted();
@@ -190,13 +265,18 @@ export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): P
 
 async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, verify: (ref: WorkspaceSnapshotRef) => Promise<void>,
   options: { acceptServerVerifiedUpload: boolean }): Promise<WorkspaceSnapshotRef> {
+  // Reusing an earlier upload still reads it back: time that too.
+  const verifyTimed = async (ref: WorkspaceSnapshotRef) => {
+    if (input.timing) input.timing.bytes = ref.byteSize;
+    await timedStep(input.timing, "verifyMs", "storage.snapshot.verify", () => verify(ref));
+  };
   const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
   if (!row) failure("missing");
   if (input.unpublishedRecapture && row!.sourceOperationId !== input.unpublishedRecapture.sourceOperationId) failure("operation_binding_changed");
   if (["uploaded", "committed", "superseded"].includes(row!.status)) {
     const saved = reference(row!);
     if (saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
-    await verify(saved); return saved;
+    await verifyTimed(saved); return saved;
   }
   if (row!.status !== "pending" || !/^[a-f0-9]{64}$/.test(input.manifestDigest)) failure("not_writable");
   const recapture = Boolean(input.unpublishedRecapture);
@@ -216,8 +296,9 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     const winning = updated ?? (await input.db.select().from(executionWorkspaceSnapshots).where(scope(input)))[0];
     if (!winning || !["uploaded", "committed", "superseded"].includes(winning.status)) failure("publication_changed");
     const saved = reference(winning!);
+    if (updated) await abortSnapshotAttemptUploads(input.storage, saved.companyId, snapshotAttemptKeys(updated));
     if (!recapture && saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
-    if (saved.objectKey !== attempt.objectKey) await verify(saved);
+    if (saved.objectKey !== attempt.objectKey) await verifyTimed(saved);
     return saved;
   };
   // Recover a completed upload even when the previous process lost its reply
@@ -229,36 +310,45 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
       const ref = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
       validateReference(ref);
       if ((await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) {
-        await verify(ref); return attempt;
+        await verifyTimed(ref); return attempt;
       }
     }
     return null;
   };
   const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
-  const available = await availableAttempt(attempts);
+  const available = await timedStep(input.timing, "priorAttemptCheckMs", "storage.snapshot.prior_attempts", () => availableAttempt(attempts));
   if (available) return publish(available);
   const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-encrypt-"));
   try {
     const encrypted = path.join(scratch, "archive.encrypted"), dataKey = randomBytes(32), iv = randomBytes(12);
+    const ciphertextDigest = createHash("sha256"), prefix = Buffer.concat([MAGIC, iv]);
+    let ciphertextBytes = prefix.length;
+    ciphertextDigest.update(prefix);
     const cipher = createCipheriv("aes-256-gcm", dataKey, iv); cipher.setAAD(aad(identity));
     const header = await open(encrypted, "wx", 0o600);
-    try { await header.writeFile(Buffer.concat([MAGIC, iv])); } finally { await header.close(); }
+    try { await header.writeFile(prefix); } finally { await header.close(); }
     // One read of the archive both digests and encrypts it. An unchanged file
     // identity across that read replaces the separate digest pass.
     const before = await lstat(input.archivePath);
     const incomingDigest = createHash("sha256"); let incomingBytes = 0;
     const observed = new Transform({ transform(bytes, _encoding, callback) { incomingDigest.update(bytes); incomingBytes += bytes.length; callback(null, bytes); } });
-    await pipeline(createReadStream(input.archivePath, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), observed, cipher, createWriteStream(encrypted, { flags: "a", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
+    const encryptedDigest = new Transform({ transform(bytes, _encoding, callback) {
+      ciphertextDigest.update(bytes); ciphertextBytes += bytes.length; callback(null, bytes);
+    } });
+    await timedStep(input.timing, "encryptMs", "storage.snapshot.encrypt", () => pipeline(createReadStream(input.archivePath, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), observed, cipher, encryptedDigest, createWriteStream(encrypted, { flags: "a", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal }));
     const after = await lstat(input.archivePath);
     if (!before.isFile() || before.isSymbolicLink() || incomingBytes !== before.size || after.dev !== before.dev || after.ino !== before.ino
       || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) failure("archive_changed");
     const plaintext = { sha256: incomingDigest.digest("hex"), byteSize: incomingBytes };
-    const footer = await open(encrypted, "a"); try { await footer.writeFile(cipher.getAuthTag()); } finally { await footer.close(); }
+    const tag = cipher.getAuthTag(); ciphertextDigest.update(tag); ciphertextBytes += tag.length;
+    const footer = await open(encrypted, "a"); try { await footer.writeFile(tag); } finally { await footer.close(); }
     const { material } = await localEncryptedProvider.createVersion({ value: JSON.stringify({ schema: KEY_SCHEMA,
       ...identity, dataKey: dataKey.toString("base64"), plaintextSha256: plaintext.sha256, plaintextBytes: plaintext.byteSize }) });
     dataKey.fill(0);
-    // Digest the encrypted file as stored: upload parts are read from these bytes.
-    const content = await digestFile(encrypted, input.signal);
+    const content = await timedStep(input.timing, "digestMs", "storage.snapshot.digest", async () => ({
+      sha256: ciphertextDigest.digest("hex"), byteSize: ciphertextBytes,
+    }));
+    if (input.timing) input.timing.bytes = content.byteSize;
     const attempt: UploadAttempt = { objectKey: `${identity.companyId}/workspace-snapshots/${identity.workspaceId}/${identity.id}/${randomUUID()}.pcws`,
       ...content, key: material, manifestDigest: input.manifestDigest };
     // Recheck after encryption, then bind admission to the unchanged ledger.
@@ -283,19 +373,28 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     if (!recorded) {
       const saved = await getWorkspaceSnapshot(input.db, input);
       if (!saved || (!recapture && saved.manifestDigest !== input.manifestDigest)) failure("publication_changed");
-      await verify(saved); return saved;
+      await verifyTimed(saved); return saved;
     }
     // The object key is unique per attempt, so a late losing uploader cannot
     // overwrite an object already used by a committed generation.
-    const stored = await input.storage.putFile({ companyId: identity.companyId, namespace: "workspace-snapshots", objectKey: attempt.objectKey,
-      originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
-      byteSize: attempt.byteSize, sha256: attempt.sha256, sourceFile: encrypted, signal: input.signal });
+    let stored: Awaited<ReturnType<StorageService["putFile"]>>;
+    try {
+      stored = await timedStep(input.timing, "putMs", "storage.snapshot.put", () => input.storage.putFile({ companyId: identity.companyId, namespace: "workspace-snapshots", objectKey: attempt.objectKey,
+        originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
+        byteSize: attempt.byteSize, sha256: attempt.sha256, sourceFile: encrypted, signal: input.signal }));
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      const saved = await getWorkspaceSnapshot(input.db, input);
+      if (!saved || (!recapture && saved.manifestDigest !== input.manifestDigest)) throw error;
+      await verifyTimed(saved); return saved;
+    }
     const uploaded = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
     // The backend checked every part of this upload against digests of these
     // exact bytes, so only its size needs confirming. Any other provider, and
     // a caller that needs the bytes back, still reads the object back.
-    if (options.acceptServerVerifiedUpload && stored.integrity === "server_verified_md5") await verifyStoredSize(input.storage, uploaded, input.signal);
-    else await verify(uploaded);
+    await timedStep(input.timing, "verifyMs", "storage.snapshot.verify", () =>
+      options.acceptServerVerifiedUpload && stored.integrity === "server_verified_md5"
+        ? verifyStoredSize(input.storage, uploaded, input.signal) : verify(uploaded));
     if (recapture) {
       const recovered = await availableAttempt(attempts);
       if (recovered) return publish(recovered);
@@ -313,33 +412,53 @@ async function snapshotKey(ref: WorkspaceSnapshotRef) {
   return wrapped;
 }
 
+export async function assertWorkspaceSnapshotKeyReadable(reference: WorkspaceSnapshotRef): Promise<void> {
+  await snapshotKey(reference);
+}
+
 /** Authentication finishes in private scratch before any plaintext is published. */
 export async function loadWorkspaceSnapshotArchive(input: {
   storage: StorageService; reference: WorkspaceSnapshotRef; targetPath: string; signal?: AbortSignal; temporaryParent?: string;
+  /** Receives per-step durations and storage request counts. */
+  timing?: WorkspaceSnapshotStorageTiming;
 }): Promise<void> {
+  return withRequestStats(input.timing, () => waitOutStorageOutages(() => storageOutageWaitFor("restoring the workspace", () => loadWorkspaceSnapshotArchiveTimed(input))));
+}
+
+async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWorkspaceSnapshotArchive>[0]): Promise<void> {
   input.signal?.throwIfAborted();
   const ref = input.reference, wrapped = await snapshotKey(ref);
   const scratch = await mkdtemp(path.join(input.temporaryParent ?? os.tmpdir(), "pc-workspace-decrypt-"));
   try {
     input.signal?.throwIfAborted();
     const ciphertext = path.join(scratch, "ciphertext"), plaintext = path.join(scratch, "plaintext");
-    let received = 0; const digest = createHash("sha256");
+    let received = 0, digest = createHash("sha256");
     const stalled = new DOMException("remote_workspace_snapshot_download_stalled", "TimeoutError");
     const idle = new AbortController();
     const signal = input.signal ? AbortSignal.any([input.signal, idle.signal]) : idle.signal;
     const timer = setTimeout(() => idle.abort(stalled), DOWNLOAD_IDLE_TIMEOUT_MS);
     timer.unref();
     try {
-      const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal });
-      const bounded = new Transform({ transform(bytes, _encoding, callback) {
-        if (bytes.length > 0) timer.refresh();
-        received += bytes.length; digest.update(bytes);
-        callback(received > ref.byteSize ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
-      } });
-      try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal }); }
-      finally { object.stream.destroy(); }
+      let attempts = 0;
+      await timedStep(input.timing, "downloadMs", "storage.snapshot.download", () => sendThroughStorageOutage(async () => {
+        if (attempts++ > 0) {
+          timer.refresh();
+          received = 0; digest = createHash("sha256");
+          await rm(ciphertext, { force: true });
+        }
+        const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal });
+        const bounded = new Transform({ transform(bytes, _encoding, callback) {
+          if (bytes.length > 0) timer.refresh();
+          received += bytes.length; digest.update(bytes);
+          callback(received > ref.byteSize ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
+        } });
+        try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal }); }
+        finally { object.stream.destroy(); }
+      }, signal));
+      if (input.timing) input.timing.bytes = received;
     } catch (error) {
-      if (signal.aborted && signal.reason === stalled) throw stalled;
+      if (signal.aborted && signal.reason === stalled) throw isStorageUnavailableError(error)
+        ? Object.assign(new DOMException(stalled.message, stalled.name), { cause: error }) : stalled;
       throw error;
     } finally { clearTimeout(timer); }
     if (received !== ref.byteSize || digest.digest("hex") !== ref.sha256) failure("object_hash_mismatch");
@@ -350,17 +469,114 @@ export async function loadWorkspaceSnapshotArchive(input: {
     const decipher = createDecipheriv("aes-256-gcm", key, header.subarray(MAGIC.length));
     decipher.setAAD(aad(ref)); decipher.setAuthTag(tag);
     try {
-      await pipeline(createReadStream(ciphertext, { start: header.length, end: ref.byteSize - tag.length - 1, signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
-        decipher, createWriteStream(plaintext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
+      await timedStep(input.timing, "decryptMs", "storage.snapshot.decrypt", () => pipeline(createReadStream(ciphertext, { start: header.length, end: ref.byteSize - tag.length - 1, signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
+        decipher, createWriteStream(plaintext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal }));
     } finally { key.fill(0); }
-    const actual = await digestFile(plaintext, input.signal);
+    const actual = await timedStep(input.timing, "plaintextVerifyMs", "storage.snapshot.verify_plaintext", () => digestFile(plaintext, input.signal));
     if (actual.sha256 !== wrapped.plaintextSha256 || actual.byteSize !== wrapped.plaintextBytes) failure("plaintext_hash_mismatch");
     // Publish a complete file without replacing an existing destination. A
     // failed/cancelled relay cannot leave a plaintext cache that looks complete.
     const staged = path.join(path.dirname(input.targetPath), `.workspace-snapshot-${randomUUID()}.tmp`);
     try {
-      await pipeline(createReadStream(plaintext, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), createWriteStream(staged, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
-      input.signal?.throwIfAborted(); await link(staged, input.targetPath);
+      await timedStep(input.timing, "publishMs", "storage.snapshot.publish", async () => {
+        await pipeline(createReadStream(plaintext, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), createWriteStream(staged, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
+        input.signal?.throwIfAborted(); await link(staged, input.targetPath);
+      });
     } finally { await rm(staged, { force: true }); }
   } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
+const GCM_HEADER_BYTES = MAGIC.length + 12;
+const GCM_TAG_BYTES = 16;
+const CTR_BLOCK_BYTES = 16;
+const GCM_MAX_PLAINTEXT_BYTES = (2 ** 32 - 2) * CTR_BLOCK_BYTES;
+
+export interface WorkspaceSnapshotRanges {
+  plaintextBytes: number;
+  plaintextSha256: string;
+  read(start: number, length: number, signal?: AbortSignal): Promise<Readable>;
+  close(): void;
+}
+
+export async function openWorkspaceSnapshotRanges(input: {
+  storage: StorageService; reference: WorkspaceSnapshotRef; signal?: AbortSignal; idleTimeoutMs?: number;
+}): Promise<WorkspaceSnapshotRanges> {
+  input.signal?.throwIfAborted();
+  const idleTimeoutMs = input.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
+  const ref = input.reference, wrapped = await snapshotKey(ref);
+  if (ref.byteSize !== GCM_HEADER_BYTES + wrapped.plaintextBytes + GCM_TAG_BYTES
+    || wrapped.plaintextBytes > GCM_MAX_PLAINTEXT_BYTES) failure("object_size_mismatch");
+  const header = Buffer.concat(await collect(await openObjectRange(input.storage, ref, 0, GCM_HEADER_BYTES, idleTimeoutMs, input.signal),
+    GCM_HEADER_BYTES));
+  if (header.length !== GCM_HEADER_BYTES) failure("range_truncated");
+  if (!header.subarray(0, MAGIC.length).equals(MAGIC)) failure("ciphertext_header_invalid");
+  const iv = header.subarray(MAGIC.length);
+  const key = Buffer.from(wrapped.dataKey, "base64");
+  if (key.length !== 32) { key.fill(0); failure("key_invalid"); }
+  let closed = false;
+  return {
+    plaintextBytes: wrapped.plaintextBytes,
+    plaintextSha256: wrapped.plaintextSha256,
+    async read(start, length, signal) {
+      if (closed) failure("ranges_closed");
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) || start < 0 || length < 0
+        || start + length > wrapped.plaintextBytes) failure("range_invalid");
+      if (length === 0) return Readable.from([]);
+      const block = Math.floor(start / CTR_BLOCK_BYTES), skip = start - block * CTR_BLOCK_BYTES;
+      const counter = Buffer.alloc(16); iv.copy(counter, 0); counter.writeUInt32BE(2 + block, 12);
+      const ciphertext = await openObjectRange(input.storage, ref, GCM_HEADER_BYTES + block * CTR_BLOCK_BYTES,
+        skip + length, idleTimeoutMs, signal);
+      let skipped = 0, emitted = 0;
+      const bounded = new Transform({ transform(bytes: Buffer, _encoding, callback) {
+        let part = bytes;
+        if (skipped < skip) { const drop = Math.min(skip - skipped, part.length); skipped += drop; part = part.subarray(drop); }
+        const room = length - emitted;
+        if (part.length > room) part = part.subarray(0, room);
+        emitted += part.length;
+        callback(null, part.length ? part : undefined);
+      }, flush(callback) { callback(emitted === length ? null : new Error("remote_workspace_snapshot_range_truncated")); } });
+      return streamPipeline(ciphertext, createDecipheriv("aes-256-ctr", key, counter), bounded, () => undefined);
+    },
+    close() { closed = true; key.fill(0); },
+  };
+}
+
+async function openObjectRange(storage: StorageService, ref: WorkspaceSnapshotRef, start: number, length: number,
+  idleTimeoutMs: number, signal?: AbortSignal): Promise<Readable> {
+  const stalled = new Error("remote_workspace_snapshot_download_stalled");
+  const idle = new AbortController();
+  let timer = setTimeout(() => idle.abort(stalled), idleTimeoutMs);
+  timer.unref();
+  const combined = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
+  let object: Awaited<ReturnType<StorageService["getObject"]>>;
+  try {
+    object = await sendThroughStorageOutage(() => storage.getObject(ref.companyId, ref.objectKey, {
+      range: { start, end: start + length - 1 }, signal: combined }), combined);
+  } catch (error) { clearTimeout(timer); throw idle.signal.aborted ? stalled : error; }
+  let received = 0;
+  const guard = new Transform({ transform(bytes: Buffer, _encoding, callback) {
+    timer.refresh();
+    received += bytes.length;
+    callback(received > length ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
+  } });
+  const output = streamPipeline(object.stream, guard, () => clearTimeout(timer));
+  clearTimeout(timer);
+  timer = setTimeout(() => output.destroy(stalled), idleTimeoutMs);
+  timer.unref();
+  output.once("close", () => clearTimeout(timer));
+  return output;
+}
+
+async function collect(stream: Readable, limit: number): Promise<Buffer[]> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  try {
+    for await (const chunk of stream) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += bytes.length;
+      if (size > limit) failure("object_size_mismatch");
+      chunks.push(bytes);
+    }
+  } finally { stream.destroy(); }
+  return chunks;
 }

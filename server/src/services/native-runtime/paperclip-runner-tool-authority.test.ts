@@ -194,11 +194,16 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(53);
+    expect(authority.definitions()).toHaveLength(54);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
       "search_skills", "load_skill",
     ]));
+    // The read-only response export is its own tool, so call_api offers no save flag on writes.
+    const save = authority.definitions().find(tool => tool.name === "save_api_response")!;
+    expect(Object.keys((save.inputSchema as { properties: object }).properties).sort()).toEqual(["operationId", "pathParams", "query"]);
+    const callApi = authority.definitions().find(tool => tool.name === "call_api")!;
+    expect((callApi.inputSchema as { properties: object }).properties).not.toHaveProperty("saveResponse");
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
     expect(questions.description).toContain("Never fabricate answers");
@@ -1312,6 +1317,72 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: { ...call.arguments, body: "Conflicting retry." },
       }),
     ).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
+  });
+
+  it("settles a write_document a restart orphaned from its transactional receipt, applying it at most once", async () => {
+    // A restart can cut a write_document callback after the runner journaled
+    // its input but before any result was saved. The revision and its receipt
+    // commit in one transaction, so recovery can prove which side it is on.
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const notApplied = {
+      tool: "write_document",
+      callId: "orphaned-write-not-applied",
+      arguments: { idempotencyKey: "orphaned-write-not-applied", key: "orphan-brief", title: "Brief",
+        body: "Recovered once.", baseRevisionId: null, changeSummary: "Initial brief" },
+    };
+    // No receipt: the write provably never applied. Recovery applies it once.
+    const recovered = await authority.recover(notApplied);
+    expect(recovered).toMatchObject({ result: { disposition: "applied", created: true, document: { key: "orphan-brief" } } });
+    expect(recovered?.isError).not.toBe(true);
+    const applied = await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief");
+    expect(applied).toMatchObject({ body: "Recovered once.", latestRevisionNumber: 1 });
+    // A second recovery, and the original callback arriving late, both replay
+    // the receipt instead of writing again.
+    expect(await authority.recover(notApplied)).toEqual(recovered);
+    expect(await authority.execute(notApplied)).toEqual(recovered!.result);
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ latestRevisionNumber: 1 });
+
+    // Receipt present: the write applied before the restart. Recovery returns
+    // the saved result and writes nothing.
+    const update = {
+      tool: "write_document",
+      callId: "orphaned-write-applied",
+      arguments: { idempotencyKey: "orphaned-write-applied", key: "orphan-brief", title: "Brief",
+        body: "Second revision.", baseRevisionId: applied!.latestRevisionId, changeSummary: "Update" },
+    };
+    const original = await authority.execute(update);
+    expect(await authority.recover(update)).toEqual({ result: original });
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ body: "Second revision.", latestRevisionNumber: 2 });
+
+    // A write whose base moved on cannot apply. Recovery reports the definite
+    // conflict as a tool error and changes nothing.
+    const stale = {
+      tool: "write_document",
+      callId: "orphaned-write-stale",
+      arguments: { idempotencyKey: "orphaned-write-stale", key: "orphan-brief", title: "Brief",
+        body: "Stale.", baseRevisionId: applied!.latestRevisionId, changeSummary: "Stale" },
+    };
+    // A task switched to ask mode refuses a write that never applied, while
+    // a write that did apply still replays its receipt.
+    await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issueId));
+    try {
+      const askMode = await authority.recover({ ...notApplied, callId: "orphaned-write-ask",
+        arguments: { ...notApplied.arguments, idempotencyKey: "orphaned-write-ask", key: "orphan-ask" } });
+      expect(JSON.stringify(askMode)).toContain("paperclip_runner_tool_mode_denied");
+      expect(askMode).toMatchObject({ isError: true });
+      expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-ask")).toBeNull();
+      expect(await authority.recover(update)).toEqual({ result: original });
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+
+    const conflict = await authority.recover(stale);
+    expect(conflict).toMatchObject({ isError: true, result: { success: false } });
+    expect(JSON.stringify(conflict)).toContain("Document was updated by someone else");
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ body: "Second revision.", latestRevisionNumber: 2 });
   });
 
   it("returns the exact accepted plan revision in task context", async () => {

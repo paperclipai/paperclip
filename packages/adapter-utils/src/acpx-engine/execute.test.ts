@@ -59,6 +59,7 @@ import {
   runWithRuntimeParent,
   SANDBOX_STARTUP_SPAN_ATTRS,
 } from "./startup-timing.js";
+import type { AcpxAgentSpawnHooks } from "./stock-runtime-options.js";
 
 
 const tempRoots: string[] = [];
@@ -415,8 +416,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(turnInputs[0]).toMatchObject({
       handle: { backendSessionId: "backend-session", agentSessionId: "agent-session", runtimeSessionName: "runtime-session" },
       text: meta[0]?.prompt, mode: "prompt", requestId: "run-1", timeoutMs: 120_000,
-      onTerminalSessionFailure: expect.any(Function),
     });
+    // Typed failures arrive on the turn result `_meta`, not through an ACPX callback.
+    expect(turnInputs[0]).not.toHaveProperty("onTerminalSessionFailure");
     expect(meta[0]?.prompt).toBeTypeOf("string");
     expect(turnInputs[0]?.text).toBeTypeOf("string");
     expect((meta[0]?.prompt as string).length).toBeGreaterThan(0);
@@ -971,7 +973,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(String(reset.meta[0]?.prompt)).toContain(custom ? "Custom agent instructions." : "You are agent agent-1");
     const ordinary = await runExecutor({ ...config, promptTemplate: "" }, { context: { ...context, conversationMode: false } });
     expect(String(ordinary.meta[0]?.prompt)).not.toContain("Execution contract:");
-    expect(String(ordinary.meta[0]?.prompt)).toContain("Create child issues from the approved plan");
+    expect(String(ordinary.meta[0]?.prompt)).toContain("Implement the accepted plan on this issue.");
   });
 
   it("uses only the guarded external-chat contract for a default ACPX prompt", async () => {
@@ -2818,10 +2820,35 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(second)).toBe(fp(first));
   });
 
+  it("launches the agent with exactly this run's prepared environment and blocks the host Grok key", async () => {
+    const root = await makeTempRoot();
+    let runtimeOptions: (AcpRuntimeOptions & AcpxAgentSpawnHooks) | undefined;
+    let sessionEnvironment: Record<string, string> | undefined;
+    const execute = createAcpxEngineExecutor({
+      createRuntime: (options) => {
+        runtimeOptions = options;
+        const runtime = buildRuntime() as { ensureSession: (input: { sessionOptions?: { env?: Record<string, string> } }) => Promise<unknown> };
+        const ensure = runtime.ensureSession;
+        runtime.ensureSession = async (input) => { sessionEnvironment = input.sessionOptions?.env; return await ensure(input); };
+        return runtime as never;
+      },
+    });
+    const result = await execute({
+      runId: "run-environment", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd: root },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+    expect(runtimeOptions).not.toHaveProperty("spawnEnvironment");
+    expect(runtimeOptions?.agentProcessEnvBlock).toEqual(["XAI_API_KEY"]);
+    expect(sessionEnvironment).toBeDefined();
+    expect(runtimeOptions?.agentEnvironment?.()).toEqual(sessionEnvironment);
+  });
+
   it("routes child stderr in-process while keeping the unfiltered run log", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let runtimeOptions: (AcpRuntimeOptions & AcpxAgentSpawnHooks) | undefined;
     const execute = createAcpxEngineExecutor({
       createRuntime: (options) => {
         runtimeOptions = options;
@@ -2862,7 +2889,7 @@ describe("shared ACPX engine runtime behavior", () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const warmHandles = new Map();
-    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let runtimeOptions: (AcpRuntimeOptions & AcpxAgentSpawnHooks) | undefined;
     const execute = createAcpxEngineExecutor({
       warmHandles,
       createRuntime: (options) => {
@@ -3530,10 +3557,14 @@ describe("ACP activity diagnostics", () => {
     await fs.mkdir(cwd, { recursive: true });
     const execute = createAcpxEngineExecutor({
       classifyTerminalSessionFailure: () => ({ errorCode: "claude_transient_upstream", errorFamily: "transient_upstream" }),
-      createRuntime: () => ({ ...buildRuntime(), startTurn: (options: { onTerminalSessionFailure: (failure: unknown) => void }) => {
-        options.onTerminalSessionFailure({ category: "service", details: "API Error: 400 tools.17.custom.name: String should have at most 128 characters" });
-        return { events: (async function* () {})(), result: Promise.resolve({ status: "failed", error: new Error("turn failed") }), cancel: async () => {} };
-      } }) as never,
+      createRuntime: (options: { clientCapabilities?: unknown }) => {
+        expect(options.clientCapabilities).toEqual({ _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } });
+        // The agent reports the failure on its prompt response; ACP's stop reason stays normal.
+        return { ...buildRuntime(), startTurn: () => ({ events: (async function* () {})(), cancel: async () => {},
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn", _meta: { jetbrains: { air: { version: 1, sessionFailure: {
+            severity: "error", category: "service", details: "API Error: 400 tools.17.custom.name: String should have at most 128 characters",
+          } } } } }) }) } as never;
+      },
     });
     const result = await execute({ runId: "invalid-definition", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
       config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd, env: { SECRET: "128" } },
@@ -6739,7 +6770,7 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     const root = await makeTempRoot();
     const warmHandles = new Map();
     const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
-    let runtimeOptions: AcpRuntimeOptions;
+    let runtimeOptions: AcpRuntimeOptions & AcpxAgentSpawnHooks;
     const runtime = buildRuntime(undefined, () => {
       // Exercise the real engine spawn observer, including a second launch in
       // the same ensure call. A session ID cannot hide either startup cost.

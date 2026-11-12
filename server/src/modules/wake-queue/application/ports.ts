@@ -165,6 +165,12 @@ export interface WakeQueueTransaction {
     reason: string | null;
     releasePolicy: unknown;
   }>;
+  /**
+   * Whether the wake carries a person's saved answer to an interaction on this task that no run has received yet and
+   * that was saved before the task was completed. Such an answer is owed input, like the person's own queued message.
+   * "deliver" when the task can run now; "blocked" when unresolved blockers keep it from in_progress; null otherwise.
+   */
+  owedInteractionAnswer(input: { companyId: string; issueId: string; payload: Record<string, unknown> }): Promise<"deliver" | "blocked" | null>;
   getCommentSelfAuthorship(input: {
     companyId: string;
     issueId: string;
@@ -179,7 +185,20 @@ export interface WakeQueueTransaction {
     wakeAgentId: string;
     commentIds: string[];
   }): Promise<boolean>;
-  reopenIssue(input: { companyId: string; issueId: string; runId: string }): Promise<IssueSnapshot | null>;
+  /**
+   * True when every comment was posted by the agent watching the task (its
+   * creator or its parent's assignee) while the finishing run was active. That
+   * agent receives the completed result and can follow up; its comment does
+   * not need to reopen the task the run just closed.
+   */
+  isWatcherCommentDuringFinishingRun(input: {
+    companyId: string;
+    issueId: string;
+    finishingRunId: string;
+    commentIds: string[];
+  }): Promise<boolean>;
+  /** Reopens to todo, or straight to in_progress for an owed answer, which continues the assignee's own execution. */
+  reopenIssue(input: { companyId: string; issueId: string; runId: string; status?: "todo" | "in_progress" }): Promise<IssueSnapshot | null>;
   /** Verifies a Done onboarding parent's completion wake against its own completed children. */
   isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
     reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
