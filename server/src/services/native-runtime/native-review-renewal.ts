@@ -5,10 +5,12 @@ import { enqueueTerminalIssueInteractionChatPublications } from "../chat-interac
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { persistActivity, type ActivityPublication } from "../activity-log.js";
 import type { NativeStatusDecision, NativeStatusEffect } from "./status-arbiter.js";
+import { isUuidLike } from "@paperclipai/shared";
 
 export async function hasPendingNativeReviewSiblings(db: Db, input: {
   companyId: string; issueId: string; interactionId: string; agentId: string;
 }) {
+  if (!isUuidLike(input.interactionId)) return false;
   const [row] = await db.select({ interaction: issueThreadInteractions }).from(issueThreadInteractions)
     .innerJoin(issues, and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), eq(issues.assigneeAgentId, input.agentId)))
     .where(and(

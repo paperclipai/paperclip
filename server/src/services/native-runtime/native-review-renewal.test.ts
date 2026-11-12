@@ -25,11 +25,15 @@ function database(results: unknown[][]): Db {
 
 describe("native completion review renewal", () => {
   it("holds partial acceptance but lets the last reviewer resume the owner", async () => {
-    const accepted = { ...card, status: "accepted" };
+    const accepted = { ...card, id: "11111111-1111-4111-8111-111111111111", status: "accepted" };
     const scope = { companyId: "company", issueId: "issue", agentId: "owner", interactionId: accepted.id };
     expect(await hasPendingNativeReviewSiblings(database([[{ interaction: accepted }], [{ id: "other" }]]), scope)).toBe(true);
     expect(await hasPendingNativeReviewSiblings(database([[{ interaction: accepted }], []]), scope)).toBe(false);
     expect(await hasPendingNativeReviewSiblings(database([[]]), scope)).toBe(false);
+  });
+  it("does not query UUID columns for synthetic recovery interaction identifiers", async () => {
+    const db = { select: () => { throw new Error("unexpected database access"); } } as unknown as Db;
+    expect(await hasPendingNativeReviewSiblings(db, { companyId: "company", issueId: "issue", agentId: "owner", interactionId: "superseded-confirmation" })).toBe(false);
   });
   it("requests all reviewers again, including a previously accepted verdict", async () => {
     const accepted = { ...card, id: "accepted", status: "accepted", addresseeAgentId: "first-reviewer" };

@@ -2868,7 +2868,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
     const resolvedReviewId = readNonEmptyString(enrichedContextSnapshot.interactionId) ?? readNonEmptyString(payload?.interactionId);
-    if (issueId && resolvedReviewId && await hasPendingNativeReviewSiblings(db, {
+    if (issueId && isUuidLike(issueId) && resolvedReviewId && await hasPendingNativeReviewSiblings(db, {
       companyId: agent.companyId, issueId, agentId: agent.id, interactionId: resolvedReviewId,
     })) return null;
     const effectiveTaskKey =
