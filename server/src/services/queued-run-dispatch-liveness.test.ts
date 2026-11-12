@@ -15,13 +15,13 @@ describe("queued run re-drive schedule", () => {
     let now = 1_000_000;
     const schedule = createQueuedRunRedriveSchedule(() => now);
     const queued = [run("a", "company-a", now)];
-    expect(schedule.plan(queued)).toEqual({ companyIds: [], nextAt: now + QUEUED_RUN_REDRIVE_AFTER_MS });
+    expect(schedule.refresh("all", queued)).toEqual({ companyIds: [], nextAt: now + QUEUED_RUN_REDRIVE_AFTER_MS });
 
     const intervals: number[] = [];
     now += QUEUED_RUN_REDRIVE_AFTER_MS;
     for (let attempt = 0; attempt < 8; attempt++) {
-      expect(schedule.plan(queued)).toEqual({ companyIds: ["company-a"], nextAt: now + QUEUED_RUN_REDRIVE_DELAY_MS });
-      const waiting = schedule.plan(queued);
+      expect(schedule.refresh("all", queued)).toEqual({ companyIds: ["company-a"], nextAt: now + QUEUED_RUN_REDRIVE_DELAY_MS });
+      const waiting = schedule.refresh("all", queued);
       expect(waiting.companyIds).toEqual([]);
       intervals.push(waiting.nextAt! - now);
       now = waiting.nextAt!;
@@ -34,9 +34,19 @@ describe("queued run re-drive schedule", () => {
     let now = 5_000_000;
     const schedule = createQueuedRunRedriveSchedule(() => now);
     const stale = run("stale", "company-b", now - 10 * QUEUED_RUN_REDRIVE_AFTER_MS);
-    expect(schedule.plan([stale])).toEqual({ companyIds: ["company-b"], nextAt: now + QUEUED_RUN_REDRIVE_DELAY_MS });
-    expect(schedule.plan([])).toEqual({ companyIds: [], nextAt: null });
+    expect(schedule.refresh("all", [stale])).toEqual({ companyIds: ["company-b"], nextAt: now + QUEUED_RUN_REDRIVE_DELAY_MS });
+    expect(schedule.refresh("all", [])).toEqual({ companyIds: [], nextAt: null });
     now += 1;
-    expect(schedule.plan([stale])).toEqual({ companyIds: ["company-b"], nextAt: now + QUEUED_RUN_REDRIVE_DELAY_MS });
+    expect(schedule.refresh("all", [stale])).toEqual({ companyIds: ["company-b"], nextAt: now + QUEUED_RUN_REDRIVE_DELAY_MS });
+  });
+
+  it("refreshes only the companies a pass read and keeps every other company's runs due", () => {
+    const now = 9_000_000;
+    const schedule = createQueuedRunRedriveSchedule(() => now);
+    const held = run("held", "company-held", now - 30_000);
+    const stranded = run("stranded", "company-stranded", now - 30_000);
+    expect(schedule.refresh("all", [held, stranded]).nextAt).toBe(now + 30_000);
+    expect(schedule.refresh(new Set(["company-held"]), [])).toEqual({ companyIds: [], nextAt: now + 30_000 });
+    expect(schedule.refresh(new Set(["company-stranded"]), [])).toEqual({ companyIds: [], nextAt: null });
   });
 });

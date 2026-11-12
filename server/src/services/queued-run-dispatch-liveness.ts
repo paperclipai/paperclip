@@ -8,7 +8,6 @@ export const QUEUED_RUN_NOT_DISPATCHED = "queued_run_not_dispatched";
 
 const NOT_READY_AGENT_STATUSES = ["paused", "terminated", "pending_approval"];
 const UNDISPATCHED_PAGE_SIZE = 500;
-const MAX_UNDISPATCHED_RUNS = 10_000;
 
 export type UndispatchedQueuedRun = {
   runId: string;
@@ -20,7 +19,7 @@ export type UndispatchedQueuedRun = {
 
 type PageCursor = { at: string; runId: string };
 
-async function listUndispatchedQueuedRunPage(db: Db, after: PageCursor | null, limit: number):
+async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefined, after: PageCursor | null, limit: number):
   Promise<Array<UndispatchedQueuedRun & { cursorAt: string }>> {
   return db.select({
     runId: heartbeatRuns.id,
@@ -34,6 +33,7 @@ async function listUndispatchedQueuedRunPage(db: Db, after: PageCursor | null, l
     .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
     .where(and(
       eq(heartbeatRuns.status, "queued"),
+      companyId ? eq(heartbeatRuns.companyId, companyId) : undefined,
       eq(companies.status, "active"),
       eq(agents.lifecycleState, "ready"),
       notInArray(agents.status, NOT_READY_AGENT_STATUSES),
@@ -46,41 +46,52 @@ async function listUndispatchedQueuedRunPage(db: Db, after: PageCursor | null, l
     .limit(limit);
 }
 
-export async function listUndispatchedQueuedRuns(db: Db, options: { pageSize?: number; maxRuns?: number } = {}):
+/** Every undispatched queued run, read page by page with no cap; one
+ * company's runs when `companyId` is given. */
+export async function listUndispatchedQueuedRuns(db: Db, options: { companyId?: string; pageSize?: number } = {}):
   Promise<UndispatchedQueuedRun[]> {
   const pageSize = options.pageSize ?? UNDISPATCHED_PAGE_SIZE;
-  const maxRuns = options.maxRuns ?? MAX_UNDISPATCHED_RUNS;
   const runs: UndispatchedQueuedRun[] = [];
   let after: PageCursor | null = null;
-  while (runs.length < maxRuns) {
-    const page = await listUndispatchedQueuedRunPage(db, after, Math.min(pageSize, maxRuns - runs.length));
+  for (;;) {
+    const page = await listUndispatchedQueuedRunPage(db, options.companyId, after, pageSize);
     runs.push(...page.map(({ cursorAt: _cursorAt, ...run }) => run));
-    if (page.length < pageSize) break;
+    if (page.length < pageSize) return runs;
     const last = page[page.length - 1]!;
     after = { at: last.cursorAt, runId: last.runId };
   }
-  return runs;
 }
 
+export type QueuedRunRedrivePlan = { companyIds: string[]; nextAt: number | null };
+
+/** Re-drive deadlines for undispatched queued runs. `refresh` replaces the
+ * tracked runs of the companies a dispatch pass just read (or of every company
+ * after an instance-wide pass) and keeps the others, so a company-scoped pass
+ * never reads another company's queue. */
 export function createQueuedRunRedriveSchedule(now: () => number = Date.now) {
-  const attempts = new Map<string, { count: number; dueAt: number }>();
+  const tracked = new Map<string, { run: UndispatchedQueuedRun; count: number; dueAt: number }>();
   return {
-    plan(runs: readonly UndispatchedQueuedRun[]): { companyIds: string[]; nextAt: number | null } {
+    refresh(scope: "all" | ReadonlySet<string>, runs: readonly UndispatchedQueuedRun[]): QueuedRunRedrivePlan {
       const current = now();
       const live = new Set(runs.map(run => run.runId));
-      for (const runId of attempts.keys()) if (!live.has(runId)) attempts.delete(runId);
+      for (const [runId, entry] of tracked) {
+        if ((scope === "all" || scope.has(entry.run.companyId)) && !live.has(runId)) tracked.delete(runId);
+      }
+      for (const run of runs) {
+        const prior = tracked.get(run.runId);
+        tracked.set(run.runId, prior ? { ...prior, run }
+          : { run, count: 0, dueAt: run.createdAt.getTime() + QUEUED_RUN_REDRIVE_AFTER_MS });
+      }
       const companyIds = new Set<string>();
       let nextAt: number | null = null;
-      for (const run of runs) {
-        let state = attempts.get(run.runId) ?? { count: 0, dueAt: run.createdAt.getTime() + QUEUED_RUN_REDRIVE_AFTER_MS };
-        let dueAt = state.dueAt;
-        if (state.dueAt <= current) {
-          companyIds.add(run.companyId);
-          state = { count: state.count + 1,
-            dueAt: current + Math.min(QUEUED_RUN_REDRIVE_AFTER_MS * 2 ** state.count, QUEUED_RUN_REDRIVE_MAX_INTERVAL_MS) };
+      for (const [runId, entry] of tracked) {
+        let dueAt = entry.dueAt;
+        if (entry.dueAt <= current) {
+          companyIds.add(entry.run.companyId);
+          tracked.set(runId, { ...entry, count: entry.count + 1,
+            dueAt: current + Math.min(QUEUED_RUN_REDRIVE_AFTER_MS * 2 ** entry.count, QUEUED_RUN_REDRIVE_MAX_INTERVAL_MS) });
           dueAt = current + QUEUED_RUN_REDRIVE_DELAY_MS;
         }
-        attempts.set(run.runId, state);
         nextAt = nextAt === null ? dueAt : Math.min(nextAt, dueAt);
       }
       return { companyIds: [...companyIds], nextAt };

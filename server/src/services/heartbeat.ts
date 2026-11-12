@@ -4600,7 +4600,7 @@ export function heartbeatService(
         promoteDueScheduledRetries,
         nextScheduledRetryAt,
         resumeQueuedRunsAfterDrain,
-        listUndispatchedQueuedRuns: () => listUndispatchedQueuedRuns(db),
+        listUndispatchedQueuedRuns: scope => listUndispatchedQueuedRuns(db, scope),
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
     promoteDueScheduledRetries,

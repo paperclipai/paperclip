@@ -10,7 +10,7 @@ export function registerRunDispatchWork(
     promoteDueScheduledRetries(): Promise<unknown>;
     nextScheduledRetryAt(): Promise<number | null>;
     resumeQueuedRunsAfterDrain(scope?: RunDispatchScope): Promise<unknown>;
-    listUndispatchedQueuedRuns?(): Promise<UndispatchedQueuedRun[]>;
+    listUndispatchedQueuedRuns?(scope?: RunDispatchScope): Promise<UndispatchedQueuedRun[]>;
     schedulingSuppressed(): Promise<boolean>;
   },
   canRun: () => boolean,
@@ -29,6 +29,7 @@ export function registerRunDispatchWork(
   });
   const scopes = new Set<string>(["*"]);
   const redrive = createQueuedRunRedriveSchedule();
+  let dispatched: "all" | Set<string> = new Set();
   const queue = registerDeadlineWork(coordinator, DELIVERY_QUEUES.queuedRunDispatch, {
     retryMs: 30_000,
     notificationCoalesceMs: 1_000,
@@ -44,7 +45,10 @@ export function registerRunDispatchWork(
           return;
         }
         try {
-          await owner.resumeQueuedRunsAfterDrain(requested[index] === "*" ? undefined : JSON.parse(requested[index]) as RunDispatchScope);
+          const scope = requested[index] === "*" ? undefined : JSON.parse(requested[index]) as RunDispatchScope;
+          await owner.resumeQueuedRunsAfterDrain(scope);
+          if (!scope) dispatched = "all";
+          else if (dispatched !== "all") dispatched.add(scope.companyId);
         } catch (error) {
           for (const hint of requested.slice(index)) scopes.add(hint);
           throw error;
@@ -52,8 +56,12 @@ export function registerRunDispatchWork(
       }
     },
     next: async () => {
+      const refreshed = dispatched;
+      dispatched = new Set();
       if (!owner.listUndispatchedQueuedRuns || await owner.schedulingSuppressed()) return null;
-      const plan = redrive.plan(await owner.listUndispatchedQueuedRuns());
+      const runs = refreshed === "all" ? await owner.listUndispatchedQueuedRuns()
+        : (await Promise.all([...refreshed].map(companyId => owner.listUndispatchedQueuedRuns!({ companyId })))).flat();
+      const plan = redrive.refresh(refreshed, runs);
       for (const companyId of plan.companyIds) scopes.add(JSON.stringify({ companyId }));
       return plan.nextAt;
     },
