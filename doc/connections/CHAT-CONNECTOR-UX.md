@@ -327,6 +327,17 @@ steps. Account linking and the message test should reflect the supported private
 interaction and mention/thread behavior. Explain any channel permission or event
 subscription prerequisite before asking for a message that depends on it.
 
+While the bot is active, the Destinations heading has a **Refresh channels**
+button that re-reads the bot's guild channels from Discord. Newly found channels are added
+disabled; the board enables each one explicitly. A channel Discord no longer
+reports is kept and marked "Unavailable at the provider", and its open
+conversations become unavailable. An unavailable channel can still be turned
+off but cannot be turned back on. Once it is both unavailable and off, its row
+shows a remove button. Removal asks for confirmation once, then deletes the
+channel row and detaches its past conversations from it; the conversations and
+their tasks remain. The server re-checks both conditions, rejects anything else
+with 409, and logs `chat_discord.channel_removed` to the activity log.
+
 ### Telegram example
 
 Center setup on the actual bot-creation and token-acquisition flow. If no separate
