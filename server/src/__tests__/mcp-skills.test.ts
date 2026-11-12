@@ -11,7 +11,7 @@ import { mcpSkillsRoutes } from "../routes/mcp-skills.js";
 import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, toolMcpSkillFiles, toolMcpSkills } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { checkMcpSkillEntry, MCP_SKILLS_EXTENSION_ID } from "@paperclipai/shared";
-import { MCP_MODERN_PROTOCOL_VERSION } from "../services/mcp-http.js";
+import { knownMcpServerCapabilities, MCP_MODERN_PROTOCOL_VERSION, rememberMcpServerCapabilities } from "../services/mcp-http.js";
 import { forgetRemoteToolListCache } from "../services/tool-access/catalog/discovery.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -455,6 +455,17 @@ describe("MCP skill entries and bundles", () => {
     expect(checkMcpSkillEntry({ uri: "skill://refunds/SKILL.md", frontmatter: { name: "refunds", description: "d" }, resources: [resource, { ...resource, uri: "skill://other/x.md" }] })).toMatchObject({ ok: false, reason: "invalid" });
     expect(checkMcpSkillEntry({ uri: "skill://refunds/SKILL.md", frontmatter: { name: "refunds", description: "d" } })).toMatchObject({ ok: false, reason: "invalid" });
     expect(checkMcpSkillEntry({ uri: "skill://refunds/SKILL.md", frontmatter: { name: "refunds", description: "d" }, resources: [{ ...resource, size: 17 * 1024 * 1024 }] })).toMatchObject({ ok: false, reason: "too_large" });
+  });
+
+  it("remembers only the names of declared extensions, bounded, never the discover payload", () => {
+    const key = `caps-${randomUUID()}`;
+    const extensions = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`ext/${index}`, { blob: "x".repeat(10_000) }]));
+    rememberMcpServerCapabilities(key, { tools: { huge: "y".repeat(100_000) }, extensions: { [MCP_SKILLS_EXTENSION_ID]: { directoryRead: true }, [`${"z".repeat(200)}`]: {}, ...extensions } });
+    const kept = knownMcpServerCapabilities(key)!;
+    expect(Object.keys(kept)).toEqual(["extensions"]);
+    expect(Object.keys(kept.extensions as object)).toHaveLength(32);
+    expect((kept.extensions as Record<string, unknown>)[MCP_SKILLS_EXTENSION_ID]).toEqual({});
+    expect(JSON.stringify(kept).length).toBeLessThan(2_000);
   });
 
   it("digests manifests independently of order", () => {

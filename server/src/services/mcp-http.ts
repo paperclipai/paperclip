@@ -387,18 +387,27 @@ export function forgetMcpProtocolVersion(eraKey: string) {
   serverCapabilities.delete(eraKey);
 }
 
-// What a stateless server advertised in `server/discover`, kept beside its era
-// so a catalog refresh can tell whether the server serves skills without
-// asking again.
+// Which extensions a stateless server declared in `server/discover`, kept
+// beside its era so a catalog refresh can tell whether the server serves skills
+// without asking again. Only the extension names are kept, never the payload,
+// so each entry is small and bounded however large the server's answer is.
+const MAX_REMEMBERED_EXTENSIONS = 32;
+const MAX_EXTENSION_ID_LENGTH = 128;
 const serverCapabilities = new Map<string, { capabilities: Record<string, unknown>; expiresAt: number }>();
 
 export function rememberMcpServerCapabilities(eraKey: string, capabilities: Record<string, unknown>) {
+  const declared = Object.keys(record(capabilities.extensions) ?? {})
+    .filter((id) => id.length <= MAX_EXTENSION_ID_LENGTH)
+    .slice(0, MAX_REMEMBERED_EXTENSIONS);
   for (const [key, value] of serverCapabilities) if (value.expiresAt <= Date.now()) serverCapabilities.delete(key);
   if (serverCapabilities.size >= 2000) serverCapabilities.delete(serverCapabilities.keys().next().value!);
-  serverCapabilities.set(eraKey, { capabilities, expiresAt: Date.now() + ERA_TTL_MS });
+  serverCapabilities.set(eraKey, {
+    capabilities: { extensions: Object.fromEntries(declared.map((id) => [id, {}])) },
+    expiresAt: Date.now() + ERA_TTL_MS,
+  });
 }
 
-/** The capabilities a stateless server last advertised, or null when not known in this process. */
+/** The extensions a stateless server last declared (`{extensions: {id: {}}}`), or null when not known in this process. */
 export function knownMcpServerCapabilities(eraKey: string): Record<string, unknown> | null {
   const cached = serverCapabilities.get(eraKey);
   if (!cached || cached.expiresAt <= Date.now()) return null;

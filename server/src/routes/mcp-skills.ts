@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { approveCompanyMcpSkillSchema, mcpSkillFileQuerySchema } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
@@ -10,11 +11,6 @@ import { mcpSkillsService, toCompanyMcpSkill } from "../services/mcp-skills.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
 const uuidSchema = z.string().uuid();
-const approveSchema = z.object({
-  manifestDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  allowTools: z.boolean().optional(),
-}).strict();
-const filePathSchema = z.string().min(1).max(1024);
 
 type McpSkillsGateway = Pick<ToolGatewayService, "readConnectionSkillFile" | "readConnectionSkillForReview">;
 
@@ -88,7 +84,7 @@ export function mcpSkillsRoutes(db: Db, toolGateway: McpSkillsGateway) {
     }
   });
 
-  router.post("/companies/:companyId/mcp-skills/:skillId/approve", validate(approveSchema), async (req, res) => {
+  router.post("/companies/:companyId/mcp-skills/:skillId/approve", validate(approveCompanyMcpSkillSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     if (!uuidSchema.safeParse(req.params.skillId).success) {
       res.status(404).json({ error: "Skill not found" });
@@ -123,15 +119,15 @@ export function mcpSkillsRoutes(db: Db, toolGateway: McpSkillsGateway) {
       res.status(403).json({ error: "Run id header does not match agent token", code: "run_id_mismatch" });
       return;
     }
-    const path = filePathSchema.safeParse(req.query.path);
-    if (!uuidSchema.safeParse(req.params.skillId).success || !path.success) {
+    const query = mcpSkillFileQuerySchema.safeParse(req.query);
+    if (!uuidSchema.safeParse(req.params.skillId).success || !query.success) {
       res.status(404).json({ error: "File not found" });
       return;
     }
     try {
       const bytes = await toolGateway.readConnectionSkillFile({
         companyId: req.actor.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
-        skillId: req.params.skillId as string, path: path.data,
+        skillId: req.params.skillId as string, path: query.data.path,
       });
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("X-Content-Type-Options", "nosniff");

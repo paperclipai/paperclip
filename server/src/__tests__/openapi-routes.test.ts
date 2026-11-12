@@ -42,6 +42,7 @@ const apiPrefixes: Record<string, string> = {
   "board-chat.ts": "/api",
   "browser-use.ts": "/api",
   "mcp-apps.ts": "/api",
+  "mcp-skills.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
   "slack-tools.ts": "/api",

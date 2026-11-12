@@ -7,6 +7,8 @@
  * https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx
  */
 
+import { z } from "zod";
+
 export const MCP_SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills";
 
 /** Client capability Paperclip declares in each request's `_meta`. */
@@ -66,10 +68,15 @@ export interface CompanyMcpSkill {
   lastSeenAt: string;
 }
 
-export interface ApproveCompanyMcpSkillRequest {
-  manifestDigest: string;
-  allowTools?: boolean;
-}
+export const approveCompanyMcpSkillSchema = z.object({
+  /** The manifest digest the board reviewed. */
+  manifestDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  /** Also honor the skill's `allowed-tools`. */
+  allowTools: z.boolean().optional(),
+}).strict();
+export type ApproveCompanyMcpSkillRequest = z.infer<typeof approveCompanyMcpSkillSchema>;
+
+export const mcpSkillFileQuerySchema = z.object({ path: z.string().min(1).max(1024) });
 
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 // Agent Skills spec: 1-64 chars, lowercase letters, digits and single hyphens.
