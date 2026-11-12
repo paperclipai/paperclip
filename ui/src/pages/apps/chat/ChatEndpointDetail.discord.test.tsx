@@ -102,6 +102,24 @@ describe("Discord channel refresh", () => {
     expect(mocks.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Channel removed", tone: "success" }));
   });
 
+  it("locks channel toggles and removal while a refresh is in flight", async () => {
+    const gone = { ...releases, availability: "unavailable", enabled: false };
+    mocks.listResources.mockResolvedValue([lab, gone]);
+    let finishRefresh!: (resources: unknown[]) => void;
+    mocks.refreshDiscordChannels.mockReturnValue(new Promise((resolve) => { finishRefresh = resolve; }));
+    await render();
+    const toggle = () => container.querySelector<HTMLButtonElement>('[aria-label="Enable #agent-lab"]')!;
+    const removeButton = () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove #releases"]')!;
+    expect(toggle().disabled).toBe(false);
+    expect(removeButton().disabled).toBe(false);
+    await act(async () => refreshButton()!.click());
+    await vi.waitFor(() => expect(refreshButton()!.disabled).toBe(true));
+    expect(toggle().disabled).toBe(true);
+    expect(removeButton().disabled).toBe(true);
+    await act(async () => finishRefresh([lab, gone]));
+    await vi.waitFor(() => expect(toggle().disabled).toBe(false));
+  });
+
   it("hides refresh while the bot is paused", async () => {
     mocks.get.mockResolvedValue({ ...endpoint, status: "paused" });
     await render();

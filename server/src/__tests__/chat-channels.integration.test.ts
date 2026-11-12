@@ -8772,6 +8772,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     });
 
+    it("keeps the channel when authority is revoked while waiting for the lease", async () => {
+      const f = await refreshFixture();
+      try {
+        const [lab] = await f.service.listResources(f.endpoint.id);
+        f.setChannels([{ id: releasesId, name: "releases", position: 2, type: 0 }]);
+        await f.service.refreshDiscordChannels(f.endpoint.id, "owner-user");
+        await f.service.replaceResources(f.endpoint.id, [{ id: lab!.id, enabled: false }], "owner-user");
+        let checks = 0;
+        const managementContext = {
+          audit: { actorType: "user", actorId: "owner-user" },
+          reauthorize: async () => {
+            checks += 1;
+            if (checks > 1) throw Object.assign(new Error("Agent key revoked"), { status: 403 });
+          },
+        } as unknown as Parameters<ChatChannelService["removeUnavailableDiscordChannel"]>[3];
+        await expect(f.service.removeUnavailableDiscordChannel(f.endpoint.id, lab!.id, "owner-user", managementContext))
+          .rejects.toMatchObject({ status: 403 });
+        expect(checks).toBe(2);
+        expect(await f.service.listResources(f.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({ id: lab!.id })]));
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+
     it("refuses paused and non-Discord connections", async () => {
       const f = await refreshFixture();
       try {

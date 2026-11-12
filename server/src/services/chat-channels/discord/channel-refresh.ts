@@ -51,6 +51,7 @@ export function createDiscordChannelRefresh(db: Db, options: DiscordChannelRefre
     const initial = await endpointRecord(endpointId);
     if (!initial || initial.endpoint.provider !== "discord") throw notFound("Discord bot not found");
     await withCredentialMutationLease(initial.endpoint, async lease => {
+      await managementContext?.reauthorize();
       const publications: ActivityPublication[] = [];
       await db.transaction(async tx => {
         await lease.assertOwned(tx);

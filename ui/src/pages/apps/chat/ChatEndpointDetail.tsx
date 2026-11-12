@@ -531,6 +531,8 @@ function Settings({
         tone: "error",
       }),
   });
+  // Each of these replaces the whole list, so only one may run at a time.
+  const resourcesBusy = saveResources.isPending || refreshChannels.isPending || removeChannel.isPending;
   const updateEndpoint = useMutation({
     mutationFn: chatEndpointsApi.update.bind(null, endpointId),
     onSuccess: (next) =>
@@ -577,7 +579,7 @@ function Settings({
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
           {endpoint.provider === "discord" && ["active", "attention"].includes(endpoint.status) && (
-            <Button type="button" variant="ghost" size="icon-xs" aria-label="Refresh channels" title="Refresh channels" disabled={refreshChannels.isPending} onClick={() => refreshChannels.mutate()}>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Refresh channels" title="Refresh channels" disabled={resourcesBusy} onClick={() => refreshChannels.mutate()}>
               <RefreshCw className={refreshChannels.isPending ? "animate-spin" : undefined} />
             </Button>
           )}
@@ -611,14 +613,14 @@ function Settings({
                     endpoint.photonAllocation === "shared" ||
                     // A destination gone at the provider can still be turned off.
                     (resource.availability !== "available" && !resource.enabled) ||
-                    saveResources.isPending
+                    resourcesBusy
                   }
                   onCheckedChange={(enabled) =>
                     toggleResource(resource, enabled)
                   }
                 />
                 {endpoint.provider === "discord" && resource.availability !== "available" && !resource.enabled && (
-                  <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${resource.label}`} title="Remove channel" disabled={removeChannel.isPending} onClick={() => setChannelToRemove(resource)}>
+                  <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${resource.label}`} title="Remove channel" disabled={resourcesBusy} onClick={() => setChannelToRemove(resource)}>
                     <Trash2 />
                   </Button>
                 )}
