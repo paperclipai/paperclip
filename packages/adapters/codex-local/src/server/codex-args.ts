@@ -32,6 +32,7 @@ export function buildCodexExecArgs(
     resumeSessionId?: string | null;
     skipGitRepoCheck?: boolean;
     networkAccess?: boolean;
+    managedMcpArgs?: string[];
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
@@ -66,7 +67,7 @@ export function buildCodexExecArgs(
   if (fastModeApplied) {
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
-  if (extraArgs.length > 0) args.push(...extraArgs);
+  args.push(...(options.managedMcpArgs ?? extraArgs));
   if (!bypass && options.networkAccess === false) {
     args.push("-c", "sandbox_workspace_write.network_access=false");
   }

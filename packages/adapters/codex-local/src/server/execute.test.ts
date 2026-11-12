@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -118,7 +118,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean; env?: Record<string, string> }) {
+  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean; env?: Record<string, string>; onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }) {
     const rootDir = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
     );
@@ -179,7 +179,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
           strictHostKeyChecking: true,
         },
       },
-      onLog: async () => {},
+      onLog: input.onLog ?? (async () => {}),
     });
 
     return {
@@ -339,5 +339,41 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
     });
     expect(result.executionResult.errorMessage).toBe("provider failed first");
+  });
+
+  it("keeps the run result and removes the staged home when the run profile cleanup fails", async () => {
+    const originalRun = runChildProcess.getMockImplementation();
+    const blockedProfiles: string[] = [];
+    runChildProcess.mockImplementation(async (...args: unknown[]) => {
+      const home = process.env.CODEX_HOME;
+      if (home) {
+        for (const name of await readdir(home)) {
+          const profilePath = path.join(home, name);
+          if (!/^paperclip-run-[0-9a-f-]{36}\.config\.toml$/.test(name) || !(await lstat(profilePath)).isFile()) continue;
+          await rm(profilePath);
+          await mkdir(profilePath);
+          await writeFile(path.join(profilePath, "keep"), "x");
+          blockedProfiles.push(profilePath);
+        }
+      }
+      return originalRun!(...(args as Parameters<NonNullable<typeof originalRun>>));
+    });
+    const logs: string[] = [];
+    try {
+      const result = await runTeardown({
+        sandboxAuth: "{}",
+        hostAuth: "{}",
+        onLog: async (stream, chunk) => { if (stream === "stderr") logs.push(chunk); },
+      });
+      expect(blockedProfiles).toHaveLength(1);
+      expect(result.executionResult.exitCode).toBe(0);
+      expect(result.executionResult.errorMessage ?? null).toBeNull();
+      const home = captured.assets.find((asset) => asset.key === "home");
+      expect(home?.localDir).toBeTruthy();
+      await expect(lstat(home!.localDir!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(logs.some((line) => line.includes("Failed to remove managed Codex MCP profile") && line.includes(blockedProfiles[0]!))).toBe(true);
+    } finally {
+      runChildProcess.mockImplementation(originalRun!);
+    }
   });
 });

@@ -830,6 +830,10 @@ function safeClientMetadata(
     clientName,
     correlationId,
     userAgent: safeHeaderValue(headers, "user-agent", 200),
+    presentingRunId: (() => {
+      const value = safeHeaderValue(headers, "x-paperclip-run-id", 120);
+      return value && uuidPattern.test(value) ? value : null;
+    })(),
   };
 }
 
@@ -7390,6 +7394,33 @@ export function createToolGatewayService(
       ? `id:${tokenId}`
       : `hash:${hashGatewayToken(token).slice(0, 24)}`;
     const gateway = await findGatewayForProtocolLocator(input);
+    const [subjectToken] = await db.select({
+      subjectType: toolMcpGatewayTokens.subjectType,
+      subjectId: toolMcpGatewayTokens.subjectId,
+      companyId: toolMcpGatewayTokens.companyId,
+    }).from(toolMcpGatewayTokens)
+      .where(eq(toolMcpGatewayTokens.tokenHash, hashGatewayToken(token))).limit(1);
+    const subjectRunId = subjectToken?.subjectType === "heartbeat_run" &&
+      subjectToken.subjectId && uuidPattern.test(subjectToken.subjectId) ? subjectToken.subjectId : null;
+    const [subjectRun] = subjectRunId ? await db.select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, subjectRunId),
+        eq(heartbeatRuns.companyId, subjectToken!.companyId))).limit(1) : [];
+    logger.warn(
+      {
+        event: "named_gateway_auth_failed",
+        gatewayId: input.gatewayId ?? gateway?.id ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? gateway?.gatewayPublicId ?? null,
+        reasonCode: input.reasonCode,
+        clientMetadata: input.clientMetadata,
+        tokenSubjectType: subjectToken?.subjectType ?? null,
+        tokenSubjectId: subjectToken?.subjectId ?? null,
+        subjectRunId,
+        subjectRunStatus: subjectRun?.status ?? null,
+        presentingRunId: input.clientMetadata.presentingRunId,
+        presentingRunIdSource: input.clientMetadata.presentingRunId ? "client_header" : "unavailable",
+      },
+      `MCP named gateway authentication failed: ${input.reasonCode}`,
+    );
     if (!gateway) {
       throw new ToolGatewayHttpError(
         401,
@@ -7485,7 +7516,7 @@ export function createToolGatewayService(
     gatewayId?: string | null;
     gatewayPublicId?: string | null;
     bearerToken: string;
-    protocolMethod: McpGatewayProtocolMethod;
+    protocolMethod: McpGatewayProtocolMethod | null;
     callerHeaders?: Record<string, string | string[] | undefined>;
   }): Promise<ToolGatewaySession> {
     const clientMetadata = safeClientMetadata(input.callerHeaders);
@@ -7690,11 +7721,13 @@ export function createToolGatewayService(
       agentId ??= row.token.createdByAgentId;
       responsibleUserId = row.token.responsibleUserId;
     }
-    const now = new Date();
-    await db
-      .update(toolMcpGatewayTokens)
-      .set({ lastUsedAt: now, updatedAt: now })
-      .where(eq(toolMcpGatewayTokens.id, row.token.id));
+    if (input.protocolMethod) {
+      const now = new Date();
+      await db
+        .update(toolMcpGatewayTokens)
+        .set({ lastUsedAt: now, updatedAt: now })
+        .where(eq(toolMcpGatewayTokens.id, row.token.id));
+    }
     const session: ToolGatewaySession = {
       id: `gateway:${row.gateway.id}`,
       token: "",
@@ -7720,6 +7753,7 @@ export function createToolGatewayService(
         row.token.expiresAt ??
         new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
     };
+    if (!input.protocolMethod) return session;
     await assertNamedGatewayProtocolLimit(
       session,
       input.protocolMethod,
@@ -9540,6 +9574,21 @@ export function createToolGatewayService(
         gatewayPublicId: input.gatewayPublicId ?? null,
         bearerToken: input.bearerToken,
         protocolMethod: "initialize",
+        callerHeaders: input.callerHeaders,
+      });
+    },
+
+    async verifyNamedGatewayProtocolNotification(input: {
+      gatewayId?: string | null;
+      gatewayPublicId?: string | null;
+      bearerToken: string;
+      callerHeaders?: Record<string, string | string[] | undefined>;
+    }): Promise<void> {
+      await namedGatewaySessionFromBearer({
+        gatewayId: input.gatewayId ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? null,
+        bearerToken: input.bearerToken,
+        protocolMethod: null,
         callerHeaders: input.callerHeaders,
       });
     },
