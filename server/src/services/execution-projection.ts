@@ -29,8 +29,6 @@ const executionRunColumns = {
   agentId: heartbeatRuns.agentId,
   driverKind: heartbeatRuns.driverKind,
   errorCode: heartbeatRuns.errorCode,
-  resultJson: sql<Record<string, unknown> | null>`CASE WHEN ${heartbeatRuns.resultJson} IS NULL THEN NULL
-    ELSE jsonb_build_object('errorFamily', ${heartbeatRuns.resultJson}->'errorFamily') END`,
   executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
   finishedAt: heartbeatRuns.finishedAt,
   lastOutputAt: heartbeatRuns.lastOutputAt,
@@ -49,11 +47,11 @@ const executionRunColumns = {
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
     'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
     'errorFamily', ${heartbeatRuns.contextSnapshot}->'errorFamily',
-    'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting',
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
     'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
   resultJson: sql<Record<string, unknown>>`jsonb_build_object(
+    'errorFamily', ${heartbeatRuns.resultJson}->'errorFamily',
     'finalizationPhase', ${heartbeatRuns.resultJson}->'finalizationPhase',
     'finalizationReasonCode', ${heartbeatRuns.resultJson}->'finalizationReasonCode')`,
 };
