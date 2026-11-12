@@ -2136,6 +2136,7 @@ export function heartbeatService(
     let providerTraceFinalized = false;
     let readFailureReportSecrets: () => string[] = () => [];
     let identityRedactor = createAgentIdentityRedactor();
+    let workspaceWaitWasIssueAssignee = false;
 
     try {
       const loadedAgent = await timePreparation("agent_read", () => getAgent(run.agentId));
@@ -2866,6 +2867,7 @@ export function heartbeatService(
         getLatestAgentConfigRevision,
       }));
       const { sessionConfigMetadata, configuredModel, resetTaskSession, sessionResetReason, taskSessionForRun, getFreshSessionHandoff, previousSessionParams } = preparedSession;
+      workspaceWaitWasIssueAssignee = issueContext?.assigneeAgentId === agent.id;
       const {
         resolvedWorkspace,
         hostExecutionWorkspaceConfig,
@@ -3973,7 +3975,7 @@ export function heartbeatService(
         // preparing: resource contention, not a failure. The finally block
         // below still releases leases, runtime services, and scratch.
         await finalizeWorkspaceSourceLockWait(run, outerErr, {
-          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+          wasIssueAssignee: workspaceWaitWasIssueAssignee,
         }).catch(
           (deferralErr) => {
             logger.error(
