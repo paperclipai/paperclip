@@ -190,6 +190,22 @@ describePostgres("a task stranded behind its own workspace's ended writer", () =
     expect(wakesFor(f.task.id)).toHaveLength(1);
   }, 60_000);
 
+  it("never wakes twice when a crash came after the wake created its run", async () => {
+    const f = await seedStrandedTask();
+    await f.releaseWriter();
+    expect((await continueTasksAfterWorkspaceWriterReleased(db, null, { companyId: f.companyId })).continued).toEqual([f.task.id]);
+    // The wake committed and created its run, then the process stopped before recording it as delivered.
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      reason: "issue_recovery_action_restored", status: "completed", runId: randomUUID(),
+      payload: { issueId: f.task.id, recoveryActionId: f.actionId, mutation: "recovery_action_resolution" } });
+    expect((await action(f.actionId)).evidence).toMatchObject({ releasedWorkspaceWriter: { wake: "pending" } });
+
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
+
+    expect(wakesFor(f.task.id)).toEqual([]);
+    expect((await action(f.actionId)).evidence).toMatchObject({ releasedWorkspaceWriter: { wake: "delivered" } });
+  }, 60_000);
+
   it("keeps the task when a later decision chose the block, a dependency forbids work, or a newer run exists", async () => {
     const chosen = await seedStrandedTask({ laterDecision: { fromStatus: "in_progress", toStatus: "blocked" } });
     const dependent = await seedStrandedTask();

@@ -1,5 +1,5 @@
-import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, issues, statusDecisions, type Db } from "@paperclipai/db";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, statusDecisions, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { releaseAncestorWorkspaceBinding } from "../execution-workspaces.js";
@@ -116,11 +116,17 @@ export async function deliverPendingRecoveryWakes(db: Db, wake: RehomeWakeup, sc
     const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
       .where(and(eq(issues.companyId, row.companyId), eq(issues.id, row.issueId)));
     const owed = task?.status === "todo" && Boolean(task.assigneeAgentId) && task.assigneeAgentId === row.agentId;
-    let accepted = !owed;
+    // The wake's identity is its recovery action: a run already created for it
+    // (a crash after the wake committed, before this record changed) is the
+    // delivery, so the continuation never runs twice.
+    const [delivered] = owed ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, row.companyId), sql`${agentWakeupRequests.payload}->>'issueId' = ${row.issueId}`,
+      sql`${agentWakeupRequests.payload}->>'recoveryActionId' = ${row.actionId}`, isNotNull(agentWakeupRequests.runId))).limit(1) : [];
+    let accepted = !owed || Boolean(delivered);
     try {
       // Only a created run settles the wake; a refusal (for example a paused
       // company or disabled on-demand wakes) returns null and is retried.
-      if (owed) accepted = Boolean(await wake(row.agentId!, {
+      if (!accepted) accepted = Boolean(await wake(row.agentId!, {
         source: "automation", triggerDetail: "system", reason: "issue_recovery_action_restored",
         payload: { issueId: row.issueId, recoveryActionId: row.actionId, mutation: "recovery_action_resolution" },
         requestedByActorType: "system", requestedByActorId: kind.actorId,

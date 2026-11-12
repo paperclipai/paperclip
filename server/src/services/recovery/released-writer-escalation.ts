@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, statusDecisions, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
@@ -92,8 +92,9 @@ async function continueOne(tx: Db, input: { actionId: string; companyId: string;
   // That failed run is still the task's latest: nothing newer has started or queued for it.
   const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, run.id), gt(heartbeatRuns.createdAt, run.createdAt),
-    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issue.id}::text`))
-    .orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+    // Each binding has its own (company, task, created) index.
+    or(eq(heartbeatRuns.issueId, issue.id), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}::text`)))
+    .limit(1);
   if (newer) return null;
   // The Blocked status belongs to this escalation: set after that run, and no blocker keeps it.
   const blockedAt = issue.blockedTransitionAt?.getTime();
