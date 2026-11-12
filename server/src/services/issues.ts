@@ -12648,6 +12648,9 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
+      const pendingExecutionStage = sql`${issues.executionState}->>'status' = 'pending'`;
+      const checkoutStatus = sql<string>`case when ${pendingExecutionStage} then ${issues.status} else 'in_progress' end`;
+      const leavesBlocked = sql`${issues.status} = 'blocked' and not coalesce(${pendingExecutionStage}, false)`;
       const updated = await db.transaction(async tx => {
         await assertAgentInteraction(tx as unknown as Db, {
           companyId: issueCompany.companyId, actorAgentId: agentId, operation: "assign",
@@ -12667,13 +12670,13 @@ export function issueService(db: Db) {
             assigneeUserId: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
-            status: "in_progress",
+            status: checkoutStatus,
             startedAt: now,
             updatedAt: now,
             ...(expectedStatuses.includes("blocked") ? {
-              unblockDescriptor: sql`case when ${issues.status} = 'blocked' then null else ${issues.unblockDescriptor} end`,
-              blockedTransitionAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedTransitionAt} end`,
-              blockedOwnerNotifiedAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedOwnerNotifiedAt} end`,
+              unblockDescriptor: sql`case when ${leavesBlocked} then null else ${issues.unblockDescriptor} end`,
+              blockedTransitionAt: sql`case when ${leavesBlocked} then null else ${issues.blockedTransitionAt} end`,
+              blockedOwnerNotifiedAt: sql`case when ${leavesBlocked} then null else ${issues.blockedOwnerNotifiedAt} end`,
             } : {}),
           })
           .where(
@@ -12792,7 +12795,7 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
-            status: "in_progress",
+            status: checkoutStatus,
             updatedAt: now,
           };
           if (current.status !== "in_progress") {
