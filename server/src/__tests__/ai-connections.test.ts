@@ -6,7 +6,6 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 // Background plan observations have their own provider-fixture coverage. Runtime
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
-// Lets a test act between a directory listing and the work that follows it.
 const readdirHook = vi.hoisted(() => ({ current: undefined as undefined | ((target: string) => Promise<void>) }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -380,8 +379,6 @@ describe("managed AI connections", () => {
     await expect(prepareManagedAiRuntime(db, runInput)).rejects.toThrow();
   });
 
-  // Go and similar tools leave read-only module caches (0555 directories,
-  // 0444 files) in the run home; a plain recursive removal stops with EACCES.
   const writeReadOnlyModuleCache = async (root: string) => {
     const module = path.join(root, "go", "pkg", "mod", "example.com", "module@v1.0.0");
     await fs.mkdir(module, { recursive: true });
@@ -436,8 +433,6 @@ describe("managed AI connections", () => {
     try {
       await writeReadOnlyModuleCache(runtime.home!);
       const goTarget = await realpath(go);
-      // Once the walk has inspected `go` and lists it, replace it with a link
-      // to a read-only directory outside the home.
       readdirHook.current = async (target) => {
         if (swapped || await realpath(target).catch(() => "") !== goTarget) return;
         swapped = true;

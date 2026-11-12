@@ -9,10 +9,6 @@ function isPermissionError(error: unknown) {
   return code === "EACCES" || code === "EPERM";
 }
 
-// Path of a child entry resolved relative to an open directory handle rather
-// than to a pathname. On Linux `/proc/self/fd/<fd>` always names the exact
-// directory the handle was opened on, so renaming or replacing that directory
-// (or any of its ancestors) with a symlink cannot redirect the lookup.
 const throughHandle = (handle: FileHandle, name?: string) =>
   name === undefined ? `/proc/self/fd/${handle.fd}` : `/proc/self/fd/${handle.fd}/${name}`;
 
@@ -21,9 +17,6 @@ async function openDirectoryNoFollow(target: string) {
   catch { return undefined; }
 }
 
-// Checks that handle-relative lookups really resolve to the opened directory.
-// Without that guarantee (for example no Linux procfs) the walk is skipped and
-// the removal failure is reported instead of risking changes outside the home.
 async function handleLookupIsBound(handle: FileHandle) {
   if (process.platform !== "linux") return false;
   try {
@@ -34,10 +27,6 @@ async function handleLookupIsBound(handle: FileHandle) {
   }
 }
 
-// Grants the owner rwx on the directory held by `handle` and every real
-// directory below it on the same filesystem. Every child is listed and opened
-// through its parent's handle with O_NOFOLLOW, and changed through its own
-// handle, so symlinks, replaced ancestors and mount points are never crossed.
 async function grantOwnerDirectoryAccess(handle: FileHandle, device: number): Promise<void> {
   try {
     const { mode, dev } = await handle.stat();
@@ -70,13 +59,6 @@ async function restoreOwnerAccess(home: string) {
   }
 }
 
-/**
- * Removes a managed AI run home that removal has already been decided for.
- * Tools such as the Go module cache leave read-only directories, which make a
- * plain recursive removal stop part-way with EACCES. On a permission error this
- * restores owner access inside the home and retries once; a remaining failure
- * is logged and rethrown so callers keep their existing retention behavior.
- */
 export async function removeManagedHome(home: string): Promise<void> {
   try {
     await rm(home, { recursive: true, force: true });
