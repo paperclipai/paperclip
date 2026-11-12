@@ -22,13 +22,14 @@ const purePackages = new Set([
 const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "path/win32",
   "url", "util", "util/types", "buffer", "events", "string_decoder", "crypto",
   "os", "timers", "timers/promises", "stream", "stream/promises", "stream/web", "async_hooks", "zlib"]);
-// Reviewed setup performs only temporary-home IO and Supertest socket setup,
-// not reads of arbitrary repository inputs. Pin contents, not just paths: any
+// Reviewed setup performs only temporary-home IO (including removal of those
+// homes on exit and termination signals) and Supertest socket setup, not reads
+// of arbitrary repository inputs. Pin contents, not just paths: any
 // edit disables this exception until its effects are reviewed again. Continue
 // following local imports even for these files; helper changes affect all tests.
 const reviewedSetup = new Map([
   ["server/src/__tests__/setup-supertest.ts", {
-    hash: "15a53631d5015910d4a3e9506158f9e4bd8269ac340afb52d94089da77fc3ced",
+    hash: "0de82844a84693afeffb3a823b84382df691511b67e2b37fb1f97b3a957f4c12",
     external: ["supertest/lib/test.js"],
   }],
   ["server/src/services/instance-settings-cache.ts", {
@@ -36,7 +37,7 @@ const reviewedSetup = new Map([
     external: ["drizzle-orm", "drizzle-orm/pg-core", "@paperclipai/db/work-signals"],
   }],
   ["server/src/__tests__/helpers/isolated-test-home.ts", {
-    hash: "bd5645dc590087f26b473beab06d5c3ddd7956a79949f0b3e9713f11897a0c1b",
+    hash: "b637ea1ecaf54e528756692b0e95201cfee10e806f431c30711448e2e300dd32",
     external: [],
   }],
 ]);
