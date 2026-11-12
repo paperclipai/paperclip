@@ -2401,6 +2401,29 @@ describe("agent permission routes", () => {
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
   });
 
+  it("returns only the inbox mine rows the agent may read", async () => {
+    mockIssueService.list.mockResolvedValue([
+      { id: "issue-open", companyId, identifier: "PAP-1", title: "Readable", status: "todo" },
+      { id: "issue-denied", companyId, identifier: "PAP-2", title: "Not readable", status: "todo" },
+    ]);
+    mockAccessService.decideReads.mockResolvedValue([{ allowed: true }, { allowed: false }]);
+    const app = await createApp({ type: "agent", agentId, companyId, runId: "run-1", source: "agent_key" });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .get("/api/agents/me/inbox/mine")
+      .query({ userId: "board-user" }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((row: { id: string }) => row.id)).toEqual(["issue-open"]);
+    expect(mockAccessService.decideReads).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "agent", agentId }),
+      [
+        expect.objectContaining({ type: "issue", companyId, issueId: "issue-open" }),
+        expect.objectContaining({ type: "issue", companyId, issueId: "issue-denied" }),
+      ],
+    );
+  });
+
   it("exposes a dedicated agent route for the inbox mine view", async () => {
     mockIssueService.list.mockResolvedValue([
       {
