@@ -797,6 +797,9 @@ const server = createServer(async (request, response) => {
         const correlatedFinal = String(parsedPrompt.message ?? "").includes(
           "correlated-final-message",
         );
+        const answerBeforeFinishThenReference = String(
+          parsedPrompt.message ?? "",
+        ).includes("answer-before-finish-then-reference");
         const finalAfterToolCommentary = String(
           parsedPrompt.message ?? "",
         ).includes("final-after-tool-commentary");
@@ -994,6 +997,62 @@ const server = createServer(async (request, response) => {
                 messageID: "message-post-tool-final",
                 type: "text",
                 text: "This is the complete substantive answer emitted after the accepted completion tool call.",
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+        } else if (answerBeforeFinishThenReference) {
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-before-finish",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-before-finish",
+                messageID: "message-assistant",
+                type: "text",
+                text: "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-finish-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-finish",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-reference-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-reference",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-reference",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-reference",
+                messageID: "message-reference",
+                type: "text",
+                text: "Answered above: two inbox items need your attention.",
                 time: { start: 3, end: 4 },
               },
             },
