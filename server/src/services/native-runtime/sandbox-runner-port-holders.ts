@@ -59,8 +59,8 @@ export function parseSandboxRunnerHolders(stdout: string): SandboxRunnerHolder[]
       || !runnerInstanceId || (fingerprint !== undefined && !/^linux:[0-9a-f-]+:[0-9]+$/.test(fingerprint))) continue;
     const state = parseObject(decode(encodedState));
     const runId = typeof state?.runId === "string" && state.runnerInstanceId === runnerInstanceId ? state.runId : null;
-    const idle = state !== null && state.lifecycle !== "running" && Array.isArray(state.outbox) && state.outbox.length === 0
-      && state.pendingTerminalDelivery === null;
+    const idle = state !== null && Array.isArray(state.outbox) && state.outbox.length === 0
+      && state.pendingTerminalDelivery === null && state.pendingProviderCleanup == null && state.warmTransition == null;
     holders.push({ identityPath, nonce, pid, runnerInstanceId, processStartFingerprint: fingerprint ?? null, runId, idle });
   }
   return holders;
@@ -80,7 +80,7 @@ async function probeHolder(runner: CommandManagedRuntimeRunner, holder: SandboxR
   }).catch(() => null);
   if (!result || result.timedOut) return "unproven";
   if (result.exitCode === 0) return "alive";
-  if (result.exitCode === 41 || result.exitCode === 44 || result.exitCode === 45 || result.exitCode === 47) return "gone";
+  if (result.exitCode === 45 || result.exitCode === 47) return "gone";
   return "unproven";
 }
 
