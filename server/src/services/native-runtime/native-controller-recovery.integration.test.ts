@@ -284,7 +284,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       expect(await evidence()).toMatchObject({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
         providerEventsExist: false, checkpointExists: false });
       expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_connection_lease_expired",
-        "The runner's connection lease expired before it was renewed."))).toBe("native_session_interrupted");
+        "The runner's connection lease expired before it was renewed.", { cause: failure }))).toBe("native_session_interrupted");
       expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_ingress_auth_failed",
         "Runner ingress connection failed."))).toBe("runner_ingress_startup_failed");
       expect(await nativeProviderRecoveryEvidence({ db, runId, metadataOnly: true,

@@ -9012,6 +9012,7 @@ export function nativeSessionFailureSourceCode(
 function runnerIngressConnectionFailure(error: unknown, depth = 0): boolean {
   if (!error || typeof error !== "object" || depth > 5) return false;
   const value = error as Record<string, unknown>;
+  if (value.code === "runner_connection_lease_expired") return false;
   if (typeof value.message === "string"
     && /^runner_ingress_(?:auth_failed|unavailable): (?:Runner ingress did not complete PRP authentication before the deadline|Runner ingress connection failed)\.$/.test(value.message)) return true;
   return runnerIngressConnectionFailure(value.cause, depth + 1);
