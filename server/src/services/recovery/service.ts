@@ -932,6 +932,7 @@ export function recoveryService(
     enqueueWakeup: RecoveryWakeup;
     scheduleRecoveryRetry?: (
       runId: string,
+      outcome?: { retryExhausted?: boolean },
     ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
     /** Settle retained explicit retry claims through the queue-first release policy. */
     settleExplicitContinuationRetry?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>;
@@ -2042,14 +2043,15 @@ export function recoveryService(
           return null;
         }
         if (deps.scheduleRecoveryRetry) {
-          const retry = await deps.scheduleRecoveryRetry(predecessor.id);
+          const scheduling: { retryExhausted?: boolean } = {};
+          const retry = await deps.scheduleRecoveryRetry(predecessor.id, scheduling);
           if (retry) return retry;
           // A spent budget is the one "no retry" the sweeper must not wait
           // out: nothing else will ever queue a successor for this run, so
           // it reports the exhaustion instead of leaving the issue with no
           // live path (2026-09-25: three deploy restarts in a row spent the
           // budget and the issue sat in_progress with no run, unescalated).
-          if (input.outcome && deps.transientRetryBudgetSpent?.(predecessor)) {
+          if (input.outcome && (scheduling.retryExhausted || deps.transientRetryBudgetSpent?.(predecessor))) {
             input.outcome.retryExhausted = true;
           }
           return null;

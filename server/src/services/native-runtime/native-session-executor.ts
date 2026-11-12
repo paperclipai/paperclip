@@ -10637,7 +10637,8 @@ async function executePaperclipNativeSessionAttempt(
     },
   });
   nativeRunRecoveryFlushers.set(traceRunId, flushRecovery);
-  await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget));
+  await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget,
+    { reattachedRetainedLease: input.restartRecovery?.kind === "reattach_remote_runner" }));
   if (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") {
     await emitStartupReuse(input.onEvent, "workspace", { state: "not_applicable", reason: "not_applicable" });
   }

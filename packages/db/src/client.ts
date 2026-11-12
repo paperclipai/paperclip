@@ -311,10 +311,24 @@ export function livenessDb(db: Db): Db {
   return created;
 }
 
+const controllerLeaseDbFactories = new WeakMap<object, () => Db>();
+const controllerLeaseDbs = new WeakMap<object, Db>();
+
+export function controllerLeaseDb(db: Db): Db {
+  const existing = controllerLeaseDbs.get(db);
+  if (existing) return existing;
+  const factory = controllerLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory();
+  controllerLeaseDbs.set(db, created);
+  return created;
+}
+
 /** Ends the liveness pool if one was created. The ended pool stays cached, so
  * a late renewal fails like a query on the ended primary pool. */
 export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<void> {
-  await livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+  await Promise.all([livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
+    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
 }
 
 // Control checkpoints must not occupy the request or lease-renewal pools
@@ -388,6 +402,9 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   }, db));
   livenessDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
+  }, db));
+  controllerLeaseDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 1, applicationName: "paperclip-legacy-controller-lease",
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",

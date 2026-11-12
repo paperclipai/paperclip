@@ -8970,7 +8970,7 @@ export function createToolGatewayService(
           invocationId: invocation.id,
           actionRequestId: actionRequest.id,
           instructions:
-            "The action was declined. Do not retry the same call; adjust your approach or report the decline on the task.",
+            "The action was declined. Do not retry the same call on your own; adjust your approach or report the decline on the task. If the person asks for the same action again in a new message, the call made for that message posts a fresh approval card.",
         },
       );
     }

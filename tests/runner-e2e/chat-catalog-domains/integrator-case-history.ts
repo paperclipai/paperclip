@@ -8,6 +8,7 @@ import { pollUntil } from "../api.js";
 import { checks, observation, project, type Entity, type InternalObservation } from "./internal-support.js";
 import { fixtureWorker } from "./internal-definition.js";
 import { integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
+import { waitForTurnReplyLinks } from "./identity-support.js";
 type CaseRecord = typeof cases.$inferSelect;
 type CaseEvent = typeof caseEvents.$inferSelect;
 interface HistoryObservation extends InternalObservation { caseRecord: CaseRecord; caseEvents: CaseEvent[]; handoffs: CaseHandoff[]; diagnosis: IssueDocument; diagnosisRevisions: DocumentRevision[] }
@@ -78,11 +79,14 @@ export const integratorCaseHistoryCases = [integratorDefinition("cases", "cases.
   const row = state.case as CaseRecord; const task = state.task as Issue;
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { expectedRunCount: 5, expectedHumanMessageCount: 2, attemptTimeoutMs: 1_200_000, cleanup, oracleVersion: "paperclip.chat-catalog.integrator.case-history.v3",
-  sourceFiles: ["chat-catalog-domains/integrator-case-history.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"],
+}, { expectedRunCount: 5, expectedHumanMessageCount: 2, attemptTimeoutMs: 1_200_000, cleanup, oracleVersion: "paperclip.chat-catalog.integrator.case-history.v4",
+  sourceFiles: ["chat-catalog-domains/integrator-case-history.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts", "chat-scenarios/cases.yaml"],
   async act(ctx, state) {
-    const first = await pollUntil({ label: "canonical diagnosis history answer before distinct missing-history question", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000), intervalMs: 1000,
+    await pollUntil({ label: "canonical diagnosis history answer before distinct missing-history question", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000), intervalMs: 1000,
       load: () => observeHistory(ctx, state), accept: o => chatCatalogNativePhaseIsTimely(ctx) && o.runs.length === 4 && o.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
+    // Finished runs and a waiting chat precede the saved reply's render; capture the phase only after it renders.
+    await waitForTurnReplyLinks(ctx);
+    const first = await observeHistory(ctx, state);
     state.firstHistory = { ...first, state: structuredClone(state) }; await ctx.input.evidence("chat-case-diagnosis-history-first.json", state.firstHistory);
     const row = first.caseRecord; const beforeIds = new Set(first.caseEvents.map(event => event.id));
     resources.get(ctx)!.unavailableText = `unretained-support-${ctx.input.nonce}`;

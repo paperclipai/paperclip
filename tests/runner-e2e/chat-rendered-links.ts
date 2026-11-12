@@ -174,9 +174,35 @@ export async function waitForSavedTurnReplyRender(page: Pick<Page, "evaluate">, 
   }
 }
 export async function collectConversationLinks(page: Page, input: ConversationLinkInput) {
+  return (await collectConversationLinksWithDiagnostics(page, input)).links;
+}
+/** What the page showed when a saved reply yielded no rendered links: each candidate thread root, whether it
+ * is visible, which saved comment anchors it renders, and how many anchors each saved reply carries. */
+export interface ConversationLinkDiagnostics {
+  render: ConversationReplyRender; expectedReplyIds: string[]; savedCommentCount: number;
+  threads: Array<{ testId: string | null; visible: boolean; renderedCommentIds: string[]; foreignCommentIds: string[]; replyAnchorCounts: Record<string, number> }>;
+}
+export function readConversationLinkDiagnostics(input: Pick<ReturnType<typeof conversationLinkBindings>, "anchors" | "replies">): Omit<ConversationLinkDiagnostics, "render"> {
+  const threadSelector = '[data-testid="task-chat-thread"], [data-testid="thread-root"]';
+  return { expectedReplyIds: input.replies, savedCommentCount: input.anchors.length,
+    threads: Array.from(document.querySelectorAll(threadSelector)).map(root => {
+      const ids = Array.from(root.querySelectorAll('[id^="comment-"]')).filter(node => node.closest(threadSelector) === root).map(node => node.id.slice("comment-".length));
+      return { testId: root.getAttribute("data-testid"), visible: root.getClientRects().length > 0,
+        renderedCommentIds: ids.filter(id => input.anchors.includes(id)), foreignCommentIds: ids.filter(id => !input.anchors.includes(id)),
+        replyAnchorCounts: Object.fromEntries(input.replies.map(id => [id, root.querySelector(`[id="comment-${id}"]`)?.querySelectorAll("a[href]").length ?? 0])) };
+    }) };
+}
+export async function collectConversationLinksWithDiagnostics(page: Page, input: ConversationLinkInput): Promise<{ links: RenderedConversationLink[]; diagnostics?: ConversationLinkDiagnostics }> {
   const bindings = conversationLinkBindings(input);
-  await waitForLatestConversationReplyRender(page, bindings);
-  return page.evaluate(readConversationDomLinks, bindings);
+  const render = await waitForLatestConversationReplyRender(page, bindings);
+  const links = await page.evaluate(readConversationDomLinks, bindings);
+  if (links.length || !bindings.replies.length) return { links };
+  let diagnostics: ConversationLinkDiagnostics;
+  try { diagnostics = { render, ...await page.evaluate(readConversationLinkDiagnostics, { anchors: bindings.anchors, replies: bindings.replies }) }; }
+  catch { diagnostics = { render, expectedReplyIds: bindings.replies, savedCommentCount: bindings.anchors.length, threads: [] }; }
+  // Logged so an empty capture says whether the thread was closed, another conversation, or the reply had no anchors yet.
+  console.info(`[chat-rendered-links] no rendered reply links: ${JSON.stringify(diagnostics)}`);
+  return { links, diagnostics };
 }
 export function conversationLinkLocator(page: Page, link: RenderedConversationLink): Locator {
   const thread = page.getByTestId(link.threadTestId).filter({ has: page.locator(`[id=${JSON.stringify(`comment-${link.anchorCommentId}`)}]`) });
