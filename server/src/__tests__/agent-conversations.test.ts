@@ -987,8 +987,6 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
-  // Full chat cohort 5 (questions-and-approvals.reject-and-revise): the person said "Do not publish it", the CEO read
-  // withdraw as the only agent route, saw the person had created the publish card and left it pending.
   it("tells chat to record a person's decline with resolve-from-comment whoever created the card, and keeps withdraw for its own obsolete card", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("A person's explicit decline in chat (for example \"do not publish it\") answers a pending confirmation with reject, whoever created the card");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Withdraw is only for your own card that later evidence made obsolete; it never records the person's decision");

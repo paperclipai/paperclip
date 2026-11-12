@@ -420,8 +420,6 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
   });
 
-  // Full chat cohort 5: the cancel summary named only withdraw for agents, so an agent asked to decline a card the person
-  // created left it pending. Withdraw is for the agent's own obsolete card; a person's decline goes to resolve-from-comment.
   it("points agents to resolve-from-comment to record a person's decline and keeps withdraw for their own obsolete card", () => {
     const spec = buildOpenApiSpec() as any;
     const interaction = "/api/issues/{id}/interactions/{interactionId}";
@@ -429,6 +427,8 @@ describe("openapi routes", () => {
       expect(summary).toContain("only for the agent's own obsolete card");
       expect(summary).toContain(`POST ${interaction}/resolve-from-comment`);
       expect(summary).toContain("when the card's resolver policy allows");
+      expect(summary).toContain("to accept or decline a confirmation card on the person's explicit instruction");
+      expect(summary).toContain("not for question forms or governed approvals");
     }
     expect(spec.paths[`${interaction}/resolve-from-comment`].post.summary).toContain("including a decline of a card the person created");
   });

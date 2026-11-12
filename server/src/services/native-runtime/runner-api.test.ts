@@ -811,8 +811,6 @@ describe("runner API request boundary", () => {
     await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: { offsetBytes: 4 } }, context, io(request))).rejects.toThrow("This request was not sent");
     expect(request).not.toHaveBeenCalled();
   });
-  // Full chat cohort 4: write calls carried responseText beside (or instead of) their body. A new write whose
-  // responseText sets a window is refused before sending; an older saved call still validates for recovery.
   it.each([{ limitBytes: 8192 }, { offsetBytes: 0, limitBytes: 4096 }])("refuses a new write whose responseText sets a window before sending: %j", async responseText => {
     const request = vi.fn<typeof fetch>(async () => Response.json({ id: "company-a", name: "Acorn Studio" }));
     const call = { operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: { name: "Acorn Studio" }, responseText };
@@ -822,9 +820,6 @@ describe("runner API request boundary", () => {
     expect(error?.message).toContain("Resend PATCH /api/companies/{companyId} once without responseText, with its request fields in body");
     expect(validateRunnerApiCall(call, context).input).not.toHaveProperty("responseText");
   });
-  // Full chat cohort 5 (inbox-search.restore-archive): DeepSeek sent responseText: {} with a valid body on every
-  // inbox-archive POST, and 24 refusals in a row ran out the chat window. An empty or default read option changes
-  // nothing on a write, so it is dropped and the write is sent once.
   it.each([
     { responseText: {} },
     { responseText: { offsetBytes: 0 } },

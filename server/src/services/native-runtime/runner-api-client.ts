@@ -90,9 +90,6 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
  */
 export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, received: Readonly<Record<string, unknown>>): void {
   assertBodyPresent(operation, input, Object.keys(received));
-  // responseText is a GET read option; validateRunnerApiCall drops it from a write. An empty or default one
-  // ({} or offsetBytes 0) changes nothing, so the write is sent. One that sets a window shows the model expects it
-  // to shape the write, and such calls tend to put request fields beside it; refuse before sending.
   if (operation.method !== "GET" && setsResponseWindow(received.responseText)) {
     throw badRequest(`This request was not sent: responseText applies only to GET reads and never carries request fields. Resend ${operation.operationId} once without responseText, with its request fields in body${requestFieldHint(operation)}.`);
   }
