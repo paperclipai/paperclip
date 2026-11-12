@@ -159,7 +159,7 @@ try {
   console.log(JSON.stringify({ baselineRevision, treatmentRevision: git("rev-parse", "HEAD").trim(),
     treatmentDiff: git("diff", "--stat", "HEAD", "--", modulePath).trim() || "none",
     node: process.version, postgres: version.split(" ").slice(0, 2).join(" "), stalls: STALLS, iterations: ITERATIONS, passes: PASSES,
-    correctness: { sameResult: true, sameStatementsAndParameters: true, waiterReadShapesCompared: waiterReadTexts.size + 1 },
+    correctness: { sameResult: true, sameStatementsAndParameters: true, waiterReadShapesCompared: waiterReadTexts.size },
     waiterRead: { sqlBytes: statements.sweep!.waiterReadBytes, parameters: statements.sweep!.waiterReadParameters }, results }, null, 2));
 } finally {
   gcObserver.disconnect();
