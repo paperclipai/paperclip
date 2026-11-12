@@ -31,7 +31,7 @@
     "packages/plugins/sdk/src/ui/types.ts": "5a5644acf6554d2e5e1d000bfd03b97d57001eb2",
     "packages/plugins/sdk/src/worker-rpc-host.ts": "3de7748e983ad1a749a7a7f62f685dab4399cdd1",
     "packages/plugins/sdk/src/workspace-operation-error.ts": "2cd247d002d83b163239229e631bca4e519e5075",
-    "packages/plugins/sdk/src/workspace-provider.ts": "dea90b92e5bf0c05062eb57598c70f370e207cea",
+    "packages/plugins/sdk/src/workspace-provider.ts": "bdfe5e91d4569df0a5d31e1bfc200aff1bf68f5b",
     "packages/plugins/sdk/tsconfig.json": "d62ebdff94bc4b75dabf1fcad187e1e7a90fc794",
     "packages/shared/package.json": "6417ef8baef0cb9b836b14f453dc8bc5025709e0",
     "packages/shared/src/__snapshots__/slack-app-manifest.test.ts.snap": "79020ba3aa6662923f70aa44e2c483844e9901d9",
