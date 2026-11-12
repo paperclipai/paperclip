@@ -180,33 +180,6 @@ describe("IssueAttachmentsSection", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("renders video attachments through the same player used for artifact outputs", async () => {
-    const attachment = makeAttachment({
-      id: "video-attachment",
-      originalFilename: "demo.webm",
-      contentType: "video/webm",
-      contentPath: "/api/attachments/video-attachment/content",
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueAttachmentsSection
-            attachments={[attachment]}
-            onDelete={vi.fn()}
-            onImageClick={vi.fn()}
-          />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    const video = container.querySelector("video");
-    expect(video?.getAttribute("src")).toBe("/api/attachments/video-attachment/content");
-    expect(video?.getAttribute("controls")).not.toBeNull();
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it("lets video attachments open the shared media gallery", async () => {
     const attachment = makeAttachment({
       id: "video-attachment",
@@ -228,6 +201,11 @@ describe("IssueAttachmentsSection", () => {
       );
     });
     await flushReact();
+
+    const video = container.querySelector("video");
+    expect(video?.getAttribute("src")).toBe("/api/attachments/video-attachment/content");
+    expect(video?.getAttribute("controls")).not.toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
 
     const browse = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Browse demo.webm in gallery"]',
@@ -326,5 +304,29 @@ describe("IssueAttachmentsSection", () => {
     expect(container.querySelector('a[aria-label="Download report.pdf"]')?.getAttribute("href")).toBe(
       "/api/attachments/pdf-attachment/content?download=1",
     );
+  });
+
+  it("can render read-only attachments without destructive controls", async () => {
+    const attachment = makeAttachment({
+      id: "read-only-pdf",
+      originalFilename: "stored-report.pdf",
+      contentType: "application/pdf",
+      contentPath: "/api/attachments/read-only-pdf/content",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection attachments={[attachment]} onImageClick={vi.fn()} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("stored-report.pdf");
+    expect(container.querySelector('a[aria-label="Open stored-report.pdf"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Download stored-report.pdf"]')).toBeTruthy();
+    expect(container.querySelector('button[title="Delete attachment"]')).toBeNull();
+    expect(container.textContent).not.toContain("Delete this attachment?");
   });
 });

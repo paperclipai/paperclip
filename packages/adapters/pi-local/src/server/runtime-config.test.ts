@@ -22,6 +22,26 @@ async function readModelsJson(agentConfigDir: string): Promise<Record<string, un
 }
 
 describe("preparePiRuntimeConfig", () => {
+  it("attributes OpenRouter aliases and model overrides while preserving routing and other providers", async () => {
+    const other = { baseUrl: "https://other.example/v1", headers: { "X-Title": "Other" } };
+    const prepared = await preparePiRuntimeConfig({ env: { PAPERCLIP_PI_PROVIDERS: JSON.stringify({
+      router: {
+        baseUrl: "https://openrouter.ai/api/v1", apiKey: "fixture-key",
+        headers: { "http-referer": "https://pi.example", "X-Route": "selected" },
+        modelOverrides: { model: { headers: { "x-title": "Pi" } } },
+      }, other, openrouter: other,
+    }) } });
+    cleanupPaths.add(prepared.env.PI_CODING_AGENT_DIR);
+    const { providers } = await readModelsJson(prepared.env.PI_CODING_AGENT_DIR) as { providers: Record<string, any> };
+    expect(providers.router).toMatchObject({ apiKey: "fixture-key", headers: { "HTTP-Referer": "https://paperclip.ing", "X-Route": "selected" } });
+    expect(providers.router.headers).not.toHaveProperty("http-referer");
+    expect(providers.router.modelOverrides.model.headers["X-Title"]).toBe("Paperclip");
+    expect(providers.router.modelOverrides.model.headers).not.toHaveProperty("x-title");
+    expect(providers.other).toEqual(other);
+    expect(providers.openrouter).toEqual(other);
+    await prepared.cleanup();
+  });
+
   it("is a no-op when PAPERCLIP_PI_PROVIDERS is unset", async () => {
     const prepared = await preparePiRuntimeConfig({ env: { FOO: "bar" } });
 

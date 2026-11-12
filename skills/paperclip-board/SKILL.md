@@ -1,10 +1,9 @@
 ---
 name: paperclip-board
 description: >
-  Manage a Paperclip company as a board member via chat. Covers onboarding
-  (company creation, CEO setup, hiring plans), agent management, approvals,
-  task monitoring, cost oversight, and work product review. Use this skill
-  whenever the user wants to interact with their Paperclip control plane.
+  Manage a Paperclip company as a board member via chat. Use when the user wants
+  onboarding, company or agent management, approvals, task monitoring, cost
+  oversight, work product review, or help finding things in the Paperclip web UI.
 ---
 
 # Paperclip Board Skill
@@ -31,7 +30,7 @@ You are a board-level assistant helping a human manage their AI-agent company th
 
 Every time you begin a new conversation with the user:
 
-1. Check if `PAPERCLIP_API_URL` is set. If not, tell the user to run `pnpm paperclipai board setup`.
+1. Check if `PAPERCLIP_API_URL` is set. If not, tell the user to run `npx paperclipai board setup`.
 2. Check if `PAPERCLIP_COMPANY_ID` is set.
    - If set: fetch the dashboard to understand current state.
    - If not set: list companies to see if any exist, or guide through company creation.
@@ -558,6 +557,18 @@ curl -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision
   }'
 ```
 2. Also update the local file at `./artifacts/decision-log.md`.
+
+## Finding Things in the Web UI
+
+When someone asks how to find, search for, or jump to tasks, projects, or agents themselves (for example "how do I quickly find X without leaving what I'm doing?"), tell them about quick search before or alongside listing results here:
+
+- **Quick search:** press **Cmd+K** (macOS) or **Ctrl+K** (Windows/Linux) on any board page. It opens over the current page, so they do not lose their place; Esc closes it.
+- The sidebar **Search** item is different: it opens the full search page, so they leave their current page.
+- Type words to match tasks, projects, and agents. They can also type operators such as `status:backlog`, `status:todo`, `assignee:me`, `project:"Launch"`, `label:bug`, `priority:high`, or `updated:>7d`. These filters take effect on the full search page; they do not narrow the quick-search results.
+- Choose **Search all** (or press Cmd/Ctrl+Enter) to open the full search page (`/{prefix}/search`). It keeps the typed text and operators as filters and adds comments, documents, and artifacts.
+- Results only include what that person is allowed to see.
+
+You cannot press keys, focus fields, or open the palette in their browser; describe the steps for them to take. You may also offer to list the matching items in chat with links.
 
 ## Presentation Rules
 

@@ -36,6 +36,9 @@ describe("resolveServerDevWatchIgnorePaths", () => {
     expect(ignorePaths).toContain(fs.realpathSync(path.join(sharedUiRoot, ".vite")));
     expect(ignorePaths).toContain(path.join(worktreeUiRoot, "dist"));
     expect(ignorePaths).toContain(fs.realpathSync(path.join(sharedUiRoot, "dist")));
+    const sharedWorktreesRoot = path.join(tempRoot, "repo", ".paperclip", "worktrees");
+    expect(ignorePaths).toContain(sharedWorktreesRoot);
+    expect(ignorePaths).toContain(`${sharedWorktreesRoot.replaceAll(path.sep, "/")}/**`);
     expect(ignorePaths).toContain("**/{node_modules,bower_components,vendor}/**");
     expect(ignorePaths).toContain("**/.vite-temp/**");
   });

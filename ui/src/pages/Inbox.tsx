@@ -1,7 +1,16 @@
+import { errorCodes, isTransientError } from "@/api/errors";
+import { useQueryView } from "@/components/QueryView";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
+import { topTaskRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
+import { describeError } from "../api/errors";
+import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
+import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
+import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -9,6 +18,8 @@ import { ApiError } from "../api/client";
 import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import { useSecondTick } from "../hooks/useSecondTick";
+import { taskRetryNotStartedReason } from "../hooks/useTaskRetry";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -20,8 +31,8 @@ import {
   type BlockedInboxSort,
 } from "../lib/blockedInbox";
 import { useCompany } from "../context/CompanyContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
@@ -29,6 +40,8 @@ import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObject
 import {
   applyIssueFilters,
   countActiveIssueFilters,
+  defaultIssueFilterState,
+  normalizeIssueFilterState,
   type IssueFilterState,
 } from "../lib/issue-filters";
 import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
@@ -41,7 +54,7 @@ import {
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
-import { prefetchIssueDetail } from "../lib/issueDetailCache";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
@@ -54,14 +67,21 @@ import {
   resolveIssueLiveDescendantCount,
 } from "../lib/inbox-live-descendants";
 import {
+  beginLocalInboxArchive,
+  boundLocalInboxArchive,
   cancelInboxIssueQueries,
+  clearLocalInboxArchive,
+  confirmLocalInboxArchive,
   invalidateInboxIssueQueries,
+  getIssuePresenceInActiveInboxCaches,
   removeIssueFromInboxCaches,
   restoreIssueToInboxCaches,
   snapshotInboxIssueCaches,
   type InboxIssueCacheSnapshot,
+  useLocalInboxArchiveIssueIds,
 } from "../lib/inboxArchiveCache";
 import { EmptyState } from "../components/EmptyState";
+import { CollectionToolbar, type CollectionToolbarProps } from "../components/CollectionToolbar";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
@@ -69,12 +89,15 @@ import {
   InboxIssueTrailingColumns,
   IssueColumnPicker,
   issueActivityText,
+  issueActivityTimestamp,
   issueTrailingColumns,
 } from "../components/IssueColumns";
 import { IssueFiltersPopover } from "../components/IssueFiltersPopover";
-import { IssueRow } from "../components/IssueRow";
+import { InboxArchiveButton, IssueRow } from "../components/IssueRow";
 import { BlockedInboxView } from "../components/BlockedInboxView";
 import { SwipeToArchive } from "../components/SwipeToArchive";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
+import { Inbox as LegacyInbox } from "./LegacyInbox";
 
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
@@ -92,13 +115,6 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Inbox as InboxIcon,
@@ -117,7 +133,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, InboxMineSnapshot, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -132,13 +148,13 @@ import {
   getInboxWorkItems,
   getInboxSearchSupplementIssues,
   getLatestFailedRunsByAgent,
+  collectReferencedExecutionWorkspaceIds,
   matchesInboxIssueSearch,
   getRecentTouchedIssues,
   isInboxEntityDismissed,
   isMineInboxTab,
   loadCollapsedInboxGroupKeys,
-  loadInboxFilterPreferences,
-  loadInboxIssueColumns,
+  loadCollapsedInboxParentIds,
   loadInboxNesting,
   loadInboxWorkItemGroupBy,
   normalizeInboxIssueColumns,
@@ -146,9 +162,8 @@ import {
   shouldResetInboxWorkspaceGrouping,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
-  saveInboxFilterPreferences,
   saveCollapsedInboxGroupKeys,
-  saveInboxIssueColumns,
+  saveCollapsedInboxParentIds,
   saveInboxNesting,
   saveInboxWorkItemGroupBy,
   type InboxWorkspaceGroupingOptions,
@@ -164,12 +179,100 @@ import {
   type InboxTab,
   type InboxWorkItem,
   type InboxWorkItemGroupBy,
+  INBOX_FILTER_PREFERENCES_KEY_PREFIX,
+  INBOX_ISSUE_COLUMNS_KEY,
+  inboxNavEntryTask,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
+import {
+  captureInboxOrderPin,
+  reconcileInboxOrderPin,
+  type InboxOrderPin,
+} from "../lib/inboxOrderPin";
+import {
+  loadTaskCollectionPreferences,
+  saveTaskCollectionPreferences,
+  type TaskCollectionPreferenceLocation,
+} from "../lib/task-collection-preferences";
+import {
+  taskDateGroup,
+  taskDateGroupSeparator,
+  type TaskDateGroup,
+} from "../lib/task-date-groups";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
-const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_ISSUE_LIST_LIMIT = 100;
 const INBOX_HOT_PATH_STALE_MS = 30_000;
+// Stable fallback so memos over unloaded or disabled issue reads do not rerun on every render.
+const NO_ISSUES: Issue[] = [];
+/** Bounds an optional read that can hold task rows hidden; a timeout reveals rows and retries in the background. */
+const INBOX_OPTIONAL_READ_TIMEOUT_MS = 10_000;
+const INBOX_COLLECTION_KEY = "inbox";
+
+type StreamlinedInboxViewState = InboxFilterPreferences & {
+  showDateGroupSeparators: boolean;
+};
+
+const DEFAULT_INBOX_FILTER_PREFERENCES: StreamlinedInboxViewState = {
+  allCategoryFilter: "everything",
+  allApprovalFilter: "all",
+  issueFilters: { ...defaultIssueFilterState },
+  showDateGroupSeparators: true,
+};
+
+function normalizeInboxCollectionViewState(value: unknown): StreamlinedInboxViewState {
+  const candidate = value && typeof value === "object"
+    ? value as Partial<StreamlinedInboxViewState>
+    : {};
+  const category = candidate.allCategoryFilter;
+  const approval = candidate.allApprovalFilter;
+  return {
+    allCategoryFilter:
+      category === "issues_i_touched"
+      || category === "join_requests"
+      || category === "approvals"
+      || category === "failed_runs"
+      || category === "alerts"
+        ? category
+        : "everything",
+    allApprovalFilter: approval === "actionable" || approval === "resolved" ? approval : "all",
+    issueFilters: {
+      ...normalizeIssueFilterState(candidate.issueFilters),
+      // The filter menu no longer offers Workspace. Drop a saved selection so
+      // it cannot keep hiding tasks. A task-link workspace query is applied
+      // by the task list after this load.
+      workspaces: [],
+    },
+    showDateGroupSeparators: candidate.showDateGroupSeparators !== false,
+  };
+}
+
+function inboxCollectionPreferenceLocation(
+  companyId: string | null | undefined,
+): TaskCollectionPreferenceLocation {
+  return {
+    companyId: companyId ?? "__unscoped__",
+    collectionKey: INBOX_COLLECTION_KEY,
+    legacyViewStorageKey: companyId
+      ? `${INBOX_FILTER_PREFERENCES_KEY_PREFIX}:${companyId}`
+      : undefined,
+    legacyColumnsStorageKey: INBOX_ISSUE_COLUMNS_KEY,
+  };
+}
+
+function loadInboxCollectionPreferences(companyId: string | null | undefined) {
+  return loadTaskCollectionPreferences({
+    ...inboxCollectionPreferenceLocation(companyId),
+    defaultViewState: DEFAULT_INBOX_FILTER_PREFERENCES,
+    defaultColumns: DEFAULT_INBOX_ISSUE_COLUMNS,
+    normalizeViewState: normalizeInboxCollectionViewState,
+    normalizeColumns: (value) => Array.isArray(value)
+      ? normalizeInboxIssueColumns(value)
+      : DEFAULT_INBOX_ISSUE_COLUMNS,
+  });
+}
 
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
@@ -179,6 +282,17 @@ type SectionKey =
 
 /** A flat navigation entry for keyboard j/k traversal that includes expanded children. */
 type NavEntry = InboxKeyboardNavEntry;
+// Stable identity for a nav row, resilient to the numeric index shifting when
+// the inbox reshapes (archive/poll). Used to re-anchor both the keyboard
+// selection and the hovered row across list refreshes.
+const navEntryKey = (entry: NavEntry | undefined): string | null =>
+  !entry
+    ? null
+    : entry.type === "top"
+      ? `top:${entry.itemKey}`
+      : entry.type === "child"
+        ? `child:${entry.issueId}`
+        : `group:${entry.groupKey}`;
 type CreatorOption = {
   id: string;
   label: string;
@@ -201,6 +315,7 @@ function approvalStatusLabel(status: Approval["status"]): string {
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
+  if (run.issueId) return run.issueId;
   const context = run.contextSnapshot;
   if (!context) return null;
 
@@ -286,13 +401,28 @@ export function FailedRunInboxRow({
 }) {
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
-  const displayError = runFailureMessage(run);
+  const interruption = issue?.interruption;
+  useSecondTick(interruption?.state === "retry_scheduled");
+  const retrySeconds = Math.max(0, Math.ceil((Date.parse(interruption?.nextRetryAt ?? "") - Date.now()) / 1000));
+  const displayError = isRetrying ? "Thinking"
+    : interruption?.retryWait ? interruption.retryWait.message
+    : interruption?.state === "working" ? "Thinking"
+    : interruption?.state === "retry_scheduled" ? `Trying again in ${retrySeconds}s…`
+      : interruption?.state === "failed" ? "Couldn’t finish this attempt. Your message is saved."
+        : interruption?.state === "waiting_for_user" ? ({
+          approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
+          resume: "Work is paused", budget: "Budget limit reached",
+          project_access: "Agent needs project access",
+          confirm_owner_stop: "Confirm the previous server stopped",
+          confirm_run_stopped: "Confirm the previous run stopped",
+        }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
+  const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group py-2.5 pl-4 pr-2 sm:py-2",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -314,23 +444,13 @@ export function FailedRunInboxRow({
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
               </button>
-            ) : onArchive ? (
-              <button
-                type="button"
-                onClick={onArchive}
-                disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
             ) : (
               <span className="inline-flex h-4 w-4" aria-hidden="true" />
             )}
           </span>
         ) : null}
         <Link
-          to={`/agents/${run.agentId}/runs/${run.id}`}
+          to={issueId ? `/issues/${issueId}` : `/agents/${run.agentId}/runs/${run.id}`}
           className={cn(
             "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors",
             selected ? "hover:bg-transparent" : "hover:bg-accent/50",
@@ -355,7 +475,7 @@ export function FailedRunInboxRow({
               )}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <StatusBadge status={run.status} />
+              {!interruption && <StatusBadge status={run.status} />}
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
               <span className="truncate max-w-(--sz-300px)">{displayError}</span>
               <span>{timeAgo(run.createdAt)}</span>
@@ -363,7 +483,10 @@ export function FailedRunInboxRow({
           </span>
         </Link>
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
-          <Button
+          {onArchive ? (
+            <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
+          ) : null}
+          {retryAvailable && <Button
             type="button"
             variant="outline"
             size="sm"
@@ -372,8 +495,8 @@ export function FailedRunInboxRow({
             disabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {isRetrying ? "Retrying…" : "Retry"}
-          </Button>
+            {isRetrying ? "Thinking" : "Retry"}
+          </Button>}
           {!showUnreadSlot && (
             <button
               type="button"
@@ -387,7 +510,7 @@ export function FailedRunInboxRow({
         </div>
       </div>
       <div className="mt-3 flex gap-2 sm:hidden">
-        <Button
+        {retryAvailable && <Button
           type="button"
           variant="outline"
           size="sm"
@@ -396,8 +519,8 @@ export function FailedRunInboxRow({
           disabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          {isRetrying ? "Retrying…" : "Retry"}
-        </Button>
+          {isRetrying ? "Thinking" : "Retry"}
+        </Button>}
         {!showUnreadSlot && (
           <button
             type="button"
@@ -448,7 +571,7 @@ function ApprovalInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group py-2.5 pl-4 pr-2 sm:py-2",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -469,16 +592,6 @@ function ApprovalInboxRow({
                   "bg-blue-600 dark:bg-blue-400",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
-              </button>
-            ) : onArchive ? (
-              <button
-                type="button"
-                onClick={onArchive}
-                disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
-              >
-                <X className="h-3.5 w-3.5" />
               </button>
             ) : (
               <span className="inline-flex h-4 w-4" aria-hidden="true" />
@@ -508,25 +621,32 @@ function ApprovalInboxRow({
             </span>
           </span>
         </Link>
-        {showResolutionButtons ? (
+        {(onArchive || showResolutionButtons) ? (
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
-            <Button
-              size="sm"
-              className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
-              onClick={onApprove}
-              disabled={isPending}
-            >
-              Approve
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              className="h-8 px-3"
-              onClick={onReject}
-              disabled={isPending}
-            >
-              Reject
-            </Button>
+            {onArchive ? (
+              <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
+            ) : null}
+            {showResolutionButtons ? (
+              <>
+                <Button
+                  size="sm"
+                  className="h-8 min-w-(--sz-64px) justify-center bg-green-700 px-3 text-white hover:bg-green-600"
+                  onClick={onApprove}
+                  disabled={isPending}
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 min-w-(--sz-64px) justify-center px-3"
+                  onClick={onReject}
+                  disabled={isPending}
+                >
+                  Reject
+                </Button>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -534,7 +654,7 @@ function ApprovalInboxRow({
         <div className="mt-3 flex gap-2 sm:hidden">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 min-w-(--sz-64px) justify-center bg-green-700 px-3 text-white hover:bg-green-600"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -543,7 +663,7 @@ function ApprovalInboxRow({
           <Button
             variant="destructive"
             size="sm"
-            className="h-8 px-3"
+            className="h-8 min-w-(--sz-64px) justify-center px-3"
             onClick={onReject}
             disabled={isPending}
           >
@@ -584,7 +704,7 @@ function JoinRequestInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group py-2.5 pl-4 pr-2 sm:py-2",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -605,16 +725,6 @@ function JoinRequestInboxRow({
                   "bg-blue-600 dark:bg-blue-400",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
-              </button>
-            ) : onArchive ? (
-              <button
-                type="button"
-                onClick={onArchive}
-                disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
-              >
-                <X className="h-3.5 w-3.5" />
               </button>
             ) : (
               <span className="inline-flex h-4 w-4" aria-hidden="true" />
@@ -638,6 +748,9 @@ function JoinRequestInboxRow({
           </span>
         </div>
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          {onArchive ? (
+            <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
+          ) : null}
           <Button
             size="sm"
             className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
@@ -680,38 +793,105 @@ function JoinRequestInboxRow({
   );
 }
 
-export function Inbox() {
+function InboxCollectionToolbar({
+  streamlined,
+  context,
+  search,
+  controls,
+  feedback,
+  ariaLabel,
+}: CollectionToolbarProps & { streamlined: boolean }) {
+  if (streamlined) {
+    return (
+      <CollectionToolbar
+        className={ariaLabel === "Tasks controls" ? "mobile-task-toolbar" : undefined}
+        ariaLabel={ariaLabel}
+        context={context}
+        search={search}
+        controls={controls}
+        feedback={feedback}
+      />
+    );
+  }
+
+  return (
+    <div role="toolbar" aria-label={ariaLabel} className="space-y-2">
+      {search ? <div className="sm:hidden">{search}</div> : null}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {context}
+        <div className="flex items-center gap-2">
+          {search ? <div className="hidden sm:block">{search}</div> : null}
+          {controls}
+        </div>
+      </div>
+      {feedback}
+    </div>
+  );
+}
+
+/**
+ * PAP-670: the inbox stopped being its own page and became the "My work" half
+ * of Tasks. `Tasks` hosts this component and drives it through these props, so
+ * every inbox behaviour (unread state, archive, date groups, the mixed
+ * approval / failed-run / join-request rows) survives the merge by construction
+ * rather than being reimplemented on the task list.
+ *
+ * With no props it is still the standalone `/inbox/*` page, which the legacy
+ * (non-streamlined) shell continues to use.
+ */
+export interface InboxSurfaceProps {
+  /** Which view to render. Falls back to the last path segment when absent. */
+  tab?: InboxTab;
+  /** Replaces the inbox tab bar in the toolbar's context slot. */
+  toolbarContext?: ReactNode;
+  /** Breadcrumb and back-link label; "Inbox" when standalone, "Tasks" when hosted. */
+  surfaceLabel?: string;
+}
+
+export function Inbox(props: InboxSurfaceProps = {}) {
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const coordinator = useCoordinatorPresentation();
+  return streamlinedUiEnabled || coordinator ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
+}
+
+function StreamlinedInbox({
+  tab: tabOverride,
+  toolbarContext,
+  surfaceLabel = "Inbox",
+}: InboxSurfaceProps) {
+  const streamlinedUiEnabled = true;
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
   const { isMobile } = useSidebar();
   const navigate = useNavigate();
+  const { pushToast } = useToastActions();
   const location = useLocation();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
-  const { keyboardShortcutsEnabled } = useGeneralSettings();
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isLoading: isSettingsLoading } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+    });
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = searchQuery.trim();
-  const [filterPreferences, setFilterPreferences] = useState<InboxFilterPreferences>(
-    () => loadInboxFilterPreferences(selectedCompanyId),
+  const [filterPreferences, setFilterPreferences] = useState<StreamlinedInboxViewState>(
+    () => loadInboxCollectionPreferences(selectedCompanyId).viewState,
   );
   const [groupBy, setGroupBy] = useState<InboxWorkItemGroupBy>(() => loadInboxWorkItemGroupBy());
   const [blockedGroupBy, setBlockedGroupBy] = useState<BlockedInboxGroupBy>("none");
   const [blockedSortBy, setBlockedSortBy] = useState<BlockedInboxSort>("most_recent");
-  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
+  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(
+    () => loadInboxCollectionPreferences(selectedCompanyId).columns,
+  );
   const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
-  const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);
+  const { dismissedAtByKey, dismiss: dismissInboxItem, isLoading: isDismissalsLoading, error: dismissalsError } = useInboxDismissals(selectedCompanyId);
   const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
   const { allCategoryFilter, allApprovalFilter, issueFilters } = filterPreferences;
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
-  const tab: InboxTab =
+  const pathTab: InboxTab =
     pathSegment === "mine"
     || pathSegment === "recent"
     || pathSegment === "all"
@@ -719,31 +899,36 @@ export function Inbox() {
     || pathSegment === "blocked"
       ? pathSegment
       : "mine";
+  const tab: InboxTab = tabOverride ?? pathTab;
   const canArchiveFromTab = isMineInboxTab(tab);
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Inbox",
+        surfaceLabel,
         `${location.pathname}${location.search}${location.hash}`,
         "inbox",
       ),
-    [location.pathname, location.search, location.hash],
+    [surfaceLabel, location.pathname, location.search, location.hash],
   );
 
-  const { data: session } = useQuery({
+  const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+  const mineContextQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "mine-context", currentUserId] as const;
+  const { data: mineSnapshot } = useQuery<InboxMineSnapshot>({ queryKey: mineContextQueryKey, enabled: false });
 
-  const { data: agents } = useQuery({
+
+  const { data: agents, isLoading: isAgentsLoading } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+  const { data: projects, isLoading: isProjectsLoading } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: labels } = useQuery({
@@ -753,17 +938,10 @@ export function Inbox() {
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
-  const { data: executionWorkspaces = [] } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
-      : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
-    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
-  });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Inbox" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: surfaceLabel }]);
+  }, [setBreadcrumbs, surfaceLabel]);
 
   useEffect(() => {
     saveLastInboxTab(tab);
@@ -775,29 +953,39 @@ export function Inbox() {
   useEffect(() => {
     if (previousSelectedCompanyIdRef.current !== selectedCompanyId) {
       previousSelectedCompanyIdRef.current = selectedCompanyId;
-      setFilterPreferences(loadInboxFilterPreferences(selectedCompanyId));
+      const preferences = loadInboxCollectionPreferences(selectedCompanyId);
+      setFilterPreferences(preferences.viewState);
+      setVisibleIssueColumns(preferences.columns);
       setCollapsedGroupKeys(loadCollapsedInboxGroupKeys(selectedCompanyId));
+      setCollapsedInboxParents(loadCollapsedInboxParentIds(selectedCompanyId));
     }
   }, [selectedCompanyId]);
 
   const {
     data: approvals,
     isLoading: isApprovalsLoading,
+    failureCount: approvalsFailureCount,
     error: approvalsError,
   } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
-    queryFn: () => approvalsApi.list(selectedCompanyId!),
+    queryFn: ({ signal }) =>
+      approvalsApi.list(selectedCompanyId!, undefined, { signal, timeoutMs: INBOX_OPTIONAL_READ_TIMEOUT_MS }),
     enabled: !!selectedCompanyId,
   });
 
   const {
     data: joinRequests = [],
     isLoading: isJoinRequestsLoading,
+    failureCount: joinRequestsFailureCount,
+    error: joinRequestsError,
   } = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return await accessApi.listJoinRequests(selectedCompanyId!, "pending_approval");
+        return await accessApi.listJoinRequests(selectedCompanyId!, "pending_approval", undefined, {
+          signal,
+          timeoutMs: INBOX_OPTIONAL_READ_TIMEOUT_MS,
+        });
       } catch (err) {
         if (err instanceof ApiError && (err.status === 403 || err.status === 401)) {
           return [];
@@ -806,83 +994,204 @@ export function Inbox() {
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
-  });
+    });
 
-  const { data: dashboard, isLoading: isDashboardLoading } = useQuery({
-    queryKey: queryKeys.dashboard(selectedCompanyId!),
+  const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
+  const sharedDashboard = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "dashboard",
+    queryKey: dashboardQueryKey,
+    enabled: !!selectedCompanyId && tab === "all",
+  });
+  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+    queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && tab === "all",
   });
+  usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const { data: issues, isLoading: isIssuesLoading } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "with-routine-executions", "live-descendant-summary"],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
-        includeRoutineExecutions: true,
-        includeLiveDescendantSummary: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
-      }),
-    enabled: !!selectedCompanyId,
+  const mineIssuesQuery = useQuery({
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, currentUserId] as const,
+    queryFn: async ({ signal }) => {
+      const snapshot = await issuesApi.inboxMine(selectedCompanyId!, { signal });
+      if (snapshot.userId !== currentUserId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+        throw new ApiError("Your account changed. Refresh the inbox.", 409, { error: "account_changed" });
+      }
+      queryClient.setQueryData(mineContextQueryKey, snapshot);
+      return snapshot.issues as Issue[];
+    },
+    enabled: !!selectedCompanyId && !!currentUserId && tab === "mine",
+    refetchOnMount: mineSnapshot ? undefined : "always",
     refetchOnWindowFocus: false,
-    staleTime: INBOX_HOT_PATH_STALE_MS,
+    staleTime: mineSnapshot ? INBOX_HOT_PATH_STALE_MS : 0,
+    // A successful aggregate can still omit a failed source. React Query's
+    // error retries do not run for that 200 response, so retry those sources.
+    refetchInterval: () => {
+      const snapshot = queryClient.getQueryData<InboxMineSnapshot>(mineContextQueryKey);
+      return [snapshot?.failureError, snapshot?.contextError].some(error =>
+        error && isTransientError(new ApiError(error.message, error.status, null))) ? 5_000 : false;
+    },
   });
-  const {
-    data: mineIssuesRaw = [],
-    isLoading: isMineIssuesLoading,
-  } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions", "live-descendant-summary"],
+  const { data: mineIssuesRaw = NO_ISSUES, isLoading: isMineIssuesLoading, error: mineIssuesError } = mineIssuesQuery;
+  const mineIssuesView = useQueryView(mineIssuesQuery);
+  const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, currentUserId] as const;
+  // Mine owns one coherent response: broadcasting only its task array would
+  // refresh that array while another tab retained stale parent/failure context.
+  // Each tab uses the authenticated aggregate read; the server coalesces it.
+
+  const touchedIssuesQuery = useQuery({
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
-        touchedByUserId: "me",
-        inboxArchivedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
-        includeRoutineExecutions: true,
-        includeLiveDescendantSummary: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
-      }),
-    enabled: !!selectedCompanyId,
-    refetchOnWindowFocus: false,
-    staleTime: INBOX_HOT_PATH_STALE_MS,
-  });
-  const {
-    data: touchedIssuesRaw = [],
-    isLoading: isTouchedIssuesLoading,
-  } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions", "live-descendant-summary"],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+      issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        projection: "index",
+        sortField: "updated",
+        sortDir: "desc",
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
-      }),
-    enabled: !!selectedCompanyId,
+      }).then((rows) => rows as Issue[]),
+    enabled: !!selectedCompanyId && (tab !== "mine" && tab !== "blocked" || normalizedSearchQuery.length > 0),
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: touchedIssuesRaw = NO_ISSUES, isLoading: isTouchedIssuesLoading, error: touchedIssuesError, dataUpdatedAt: touchedIssuesUpdatedAt } = touchedIssuesQuery;
+  const touchedIssuesView = useQueryView(touchedIssuesQuery);
+  const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
+    companyId: selectedCompanyId,
+    resourceKey: "inbox:touched-issues",
+    queryKey: touchedIssuesQueryKey,
+    enabled: !!selectedCompanyId && (tab !== "mine" && tab !== "blocked" || normalizedSearchQuery.length > 0),
+  });
+  usePublishSharedQueryData(sharedTouchedIssues, touchedIssuesRaw, touchedIssuesUpdatedAt);
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
-    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }),
-    enabled: !!selectedCompanyId,
+  const { data: otherHeartbeatRuns, isLoading: isOtherRunsLoading, error: otherRunsError } = useQuery({
+    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "inbox-failures", INBOX_HEARTBEAT_RUN_LIMIT],
+    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true, latestFailuresOnly: true }),
+    enabled: !!selectedCompanyId && tab !== "mine",
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+  const heartbeatRuns = tab === "mine" ? mineSnapshot?.failureRuns : otherHeartbeatRuns;
+  const isRunsLoading = tab === "mine" ? !!currentUserId && !mineSnapshot && !mineIssuesError : isOtherRunsLoading;
+  const runsError = tab === "mine" && mineSnapshot?.failureError
+    ? new ApiError(mineSnapshot.failureError.message, mineSnapshot.failureError.status, null) : tab === "mine" ? null : otherRunsError;
+  const bundledContextIds = useMemo(() => new Set(tab === "mine" && mineSnapshot ? [
+    ...mineSnapshot.issues.map((issue) => issue.parentId).filter((id): id is string => Boolean(id)),
+    ...mineSnapshot.failureRuns.map(readIssueIdFromRun).filter((id): id is string => Boolean(id)),
+  ] : []), [tab, mineSnapshot]);
+  const { parentContextIds, failureContextIds, contextIssueIds } = useMemo(() => {
+    const sourceIssues = tab === "mine" ? mineIssuesRaw : touchedIssuesRaw;
+    const loadedIds = new Set(sourceIssues.map((issue) => issue.id));
+    // Failure cards need interruption state even when their task is already in
+    // the index. Parent captions only need index metadata.
+    const failureIds = new Set((heartbeatRuns ?? []).map(readIssueIdFromRun)
+      .filter((id): id is string => Boolean(id))
+      .filter((id) => !bundledContextIds.has(id)));
+    const parentIds = new Set(sourceIssues.map((issue) => issue.parentId)
+      .filter((id): id is string => Boolean(id))
+      .filter((id) => !loadedIds.has(id) && !failureIds.has(id) && !bundledContextIds.has(id)));
+    return {
+      parentContextIds: [...parentIds].sort(),
+      failureContextIds: [...failureIds].sort(),
+      contextIssueIds: new Set([...parentIds, ...failureIds]),
+    };
+  }, [tab, mineIssuesRaw, touchedIssuesRaw, heartbeatRuns, bundledContextIds]);
+  const needsIssueContext = !!selectedCompanyId && contextIssueIds.size > 0 && tab !== "blocked"
+    && (tab !== "mine" || !!mineSnapshot || !!mineIssuesError);
+  const {
+    data: issueContext,
+    isLoading: isContextIssuesLoading,
+    isPlaceholderData: isContextIssuesPlaceholder,
+    error: extraContextIssuesError,
+  } = useQuery<{
+    companyId: string | null;
+    userId: string | null;
+    issues: Issue[];
+    failureIssueIds: string[];
+  }>({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "row-context", "parent-index-with-failure-state", parentContextIds, failureContextIds, currentUserId],
+    placeholderData: (previous) => needsIssueContext && previous?.companyId === selectedCompanyId && previous.userId === currentUserId
+      ? { ...previous, issues: previous.issues.filter((issue) => contextIssueIds.has(issue.id)) }
+      : undefined,
+    queryFn: async ({ signal }) => {
+      const loadContext = async (ids: string[], projection: "index" | "rows") => {
+        const result: Issue[] = [];
+        for (let offset = 0; offset < ids.length; offset += 100) {
+          result.push(...await issuesApi.listCompact(selectedCompanyId!, {
+            ids: ids.slice(offset, offset + 100), projection, limit: 100,
+            includeRoutineExecutions: true,
+          }, { signal }) as Issue[]);
+        }
+        return result;
+      };
+      const [parents, failures] = await Promise.all([
+        loadContext(parentContextIds, "index"),
+        loadContext(failureContextIds, "rows"),
+      ]);
+      // A completed failure read also establishes absence for filtered/missing
+      // tasks. Parent-only placeholders cannot supply this coverage.
+      return { companyId: selectedCompanyId, userId: currentUserId, issues: [...parents, ...failures], failureIssueIds: failureContextIds };
+    },
+    enabled: needsIssueContext,
+  });
+  const contextIssuesError = extraContextIssuesError ?? (tab === "mine" && mineSnapshot?.contextError
+    ? new ApiError(mineSnapshot.contextError.message, mineSnapshot.contextError.status, null) : null);
+  const contextIssues = useMemo(() => {
+    if (tab !== "mine" || !mineSnapshot) return issueContext?.issues ?? [];
+    const sourceIds = new Set(mineIssuesRaw.map((issue) => issue.id));
+    const parentIds = new Set(mineIssuesRaw.map((issue) => issue.parentId));
+    return [
+      ...mineSnapshot.issues.filter((issue) => !sourceIds.has(issue.id) && parentIds.has(issue.id)),
+      ...mineSnapshot.contextIssues.filter((issue) => parentIds.has(issue.id) || mineSnapshot.failureIssueIds.includes(issue.id)),
+      ...(issueContext?.issues ?? []),
+    ] as Issue[];
+  }, [tab, mineSnapshot, mineIssuesRaw, issueContext]);
+  const knownFailureContextIds = useMemo(() => new Set([
+    ...(tab === "mine" ? mineSnapshot?.failureIssueIds ?? [] : []), ...(issueContext?.failureIssueIds ?? []),
+  ]), [tab, mineSnapshot, issueContext]);
+  const issues = useMemo(() => [...mineIssuesRaw, ...touchedIssuesRaw, ...contextIssues], [mineIssuesRaw, touchedIssuesRaw, contextIssues]);
+  const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
+    enabled: !!selectedCompanyId,
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
+  });
+  const { data: liveRuns, isLoading: isLiveRunsLoading, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
   });
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-  const { data: companyMembers } = useQuery({
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
+  const {
+    data: companyMembers,
+    isLoading: isMembersLoading,
+    failureCount: membersFailureCount,
+  } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
-    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    queryFn: ({ signal }) =>
+      accessApi.listUserDirectory(selectedCompanyId!, { signal, timeoutMs: INBOX_OPTIONAL_READ_TIMEOUT_MS }),
     enabled: !!selectedCompanyId,
   });
-  const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+  const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
+  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
+  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
+  const guardedArchiveIssueIds = useLocalInboxArchiveIssueIds(selectedCompanyId);
+  const locallyArchivedIssueIds = useMemo(() => {
+    const issueIds = new Set(guardedArchiveIssueIds);
+    for (const issueId of undoableArchiveIssueIds) issueIds.add(issueId);
+    for (const issueId of archivingIssueIds) issueIds.add(issueId);
+    for (const issueId of unarchivingIssueIds) issueIds.delete(issueId);
+    return issueIds;
+  }, [archivingIssueIds, guardedArchiveIssueIds, undoableArchiveIssueIds, unarchivingIssueIds]);
 
   const companyUserLabelMap = useMemo(
     () => buildCompanyUserLabelMap(companyMembers?.users),
@@ -893,27 +1202,63 @@ export function Inbox() {
     [companyMembers?.users],
   );
 
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
-  const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
+  const mineIssues = useMemo(
+    () => getRecentTouchedIssues(mineIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+    [locallyArchivedIssueIds, mineIssuesRaw],
+  );
+  const touchedIssues = useMemo(
+    () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+    [locallyArchivedIssueIds, touchedIssuesRaw],
+  );
+  const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw]);
+  const sourceSearchQuery = useQuery<Issue[]>({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "inbox-source-search", normalizedSearchQuery, sourceSearchIds],
+    queryFn: async ({ signal }) => {
+      const matches: Issue[] = [];
+      for (let offset = 0; offset < sourceSearchIds.length; offset += 100) {
+        matches.push(...await issuesApi.listCompact(selectedCompanyId!, {
+          ids: sourceSearchIds.slice(offset, offset + 100), q: normalizedSearchQuery,
+          projection: "index", includeRoutineExecutions: true, limit: 100,
+        }, { signal }) as Issue[]);
+      }
+      return matches;
+    },
+    enabled: !!selectedCompanyId && normalizedSearchQuery.length > 0 && sourceSearchIds.length > 0,
+  });
+  const { data: sourceSearchMatches = [], isLoading: isSourceSearchLoading, error: sourceSearchError } = sourceSearchQuery;
+  const sourceSearchView = useQueryView(sourceSearchQuery);
+  const sourceSearchMatchIds = useMemo(() => new Set(sourceSearchMatches.map((issue) => issue.id)), [sourceSearchMatches]);
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
-  const { data: remoteIssueSearchResults = [] } = useQuery({
+  const { data: remoteIssueSearchResults = NO_ISSUES } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
+      "compact",
       "inbox-supplement",
+      issueFilters.showAgentCreatedTasks,
       "live-descendant-summary",
     ],
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+      issuesApi.listCompact(selectedCompanyId!, {
         q: normalizedSearchQuery,
         limit: 25,
+        includeAgentCreatedTasks: issueFilters.showAgentCreatedTasks,
+        includeParticipatedTasks: true,
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
-      }),
+      }).then((rows) => rows as Issue[]),
     enabled: shouldUseIssueSearchSupplement,
-    placeholderData: (previousData) => previousData,
   });
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(liveRuns, [
+      ...(issues ?? []),
+      ...mineIssuesRaw,
+      ...touchedIssuesRaw,
+      ...remoteIssueSearchResults,
+    ]),
+    [issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw],
+  );
   const inboxIssueIdsForExternalObjectSummaries = useMemo(() => {
     const issueIds = new Set<string>();
     for (const issue of mineIssues) issueIds.add(issue.id);
@@ -921,10 +1266,34 @@ export function Inbox() {
     for (const issue of remoteIssueSearchResults) issueIds.add(issue.id);
     return [...issueIds];
   }, [mineIssues, remoteIssueSearchResults, touchedIssues]);
+  // Only the workspaces these rows reference; a company-wide list can be thousands of rows.
+  const referencedExecutionWorkspaceIds = useMemo(
+    () => collectReferencedExecutionWorkspaceIds(issues, remoteIssueSearchResults),
+    [issues, remoteIssueSearchResults],
+  );
+  const referencedExecutionWorkspaceIdsKey = referencedExecutionWorkspaceIds.join(",");
+  const workspaceLookupEnabled = !!selectedCompanyId && isolatedWorkspacesEnabled && referencedExecutionWorkspaceIds.length > 0;
+  const {
+    data: executionWorkspaces = [],
+    isLoading: isWorkspacesLoading,
+    isPlaceholderData: isWorkspacesPlaceholder,
+  } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.summaryList(selectedCompanyId ?? "__disabled__", {
+      ids: referencedExecutionWorkspaceIdsKey,
+    }),
+    queryFn: () => executionWorkspacesApi.listSummariesByIds(selectedCompanyId!, referencedExecutionWorkspaceIds),
+    enabled: workspaceLookupEnabled,
+    // Keep names visible while this company's id set changes; never carry them across companies
+    // or into a view that needs no lookup, where a placeholder would never be replaced.
+    placeholderData: (previous, previousQuery) =>
+      workspaceLookupEnabled && previousQuery?.queryKey[1] === selectedCompanyId ? previous : undefined,
+  });
   const {
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
     isReady: externalObjectSummariesReady,
+    error: externalObjectSummariesError,
+    refetch: retryExternalObjectSummaries,
   } = useIssueExternalObjectSummaries(
     selectedCompanyId,
     inboxIssueIdsForExternalObjectSummaries,
@@ -934,11 +1303,11 @@ export function Inbox() {
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
     [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
     [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const unreadTouchedIssues = useMemo(
@@ -1102,13 +1471,21 @@ export function Inbox() {
     () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
     [availableIssueColumnSet, visibleIssueColumnSet],
   );
+  const visibleTaskDataColumns = useMemo(
+    () => visibleTrailingIssueColumns.filter((column) => column !== "updated"),
+    [visibleTrailingIssueColumns],
+  );
+  const showTaskTimestamp = visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated");
 
   const failedRuns = useMemo(
     () =>
-      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
-        (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt),
-      ),
-    [heartbeatRuns, dismissedAtByKey],
+      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((run) => {
+        const issueId = readIssueIdFromRun(run);
+        return !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt)
+          && (!issueId || knownFailureContextIds.has(issueId) || !!contextIssuesError)
+          && issueById.get(issueId ?? "")?.interruption?.state !== "resolved";
+      }),
+    [heartbeatRuns, dismissedAtByKey, issueById, knownFailureContextIds, contextIssuesError],
   );
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
@@ -1130,8 +1507,9 @@ export function Inbox() {
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
     if (tab === "all" && !showFailedRunsCategory) return [];
+    if (tab === "mine") return failedRuns.filter((run) => isHeartbeatRunVisibleInMine(run, currentUserId));
     return failedRuns;
-  }, [failedRuns, tab, showFailedRunsCategory]);
+  }, [failedRuns, tab, showFailedRunsCategory, currentUserId]);
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -1160,6 +1538,7 @@ export function Inbox() {
     return workItemsToRender.filter((item) => {
       if (item.kind === "issue") {
         return matchesInboxIssueSearch(item.issue, q, {
+          matchedIssueIds: sourceSearchMatchIds,
           isolatedWorkspacesEnabled,
           executionWorkspaceById,
           projectWorkspaceById,
@@ -1203,6 +1582,7 @@ export function Inbox() {
     issueById,
     isolatedWorkspacesEnabled,
     normalizedSearchQuery,
+    sourceSearchMatchIds,
     projectWorkspaceById,
   ]);
 
@@ -1213,6 +1593,7 @@ export function Inbox() {
           visibleIssues: visibleMineIssues,
           searchableIssues: visibleTouchedIssues,
           query: normalizedSearchQuery,
+          matchedIssueIds: sourceSearchMatchIds,
           isolatedWorkspacesEnabled,
           executionWorkspaceById,
           projectWorkspaceById,
@@ -1224,6 +1605,7 @@ export function Inbox() {
       executionWorkspaceById,
       isolatedWorkspacesEnabled,
       normalizedSearchQuery,
+      sourceSearchMatchIds,
       projectWorkspaceById,
       tab,
       visibleMineIssues,
@@ -1239,7 +1621,7 @@ export function Inbox() {
         remoteIssues: remoteIssueSearchResults,
         issueFilters,
         currentUserId,
-        enableRoutineVisibilityFilter: true,
+        enableAgentCreatedVisibilityFilter: false,
         liveIssueIds,
         issueFilterContext,
       }),
@@ -1277,7 +1659,9 @@ export function Inbox() {
       return next;
     });
   }, []);
-  const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(new Set());
+  const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(
+    () => loadCollapsedInboxParentIds(selectedCompanyId),
+  );
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => loadCollapsedInboxGroupKeys(selectedCompanyId));
   const toggleGroupCollapse = useCallback((groupKey: string) => {
     setCollapsedGroupKeys((prev) => {
@@ -1298,7 +1682,7 @@ export function Inbox() {
       return next;
     });
   }, [selectedCompanyId]);
-  const groupedSections = useMemo<InboxGroupedSection[]>(() => [
+  const freshGroupedSections = useMemo<InboxGroupedSection[]>(() => [
     ...buildGroupedInboxSections(filteredWorkItems, groupBy, inboxWorkspaceGrouping, { nestingEnabled }),
     ...buildGroupedInboxSections(
       getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
@@ -1321,6 +1705,79 @@ export function Inbox() {
     nestingEnabled,
   ]);
 
+  // --- Order pinning (PAP-16015) ---
+  // The freshly computed sort is only *displayed* at attention boundaries. Between
+  // them we reconcile the fresh sections against the last committed order so that
+  // archiving mid-engagement (which drops rows from the caches, and can lower a
+  // parent's subtree-max sort ts) can no longer reshuffle the list under the
+  // cursor. New items still land at their algorithmic position; archived rows hold
+  // their slot for the 5s undo grace before collapsing. See `inboxOrderPin.ts`.
+  const orderPinRef = useRef<InboxOrderPin>({ sections: [] });
+  // Bumped by an attention commit to force `groupedSections` to adopt the fresh order.
+  const [orderCommitToken, setOrderCommitToken] = useState(0);
+  const orderCommitRequestedRef = useRef(false);
+  const commitInboxOrder = useCallback(() => {
+    orderCommitRequestedRef.current = true;
+    setOrderCommitToken((token) => token + 1);
+  }, []);
+
+  // Distinct view = distinct pin. Switching tab/filter/search/grouping resets the
+  // held order so we never carry one view's layout into another.
+  const inboxSortViewIdentity = useMemo(
+    () =>
+      JSON.stringify([
+        selectedCompanyId,
+        tab,
+        groupBy,
+        nestingEnabled,
+        normalizedSearchQuery,
+        allCategoryFilter,
+        allApprovalFilter,
+        issueFilters,
+      ]),
+    [
+      allApprovalFilter,
+      allCategoryFilter,
+      groupBy,
+      issueFilters,
+      nestingEnabled,
+      normalizedSearchQuery,
+      selectedCompanyId,
+      tab,
+    ],
+  );
+  // Adopt the fresh order in the SAME render the view identity changes, so a
+  // section key shared between the two views never briefly shows the previous
+  // view's order before the hook's passive commit effect runs.
+  const previousInboxSortViewIdentityRef = useRef(inboxSortViewIdentity);
+  if (previousInboxSortViewIdentityRef.current !== inboxSortViewIdentity) {
+    previousInboxSortViewIdentityRef.current = inboxSortViewIdentity;
+    orderCommitRequestedRef.current = true;
+  }
+
+  const groupedSections = useMemo<InboxGroupedSection[]>(() => {
+    const nowMs = Date.now();
+    // An attention boundary (or a view change) fired: adopt the fresh order
+    // wholesale and re-pin it.
+    if (orderCommitRequestedRef.current) {
+      orderCommitRequestedRef.current = false;
+      orderPinRef.current = captureInboxOrderPin(freshGroupedSections);
+      return freshGroupedSections;
+    }
+    const { sections, pin } = reconcileInboxOrderPin(orderPinRef.current, freshGroupedSections, nowMs);
+    orderPinRef.current = pin;
+    return sections;
+    // orderCommitToken forces re-adoption at a commit boundary; inboxSortViewIdentity
+    // forces it on a view change even when the fresh sections keep their identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
+
+  const inboxSortAttention = useInboxSortAttention({
+    viewIdentity: inboxSortViewIdentity,
+    onCommit: commitInboxOrder,
+  });
+  const noteInboxSortInteraction = inboxSortAttention.noteInteraction;
+
   const openCreateIssueForGroup = useCallback((group: InboxGroupedSection) => {
     const defaults = buildInboxIssueGroupCreateDefaults(
       group.key,
@@ -1340,14 +1797,29 @@ export function Inbox() {
       const next = new Set(prev);
       if (next.has(parentId)) next.delete(parentId);
       else next.add(parentId);
+      saveCollapsedInboxParentIds(selectedCompanyId, next);
       return next;
     });
-  }, []);
+  }, [selectedCompanyId]);
+  const setInboxParentCollapsed = useCallback((parentId: string, collapsed: boolean) => {
+    setCollapsedInboxParents((prev) => {
+      if (prev.has(parentId) === collapsed) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(parentId);
+      else next.delete(parentId);
+      saveCollapsedInboxParentIds(selectedCompanyId, next);
+      return next;
+    });
+  }, [selectedCompanyId]);
 
   // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
   const flatNavItems = useMemo((): NavEntry[] => {
     return buildInboxKeyboardNavEntries(groupedSections, collapsedGroupKeys, collapsedInboxParents);
   }, [collapsedGroupKeys, collapsedInboxParents, groupedSections]);
+  // Read the current nav list from event handlers without recreating them (and
+  // without capturing a stale array), so hover can resolve the row's key.
+  const flatNavItemsRef = useRef(flatNavItems);
+  flatNavItemsRef.current = flatNavItems;
   // Roll live descendant runs up to their ancestors across the loaded inbox tree
   // so a parent that is not itself live can still surface "n live below".
   const subtreeLiveCounts = useMemo(() => {
@@ -1397,8 +1869,11 @@ export function Inbox() {
   const setIssueColumns = useCallback((next: InboxIssueColumn[]) => {
     const normalized = normalizeInboxIssueColumns(next);
     setVisibleIssueColumns(normalized);
-    saveInboxIssueColumns(normalized);
-  }, []);
+    saveTaskCollectionPreferences(inboxCollectionPreferenceLocation(selectedCompanyId), {
+      viewState: filterPreferences,
+      columns: normalized,
+    });
+  }, [filterPreferences, selectedCompanyId]);
   const toggleIssueColumn = useCallback((column: InboxIssueColumn, enabled: boolean) => {
     if (enabled) {
       setIssueColumns([...visibleIssueColumns, column]);
@@ -1407,14 +1882,17 @@ export function Inbox() {
     setIssueColumns(visibleIssueColumns.filter((value) => value !== column));
   }, [setIssueColumns, visibleIssueColumns]);
   const updateFilterPreferences = useCallback(
-    (updater: (previous: InboxFilterPreferences) => InboxFilterPreferences) => {
+    (updater: (previous: StreamlinedInboxViewState) => StreamlinedInboxViewState) => {
       setFilterPreferences((previous) => {
         const next = updater(previous);
-        saveInboxFilterPreferences(selectedCompanyId, next);
+        saveTaskCollectionPreferences(inboxCollectionPreferenceLocation(selectedCompanyId), {
+          viewState: next,
+          columns: visibleIssueColumns,
+        });
         return next;
       });
     },
-    [selectedCompanyId],
+    [selectedCompanyId, visibleIssueColumns],
   );
   const updateIssueFilters = useCallback((patch: Partial<IssueFilterState>) => {
     updateFilterPreferences((previous) => ({
@@ -1450,7 +1928,7 @@ export function Inbox() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(describeError(err, { action: "approve this request" }).body);
     },
   });
 
@@ -1461,7 +1939,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(describeError(err, { action: "reject this request" }).body);
     },
   });
 
@@ -1476,7 +1954,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(describeError(err).body);
     },
   });
 
@@ -1489,39 +1967,63 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(describeError(err).body);
     },
   });
 
   const [retryingRunIds, setRetryingRunIds] = useState<Set<string>>(new Set());
+  const retryRequestKeys = useRef(new Map<string, string>());
 
   const retryRunMutation = useMutation({
     mutationFn: async (run: HeartbeatRun) => {
-      const payload: Record<string, unknown> = {};
-      const context = run.contextSnapshot as Record<string, unknown> | null;
-      if (context) {
-        if (typeof context.issueId === "string" && context.issueId) payload.issueId = context.issueId;
-        if (typeof context.taskId === "string" && context.taskId) payload.taskId = context.taskId;
-        if (typeof context.taskKey === "string" && context.taskKey) payload.taskKey = context.taskKey;
+      const issueId = readIssueIdFromRun(run);
+      if (issueId) {
+        let idempotencyKey = retryRequestKeys.current.get(run.id);
+        if (!idempotencyKey) {
+          idempotencyKey = crypto.randomUUID();
+          retryRequestKeys.current.set(run.id, idempotencyKey);
+        }
+        const result = await issuesApi.retryTask(issueId, { idempotencyKey, observedRunId: run.id }).catch(error => {
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500)
+            retryRequestKeys.current.delete(run.id);
+          throw error;
+        });
+        queryClient.setQueryData<Issue>(queryKeys.issues.detail(issueId), current =>
+          current ? { ...current, interruption: result.presentation } : current);
+        const notStarted = taskRetryNotStartedReason(result);
+        if (notStarted) {
+          retryRequestKeys.current.delete(run.id);
+          await Promise.all([queryKeys.issues.listMineByMe(run.companyId), queryKeys.heartbeats(run.companyId),
+            queryKeys.heartbeats(run.companyId, run.agentId)].map(queryKey => queryClient.invalidateQueries({ queryKey })));
+          throw new Error(notStarted);
+        }
+        return { newRun: { runId: null, issueId }, originalRun: run };
       }
-      const result = await agentsApi.wakeup(run.agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: "retry_failed_run",
-        payload,
-      });
-      if (!("id" in result)) {
-        throw new Error(result.message ?? "Retry was skipped.");
-      }
+      const result = await agentsApi.retryFailedRun(
+        run.agentId,
+        run.id,
+        run.companyId,
+      );
       return { newRun: result, originalRun: run };
     },
     onMutate: (run) => {
       setRetryingRunIds((prev) => new Set(prev).add(run.id));
     },
     onSuccess: ({ newRun, originalRun }) => {
+      retryRequestKeys.current.delete(originalRun.id);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
-      navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
+      if (newRun.runId)
+        navigate(`/agents/${originalRun.agentId}/runs/${newRun.runId}`);
+      else if (newRun.issueId) navigate(`/issues/${newRun.issueId}`);
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Run retry failed",
+        body: error instanceof Error ? error.message : "Unable to retry run",
+        tone: "error",
+      });
     },
     onSettled: (_data, _error, run) => {
       if (!run) return;
@@ -1535,9 +2037,6 @@ export function Inbox() {
 
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
-  const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
-  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
-  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
   const [fadingNonIssueItems, setFadingNonIssueItems] = useState<Set<string>>(new Set());
   const [archivingNonIssueIds, setArchivingNonIssueIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
@@ -1553,10 +2052,24 @@ export function Inbox() {
     window.addEventListener("mousemove", handlePointerMove, { passive: true });
     return () => window.removeEventListener("mousemove", handlePointerMove);
   }, []);
+  // Which row the cursor is over, tracked WITHOUT React state so scrubbing the
+  // list costs zero re-renders (hover paints via CSS `:hover`, see IssueRow).
+  // Keyboard nav reads this to continue from the hovered row.
+  const hoveredIndexRef = useRef<number | null>(null);
+  // The hovered row's stable key, kept alongside the numeric index so a poll
+  // that reshapes the list can re-anchor the hover to the same row instead of
+  // dropping it (which stranded j/k back at the top — PAP-9679 regression).
+  const hoveredNavKeyRef = useRef<string | null>(null);
   const setSelectedIndexFromPointer = useCallback((idx: number) => {
     if (!pointerMovedSinceKeyNavRef.current) return;
-    setSelectedIndex(idx);
-  }, []);
+    noteInboxSortInteraction();
+    hoveredIndexRef.current = idx;
+    hoveredNavKeyRef.current = navEntryKey(flatNavItemsRef.current[idx]);
+    // Drop any keyboard selection band the moment the mouse takes over, so we
+    // never show two identical highlights at once. React bails out when the
+    // value is already -1, so continuous hovering triggers no re-render.
+    setSelectedIndex((prev) => (prev < 0 ? prev : -1));
+  }, [noteInboxSortInteraction]);
 
   const invalidateInboxIssueQueryCaches = () => {
     if (!selectedCompanyId) return;
@@ -1566,19 +2079,23 @@ export function Inbox() {
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
+      // Keep the sort pinned: archiving is engagement, so defer any idle re-sort.
+      noteInboxSortInteraction();
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
 
       if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
+      beginLocalInboxArchive(selectedCompanyId, id);
 
       await cancelInboxIssueQueries(queryClient, selectedCompanyId);
       const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
 
-      return { previousData };
+      return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      setActionError(describeError(err).body);
+      if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
@@ -1589,14 +2106,20 @@ export function Inbox() {
         restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
     },
-    onSettled: (_data, _error, id) => {
+    onSettled: async (_data, error, id, context) => {
       // Clean up archiving state and refetch to sync with server
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
-      invalidateInboxIssueQueryCaches();
+      if (!context?.companyId) return;
+      if (!error) boundLocalInboxArchive(context.companyId, id);
+      await invalidateInboxIssueQueries(queryClient, context.companyId);
+      if (!error) {
+        const presence = getIssuePresenceInActiveInboxCaches(queryClient, context.companyId, id);
+        if (presence !== "unknown") confirmLocalInboxArchive(context.companyId, id);
+      }
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => [...prev.filter((issueId) => issueId !== id), id]);
@@ -1608,9 +2131,15 @@ export function Inbox() {
     onMutate: (id) => {
       setActionError(null);
       setUnarchivingIssueIds((prev) => new Set(prev).add(id));
+      if (selectedCompanyId) clearLocalInboxArchive(selectedCompanyId, id);
+      return { companyId: selectedCompanyId };
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+    onError: (err, id, context) => {
+      setActionError(describeError(err).body);
+      if (context?.companyId) {
+        beginLocalInboxArchive(context.companyId, id);
+        boundLocalInboxArchive(context.companyId, id);
+      }
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => {
@@ -1692,6 +2221,7 @@ export function Inbox() {
   }, [markItemRead]);
 
   const handleArchiveNonIssue = useCallback((key: string) => {
+    noteInboxSortInteraction();
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
     setTimeout(() => {
       if (key.startsWith("alert:")) {
@@ -1705,7 +2235,7 @@ export function Inbox() {
         return next;
       });
     }, 200);
-  }, [dismissAlert, dismissInboxItem]);
+  }, [dismissAlert, dismissInboxItem, noteInboxSortInteraction]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -1721,16 +2251,16 @@ export function Inbox() {
   // numeric index onto a neighboring row (and Enter would open the wrong
   // task). Falls back to clamping when the item is gone; never auto-selects
   // on initial load.
-  const navEntryKey = (entry: NavEntry | undefined): string | null =>
-    !entry
-      ? null
-      : entry.type === "top"
-        ? `top:${entry.itemKey}`
-        : entry.type === "child"
-          ? `child:${entry.issueId}`
-          : `group:${entry.groupKey}`;
   const selectedNavKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    // A reshaped list invalidates the numeric hover index. Re-anchor it to the
+    // same row by key (the inbox polls constantly, so nulling it here silently
+    // broke hover→j/k sync — PAP-9679). Drop it only when the row is gone.
+    const hoveredKey = hoveredNavKeyRef.current;
+    const nextHovered =
+      hoveredKey === null ? -1 : flatNavItems.findIndex((entry) => navEntryKey(entry) === hoveredKey);
+    hoveredIndexRef.current = nextHovered >= 0 ? nextHovered : null;
+    if (nextHovered < 0) hoveredNavKeyRef.current = null;
     setSelectedIndex((prev) => {
       if (prev < 0) return resolveInboxSelectionIndex(prev, flatNavItems.length);
       const prevKey = selectedNavKeyRef.current;
@@ -1743,6 +2273,12 @@ export function Inbox() {
   useEffect(() => {
     selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItems[selectedIndex]) : null;
   }, [flatNavItems, selectedIndex]);
+
+  useEffect(() => {
+    setUndoableArchiveIssueIds((prev) =>
+      prev.filter((issueId) => guardedArchiveIssueIds.has(issueId) || unarchivingIssueIds.has(issueId)),
+    );
+  }, [guardedArchiveIssueIds, unarchivingIssueIds]);
 
   useEffect(() => {
     setUndoableArchiveIssueIds([]);
@@ -1786,6 +2322,7 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   });
   kbActionsRef.current = {
@@ -1797,13 +2334,12 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   };
 
   // Keyboard shortcuts (mail-client style) — single stable listener using refs
   useEffect(() => {
-    if (!keyboardShortcutsEnabled) return;
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
 
@@ -1847,7 +2383,10 @@ export function Inbox() {
       const navCount = navItems.length;
       if (navCount === 0) return;
 
-      /** Resolve the nav entry at selectedIndex to an issue (for child entries) or work item. */
+      // Any inbox keystroke (nav, archive, undo) is engagement: hold the sort.
+      noteInboxSortInteraction();
+
+      /** Resolve the nav entry at an index to an issue (for child entries) or work item. */
       const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
         const entry = navItems[idx];
         if (!entry) return {};
@@ -1856,36 +2395,62 @@ export function Inbox() {
         return {};
       };
 
+      // The row a keystroke acts on: the hovered row when the mouse has moved
+      // since the last key nav (so "hover a row → press a/r/Enter/Arrow" acts on
+      // it), otherwise the keyboard selection. Hover no longer writes selection
+      // state, so this is what threads the pointer position into every handler.
+      const rawHovered = hoveredIndexRef.current;
+      const hoveredIndex = rawHovered != null && rawHovered >= 0 && rawHovered < navCount ? rawHovered : -1;
+      const fromHover = pointerMovedSinceKeyNavRef.current && hoveredIndex >= 0;
+      const effectiveIndex = fromHover ? hoveredIndex : st.selectedIndex;
+
       switch (e.key) {
         case "j":
         case "ArrowDown": {
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
+          setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "next"));
           break;
         }
         case "k":
         case "ArrowUp": {
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
+          setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "previous"));
           break;
         }
         case "ArrowLeft":
         case "ArrowRight": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
-          const entry = navItems[st.selectedIndex];
-          if (!entry || entry.type !== "group") return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
+          const entry = navItems[effectiveIndex];
+          if (!entry) return;
+          if (entry.type === "group") {
+            e.preventDefault();
+            pointerMovedSinceKeyNavRef.current = false;
+            setSelectedIndex(effectiveIndex);
+            act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+            break;
+          }
+          // Parent tasks collapse/expand with the same keys as groups.
+          const { issue, item } = resolveNavEntry(effectiveIndex);
+          const targetIssue = issue ?? (item?.kind === "issue" ? item.issue : null);
+          if (!targetIssue) return;
+          const hasChildren = st.workItems.some(
+            (group) => (group.childrenByIssueId.get(targetIssue.id)?.length ?? 0) > 0,
+          );
+          if (!hasChildren) return;
           e.preventDefault();
-          act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+          pointerMovedSinceKeyNavRef.current = false;
+          setSelectedIndex(effectiveIndex);
+          act.setInboxParentCollapsed(targetIssue.id, e.key === "ArrowLeft");
           break;
         }
         case "a":
         case "y": {
           if (!st.canArchive) return;
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             if (!st.nonInboxSearchIssueIds.has(issue.id) && !st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
           } else if (item) {
@@ -1902,9 +2467,9 @@ export function Inbox() {
         }
         case "U": {
           if (!st.canArchive) return;
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             act.markUnreadIssue(issue.id);
           } else if (item) {
@@ -1915,9 +2480,9 @@ export function Inbox() {
         }
         case "r": {
           if (!st.canArchive) return;
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             if (issue.isUnreadForMe && !st.fadingOutIssues.has(issue.id)) act.markRead(issue.id);
           } else if (item) {
@@ -1931,14 +2496,14 @@ export function Inbox() {
           break;
         }
         case "Enter": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetail(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue, history: true });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -1947,7 +2512,7 @@ export function Inbox() {
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetail(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue, history: true });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
@@ -1963,7 +2528,7 @@ export function Inbox() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [issueLinkState, keyboardShortcutsEnabled]);
+  }, [issueLinkState, noteInboxSortInteraction]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -1972,10 +2537,6 @@ export function Inbox() {
     const row = rows[selectedIndex];
     if (row) row.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
-
-  if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
-  }
 
   const hasRunFailures = failedRuns.length > 0;
   const showCompanyAlerts = shouldShowCompanyAlerts(tab) && showAlertsCategory;
@@ -2007,80 +2568,136 @@ export function Inbox() {
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
-  const allLoaded =
-    !isJoinRequestsLoading &&
-    !isApprovalsLoading &&
+  // Workspace names change what rows show (grouping, the Workspace column) or which rows match a
+  // search, so wait for them only then; otherwise rows reveal without the workspace read.
+  const workspaceDataAffectsRows = groupBy === "workspace"
+    || (visibleIssueColumnSet.has("workspace") && availableIssueColumnSet.has("workspace"))
+    || normalizedSearchQuery.length > 0;
+  // Approvals and join requests sort in among task rows by time, so a late arrival would push
+  // rows down. Wait for their first bounded attempt only; a failure or timeout reveals rows.
+  const approvalsAffectRows = tab !== "blocked" && (tab !== "all" || showApprovalsCategory);
+  const joinRequestsAffectRows = tab !== "blocked" && (tab !== "all" || showJoinRequestsCategory);
+  const isApprovalsFirstAttemptPending = isApprovalsLoading && approvalsFailureCount === 0;
+  const isJoinRequestsFirstAttemptPending = isJoinRequestsLoading && joinRequestsFailureCount === 0;
+  // User names only fill row text, except when they name and order assignee groups.
+  const userLabelsAffectRows = groupBy === "assignee";
+  const isMembersFirstAttemptPending = isMembersLoading && membersFailureCount === 0;
+  const initialSourcesSettled =
+    ![sourceSearchView, mineIssuesView, touchedIssuesView].some(view => view.kind === "reconnecting") &&
+    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading &&
+    !(userLabelsAffectRows && isMembersFirstAttemptPending) &&
+    // Previous summaries stand in while a new id set loads; they may lack the new view's workspaces.
+    !(workspaceDataAffectsRows && workspaceLookupEnabled && (isWorkspacesLoading || isWorkspacesPlaceholder)) &&
+    !(joinRequestsAffectRows && isJoinRequestsFirstAttemptPending) &&
+    !(approvalsAffectRows && isApprovalsFirstAttemptPending) &&
     !isDashboardLoading &&
-    !isIssuesLoading &&
+    !isContextIssuesLoading &&
+    !isContextIssuesPlaceholder &&
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
-    !isRunsLoading;
+    !isRunsLoading
+    && (!issueFilters.liveOnly || !isLiveRunsLoading)
+    && (issueFilters.externalObjectStatuses.length === 0 || externalObjectSummariesReady || !!externalObjectSummariesError);
+  const sourceView = tab === "mine" ? mineIssuesView : touchedIssuesView;
+  const listError = (sourceSearchView.kind === "error" ? sourceSearchError : null)
+    ?? (sourceView.kind === "error" ? sourceView.error : null)
+    ?? (issueFilters.externalObjectStatuses.length > 0 ? externalObjectSummariesError : null);
+  const rawOptionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
+    ?? (tab === "mine" ? mineIssuesError : touchedIssuesError);
+  // A query error means retries are over. Transient errors usually clear on their own, but a read
+  // that keeps hitting the inbox timeout leaves items missing, so say so and offer a retry.
+  const optionalReadTimeoutError = [approvalsError, joinRequestsError]
+    .find((error) => errorCodes(error).includes("TIMEOUT")) ?? null;
+  const optionalSourceError = optionalReadTimeoutError
+    ?? (isTransientError(rawOptionalSourceError) ? null : rawOptionalSourceError);
+  const retryFailedSources = () => {
+    // Optional failures belong to the aggregate read, whose task rows stay usable.
+    if (tab === "mine" && (mineSnapshot?.failureError || mineSnapshot?.contextError)) {
+      void queryClient.refetchQueries({ queryKey: mineIssuesQueryKey, exact: true });
+    }
+    // Retry only failed reads for this company; settled rows stay visible.
+    void queryClient.refetchQueries({ predicate: (query) => query.state.status === "error"
+      && query.queryKey.includes(selectedCompanyId), type: "active" });
+  };
+
+  const revealScope = JSON.stringify([currentUserId, selectedCompanyId, tab, normalizedSearchQuery, issueFilters]);
+  const [revealedScope, setRevealedScope] = useState<string | null>(null);
+  useEffect(() => {
+    if (initialSourcesSettled && !listError) setRevealedScope(revealScope);
+  }, [initialSourcesSettled, listError, revealScope]);
+  const allLoaded = initialSourcesSettled || revealedScope === revealScope;
+  useWarmTaskDetailCode(allLoaded && !listError && tab !== "blocked" && showWorkItemsSection);
+  // Preload the chat of the top visible tasks, in display order, so opening
+  // one renders its latest messages and composer from cache.
+  // The walk stops at the preload limit, whatever the size of the Inbox.
+  const preloadTaskRefs = useMemo(() => topTaskRefs(flatNavItems, inboxNavEntryTask), [flatNavItems]);
+  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, allLoaded && !listError && showWorkItemsSection);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
+  const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
+    selectedCompanyId, listRef,
+    groupedSections.map((group) => group.key + ":" + group.displayItems.map(getInboxWorkItemKey).join(",") + ":" + [...group.childrenByIssueId.values()].flat().map((issue) => issue.id).join(",")).join("|")
+      + ":" + [...collapsedInboxParents].join(",") + ":" + [...collapsedGroupKeys].join(","),
+    allLoaded && !listError && tab !== "blocked",
+    issues,
+  );
+
+  if (!selectedCompanyId) {
+    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+  }
+
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
     .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id));
   const unreadIssueIds = markAllReadIssues
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
+  const activeInboxScopeFilterCount = tab === "all"
+    ? Number(allCategoryFilter !== "everything")
+      + Number(showApprovalsCategory && allApprovalFilter !== "all")
+    : 0;
+  const activeFilterCount = activeIssueFilterCount + activeInboxScopeFilterCount;
   const showGeneralIssueToolbarControls = tab !== "blocked";
+  const activeStatusFilterApplied =
+    issueFilters.statuses.length === 4
+    && ["todo", "in_progress", "in_review", "blocked"].every((status) =>
+      issueFilters.statuses.includes(status as IssueFilterState["statuses"][number]),
+    );
+  const issueFilterFeedback = issueFilters.liveOnly
+    ? "Live runs only — tasks currently connected to an agent run."
+    : activeStatusFilterApplied
+      ? "Active statuses — open tasks, whether or not an agent is running."
+      : null;
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        {/* Search — full-width row on mobile, inline on desktop */}
-        <div className="relative sm:hidden">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            placeholder="Search inbox…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (shouldBlurPageSearchOnEnter({
-                key: e.key,
-                isComposing: e.nativeEvent.isComposing,
-              })) {
-                e.currentTarget.blur();
-                return;
-              }
-
-              if (shouldBlurPageSearchOnEscape({
-                key: e.key,
-                isComposing: e.nativeEvent.isComposing,
-                currentValue: e.currentTarget.value,
-              })) {
-                e.currentTarget.blur();
-              }
-            }}
-            className="h-8 w-full pl-8 text-xs"
-            data-page-search-target="true"
-          />
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-        <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
-          <PageTabBar
-            items={[
-              {
-                value: "mine",
-                label: "Mine",
-              },
-              {
-                value: "recent",
-                label: "Recent",
-              },
-              { value: "unread", label: "Unread" },
-              { value: "blocked", label: "Blocked" },
-              { value: "all", label: "All" },
-            ]}
-          />
-        </Tabs>
-
-        <div className="flex items-center gap-2">
-          <div className="relative hidden sm:block">
+      <IssueRowDetailsNotice
+        error={optionalSourceError ?? rowDetailsError}
+        message={optionalSourceError ? "Some inbox items couldn’t load. Showing available items." : undefined}
+        retryLabel={optionalSourceError ? "Retry missing items" : undefined}
+        onRetry={optionalSourceError ? retryFailedSources : () => void retryRowDetails()}
+      />
+      <InboxCollectionToolbar
+        streamlined={streamlinedUiEnabled}
+        ariaLabel={`${surfaceLabel} controls`}
+        context={toolbarContext ?? (
+          <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
+            <PageTabBar
+              items={[
+                { value: "mine", label: "Mine" },
+                { value: "recent", label: "Recent" },
+                { value: "unread", label: "Unread" },
+                { value: "blocked", label: "Blocked" },
+                { value: "all", label: "All" },
+              ]}
+            />
+          </Tabs>
+        )}
+        search={(
+          <div className="relative ml-auto w-full sm:w-(--sz-220px)">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search inbox…"
+              placeholder={`Search ${surfaceLabel.toLowerCase()}…`}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2100,10 +2717,13 @@ export function Inbox() {
                   e.currentTarget.blur();
                 }
               }}
-              className="h-8 w-(--sz-220px) pl-8 text-xs"
+              className="h-8 w-full pl-8 text-xs"
               data-page-search-target="true"
             />
           </div>
+        )}
+        controls={(
+          <>
           {tab === "blocked" ? (
             <>
               <IssueFiltersPopover
@@ -2116,10 +2736,10 @@ export function Inbox() {
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
-                enableRoutineVisibilityFilter
+                enableAgentCreatedVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
+                presentation={streamlinedUiEnabled ? "streamlined" : "legacy"}
               />
               <Popover>
                 <PopoverTrigger asChild>
@@ -2156,8 +2776,15 @@ export function Inbox() {
                 availableColumns={availableIssueColumns}
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
+                showDateGroupSeparators={filterPreferences.showDateGroupSeparators}
+                onToggleDateGroupSeparators={(enabled) => {
+                  updateFilterPreferences((previous) => ({
+                    ...previous,
+                    showDateGroupSeparators: enabled,
+                  }));
+                }}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title="Choose which columns stay visible"
                 iconOnly
               />
               <Popover>
@@ -2207,17 +2834,31 @@ export function Inbox() {
               <IssueFiltersPopover
                 state={issueFilters}
                 onChange={updateIssueFilters}
-                activeFilterCount={activeIssueFilterCount}
+                activeFilterCount={activeFilterCount}
                 agents={agents}
                 creators={creatorOptions}
                 projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
-                enableRoutineVisibilityFilter
+                enableAgentCreatedVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
+                presentation={streamlinedUiEnabled ? "streamlined" : "legacy"}
+                inboxScopeFilters={tab === "all" ? {
+                  category: allCategoryFilter,
+                  approvalStatus: allApprovalFilter,
+                  showApprovalStatus: showApprovalsCategory,
+                  onCategoryChange: updateAllCategoryFilter,
+                  onApprovalStatusChange: updateAllApprovalFilter,
+                  onClear: () => {
+                    updateFilterPreferences((previous) => ({
+                      ...previous,
+                      allCategoryFilter: "everything",
+                      allApprovalFilter: "all",
+                    }));
+                  },
+                } : undefined}
               />
               <Popover>
                 <PopoverTrigger asChild>
@@ -2260,9 +2901,17 @@ export function Inbox() {
                 availableColumns={availableIssueColumns}
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
+                showDateGroupSeparators={filterPreferences.showDateGroupSeparators}
+                onToggleDateGroupSeparators={(enabled) => {
+                  updateFilterPreferences((previous) => ({
+                    ...previous,
+                    showDateGroupSeparators: enabled,
+                  }));
+                }}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title="Choose which columns stay visible"
                 iconOnly
+                rowPresentation={streamlinedUiEnabled ? "task" : "legacy"}
               />
               {canMarkAllRead && (
                 <>
@@ -2303,55 +2952,29 @@ export function Inbox() {
               )}
             </>
           ) : null}
-        </div>
-        </div>
-      </div>
+          </>
+        )}
+        feedback={issueFilterFeedback ? (
+          <p className="text-xs text-muted-foreground" data-testid="inbox-filter-scope-feedback">
+            {issueFilterFeedback}
+          </p>
+        ) : null}
+      />
 
-      {tab === "all" && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={allCategoryFilter}
-            onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
-          >
-            <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
-              <SelectValue placeholder="Category" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
-              <SelectItem value="join_requests">Join requests</SelectItem>
-              <SelectItem value="approvals">Approvals</SelectItem>
-              <SelectItem value="failed_runs">Failed runs</SelectItem>
-              <SelectItem value="alerts">Alerts</SelectItem>
-            </SelectContent>
-          </Select>
-
-          {showApprovalsCategory && (
-            <Select
-              value={allApprovalFilter}
-              onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
-            >
-              <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
-                <SelectValue placeholder="Approval status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All approval statuses</SelectItem>
-                <SelectItem value="actionable">Needs action</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
-              </SelectContent>
-            </Select>
-          )}
+      {listError && (
+        <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
+          <p>Unable to load the inbox: {describeError(listError).body}</p>
+          <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>Retry</Button>
         </div>
       )}
-
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
+        <div className="-mx-2 sm:mx-0">
         <BlockedInboxView
           companyId={selectedCompanyId!}
           searchQuery={searchQuery}
-          agentNameById={agentById}
+          agentNameById={agentById} agents={agents}
           userLabelById={companyUserLabelMap}
           issueLinkState={issueLinkState}
           groupBy={blockedGroupBy}
@@ -2364,14 +2987,16 @@ export function Inbox() {
           showStatusColumn={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
           showIdentifierColumn={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
           showUpdatedColumn={visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated")}
+          presentation={streamlinedUiEnabled ? "task" : "legacy"}
         />
+        </div>
       ) : null}
 
-      {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
-        <PageSkeleton variant="inbox" />
+      {tab !== "blocked" && !allLoaded && !listError && (
+        <PageSkeleton variant="inbox" collectionHeading={groupBy !== "none" ? "group" : filterPreferences.showDateGroupSeparators ? "date" : null} />
       )}
 
-      {tab !== "blocked" && allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && allLoaded && !listError && !optionalSourceError && visibleSections.length === 0 && (
         <EmptyState
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
@@ -2388,11 +3013,16 @@ export function Inbox() {
         />
       )}
 
-      {tab !== "blocked" && showWorkItemsSection && (
+      {tab !== "blocked" && allLoaded && !listError && showWorkItemsSection && (
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden">
+            <div
+              ref={listRef}
+              className="-mx-2 overflow-hidden sm:mx-0"
+              onPointerDownCapture={noteInboxSortInteraction}
+              onWheelCapture={noteInboxSortInteraction}
+            >
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2413,6 +3043,7 @@ export function Inbox() {
                   collapseParentId?: string | null;
                   allowArchive?: boolean;
                 }) => {
+                  issue = enrichIssueRow(issue);
                   const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                   const isFading = fadingOutIssues.has(issue.id);
                   const isArchiving = archivingIssueIds.has(issue.id);
@@ -2438,23 +3069,55 @@ export function Inbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
                       key={`issue:${issue.id}`}
                       issue={issue}
+                      presentation={streamlinedUiEnabled ? "task" : "legacy"}
+                      stableLayout
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
-                      hideDivider={hasChildren && isExpanded}
-                      externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
+                      chevronInGuide={streamlinedUiEnabled && depth > 0 && hasChildren}
                       selected={selected}
                       className={
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                           : "transition-all duration-200 ease-out"
                       }
-                      desktopMetaLeading={
+                      leadingControl={streamlinedUiEnabled && nestingEnabled && hasChildren && collapseParentId ? (
+                        <button
+                          type="button"
+                          data-slot="icon-button"
+                          className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                          aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            toggleInboxParentCollapse(collapseParentId);
+                          }}
+                        >
+                          <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                        </button>
+                      ) : streamlinedUiEnabled ? (
+                        <span data-slot="task-row-disclosure-spacer" className={cn("h-4 w-4 shrink-0", !nestingEnabled && "hidden sm:block")} aria-hidden="true" />
+                      ) : undefined}
+                      statusSlot={streamlinedUiEnabled ? rowStatusIcon : undefined}
+                      metadata={streamlinedUiEnabled ? (
+                        <InboxIssueMetaLeading
+                          issue={issue}
+                          isLive={isLive}
+                          subtreeLiveCount={liveDescendantCount}
+                          showSubtreeLiveChip={showSubtreeLiveChip}
+                          showStatus={false}
+                          showIdentifier={false}
+                        />
+                      ) : undefined}
+                      showIdentifier={streamlinedUiEnabled
+                        ? visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")
+                        : undefined}
+                      desktopMetaLeading={!streamlinedUiEnabled ? (
                         <>
                           {nestingEnabled ? (
                             depth === 0 && hasChildren && collapseParentId ? (
@@ -2484,14 +3147,15 @@ export function Inbox() {
                             statusSlot={rowStatusIcon}
                           />
                         </>
-                      }
-                      titleSuffix={hasChildren && !isExpanded && depth === 0 ? (
+                      ) : undefined}
+                      titleSuffix={hasChildren && !isExpanded ? (
                         <span className="ml-1.5 text-xs text-muted-foreground">
                           ({childCount} sub-task{childCount !== 1 ? "s" : ""})
                         </span>
                       ) : undefined}
-                      mobileMeta={issueActivityText(issue).toLowerCase()}
-                      mobileLeading={
+                      mobileTitleMeta={streamlinedUiEnabled ? issueActivityTimestamp(issue) : undefined}
+                      mobileMeta={streamlinedUiEnabled ? undefined : issueActivityText(issue).toLowerCase()}
+                      mobileLeading={!streamlinedUiEnabled ? (
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button
                             type="button"
@@ -2505,18 +3169,19 @@ export function Inbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                         )
-                      }
+                      ) : undefined}
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                      showUnreadIndicator={false}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving}
                       desktopTrailing={
-                        visibleTrailingIssueColumns.length > 0 ? (
+                        (streamlinedUiEnabled ? visibleTaskDataColumns : visibleTrailingIssueColumns).length > 0 ? (
                           <InboxIssueTrailingColumns
                             issue={issue}
-                            columns={visibleTrailingIssueColumns}
+                            columns={streamlinedUiEnabled ? visibleTaskDataColumns : visibleTrailingIssueColumns}
                             projectName={project?.name ?? null}
                             projectColor={project?.color ?? null}
                             workspaceName={resolveIssueWorkspaceName(issue, {
@@ -2525,6 +3190,8 @@ export function Inbox() {
                               defaultProjectWorkspaceIdByProjectId,
                             })}
                             assigneeName={agentName(issue.assigneeAgentId)}
+                            assigneeAgent={agents?.find((agent) => agent.id === issue.assigneeAgentId)}
+                            creatorAgent={agents?.find((agent) => agent.id === issue.createdByAgentId)}
                             assigneeUserName={
                               formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
                               ?? assigneeUserProfile?.label
@@ -2541,11 +3208,14 @@ export function Inbox() {
                           />
                         ) : undefined
                       }
+                      trailingMeta={streamlinedUiEnabled && showTaskTimestamp ? issueActivityTimestamp(issue) : null}
                     />
                   );
                 };
 
+                let previousDateGroup: TaskDateGroup | null = null;
                 let previousTimestamp = Number.POSITIVE_INFINITY;
+                const legacyTodayCutoff = Date.now() - 24 * 60 * 60 * 1000;
                 return groupedSections.flatMap((group, groupIndex) => {
                   const elements: ReactNode[] = [];
                   const isGroupCollapsed = collapsedGroupKeys.has(group.key);
@@ -2574,11 +3244,7 @@ export function Inbox() {
                       <div
                         key={`group-${group.key}`}
                         data-inbox-item
-                        className={cn(
-                          "px-3 sm:px-4",
-                          groupIndex > 0 && "pt-2",
-                          isGroupSelected && "bg-accent/50",
-                        )}
+                        className={cn(groupIndex > 0 && "pt-2")}
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
@@ -2586,6 +3252,11 @@ export function Inbox() {
                           if (groupNavIdx >= 0) setSelectedIndexFromPointer(groupNavIdx);
                         }}
                       >
+                        {/* Left inset aligns the header chevron with the nested
+                            task chevrons. Read rows no longer reserve a
+                            mark-read column, so inbox rows sit at pl-1 before
+                            their chevron — same as the tasks list. */}
+                        <div className={cn("rounded-lg px-3 sm:pl-0 sm:pr-4", isGroupSelected ? "bg-accent/50" : "hover:bg-accent/50")}>
                         <IssueGroupHeader
                           label={group.label}
                           collapsible
@@ -2607,6 +3278,7 @@ export function Inbox() {
                             </Button>
                           ) : null}
                         />
+                        </div>
                       </div>,
                     );
                   }
@@ -2626,18 +3298,46 @@ export function Inbox() {
                         {child}
                       </div>
                     );
-                    const todayCutoff = Date.now() - 24 * 60 * 60 * 1000;
-                    const showTodayDivider =
-                      groupBy === "none" &&
-                      item.timestamp > 0 &&
-                      item.timestamp < todayCutoff &&
-                      previousTimestamp >= todayCutoff;
+                    const currentDateGroup = taskDateGroup(item.timestamp);
+                    const dateGroupLabel = streamlinedUiEnabled
+                      && filterPreferences.showDateGroupSeparators
+                      && groupBy === "none"
+                      ? taskDateGroupSeparator(previousDateGroup, currentDateGroup)
+                      : null;
+                    previousDateGroup = currentDateGroup;
+                    const showLegacyEarlierDivider = !streamlinedUiEnabled
+                      && groupBy === "none"
+                      && item.timestamp > 0
+                      && item.timestamp < legacyTodayCutoff
+                      && previousTimestamp >= legacyTodayCutoff;
                     previousTimestamp = item.timestamp > 0 ? item.timestamp : previousTimestamp;
-                    if (showTodayDivider) {
+                    if (dateGroupLabel) {
                       elements.push(
-                        <div key={`today-divider-${group.key}-${index}`} className="my-2 flex items-center gap-3 px-4">
-                          <div className="flex-1 border-t border-zinc-600" />
-                          <span className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-zinc-500">
+                        <div
+                          key={`date-divider-${group.key}-${currentDateGroup}-${index}`}
+                          className="flex items-center gap-3 px-3 py-1.5 sm:pl-0 sm:pr-4"
+                          data-testid="inbox-date-group"
+                          role="separator"
+                          aria-label={dateGroupLabel}
+                        >
+                          <span className="h-px min-w-0 flex-1 bg-border/80" aria-hidden="true" data-date-group-rule="" />
+                          <span
+                            className="shrink-0 text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70"
+                            data-date-group-label=""
+                          >
+                            {dateGroupLabel}
+                          </span>
+                          <span className="h-px min-w-0 flex-1 bg-border/80" aria-hidden="true" data-date-group-rule="" />
+                        </div>,
+                      );
+                    } else if (showLegacyEarlierDivider) {
+                      elements.push(
+                        <div key={`earlier-divider-${group.key}-${index}`} className="my-2 flex items-center gap-3 px-4">
+                          <div className="flex-1 border-t border-border" />
+                          <span
+                            className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-muted-foreground/70"
+                            data-date-group-label=""
+                          >
                             Earlier
                           </span>
                         </div>,
@@ -2848,7 +3548,7 @@ export function Inbox() {
         </>
       )}
 
-      {showAlertsSection && (
+      {allLoaded && !listError && showAlertsSection && (
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>

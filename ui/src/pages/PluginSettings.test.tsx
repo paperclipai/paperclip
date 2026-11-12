@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "../lib/queryKeys";
 import { PluginSettings } from "./PluginSettings";
 
 const mockPluginsApi = vi.hoisted(() => ({
@@ -17,6 +19,8 @@ const mockPluginsApi = vi.hoisted(() => ({
 }));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockRoute = vi.hoisted(() => ({ pluginId: "plugin-1" }));
+const mockSlots = vi.hoisted(() => ({ slots: [] as Array<Record<string, unknown>> }));
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
@@ -38,12 +42,12 @@ vi.mock("@/context/CompanyContext", () => ({
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
   Navigate: () => null,
-  useParams: () => ({ companyPrefix: "PAP", pluginId: "plugin-1" }),
+  useParams: () => ({ companyPrefix: "PAP", pluginId: mockRoute.pluginId }),
 }));
 
 vi.mock("@/plugins/slots", () => ({
-  PluginSlotMount: () => null,
-  usePluginSlots: () => ({ slots: [] }),
+  PluginSlotMount: ({ slot }: { slot: { id: string } }) => <div data-testid="settings-slot">{slot.id}</div>,
+  usePluginSlots: () => ({ slots: mockSlots.slots }),
 }));
 
 vi.mock("@/components/PageTabBar", () => ({
@@ -118,11 +122,18 @@ function folderStatus(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function renderSettings(container: HTMLDivElement) {
+async function renderSettings(
+  container: HTMLDivElement,
+  experimentalSettings: Record<string, unknown> = {},
+) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  // The local-folders section is a host-path surface, so it stays hidden until
+  // the managed-sandbox-only policy is known. Seed the policy as off; the tests
+  // below are about folder rendering, not about the gate.
+  queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
 
   await act(async () => {
     root.render(
@@ -159,13 +170,38 @@ describe("PluginSettings", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    mockRoute.pluginId = "plugin-1";
+    mockSlots.slots = [];
+  });
+
+  it("shows a plugin's custom settings page when the route names the plugin by key", async () => {
+    mockRoute.pluginId = "acme.website-preview";
+    mockSlots.slots = [
+      { id: "settings", type: "settingsPage", pluginId: "plugin-1", pluginKey: "acme.website-preview" },
+      { id: "other-settings", type: "settingsPage", pluginId: "plugin-2", pluginKey: "acme.other" },
+    ];
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "acme.website-preview",
+      status: "ready",
+      manifestJson: { displayName: "Website Preview", version: "0.1.0", capabilities: [] },
+    }));
+
+    const root = await renderSettings(container);
+
+    const mounted = [...container.querySelectorAll('[data-testid="settings-slot"]')].map((node) => node.textContent);
+    expect(mounted).toEqual(["settings"]);
+    expect(container.textContent).not.toContain("This plugin does not require any settings.");
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("routes environment-provider plugins to instance environments when they have no instance config", async () => {
     const root = await renderSettings(container);
 
-    expect(container.textContent).toContain("Configure this plugin from Instance Settings → Environments.");
-    expect(container.textContent).toContain("secret bindings still resolve through the selected company context");
+    expect(container.textContent).toContain("Configure this plugin from Settings → Environments.");
+    expect(container.textContent).toContain("secret bindings still resolve through the selected organization context");
     const link = container.querySelector('a[href="/company/settings/instance/environments"]');
     expect(link?.textContent).toContain("Open Environments");
 
@@ -204,6 +240,123 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("No local folder path is configured.");
     expect(container.textContent).toContain("Missing directories: raw, wiki");
     expect(container.textContent).toContain("Missing files: WIKI.md, index.md");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps loaded local folder statuses on screen when their refetch fails transiently", async () => {
+    const declaration = wikiFolderDeclaration();
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      packageName: "@paperclipai/plugin-llm-wiki",
+      status: "ready",
+      manifestJson: {
+        displayName: "LLM Wiki",
+        version: "0.1.0",
+        description: "Local-file LLM Wiki plugin.",
+        author: "Paperclip",
+        capabilities: ["local.folders"],
+        localFolders: [declaration],
+      },
+    }));
+    mockPluginsApi.listLocalFolders.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      declarations: [declaration],
+      folders: [folderStatus()],
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, {});
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PluginSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("No local folder path is configured.");
+
+    mockPluginsApi.listLocalFolders.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders("plugin-1", "company-1") });
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.listLocalFolders).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Wiki root");
+    expect(container.textContent).toContain("No local folder path is configured.");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows readable copy with Retry instead of leaving the page when the plugin fails to load", async () => {
+    mockPluginsApi.get
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue(basePlugin());
+
+    const root = await renderSettings(container);
+
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load this plugin");
+    expect(container.textContent).not.toContain("E2B Sandbox Provider");
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retryButton, "Retry button").toBeTruthy();
+
+    await act(async () => {
+      retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("E2B Sandbox Provider");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides local folders when the instance runs agents only in the platform-managed environment", async () => {
+    const declaration = wikiFolderDeclaration();
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      packageName: "@paperclipai/plugin-llm-wiki",
+      status: "ready",
+      manifestJson: {
+        displayName: "LLM Wiki",
+        version: "0.1.0",
+        description: "Local-file LLM Wiki plugin.",
+        author: "Paperclip",
+        capabilities: ["local.folders"],
+        localFolders: [declaration],
+      },
+    }));
+    mockPluginsApi.listLocalFolders.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      declarations: [declaration],
+      folders: [folderStatus()],
+    });
+
+    const root = await renderSettings(container, { enableManagedSandboxOnly: true });
+
+    // The platform-managed environment owns the filesystem, so the whole
+    // section disappears rather than showing paths nobody can act on.
+    expect(container.textContent).not.toContain("Local folders");
 
     await act(async () => {
       root.unmount();

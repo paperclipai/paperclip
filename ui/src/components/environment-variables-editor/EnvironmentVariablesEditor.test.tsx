@@ -330,6 +330,95 @@ describe("EnvironmentVariablesEditor", () => {
     expect(revert.className).toContain("h-9");
   });
 
+  it("lists which variables changed in the unsaved-changes banner", async () => {
+    render(
+      <EnvironmentVariablesEditor
+        value={{ FOO: { type: "plain", value: "old" }, BAR: { type: "plain", value: "keep" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+
+    // Edit FOO's value.
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    setter.call(valueInput, "new");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(container.textContent).toContain("Edited: FOO");
+
+    // Remove BAR.
+    const removeButtons = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Remove"]')];
+    removeButtons.at(-1)!.click();
+    await flush();
+    expect(container.textContent).toContain("Removed: BAR");
+
+    // Add a brand-new variable.
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+    const newNameInput = nameInputs().at(-1)!;
+    setter.call(newNameInput, "API_TOKEN");
+    newNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(container.textContent).toContain("New: API_TOKEN");
+    expect(container.textContent).toContain("Edited: FOO");
+    expect(container.textContent).toContain("Removed: BAR");
+  });
+
+  it("does not show a phantom unsaved-changes banner for a saved value that round-trips lossily", () => {
+    // Incomplete refs and unpadded names are dropped by the editor's emit
+    // semantics — the committed baseline must drop them too, or the banner
+    // shows the moment the form opens with no user edits.
+    render(
+      <EnvironmentVariablesEditor
+        value={{
+          "  PADDED_NAME  ": { type: "plain", value: "x" },
+          DANGLING_SECRET: { type: "secret_ref", secretId: "", version: "latest" },
+          DANGLING_USER_SECRET: { type: "user_secret_ref", key: "", version: "latest", required: true },
+        }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    expect(container.textContent).not.toContain("Unsaved changes");
+  });
+
+  it("warns via beforeunload only while the draft is dirty", async () => {
+    render(
+      <EnvironmentVariablesEditor
+        value={{ FOO: { type: "plain", value: "" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+
+    function dispatchBeforeUnload(): boolean {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }
+
+    expect(dispatchBeforeUnload()).toBe(false);
+
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(valueInput, "bar");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(dispatchBeforeUnload()).toBe(true);
+
+    const revert = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "Revert",
+    )!;
+    revert.click();
+    await flush();
+    expect(dispatchBeforeUnload()).toBe(false);
+  });
+
   it("marks a newly typed variable name as unsaved before saving", async () => {
     render(<EnvironmentVariablesEditor value={{}} secrets={secrets} onChange={() => {}} onCreateSecret={async () => secrets[0]} />);
     const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
@@ -573,36 +662,6 @@ describe("EnvironmentVariablesEditor", () => {
     expect(secretValueField?.value).toBe("supersecretvalue");
   });
 
-  it("opens the create-secret popover from the picker's + Create item (§6.4, PAP-12476)", async () => {
-    // Regression: selecting the picker's `+ Create secret` item closes the
-    // combobox popover and (in the same tick) opens the anchored create-secret
-    // popover. The two Radix popovers must not race — the create popover has to
-    // survive the combobox's focus-return instead of being dismissed instantly.
-    render(
-      <EnvironmentVariablesEditor
-        value={{ GH: { type: "secret_ref", secretId: "s1", version: 2 } }}
-        secrets={secrets}
-        onChange={() => {}}
-        onCreateSecret={async () => secrets[0]}
-      />,
-    );
-    const combobox = container.querySelector<HTMLElement>('[role="combobox"]')!;
-    combobox.focus();
-    await flush();
-    const createItem = [...document.querySelectorAll<HTMLElement>("[cmdk-item]")].find((el) =>
-      el.textContent?.includes("Create"),
-    );
-    expect(createItem, "create item should be present in the open picker").toBeTruthy();
-    createItem!.click();
-    await flush();
-    // The create-secret popover is open (heading rendered) and stays open.
-    expect(document.body.textContent, "create-secret popover should open").toContain("Create secret");
-    expect(
-      document.querySelector('input[aria-label="Secret name"]'),
-      "create-secret name field should render",
-    ).toBeTruthy();
-  });
-
   it("keeps the create-secret popover open when focus returns to a control inside the value cell (§6.4, PAP-12492)", async () => {
     // Regression for the *fragile* part of the picker → create transition.
     // The picker's combobox and the anchored create popover share the value
@@ -634,6 +693,11 @@ describe("EnvironmentVariablesEditor", () => {
     createItem!.click();
     await flush();
     expect(document.body.textContent, "create-secret popover should open").toContain("Create secret");
+
+    expect(
+      document.querySelector('input[aria-label="Secret name"]'),
+      "create-secret name field should render",
+    ).toBeTruthy();
 
     // Simulate the picker's animation-delayed focus-return landing on a control
     // that lives inside the value cell (the source-switch trigger is a stable
@@ -717,9 +781,9 @@ describe("EnvironmentVariablesEditor", () => {
     pointerClick(sourceButton!);
     settleFakeTimers();
     const secretItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) =>
-      el.textContent?.includes("Company secret"),
+      el.textContent?.includes("Organization secret"),
     );
-    expect(secretItem, "Company secret menu item should be present").toBeTruthy();
+    expect(secretItem, "Organization secret menu item should be present").toBeTruthy();
     pointerClick(secretItem!);
     settleFakeTimers();
     // The store popover is open (heading rendered) and stays open — it must not

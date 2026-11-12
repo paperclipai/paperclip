@@ -1,6 +1,7 @@
+import type { Request } from "express";
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
-import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess, hasCompanyAccess } from "../routes/authz.js";
 
 function makeReq(input: {
   method?: string;
@@ -9,7 +10,7 @@ function makeReq(input: {
   return {
     method: input.method ?? "GET",
     actor: input.actor,
-  } as Express.Request;
+  } as unknown as Request;
 }
 
 describe("assertCompanyAccess", () => {
@@ -191,6 +192,78 @@ describe("assertCompanyAccess", () => {
     });
 
     expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+  });
+});
+
+describe("hasCompanyAccess", () => {
+  it("allows members of the company", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "viewer", status: "active" }],
+      },
+    });
+
+    expect(hasCompanyAccess(req, "company-1")).toBe(true);
+  });
+
+  it("denies users from other companies", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+      },
+    });
+
+    expect(hasCompanyAccess(req, "company-2")).toBe(false);
+  });
+
+  it("denies signed-in instance admins without explicit company access, matching assertCompanyAccess", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [],
+        memberships: [],
+      },
+    });
+
+    expect(hasCompanyAccess(req, "company-1")).toBe(false);
+    expect(() => assertCompanyAccess(req, "company-1")).toThrow("User does not have access to this company");
+  });
+
+  it("allows local trusted board access without explicit membership", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+    });
+
+    expect(hasCompanyAccess(req, "company-1")).toBe(true);
+  });
+
+  it("scopes agent actors to their own company", () => {
+    const agent = { type: "agent", agentId: "agent-1", companyId: "company-1" } as const;
+
+    expect(hasCompanyAccess(makeReq({ actor: agent }), "company-1")).toBe(true);
+    expect(hasCompanyAccess(makeReq({ actor: agent }), "company-2")).toBe(false);
+  });
+
+  it("denies unauthenticated actors", () => {
+    const req = makeReq({ actor: { type: "none" } });
+
+    expect(hasCompanyAccess(req, "company-1")).toBe(false);
   });
 });
 

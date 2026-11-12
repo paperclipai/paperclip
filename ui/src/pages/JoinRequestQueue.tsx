@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { UserPlus2 } from "lucide-react";
 import { accessApi } from "@/api/access";
-import { ApiError } from "@/api/client";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -21,7 +21,7 @@ export function JoinRequestQueue() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Inbox", href: "/inbox" },
       { label: "Join Requests" },
     ]);
@@ -37,6 +37,7 @@ export function JoinRequestQueue() {
       ),
     enabled: !!selectedCompanyId,
   });
+  const requestsView = useQueryView(requestsQuery);
 
   const approveMutation = useMutation({
     mutationFn: (requestId: string) => accessApi.approveJoinRequest(selectedCompanyId!, requestId),
@@ -57,21 +58,30 @@ export function JoinRequestQueue() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to review join requests.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to review join requests.</div>;
   }
 
-  if (requestsQuery.isLoading) {
+  if (requestsQuery.isLoading || requestsView.kind === "reconnecting") {
     return <div className="text-sm text-muted-foreground">Loading join requests…</div>;
   }
 
-  if (requestsQuery.error) {
-    const message =
-      requestsQuery.error instanceof ApiError && requestsQuery.error.status === 403
-        ? "You do not have permission to review join requests for this company."
-        : requestsQuery.error instanceof Error
-          ? requestsQuery.error.message
-          : "Failed to load join requests.";
-    return <div className="text-sm text-destructive">{message}</div>;
+  if (requestsView.kind === "error") {
+    if (requestsView.errorKind === "forbidden") {
+      return (
+        <div className="text-sm text-destructive">
+          You do not have permission to review join requests for this organization.
+        </div>
+      );
+    }
+    return (
+      <QueryErrorState
+        size="page"
+        error={requestsQuery.error}
+        action="load join requests"
+        onRetry={requestsView.retry}
+        retrying={requestsView.isFetching}
+      />
+    );
   }
 
   return (

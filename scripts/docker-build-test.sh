@@ -43,4 +43,9 @@ echo "==> Verifying key binaries in image"
   claude --version 2>/dev/null || echo "claude CLI not found (OK in minimal builds)"
 '
 
+echo "==> Verifying PID 1 is an init that reaps adopted orphans"
+# Piped in as CMD (`sh -s`) rather than `--entrypoint`, so the image's real
+# ENTRYPOINT still runs and PID 1 is exactly what a production container gets.
+"$RUNTIME" run --rm -i "$IMAGE_TAG" sh -s < "$REPO_ROOT/scripts/assert-orphan-reaping.sh"
+
 echo "PASS: Docker build test succeeded"

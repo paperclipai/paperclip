@@ -1,0 +1,207 @@
+{
+  "frameVersion": 2,
+  "defaultMaxFrameBytes": 262144,
+  "description": "Shared wire-compatibility vectors for the duplex frame codec. Every codec copy decodes the same bytes. bytes is a UTF-8 byte stream; expected lists the decode result (frame or protocol-error code).",
+  "vectors": [
+    {
+      "name": "valid-ready",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "ready",
+            "nonce": "9f8e7d6c5b4a39281706f5e4d3c2b1a0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-heartbeat",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"heartbeat\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "heartbeat"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-close",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"close\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "close"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-error",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"error\",\"code\":\"malformed_frame\",\"message\":\"peer reported a malformed frame\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "error",
+            "code": "malformed_frame",
+            "message": "peer reported a malformed frame"
+          }
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-missing-nonce",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"ready\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-with-address",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\",\"address\":\"http://127.0.0.1:47215\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-with-port",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\",\"port\":47215}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-not-json",
+      "category": "invalid",
+      "bytes": "{not valid json\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-json-array",
+      "category": "invalid",
+      "bytes": "[1,2,3]\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-json-number",
+      "category": "invalid",
+      "bytes": "42\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-unknown-type",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"teleport\"}\n",
+      "expected": [
+        {
+          "error": "unknown_type"
+        }
+      ]
+    },
+    {
+      "name": "version-mismatch-lower",
+      "category": "versionMismatch",
+      "bytes": "{\"version\":1,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n",
+      "expected": [
+        {
+          "error": "version_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "version-mismatch-higher",
+      "category": "versionMismatch",
+      "bytes": "{\"version\":3,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n",
+      "expected": [
+        {
+          "error": "version_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "version-mismatch-missing",
+      "category": "versionMismatch",
+      "bytes": "{\"type\":\"heartbeat\"}\n",
+      "expected": [
+        {
+          "error": "version_mismatch"
+        }
+      ]
+    }
+  ],
+  "encodeDescription": "Encode-bound vectors. Each codec copy runs the size-checked encode against the frame with the maxFrameBytes limit, then asserts the same result. An ok result must decode back to the same frame. This proves both copies enforce the same bound on encode.",
+  "encodeVectors": [
+    {
+      "name": "encode-within-bound",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 2,
+        "type": "error",
+        "code": "read_timeout",
+        "message": "upstream did not respond"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "encode-control-frame-never-rejected",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 2,
+        "type": "heartbeat"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "encode-over-bound",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 2,
+        "type": "error",
+        "code": "read_timeout",
+        "message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expected": {
+        "ok": false,
+        "error": "frame_too_large"
+      }
+    }
+  ]
+}

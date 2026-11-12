@@ -1,0 +1,54 @@
+---
+description: Account for dependency cost on shared runtime paths and test the assumptions that mocks can hide.
+globs: server/src/**,packages/adapter-utils/src/**,packages/adapters/*/src/**,packages/paperclip-runner/src/**,packages/paperclip-runner/runner/**
+alwaysApply: false
+---
+
+# Runtime dependency boundaries
+
+Apply this rule when adding or moving dependency calls into startup, request
+handling, discovery, or recurring orchestration in the server, adapters, or
+runner. A dependency includes a runtime API, filesystem, database, subprocess,
+or remote service.
+
+## Account for the work at the call site
+
+Establish what the dependency actually does: whether it blocks shared execution,
+how often it runs, what its cost grows with, and how it fails or stops. Reading a
+small result does not imply a cheap operation. Use implementation, documentation,
+or measurement as evidence when the behavior is not established.
+
+Match repeated work to how often its underlying facts can change. Account for
+calls inside loops and repeated requests. Keep unrelated work responsive when
+the dependency is slow or unavailable. If using a timeout or cancellation,
+verify that it can take effect while the operation is running and account for
+work that continues after the caller stops waiting.
+
+## Test the assumption that could invalidate the design
+
+Identify the consequential assumption introduced by the change and choose
+evidence that could disprove it. Check whether mocks remove the behavior being
+relied upon, such as timing, contention, cancellation, persistence, or external
+side effects. Where they do, exercise that boundary with a representative real
+dependency or a controlled fault that preserves the relevant behavior.
+
+Verify the affected contract, including unrelated work that must remain
+responsive, rather than only the returned value. Keep coverage proportional to
+the changed behavior; an exhaustive environment matrix is unnecessary. Record
+the assumption, evidence, and remaining limits in the PR's verification section.
+
+## Examples and limits
+
+- A configuration getter that reads a network filesystem needs evidence about
+  slow or unavailable storage and the effect on other work using that process.
+- A remote permission check moved inside a search-result loop needs evidence
+  about call count and latency as the result set grows. Any reuse must preserve
+  authorization scope and freshness.
+- Reading an already-loaded map or changing a pure value transformation does
+  not require dependency-failure testing unless the change introduces a
+  consequential cost or behavior assumption. Cosmetic edits do not trigger it.
+
+**Review:** Check the changed call sites, the operational assumption, and whether
+the supplied evidence exercises it. Request missing evidence for a concrete risk
+introduced by the change. Do not require unrelated refactors or a new benchmark
+suite for every edit.

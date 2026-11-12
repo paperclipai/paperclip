@@ -13,6 +13,7 @@
 - [Scope enforcement](#scope-enforcement)
 - [Origin and badges](#origin-and-badges)
 - [When not to use a watchdog](#when-not-to-use-a-watchdog)
+- [Authority contract](#authority-contract)
 - [Reference](#reference)
 
 ---
@@ -84,7 +85,7 @@ Paperclip runs a watchdog reconciliation tick at server startup, at the end of e
 
 For each active watchdog the tick:
 
-1. **Walks the watched subtree.** Starts at the configured issue and follows `parent_id` downward, excluding every issue whose `originKind = 'task_watchdog'` and everything below it. This excludes the watchdog's own review tasks so it cannot trigger itself.
+1. **Walks the watched subtree.** Starts at the configured issue and follows `parent_id` downward, excluding every issue whose `originKind = 'task_watchdog'` and everything below it. This excludes the watchdog's own review tasks so it cannot trigger itself. The scan includes at most 100 levels, with the watched issue at level 1. If an eligible child remains beyond that limit, the result is **incomplete**. Paperclip skips review dispatch and rejects watchdog mutation revalidation until it can read the full subtree. A leaf at level 100 does not by itself make the scan incomplete. Reconciliation reports these cases separately through `incomplete` and `incompleteIssueIds`. Startup and periodic reconciliation warn when a watched issue first becomes incomplete. The warning contains the newly affected issue IDs. An unchanged incomplete issue does not produce repeated warnings. Once a successful scan no longer reports that issue as incomplete, a later incomplete scan can warn again.
 2. **Checks for live paths.** If any included issue has a live run (`queued`, `running`, `scheduled_retry`), a queued wake request, or a scheduled retry, the subtree is **live** and the watchdog does not fire.
 3. **Computes a stop fingerprint.** A SHA-256 hash over the stopped leaves' identifiers, statuses, blockers, pending interactions, and the current watchdog configuration. The configuration is part of the fingerprint, so changing the agent or instructions invalidates the previously reviewed state.
 4. **Compares against `lastReviewedFingerprint`.** Match → suppress (the watchdog already saw this exact stopped state). New → proceed.
@@ -101,17 +102,17 @@ On wake, the watchdog agent reads a fixed default mandate plus your custom instr
 
 - Treat every stopped leaf as a **claim** that must be verified against comments, documents, work products, screenshots, tests, blockers, and review state. Do not accept "I could not" or "waiting for approval" as automatically valid.
 - Leave genuinely-complete leaves alone, with a short note on what was checked.
-- If a leaf is not genuinely complete, restore a live path: reopen the issue, reassign, comment actionable instructions, create a follow-up child issue inside the watched subtree, or accept an eligible task-level plan confirmation.
+- If a leaf is not genuinely complete, restore a live path: reopen the issue, reassign, comment actionable instructions, create a follow-up child issue inside the watched subtree, or resolve an interaction that the ordinary agent audience permits.
 - If the blocker is real, leave a valid waiting disposition that names the unblock owner and the next action.
 
 The mandate also enforces safety constraints that custom instructions **cannot override**:
 
 - Stay inside the watched subtree. No cross-company mutations, no mutations outside the watched issue and its non-watchdog descendants.
-- No impersonating board-only approvals, accepting spend or hiring decisions, accepting security-sensitive interactions, or bypassing execution-policy stages that require a typed reviewer or approver.
+- No impersonating formal approvals, accepting spend or hiring decisions, using an interaction response as downstream authority, or bypassing execution-policy stages that require a typed reviewer or approver.
 - No creating another watchdog for the watched subtree. No waking itself. Exactly one reusable review task per watched issue.
 - Custom instructions can narrow focus or veto specific shortcuts. They cannot grant authority the server does not already give the watchdog.
 
-The formal authority contract (the full list of allowed and disallowed mutations, and the eligibility test for accepting plan confirmations) is in [`doc/SPEC-implementation.md`](SPEC-implementation.md) §9.9.
+The formal authority contract (the full list of allowed and disallowed mutations) is in [Authority contract](#authority-contract) below. The ordinary interaction resolver contract is in [execution semantics](execution-semantics.md#issue-thread-interaction-resolution).
 
 ### Writing custom instructions
 
@@ -119,11 +120,11 @@ Custom instructions are most useful when they tell the watchdog what evidence to
 
 > Before accepting any leaf as done, check that there is a corresponding green CI run linked in the comments. If there isn't, reopen the leaf and ask for one.
 
-> Do not accept a `request_confirmation` plan that proposes more than five subtasks without first asking me to review. Leave the issue in review and ping me.
+> When an interaction is `not_creator` or `human_only`, preserve that restriction. Do not treat the watchdog role as an override.
 
 > If a leaf is blocked on the marketing team, accept the wait but make sure the unblock owner is named in the blocker reason.
 
-What custom instructions cannot do: grant authority outside the watched subtree, approve board-level decisions, expand the interaction kinds the watchdog can resolve, or override safety constraints. The server enforces this regardless of what the instructions say.
+What custom instructions cannot do: grant authority outside the watched subtree, approve formal governance decisions, widen an interaction's resolver audience, or override safety constraints. The server enforces this regardless of what the instructions say.
 
 ---
 
@@ -133,7 +134,7 @@ Every watchdog-originated mutation is gated by a server-side scope check derived
 
 - mutations on issues outside the watched subtree (parent-chain walk, depth-limited)
 - mutations on issues whose company id does not match the watchdog's company
-- attempts to resolve interactions other than eligible task-level `request_confirmation` plan confirmations (see SPEC §9.9 for eligibility)
+- interaction resolution outside the ordinary effective audience, named addressee, company/issue scope, run-attribution, low-trust/task-bridge, target-staleness, or exact-once checks
 - changes to the watchdog configuration itself (a watchdog cannot edit its own row or create another watchdog)
 - direct edits to active-run output or execution-policy decisions that require a typed participant
 
@@ -165,10 +166,61 @@ It is **not** the right tool for:
 
 - monitoring a single running process for silence — that is the silent active-run watchdog, automatic, no configuration
 - liveness recovery on stalled agent-owned issues without an explicit recovery surface — that is automatic too
-- board-level approvals or anything security-sensitive — the watchdog cannot resolve those
+- formal approvals or security-sensitive downstream actions — an interaction response cannot authorize those
 - replacing a human reviewer on a typed execution-policy stage — the watchdog cannot bypass typed participants
 
 If what you actually want is "wake me when this is done," use a routine or an issue-thread interaction with `continuationPolicy: wake_assignee`, not a watchdog.
+
+---
+
+## Authority contract
+
+A task watchdog is a scoped execution capacity for a configured watchdog agent on one watched issue subtree. It is not a separate principal, does not inherit board auth, and does not expand the selected agent's company boundary. The server must enforce the watchdog contract from persisted watchdog configuration and run context; custom instructions and prompt text can narrow the mandate but cannot expand it.
+
+The watched subtree is the source issue plus descendants reached through `parent_id`, excluding every issue whose `origin_kind = 'task_watchdog'` and excluding all descendants below those watchdog issues. The generated reusable watchdog issue is outside the watched work subtree for scan purposes, but the watchdog agent may update that reusable watchdog issue to record its own review disposition.
+
+Task-watchdog wakes must include server-derived capability metadata that names the watched root, reusable watchdog issue, excluded `task_watchdog` origin branches, allowed operations, and denied operations. Watchdogs must use that metadata and server denials for capability discovery; they must not create visible probe issues, comments, or throwaway tasks to learn their permissions.
+
+### Allowed watchdog mutations
+
+Within the watched subtree, a watchdog run may perform only mutations that restore or clarify the next live/waiting path:
+
+- add comments that explain findings, evidence, and next action
+- create descendant follow-up issues under an included subtree issue, inheriting company, project, goal, and workspace strategy from that subtree; each follow-up gets its own execution workspace
+- assign or reassign included issues to active, invokable, same-company agents when normal assignment checks and scoped assignment grants allow it
+- move included issues among `todo`, `in_progress`, `in_review`, and `blocked` when the transition is needed to restore a valid action path
+- reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
+- add, replace, or clear blockers on included issues when the blocker target is in the same company and the change makes the waiting path more accurate
+- set or refresh a one-shot monitor on an included issue when the current assignee owns the future check
+- resolve issue-thread interactions through the ordinary resolver-audience path
+  when the watchdog agent otherwise has issue access and the effective policy allows it
+- update the reusable watchdog issue itself to `done`, `in_review`, or `blocked` with the evidence for the watchdog decision
+
+Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
+
+The atomic recovery batch, restoration verification and escalation, and interaction
+resolution rules for watchdog runs are in
+[execution semantics §11](execution-semantics.md#11-task-watchdog-for-issue-trees).
+
+### Disallowed watchdog mutations
+
+A task watchdog must not:
+
+- mutate issues outside the watched subtree, except for comments or newly created follow-up issues that are children of included subtree issues
+- mutate company, project, goal, agent, auth, API key, budget, secret, environment, plugin, or deployment settings
+- approve or reject rows in the `approvals` table, including hiring, CEO strategy, spend, budget override, or `request_board_approval` decisions
+- resolve execution-policy decisions unless the watchdog agent is the typed participant under that policy outside of its watchdog capacity
+- force-release checkout/execution locks, cancel active runs, terminate processes, or perform active-run output watchdog decisions
+- create visible probe issues, comments, or throwaway tasks to discover whether an operation is allowed
+- delete issue documents, comments, attachments, work products, or activity records
+- change the watchdog configuration, select a different watchdog agent, or create nested watchdog configurations
+- treat custom instructions as authority to bypass approval gates, cross company boundaries, access secrets, or override this contract
+
+When the safe next action needs one of these disallowed mutations, the watchdog must leave a valid waiting path by commenting, creating an in-subtree escalation/follow-up issue, assigning to the correct owner, or leaving the source issue blocked on a first-class blocker.
+
+### Deferred capabilities
+
+Deliberately deferred and disallowed for the first implementation: letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion of those capabilities requires a new product/security review.
 
 ---
 
@@ -176,7 +228,7 @@ If what you actually want is "wake me when this is done," use a routine or an is
 
 | Topic                            | File                                                                  |
 | -------------------------------- | --------------------------------------------------------------------- |
-| Authority contract (formal)      | [`doc/SPEC-implementation.md`](SPEC-implementation.md) §9.9           |
+| Authority contract (formal)      | [Authority contract](#authority-contract) (this doc)                  |
 | Execution semantics (formal)     | [`doc/execution-semantics.md`](execution-semantics.md) §11           |
 | Silent active-run watchdog       | [`doc/execution-semantics.md`](execution-semantics.md) §12           |
 | Database schema                  | `packages/db/src/schema/issue_watchdogs.ts`                           |

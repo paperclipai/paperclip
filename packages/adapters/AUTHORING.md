@@ -38,6 +38,18 @@ How to apply:
   `workspace_finalize=failed` on the execution workspace, which gates
   dependent issue wakes until the next successful finalize. Do not swallow
   restore errors.
+- A transported workspace copy *may* carry the local workspace's `origin`
+  remote URL so that branches in the copy stay publishable by the agent or an
+  operator who holds credentials — the transport helpers copy the URL as
+  metadata only. The copy is allowlist-based and fails closed
+  (`sanitizeGitRemoteUrl`): http(s) URLs are stripped of userinfo, query, and
+  fragment; `ssh:`/`git:` scheme URLs are stripped of password and query;
+  scp-like `user@host:path` passes through (the syntax has no password slot);
+  every other shape — filesystem paths, unknown schemes — is dropped rather
+  than risk persisting an embedded secret. This does not weaken the contract:
+  sync-back through the local cwd remains the only cross-run persistence
+  path, the helpers never fetch from or push to that remote, and a workspace
+  without an `origin` transports exactly as before.
 
 The invariant is pinned by the `no-remote-git contract` case in
 [`packages/adapter-utils/src/ssh-fixture.test.ts`](../adapter-utils/src/ssh-fixture.test.ts),

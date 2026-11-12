@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "egnyte",
+  "name": "Egnyte",
+  "description": "Connect Egnyte's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/egnyte.svg"
+  },
+  "urlPatterns": [
+    "https://mcp-server.egnyte.com/*"
+  ],
+  "docsUrl": "https://developers.egnyte.com/docs/Remote_MCP_Server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp-server.egnyte.com/mcp"
+      },
+      "guidanceMd": "Connect Egnyte in the browser. An eligible Egnyte plan and administrator approval for external LLM access.",
+      "riskTier": "S3",
+      "label": "Sign in with Egnyte",
+      "consoleLinks": {
+        "docs": "https://developers.egnyte.com/docs/Remote_MCP_Server"
+      },
+      "warnings": [
+        "An eligible Egnyte plan and administrator approval for external LLM access."
+      ]
+    }
+  ]
+}

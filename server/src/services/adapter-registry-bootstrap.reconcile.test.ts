@@ -12,6 +12,7 @@ vi.mock("../adapters/registry.js", async (orig) => ({
 }));
 
 vi.mock("./adapter-plugin-store.js", () => ({
+  listAdapterPlugins: () => [],
   setAdapterDisabled: (type: string, disabled: boolean) => setAdapterDisabled(type, disabled),
 }));
 
@@ -31,8 +32,7 @@ describe("reconcileAdapterAvailability", () => {
     ]);
     expect(result.enabled).toEqual(["opencode_local"]);
     expect(result.disabled.sort()).toEqual(["claude_local", "pi_local"]);
-    expect(setAdapterDisabled).toHaveBeenCalledWith("claude_local", true);
-    expect(setAdapterDisabled).toHaveBeenCalledWith("opencode_local", false);
+    expect(setAdapterDisabled).not.toHaveBeenCalled();
   });
 
   it("throws when a declared adapter has no installed implementation", () => {

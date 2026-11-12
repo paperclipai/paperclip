@@ -1,0 +1,56 @@
+{
+  "schema": "paperclip.cursor.native-usage-offline-proof.v1",
+  "providerCalls": 0,
+  "standardUsageEmitted": false,
+  "boundary": "digest-pinned handlePrompt, native invocation and child update methods; surrounding session/transport doubled",
+  "platforms": [
+    {
+      "platform": "darwin-arm64",
+      "vendorSha256": "7784c8b16d4e639814c13b12be2a687f5dc2cd98cbf29ed0a10820778ab1bf62",
+      "candidateSha256": "83fa4d462b3d8fd95b05420589cc80b8a6536dbff0cc3c5d36fec69d8a753970",
+      "checks": [
+        "exact_parent_invocation_capture",
+        "separate_followups",
+        "no_standard_usage",
+        "warm_prompt_isolation",
+        "child_run_attribution",
+        "history_and_late_child_isolation",
+        "overlapping_cancellation",
+        "late_parent_callback_isolation",
+        "exception_cleanup"
+      ]
+    },
+    {
+      "platform": "darwin-x64",
+      "vendorSha256": "3c0aaf6ecc4fceb0f95e1731deec75384984570d14d0871cecec11972b948ac4",
+      "candidateSha256": "060c8816fac3d110f5931ce626e5f2d841d8252fba7dafd52e37157ca915301d",
+      "checks": [
+        "exact_parent_invocation_capture",
+        "separate_followups",
+        "no_standard_usage",
+        "warm_prompt_isolation",
+        "child_run_attribution",
+        "history_and_late_child_isolation",
+        "overlapping_cancellation",
+        "late_parent_callback_isolation",
+        "exception_cleanup"
+      ]
+    },
+    {
+      "platform": "linux-x64",
+      "vendorSha256": "2de420f1b31e70ca74b083a1ce5b519c2abffa5789d71cc06e84d2c38acb7c07",
+      "candidateSha256": "3435f90f028eb5b08cf8cb7b289694993636f2868e6af217c167a5fd27ac03b2",
+      "checks": [
+        "exact_parent_invocation_capture",
+        "separate_followups",
+        "no_standard_usage",
+        "warm_prompt_isolation",
+        "child_run_attribution",
+        "history_and_late_child_isolation",
+        "overlapping_cancellation",
+        "late_parent_callback_isolation",
+        "exception_cleanup"
+      ]
+    }
+  ]
+}

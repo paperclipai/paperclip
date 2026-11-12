@@ -1,22 +1,30 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { skillAccessService } from "./skill-access.js";
+import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
+import { executionProjectionsForRuns } from "./execution-projection.js";
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
   documentRevisions,
+  documents,
   environmentLeases,
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issueComments,
   issueDocuments,
   issues,
   issueWorkProducts,
   workspaceOperations,
 } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, normalizeRunFailureCause, RUN_FAILURE_CAUSE_MAX_LENGTH } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+import { missingRunLivenessCandidatesQuery } from "./run-liveness-backfill-query.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -24,6 +32,8 @@ export interface ActivityFilters {
   entityType?: string;
   entityId?: string;
   limit?: number;
+  readCondition?: SQL<boolean>;
+  caseReadCondition?: SQL<boolean>;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -34,8 +44,27 @@ export function normalizeActivityLimit(limit: number | undefined) {
   return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.floor(limit ?? DEFAULT_ACTIVITY_LIMIT)));
 }
 
+const RUN_LIVENESS_BACKFILL_BATCH = 20;
+// Runs finalize with a liveness classification. The backfill only repairs rows
+// that missed it (older rows or a failed finalization), so a delay is safe.
+const RUN_LIVENESS_CLEAN_TTL_MS = 10 * 60_000;
+const RUN_LIVENESS_CLEAN_MAX_ENTRIES = 10_000;
+
 export function activityService(db: Db) {
   const scheduledLivenessBackfills = new Set<string>();
+  // Issues whose last backfill pass left no missing liveness, keyed like
+  // `scheduledLivenessBackfills`. Values are the time the skip window ends.
+  // The map keeps insertion order, so the first entry is the oldest.
+  const livenessCleanUntil = new Map<string, number>();
+  function rememberLivenessClean(key: string) {
+    livenessCleanUntil.delete(key);
+    livenessCleanUntil.set(key, Date.now() + RUN_LIVENESS_CLEAN_TTL_MS);
+    while (livenessCleanUntil.size > RUN_LIVENESS_CLEAN_MAX_ENTRIES) {
+      const oldest = livenessCleanUntil.keys().next().value;
+      if (oldest === undefined) break;
+      livenessCleanUntil.delete(oldest);
+    }
+  }
   const issueIdAsText = sql<string>`${issues.id}::text`;
   const summarizedUsageJson = sql<Record<string, unknown> | null>`
     case
@@ -80,10 +109,48 @@ export function activityService(db: Db) {
       ))
     end
   `.as("usageJson");
-  const summarizedResultJson = sql<Record<string, unknown> | null>`
+  // A denied user needs the selected connection's name to repair their task.
+  // Other readers need the connection's existing human sharing permission.
+  // A malformed present Stop receipt must stay unconfirmed, not disappear.
+  const summarizedResultJson = (viewerUserId: string | null) => sql<Record<string, unknown> | null>`
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
+        'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
+        'executionCancellation', case when ${heartbeatRuns.resultJson} ? 'executionCancellation'
+          then jsonb_build_object('state', case
+            when jsonb_typeof(${heartbeatRuns.resultJson} -> 'executionCancellation') = 'object'
+              and ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' in ('requested', 'acknowledged')
+            then ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' else 'unknown' end) end,
+        'nativeCancellation', case
+          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'nativeCancellation') = 'object'
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,schema}' = 'paperclip.native-cancellation.v1'
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,runId}' = ${heartbeatRuns.id}::text
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,companyId}' = ${heartbeatRuns.companyId}::text
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}' in ('pending', 'acknowledged')
+          then jsonb_build_object('schema', 'paperclip.native-cancellation.v1',
+            'runId', ${heartbeatRuns.id}, 'companyId', ${heartbeatRuns.companyId},
+            'dispatchState', ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}') end,
+        'configurationIncomplete', case
+          when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
+          then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
+          when ${heartbeatRuns.errorCode} = 'configuration_incomplete'
+          and (${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+            or ${heartbeatRuns.error} = 'This credential is not shared with the responsible user')
+          then jsonb_build_object(
+            'selectionFailure', case when ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+              then 'ai_connection_credential_not_shared' end,
+            'credentialAccess', jsonb_build_object(
+              'connectionName', ${credentialAccessConnectionNameSql(viewerUserId)}
+            )
+          ) end,
+        'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
+          in (${workspaceRestoreFailureCodesSql})
+          then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
+        'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
+          then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
+        'finalResponseRecorded', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'finalResponseRecorded') = 'boolean'
+          then ${heartbeatRuns.resultJson} -> 'finalResponseRecorded' end,
         'billingType', coalesce(${heartbeatRuns.resultJson} -> 'billingType', ${heartbeatRuns.resultJson} -> 'billing_type'),
         'billing_type', coalesce(${heartbeatRuns.resultJson} -> 'billing_type', ${heartbeatRuns.resultJson} -> 'billingType'),
         'costUsd', coalesce(
@@ -145,47 +212,16 @@ export function activityService(db: Db) {
   }
 
   async function backfillMissingRunLivenessForIssue(companyId: string, issueId: string) {
-    const runs = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        status: heartbeatRuns.status,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-        resultJson: heartbeatRuns.resultJson,
-        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
-        stderrExcerpt: heartbeatRuns.stderrExcerpt,
-        error: heartbeatRuns.error,
-        errorCode: heartbeatRuns.errorCode,
-        continuationAttempt: heartbeatRuns.continuationAttempt,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          isNull(heartbeatRuns.livenessState),
-          sql`${heartbeatRuns.status} not in ('queued', 'running')`,
-          or(
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            sql`exists (
-              select 1
-              from ${activityLog}
-              where ${activityLog.companyId} = ${companyId}
-                and ${activityLog.entityType} = 'issue'
-                and ${activityLog.entityId} = ${issueId}
-                and ${activityLog.runId} = ${heartbeatRuns.id}
-            )`,
-          ),
-        ),
-      )
-      .limit(20);
+    const runs = await missingRunLivenessCandidatesQuery(db, companyId, issueId, RUN_LIVENESS_BACKFILL_BATCH);
 
-    if (runs.length === 0) return;
+    if (runs.length === 0) return 0;
 
     const issue = await db
       .select({
         status: issues.status,
         title: issues.title,
         description: issues.description,
+        workMode: issues.workMode,
       })
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
@@ -309,13 +345,24 @@ export function activityService(db: Db) {
         })
         .where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.livenessState)));
     }
+    return runs.length;
   }
 
   function scheduleRunLivenessBackfill(companyId: string, issueId: string) {
     const key = `${companyId}:${issueId}`;
     if (scheduledLivenessBackfills.has(key)) return;
+    const cleanUntil = livenessCleanUntil.get(key);
+    if (cleanUntil !== undefined) {
+      if (cleanUntil > Date.now()) return;
+      livenessCleanUntil.delete(key);
+    }
     scheduledLivenessBackfills.add(key);
     void backfillMissingRunLivenessForIssue(companyId, issueId)
+      .then((found) => {
+        // A partial batch means this pass classified every remaining candidate.
+        // Skip this issue for a while, so page reads do not repeat the lookup.
+        if (found < RUN_LIVENESS_BACKFILL_BATCH) rememberLivenessClean(key);
+      })
       .catch((err: unknown) => {
         logger.warn({ err, companyId, issueId }, "run liveness backfill failed");
       })
@@ -325,8 +372,9 @@ export function activityService(db: Db) {
   }
 
   return {
-    list: (filters: ActivityFilters) => {
-      const conditions = [eq(activityLog.companyId, filters.companyId)];
+    list: async (filters: ActivityFilters) => {
+      const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {
@@ -354,7 +402,7 @@ export function activityService(db: Db) {
             ...conditions,
             or(
               sql`${activityLog.entityType} != 'issue'`,
-              isNull(issues.hiddenAt),
+              and(visibleIssueCondition(), filters.readCondition ?? sql<boolean>`true`),
             ),
           ),
         )
@@ -363,23 +411,55 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
-    forIssue: (issueId: string) =>
-      db
+    inputFactsForIssue: async (companyId: string, issueId: string, commentIds: string[]) => {
+      if (!commentIds.length) return [];
+      const commentId = sql<string>`${activityLog.details}->>'commentId'`;
+      return db.selectDistinctOn([commentId, activityLog.action])
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          inArray(commentId, commentIds),
+          inArray(activityLog.action, ["issue.queued_comment_steered", "issue.comment_added"]),
+          sql`${activityLog.details}->>'duplicate' is distinct from 'true'`,
+        ))
+        .orderBy(commentId, activityLog.action, asc(activityLog.createdAt), asc(activityLog.id));
+    },
+
+    forIssue: (issueId: string, limit?: number) => {
+      const query = db
         .select()
         .from(activityLog)
         .where(
-          and(
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, issueId),
+          or(
+            and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)),
+            and(or(eq(activityLog.action, "project.created"), eq(activityLog.action, "company.skill_created")), sql`${activityLog.details}->>'sourceIssueId' = ${issueId}`,
+              sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
           ),
         )
-        .orderBy(desc(activityLog.createdAt)),
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+      return limit === undefined ? query : query.limit(limit);
+    },
 
-    runsForIssue: async (companyId: string, issueId: string) => {
-      scheduleRunLivenessBackfill(companyId, issueId);
-      const runs = await db
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      viewerUserId: string | null = null,
+      limit?: number,
+      selectedRunIds?: string[],
+      // Read-only callers (the chat bootstrap) skip the background liveness
+      // backfill: it writes to runs and outlives the request's own limits.
+      // The task page's own `/runs` read still schedules it.
+      options: { skipLivenessBackfill?: boolean } = {},
+    ) => {
+      if (selectedRunIds && !selectedRunIds.length) return [];
+      if (!options.skipLivenessBackfill) scheduleRunLivenessBackfill(companyId, issueId);
+      const runsQuery = db
         .select({
           runId: heartbeatRuns.id,
+          runtimeMode: heartbeatRuns.runtimeMode,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
           adapterType: agents.adapterType,
@@ -389,8 +469,17 @@ export function activityService(db: Db) {
           invocationSource: heartbeatRuns.invocationSource,
           responsibleUserId: heartbeatRuns.responsibleUserId,
           errorCode: heartbeatRuns.errorCode,
+          error: sql<string | null>`case when ${heartbeatRuns.status} = 'failed'
+            and ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
+            then left(${heartbeatRuns.error}, 2000)
+            when ${heartbeatRuns.status} = 'failed'
+              and ${heartbeatRuns.error} = 'This credential is not shared with the responsible user'
+            then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
-          resultJson: summarizedResultJson,
+          resultJson: summarizedResultJson(viewerUserId),
+          // Bounded cause of a generic failure code; validated below, legacy rows have none.
+          failureCause: sql<string | null>`case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'failureCause') = 'string'
+            then left(${heartbeatRuns.resultJson} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1}) end`,
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -401,6 +490,11 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
+          wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
+          queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`,
+          wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
+          contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
+          contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -413,8 +507,13 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
+            sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
+              and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
+              or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
+            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
             or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+              eq(heartbeatRuns.issueId, issueId),
               sql`exists (
                 select 1
                 from ${activityLog}
@@ -426,13 +525,14 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+      const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);
       if (runIds.length === 0) return runs;
 
-      const exhaustionRows = await db
+      const exhaustionRowsQuery = db
         .select({
           runId: heartbeatRunEvents.runId,
           message: heartbeatRunEvents.message,
@@ -447,13 +547,7 @@ export function activityService(db: Db) {
         )
         .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id));
 
-      const retryExhaustedReasonByRunId = new Map<string, string>();
-      for (const row of exhaustionRows) {
-        if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
-        retryExhaustedReasonByRunId.set(row.runId, row.message);
-      }
-
-      const leaseRows = await db
+      const leaseRowsQuery = db
         .select({
           lease: environmentLeases,
           environment: {
@@ -471,6 +565,28 @@ export function activityService(db: Db) {
           ),
         )
         .orderBy(desc(environmentLeases.lastUsedAt), desc(environmentLeases.createdAt));
+
+      // Only stored, current plan revisions can support a saved-plan link.
+      // Do not trust an adapter's claim that it wrote a document.
+      const savedPlanQuery = runs.some((run) => hasWorkspaceRestoreFailure(run.resultJson))
+        ? db.select({ revisionId: documentRevisions.id, runId: documentRevisions.createdByRunId })
+          .from(issueDocuments)
+          .innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, companyId)))
+          .innerJoin(documentRevisions, and(eq(documentRevisions.id, documents.latestRevisionId), eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, companyId)))
+          .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "plan")))
+          .limit(1)
+        : Promise.resolve([]);
+      const [exhaustionRows, leaseRows, executionByRunId, [savedPlan]] = await Promise.all([
+        exhaustionRowsQuery,
+        leaseRowsQuery,
+        executionProjectionsForRuns(db, companyId, runIds, new Date(), { retryDatabaseReads: true }),
+        savedPlanQuery,
+      ]);
+      const retryExhaustedReasonByRunId = new Map<string, string>();
+      for (const row of exhaustionRows) {
+        if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
+        retryExhaustedReasonByRunId.set(row.runId, row.message);
+      }
 
       const leaseByRunId = new Map<string, (typeof leaseRows)[number]>();
       for (const row of leaseRows) {
@@ -490,6 +606,17 @@ export function activityService(db: Db) {
               : null;
         return {
           ...run,
+          failureCause: normalizeRunFailureCause(run.failureCause),
+          resultJson: run.resultJson ? {
+            ...run.resultJson,
+            ...(Object.hasOwn(run.resultJson, "workspaceRestorePath") ? {
+              workspaceRestorePath: safeWorkspaceRestorePath(run.resultJson.workspaceRestorePath),
+            } : {}),
+            ...(hasWorkspaceRestoreFailure(run.resultJson) ? {
+              ...(savedPlan?.runId === run.runId ? { savedPlanRevisionId: savedPlan.revisionId } : {}),
+            } : {}),
+          } : null,
+          execution: executionByRunId.get(run.runId) ?? null,
           environment: leaseRow
             ? {
                 id: leaseRow.environment.id,
@@ -517,11 +644,11 @@ export function activityService(db: Db) {
       });
     },
 
-    issuesForRun: async (runId: string) => {
+    issuesForRun: async (runId: string, readCondition: SQL<boolean>) => {
       const run = await db
         .select({
           companyId: heartbeatRuns.companyId,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
+          issueId: heartbeatRuns.issueId,
         })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
@@ -543,16 +670,14 @@ export function activityService(db: Db) {
             eq(activityLog.companyId, run.companyId),
             eq(activityLog.runId, runId),
             eq(activityLog.entityType, "issue"),
-            isNull(issues.hiddenAt),
+            eq(issues.companyId, run.companyId),
+            visibleIssueCondition(),
+            readCondition,
           ),
         )
         .orderBy(issueIdAsText);
 
-      const context = run.contextSnapshot;
-      const contextIssueId =
-        context && typeof context === "object" && typeof (context as Record<string, unknown>).issueId === "string"
-          ? ((context as Record<string, unknown>).issueId as string)
-          : null;
+      const contextIssueId = run.issueId;
       if (!contextIssueId) return fromActivity;
       if (fromActivity.some((issue) => issue.issueId === contextIssueId)) return fromActivity;
 
@@ -569,7 +694,8 @@ export function activityService(db: Db) {
           and(
             eq(issues.companyId, run.companyId),
             eq(issues.id, contextIssueId),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
+            readCondition,
           ),
         )
         .then((rows) => rows[0] ?? null);
@@ -578,11 +704,10 @@ export function activityService(db: Db) {
       return [fromContext, ...fromActivity];
     },
 
-    create: (data: typeof activityLog.$inferInsert) =>
-      db
-        .insert(activityLog)
-        .values(data)
-        .returning()
-        .then((rows) => rows[0]),
+    create: (data: typeof activityLog.$inferInsert) => db.transaction(async tx => {
+      if (data.entityType === "issue") await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${data.entityId}`);
+      const [row] = await tx.insert(activityLog).values(data).returning();
+      return row;
+    }),
   };
 }

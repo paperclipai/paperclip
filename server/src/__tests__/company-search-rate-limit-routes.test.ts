@@ -5,6 +5,10 @@ import { issueRoutes } from "../routes/issues.js";
 import { createCompanySearchRateLimiter } from "../services/company-search-rate-limit.js";
 import type { CompanySearchQuery, CompanySearchResponse } from "@paperclipai/shared";
 
+async function unusedExtract(): Promise<never> {
+  throw new Error("Rate limit tests do not call extract");
+}
+
 function createSearchResponse(query: CompanySearchQuery): CompanySearchResponse {
   return {
     query: query.q,
@@ -13,7 +17,18 @@ function createSearchResponse(query: CompanySearchQuery): CompanySearchResponse 
     limit: query.limit,
     offset: query.offset,
     results: [],
-    countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
+    sort: query.sort,
+    countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 },
+    filterOptionCounts: {
+      status: {},
+      priority: {},
+      assigneeAgentId: {},
+      assigneeUserId: {},
+      projectId: {},
+      labelId: {},
+      updatedWithin: {},
+    },
+    zeroResults: null,
     hasMore: false,
   };
 }
@@ -33,7 +48,7 @@ describe("company search route rate limiting", () => {
       next();
     });
     app.use("/api", issueRoutes({} as never, {} as never, {
-      searchService: { search },
+      searchService: { search, extract: unusedExtract },
       searchRateLimiter: createCompanySearchRateLimiter({
         maxRequests: 1,
         windowMs: 60_000,
@@ -51,4 +66,60 @@ describe("company search route rate limiting", () => {
     });
     expect(limited.headers["retry-after"]).toBe("60");
   });
+  it("resolves assigneeUserId=me for board actors before invoking search", async () => {
+    const search = vi.fn(async (_companyId: string, query: CompanySearchQuery) => createSearchResponse(query));
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      };
+      next();
+    });
+    app.use("/api", issueRoutes({} as never, {} as never, {
+      searchService: { search, extract: unusedExtract },
+      searchRateLimiter: createCompanySearchRateLimiter({
+        maxRequests: 10,
+        windowMs: 60_000,
+        now: () => 1_000,
+      }),
+    }));
+
+    await request(app).get("/api/companies/company-1/search?q=wizard&assigneeUserId=me").expect(200);
+
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search.mock.calls[0]?.[1].assigneeUserId).toBe("user-1");
+  });
+
+  it("rejects invalid filter and sort params before invoking search", async () => {
+    const search = vi.fn(async (_companyId: string, query: CompanySearchQuery) => createSearchResponse(query));
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      };
+      next();
+    });
+    app.use("/api", issueRoutes({} as never, {} as never, {
+      searchService: { search, extract: unusedExtract },
+      searchRateLimiter: createCompanySearchRateLimiter({
+        maxRequests: 10,
+        windowMs: 60_000,
+        now: () => 1_000,
+      }),
+    }));
+
+    await request(app).get("/api/companies/company-1/search?q=wizard&sort=nope").expect(400);
+    await request(app).get("/api/companies/company-1/search?q=wizard&assigneeAgentId=nope").expect(400);
+
+    expect(search).not.toHaveBeenCalled();
+  });
+
 });

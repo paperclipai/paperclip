@@ -95,6 +95,15 @@ interface PluginCompanyOptions extends PluginJsonOptions {
   companyId?: string;
 }
 
+function requireCompanyId(ctx: { companyId?: string }): string {
+  if (!ctx.companyId) {
+    throw new Error(
+      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
+    );
+  }
+  return ctx.companyId;
+}
+
 interface PluginInitResult {
   outputDir: string;
   nextCommands: string[];
@@ -673,9 +682,9 @@ export function registerPluginCommands(program: Command): void {
   addPluginSubGet(plugin, "health", "Get plugin health", "health");
   addPluginSubGet(plugin, "logs", "Get plugin logs", "logs");
   addPluginSubPost(plugin, "upgrade", "Upgrade a plugin", "upgrade");
-  addPluginSubGet(plugin, "config", "Get plugin config", "config");
-  addPluginSubPost(plugin, "config:set", "Set plugin config", "config");
-  addPluginSubPost(plugin, "config:test", "Test plugin config", "config/test");
+  addPluginConfigGet(plugin, "config", "Get company-scoped plugin config");
+  addPluginConfigPost(plugin, "config:set", "Set company-scoped plugin config", "config");
+  addPluginConfigPost(plugin, "config:test", "Test company-scoped plugin config", "config/test");
   addPluginSubGet(plugin, "jobs", "List plugin jobs", "jobs");
   addPluginJobGet(plugin, "job:runs", "List plugin job runs", "runs");
   addPluginJobPost(plugin, "job:trigger", "Trigger a plugin job", "trigger");
@@ -749,6 +758,56 @@ function addPluginSubPost(parent: Command, name: string, description: string, su
       handleCommandError(err);
     }
   }));
+}
+
+function addPluginConfigGet(parent: Command, name: string, description: string): void {
+  addCommonClientOptions(
+    parent
+      .command(name)
+      .description(description)
+      .argument("<pluginId>", "Plugin ID or key")
+      .option("-C, --company-id <id>", "Company ID")
+      .action(async (pluginId: string, opts: PluginCompanyOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const companyId = requireCompanyId(ctx);
+          printOutput(
+            await ctx.api.get(`/api/plugins/${encodeURIComponent(pluginId)}/config?companyId=${encodeURIComponent(companyId)}`),
+            { json: ctx.json },
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+}
+
+function addPluginConfigPost(parent: Command, name: string, description: string, suffix: string): void {
+  addCommonClientOptions(
+    parent
+      .command(name)
+      .description(description)
+      .argument("<pluginId>", "Plugin ID or key")
+      .option("-C, --company-id <id>", "Company ID")
+      .option("--payload-json <json>", "JSON payload", "{}")
+      .action(async (pluginId: string, opts: PluginCompanyOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const payload = parseJson(opts.payloadJson ?? "{}") as Record<string, unknown>;
+          printOutput(
+            await ctx.api.post(`/api/plugins/${encodeURIComponent(pluginId)}/${suffix}`, {
+              ...payload,
+              companyId: ctx.companyId,
+            }),
+            { json: ctx.json },
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
 }
 
 function addPluginJobGet(parent: Command, name: string, description: string, suffix: string): void {

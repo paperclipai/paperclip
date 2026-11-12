@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { useMemo, useState } from "react";
 import {
   ArrowRight,
   Braces,
   Clock3,
   Edit3,
-  KeyRound,
   Play,
-  Plus,
   X,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,13 +27,10 @@ import { timeAgo } from "../../lib/timeAgo";
 import { EmptyState } from "../EmptyState";
 import { InlineEntitySelector } from "../InlineEntitySelector";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "../IssueDocumentAnnotations";
-import { AgentIcon } from "../AgentIconPicker";
 import { MarkdownEditor } from "../MarkdownEditor";
-import { ScheduleEditor, getScheduleCronValidation } from "../ScheduleEditor";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../RoutineVariablesEditor";
-import { RoutineTriggerCard } from "../RoutineTriggerCard";
 import { EnvironmentVariablesEditor } from "../environment-variables-editor";
-import { createDefaultNewTrigger, useRoutineDetail } from "./context";
+import { useRoutineDetail } from "./context";
 import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@paperclipai/shared";
 
 const concurrencyPolicyOptions = [
@@ -64,19 +60,36 @@ const catchUpPolicyOptions = [
   {
     value: "enqueue_missed_with_cap",
     title: "Enqueue missed with cap",
-    description: "Catch up missed schedule windows in capped batches after recovery.",
+    description: "Catch up missed schedule windows after recovery; sub-hourly schedules are combined into one catch-up run, slower schedules replay each missed window up to a cap.",
   },
 ];
 
-const triggerKinds = ["schedule", "webhook"];
-const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
-const signingModeDescriptions: Record<string, string> = {
-  bearer: "Expect a shared bearer token in the Authorization header.",
-  hmac_sha256: "Expect an HMAC SHA-256 signature over the request using the shared secret.",
-  github_hmac: "Accept GitHub-style X-Hub-Signature-256 header (HMAC over raw body, no timestamp).",
-  none: "No authentication — the webhook URL itself acts as a shared secret.",
-};
-const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
+const activityGatePolicyOptions = [
+  {
+    value: "always",
+    title: "Run on every scheduled tick",
+    description: "Fire on the schedule no matter what — the default behavior.",
+  },
+  {
+    value: "require_external_activity",
+    title: "Skip when there's been no activity since the last run",
+    description:
+      "On a scheduled tick, only run if something happened since the last run that finished. Lets a watcher-style routine stay asleep while the system is settled instead of burning tokens.",
+  },
+];
+
+const activityGateScopeOptions = [
+  {
+    value: "company",
+    title: "Organization-wide",
+    description: "Any activity across the organization counts as a reason to run.",
+  },
+  {
+    value: "project",
+    title: "This project",
+    description: "Only activity in the routine's project counts as a reason to run.",
+  },
+];
 
 export function OverviewSection({
   defaultDescriptionAnnotationsOpen = false,
@@ -117,7 +130,6 @@ export function OverviewSection({
       .sort((a, b) => a.getTime() - b.getTime())[0];
     return upcoming ? upcoming.toLocaleString() : null;
   }, [routine.triggers]);
-  const boundSecrets = editDraft.env ? Object.keys(editDraft.env).length : 0;
   const lastRun = (routineRuns ?? [])[0] ?? null;
   const recentActivity = (activity ?? []).slice(0, 5);
 
@@ -150,7 +162,7 @@ export function OverviewSection({
               option ? (
                 currentAssignee ? (
                   <>
-                    <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <AgentAvatar agent={currentAssignee} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                     <span className="truncate">{option.label}</span>
                   </>
                 ) : (
@@ -166,7 +178,7 @@ export function OverviewSection({
               return (
                 <>
                   {assignee ? (
-                    <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <AgentAvatar agent={assignee} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                   ) : null}
                   <span className="truncate">{option.label}</span>
                 </>
@@ -293,7 +305,7 @@ export function OverviewSection({
       </div>
 
       {/* Summary cards */}
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <SummaryCard
           icon={Clock3}
           label="Triggers"
@@ -301,14 +313,6 @@ export function OverviewSection({
           hint={nextFire ? `Next fire ${nextFire}` : "No schedule"}
           to={() => navigateToSection("triggers")}
           ariaLabel={`${activeTriggers} triggers. Open triggers.`}
-        />
-        <SummaryCard
-          icon={KeyRound}
-          label="Secrets"
-          value={boundSecrets === 0 ? "None" : `${boundSecrets} bound`}
-          hint="Manage bound secrets"
-          to={() => navigateToSection("secrets")}
-          ariaLabel={`${boundSecrets} secrets bound. Open secrets.`}
         />
         <SummaryCard
           icon={Play}
@@ -388,173 +392,7 @@ function SummaryCard({
   );
 }
 
-export function TriggersSection() {
-  const ctx = useRoutineDetail();
-  const { routine, newTrigger, setNewTrigger, createTrigger, updateTrigger, deleteTrigger, rotateTrigger } = ctx;
-  const [addOpen, setAddOpen] = useState(false);
-  const [newScheduleEditorValid, setNewScheduleEditorValid] = useState(true);
-  const newScheduleValidation = useMemo(
-    () => newTrigger.kind === "schedule" ? getScheduleCronValidation(newTrigger.cronExpression) : null,
-    [newTrigger.cronExpression, newTrigger.kind],
-  );
-  const addDisabled =
-    createTrigger.isPending ||
-    (newScheduleValidation ? !newScheduleValidation.valid || !newScheduleEditorValid : false);
-
-  useEffect(() => {
-    if (newTrigger.kind !== "schedule") setNewScheduleEditorValid(true);
-  }, [newTrigger.kind]);
-
-  return (
-    <div className="space-y-4">
-      {/* Add-trigger drawer header (§3.2) */}
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium text-muted-foreground">
-          {routine.triggers.length === 0
-            ? "No triggers yet"
-            : `${routine.triggers.length} trigger${routine.triggers.length === 1 ? "" : "s"}`}
-        </p>
-        <Button
-          size="sm"
-          variant={addOpen ? "secondary" : "default"}
-          onClick={() => setAddOpen((open) => !open)}
-          aria-expanded={addOpen}
-        >
-          {addOpen ? (
-            <>
-              <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
-            </>
-          ) : (
-            <>
-              <Plus className="mr-1.5 h-3.5 w-3.5" />
-              New trigger
-            </>
-          )}
-        </Button>
-      </div>
-
-      {/* Add trigger form — expand-on-click drawer */}
-      {addOpen ? (
-      <div className="space-y-3 rounded-lg border border-border p-4">
-        <p className="text-sm font-medium">Add trigger</p>
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label className="text-xs">Kind</Label>
-            <Select
-              value={newTrigger.kind}
-              onValueChange={(kind) => setNewTrigger((current) => ({ ...current, kind }))}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {triggerKinds.map((kind) => (
-                  <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
-                    {kind}
-                    {kind === "webhook" ? " — COMING SOON" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {newTrigger.kind === "schedule" && (
-            <div className="space-y-1.5 md:col-span-2">
-              <Label className="text-xs">Schedule</Label>
-              <ScheduleEditor
-                value={newTrigger.cronExpression}
-                onChange={(cronExpression) =>
-                  setNewTrigger((current) => ({ ...current, cronExpression }))
-                }
-                onValidityChange={setNewScheduleEditorValid}
-              />
-            </div>
-          )}
-          {newTrigger.kind === "webhook" && (
-            <>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Signing mode</Label>
-                <Select
-                  value={newTrigger.signingMode}
-                  onValueChange={(signingMode) =>
-                    setNewTrigger((current) => ({ ...current, signingMode }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {signingModes.map((mode) => (
-                      <SelectItem key={mode} value={mode}>
-                        {mode}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  {signingModeDescriptions[newTrigger.signingMode]}
-                </p>
-              </div>
-              {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(newTrigger.signingMode) && (
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Replay window (seconds)</Label>
-                  <Input
-                    value={newTrigger.replayWindowSec}
-                    onChange={(event) =>
-                      setNewTrigger((current) => ({ ...current, replayWindowSec: event.target.value }))
-                    }
-                  />
-                </div>
-              )}
-            </>
-          )}
-        </div>
-        <div className="flex items-center justify-end gap-2">
-          <Button size="sm" variant="ghost" onClick={() => setAddOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={() =>
-              createTrigger.mutate(undefined, {
-                onSuccess: () => {
-                  setNewTrigger(createDefaultNewTrigger());
-                  setAddOpen(false);
-                },
-              })
-            }
-            disabled={addDisabled}
-          >
-            {createTrigger.isPending ? "Adding..." : "Add trigger"}
-          </Button>
-        </div>
-      </div>
-      ) : null}
-
-      {/* Existing triggers */}
-      {routine.triggers.length === 0 ? (
-        <EmptyState
-          icon={Clock3}
-          message="No triggers yet."
-          action="Add a schedule"
-          onAction={() => setAddOpen(true)}
-        />
-      ) : (
-        <div className="space-y-3">
-          {routine.triggers.map((trigger) => (
-            <RoutineTriggerCard
-              key={trigger.id}
-              trigger={trigger}
-              onSave={(id, patch) => updateTrigger.mutate({ id, patch })}
-              onRotate={(id) => rotateTrigger.mutate(id)}
-              onDelete={(id) => deleteTrigger.mutate(id)}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+export { RoutineTriggers as TriggersSection } from "../routine-triggers/RoutineTriggers";
 
 export function VariablesSection() {
   const ctx = useRoutineDetail();
@@ -596,7 +434,7 @@ export function VariablesSection() {
 
 export function SecretsSection() {
   const ctx = useRoutineDetail();
-  const { editDraft, setEditDraft, availableSecrets, createSecret, secretMessage, copySecretValue } = ctx;
+  const { editDraft, setEditDraft, availableSecrets, createSecret } = ctx;
 
   // Project/company-scoped secrets that already see real usage, surfaced as
   // quick-bind chips (§3.4). Ranked by reference count then recency.
@@ -620,34 +458,6 @@ export function SecretsSection() {
         project and agent env. <span className="font-mono">PAPERCLIP_*</span> names are reserved.
       </div>
 
-      {secretMessage ? (
-        <div className="space-y-3 rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 text-sm">
-          <div>
-            <p className="font-medium">{secretMessage.title}</p>
-            <p className="text-xs text-muted-foreground">
-              Save this now. Paperclip will not show the secret value again.
-            </p>
-          </div>
-          <div className="space-y-3">
-            {secretMessage.entries.map((entry, index) => (
-              <div key={`${entry.webhookUrl}-${index}`} className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Input value={entry.webhookUrl} readOnly className="flex-1" />
-                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", entry.webhookUrl)}>
-                    URL
-                  </Button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Input value={entry.webhookSecret} readOnly className="flex-1" />
-                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", entry.webhookSecret)}>
-                    Secret
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
 
       <EnvironmentVariablesEditor
         value={(editDraft.env ?? {}) as Record<string, EnvBinding>}
@@ -663,6 +473,13 @@ export function SecretsSection() {
 export function DeliverySection() {
   const ctx = useRoutineDetail();
   const { editDraft, setEditDraft, routine } = ctx;
+
+  // The activity gate only affects schedule ticks (webhook/manual/API fires are
+  // themselves activity and always run), so the control is only meaningful for
+  // routines that have a schedule trigger. Disable — rather than hide — it
+  // elsewhere so the capability stays discoverable.
+  const hasScheduleTrigger = routine.triggers.some((trigger) => trigger.kind === "schedule");
+  const gateEnabled = editDraft.activityGatePolicy === "require_external_activity";
 
   return (
     <div className="space-y-6">
@@ -691,6 +508,38 @@ export function DeliverySection() {
           }
           options={catchUpPolicyOptions}
         />
+      </div>
+      <div className="space-y-3">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
+          Advanced run policy
+        </p>
+        <RadioCardGroup
+          ariaLabel="Advanced run policy"
+          value={editDraft.activityGatePolicy}
+          onValueChange={(activityGatePolicy) =>
+            setEditDraft((current) => ({ ...current, activityGatePolicy }))
+          }
+          options={activityGatePolicyOptions}
+          disabled={!hasScheduleTrigger}
+        />
+        {!hasScheduleTrigger ? (
+          <p className="text-xs text-muted-foreground">
+            Add a schedule trigger to gate runs on activity. Webhook, manual, and API fires always
+            run.
+          </p>
+        ) : gateEnabled ? (
+          <div className="space-y-2 rounded-lg border border-border p-3">
+            <Label className="text-xs font-medium">Activity scope</Label>
+            <RadioCardGroup
+              ariaLabel="Activity gate scope"
+              value={editDraft.activityGateScope}
+              onValueChange={(activityGateScope) =>
+                setEditDraft((current) => ({ ...current, activityGateScope }))
+              }
+              options={activityGateScopeOptions}
+            />
+          </div>
+        ) : null}
       </div>
       <NextFiresPreview
         triggers={routine.triggers}

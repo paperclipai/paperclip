@@ -1,0 +1,364 @@
+import { describe, expect, it } from "vitest";
+import { projectExecution } from "./execution-projection.js";
+import { startTaskDrain, stopTaskDrain } from "./task-admission.js";
+import { resetStartupRecoveryStateForTests, setStartupRecoveryPhase } from "../startup-recovery-state.js";
+
+type Run = Parameters<typeof projectExecution>[0];
+type Coordinator = NonNullable<Parameters<typeof projectExecution>[1]>;
+const now = new Date("2026-09-08T12:00:00Z");
+const run = (values: Partial<Run> = {}) =>
+  ({
+    status: "running",
+    runtimeMode: "native",
+    errorCode: null,
+    nextAction: null,
+    lastUsefulActionAt: now,
+    lastOutputAt: null,
+    startedAt: now,
+    scheduledRetryAt: null,
+    scheduledRetryAttempt: 1,
+    retryOfRunId: null,
+    executionControlDeadlineAt: null,
+    ...values,
+  }) as Run;
+const coordinator = (values: Partial<Coordinator> = {}) =>
+  ({
+    phase: "observed",
+    attempt: 1,
+    failureCode: null,
+    failureDetail: {},
+    nextAttemptAt: null,
+    leaseExpiresAt: new Date(now.getTime() + 30_000),
+    controlDeadlineAt: null,
+    ...values,
+  }) as Coordinator;
+const project = (
+  r = run(),
+  c: Coordinator | undefined = coordinator(),
+  pending: { kind: string }[] = [],
+) => projectExecution(r, c, pending, undefined, now);
+
+describe("execution truth projection", () => {
+  it.each(["contained", "ordinary", "wrong-source", "continued"] as const)("projects controller containment without inventing queued work: %s", state => {
+    const stopped = run({ id: "old", status: "failed" });
+    const action = { status: "resolved" as const, cause: "native_restart_recovery_blocked", nextAction: "Inspect the original owner",
+      evidence: { reason: "controller_process_space_unverified", continuationDelivery: "not_requested",
+        executionReconciliation: { runId: state === "wrong-source" ? "another-run" : "old", providerStopped: true,
+          ...(state === "ordinary" ? {} : { controllerStopped: true, controllerAuthorityDigest: "a".repeat(64) }) },
+        ...(state === "continued" ? { explicitUserContinuation: { previousRunId: "old", runId: "new" } } : {}),
+      } };
+    const projected = projectExecution(stopped, coordinator({ phase: "terminal_failure" }), [], action, now);
+    expect(projected.phase).toBe(state === "contained" ? "failed" : state === "continued" ? "completed" : "queued");
+    if (state === "contained") {
+      expect(projected.label).toBe("Execution contained");
+      expect(projected.nextAction).toContain("Use Retry");
+      expect(projected.successorRunId).toBeNull();
+    }
+    if (state === "continued") expect(projected.successorRunId).toBe("new");
+  });
+
+  it("offers Stop for every live run, including a long-silent native turn", () => {
+    const silentSince = new Date(now.getTime() - 35 * 60_000);
+    const silent = run({ lastUsefulActionAt: silentSince, startedAt: silentSince });
+    expect(project(silent)).toMatchObject({ phase: "working", canStop: true });
+    expect(project(run({ runtimeMode: "legacy" }), undefined).canStop).toBe(true);
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now).canStop).toBe(true);
+    for (const status of ["succeeded", "cancelled", "timed_out", "failed"] as const) {
+      expect(project(run({ status }), undefined).canStop).toBe(false);
+    }
+  });
+  it("shows setup progress without overriding real holds or started work", () => {
+    const queued = run({ status: "queued", startedAt: null });
+    const setup = { lifecycleState: "verifying", lifecycleHolds: [], lifecycleError: null };
+    const projectSetup = (r = queued, agent = setup) => projectExecution(r, undefined, [], undefined, now, undefined, false, agent);
+    expect(projectSetup()).toMatchObject({ label: "Waiting for agent setup", cause: "agent_setup_pending" });
+    expect(projectSetup(queued, { ...setup, lifecycleState: "paused" })).toMatchObject({ label: "Queued", cause: null });
+    expect(projectExecution(queued, undefined, [], undefined, now, undefined, false,
+      { ...setup, lifecycleHolds: ["budget"] })).toMatchObject({ label: "Queued", cause: null });
+    expect(projectSetup(run({ status: "queued", startedAt: now }))).toMatchObject({ label: "Queued", cause: null });
+    expect(projectSetup(run({ status: "running" })).label).toBe("Confirming execution");
+  });
+
+  it("shows maintenance only for admission that has not started", () => {
+    startTaskDrain();
+    try {
+      expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+        .toMatchObject({ phase: "queued", label: "Waiting for maintenance", cause: "task_drain" });
+      expect(project().phase).toBe("working");
+    } finally { stopTaskDrain(); }
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+      .toMatchObject({ phase: "queued", label: "Queued", cause: null });
+  });
+  it.each(["starting", "recovering", "draining"] as const)("names a server restart while it holds queued work: %s", phase => {
+    setStartupRecoveryPhase(phase);
+    try {
+      for (const queued of [run({ status: "queued", startedAt: null }), run({ status: "queued", startedAt: now, retryOfRunId: "prior" })]) {
+        const projection = projectExecution(queued, undefined, [], undefined, now);
+        expect(projection).toMatchObject({ phase: "queued", label: "Waiting for server restart", cause: "server_restarting" });
+        expect(projection.nextAction).toMatch(/starts automatically/);
+      }
+      // A live run is not relabelled; restart recovery owns its own state.
+      expect(project().phase).toBe("working");
+    } finally { resetStartupRecoveryStateForTests(); }
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+      .toMatchObject({ label: "Queued", cause: null });
+  });
+  it("keeps the maintenance hold reason while a restarted server is still recovering", () => {
+    setStartupRecoveryPhase("recovering");
+    startTaskDrain();
+    try {
+      expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+        .toMatchObject({ label: "Waiting for maintenance", cause: "task_drain" });
+    } finally { stopTaskDrain(); resetStartupRecoveryStateForTests(); }
+  });
+  it.each(["queued", "recovering", "blocked", "recovered"] as const)("shows the exact saved workspace recovery state instead of stale repair instructions: %s", status => {
+    const sourceRunId = "ec036e06-90a3-4b69-81db-a8eab7dbfbac";
+    const source = run({ id: sourceRunId, status: "failed", errorCode: "native_continuation_requires_reconciliation" });
+    const action = {
+      status: "resolved" as const,
+      cause: "native_continuation_requires_reconciliation",
+      nextAction: "The original sandbox is retained for workspace repair.",
+      evidence: {
+        runId: sourceRunId,
+        automaticRecovery: { policy: "preserve_without_replay_v1", actionOutcome: "unknown", replay: "blocked" },
+        continuationDelivery: "invalidated",
+        workspaceRecovery: {
+          schema: "paperclip.workspace-recovery.v1", runId: sourceRunId, status,
+          stage: "saving_receipts", attempt: 1, requestIds: [],
+          ...(status === "blocked" ? { message: "The saved source cannot be read safely." } : {}),
+        },
+      },
+    };
+    const projected = projectExecution(source, coordinator({ phase: "terminal_failure" }), [], action, now);
+    expect(projected).toMatchObject({
+      phase: "recovery_needed", label: "Stopped", cause: action.cause,
+      nextAction: status === "recovered" ? "Saved work recovered. Send a message to continue."
+        : status === "blocked" ? "The saved source cannot be read safely." : "Recovering saved work…",
+      permittedActions: ["inspect_run"], successorRunId: null,
+    });
+    expect(source.status).toBe("failed");
+    expect(action.evidence.automaticRecovery.replay).toBe("blocked");
+    expect(projectExecution(source, undefined, [], { ...action,
+      evidence: { ...action.evidence, workspaceRecovery: { ...action.evidence.workspaceRecovery,
+        runId: "5f227d75-b314-4511-bf23-9c615277e69b" } },
+    }, now).nextAction).toBe(action.nextAction);
+  });
+
+  it("keeps cleanup quarantine visible without a coordinator or recovery row", () => {
+    const stopped = run({ id: "stopped", status: "failed", errorCode: "native_session_cleanup_quarantined" });
+    expect(projectExecution(stopped, undefined, [], undefined, now)).toMatchObject({
+      phase: "recovery_needed", cause: "native_session_cleanup_quarantined", recoveryOwner: "board",
+      permittedActions: ["inspect_run", "inspect_recovery"],
+    });
+    expect(projectExecution(stopped, coordinator({ phase: "retryable_failure" }), [], undefined, now).phase).toBe("recovery_needed");
+    expect(projectExecution({ ...stopped, finishedAt: now }, coordinator({
+      phase: "terminal_failure", failureCode: "native_provider_terminal_failed",
+    }), [], undefined, now)).toMatchObject({ phase: "recovery_needed", recoveryOwner: "board" });
+    expect(projectExecution({ ...stopped, errorCode: "provider_frame_too_large" }, undefined, [], undefined, now).phase).toBe("failed");
+    expect(projectExecution(stopped, undefined, [], { status: "resolved", cause: "native_session_cleanup_quarantined", nextAction: "Verify prior execution",
+      evidence: { executionReconciliation: { providerStopped: true }, continuationRunId: "successor" } }, now))
+      .toMatchObject({ phase: "completed", successorRunId: "successor", cause: null });
+  });
+  it("shows subscription contention as a resource wait without failed provider attempts", () => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy",
+      scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeAiConnectionWait: 0 } }), undefined, [], undefined, now))
+      .toMatchObject({ label: "Waiting for AI subscription", phase: "retry_scheduled", attempt: 1, recoveryOwner: null });
+  });
+  it("shows a provider usage limit wait with its reset time", () => {
+    const scheduledRetryAt = new Date("2026-11-05T13:47:50.375Z");
+    expect(projectExecution(run({ runtimeMode: "native", status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait",
+      scheduledRetryAt, scheduledRetryAttempt: 3, contextSnapshot: { wakeReason: "provider_limit_retry", failureRetriesBeforeAiConnectionWait: 0 } }),
+    undefined, [], undefined, now)).toMatchObject({
+      label: "Waiting for usage limit reset", phase: "retry_scheduled", attempt: 1, recoveryOwner: null,
+      nextAction: expect.stringContaining(scheduledRetryAt.toISOString()),
+    });
+  });
+  it("shows a workspace wait without presenting its deferral count as failed attempts", () => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "workspace_busy",
+      scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } }), undefined, [], undefined, now))
+      .toMatchObject({ label: "Waiting for workspace", phase: "retry_scheduled", attempt: 2, recoveryOwner: null });
+  });
+  it.each([
+    { status: "resolved", previousRunId: "old", nextRunId: "next", continued: true },
+    { status: "active", previousRunId: "old", nextRunId: "next", continued: false },
+    { status: "resolved", previousRunId: "other", nextRunId: "next", continued: false },
+    { status: "resolved", previousRunId: "old", nextRunId: "old", continued: false },
+    { status: "resolved", previousRunId: "old", nextRunId: null, continued: false },
+  ])("projects the recorded explicit successor without hiding unresolved recovery: $status/$previousRunId/$nextRunId", ({ status, previousRunId, nextRunId, continued }) => {
+    const source = run({ id: "old", status: "failed", errorCode: "adapter_failed" });
+    expect(projectExecution(source, coordinator({ phase: "terminal_failure" }), [], {
+      status,
+      cause: "native_continuation_requires_reconciliation",
+      nextAction: "Inspect the stopped execution.",
+      evidence: {
+        automaticRecovery: { policy: "preserve_without_replay_v1" },
+        explicitUserContinuation: { previousRunId, runId: nextRunId },
+      },
+    }, now)).toMatchObject(continued ? {
+      phase: "completed", label: "Continued in another run", successorRunId: "next",
+      cause: "native_continuation_requires_reconciliation", nextAction: null,
+    } : { phase: "recovery_needed", successorRunId: null });
+    expect(source.status).toBe("failed");
+  });
+
+  it("shows a reconciled continuation as queued until its durable delivery is recorded", () => {
+    const action = {
+      cause: "native_session_retry_exhausted",
+      nextAction: "Old recovery action",
+      status: "resolved" as const,
+      evidence: {
+        executionReconciliation: { runId: "old" },
+        continuationDelivery: "pending",
+      },
+    };
+    expect(
+      projectExecution(
+        run({ status: "failed" }),
+        coordinator({ phase: "terminal_failure" }),
+        [],
+        action,
+        now,
+      ),
+    ).toMatchObject({
+      phase: "queued",
+      label: "Continuation queued",
+      cause: null,
+    });
+    expect(
+      projectExecution(
+        run({ status: "failed" }),
+        coordinator({ phase: "terminal_failure" }),
+        [],
+        {
+          ...action,
+          evidence: { ...action.evidence, continuationRunId: "next" },
+        },
+        now,
+      ),
+    ).toMatchObject({ phase: "completed", successorRunId: "next" });
+    expect(
+      projectExecution(
+        run({ status: "failed" }),
+        coordinator({ phase: "terminal_failure" }),
+        [],
+        {
+          ...action,
+          evidence: { ...action.evidence, continuationDelivery: "invalidated" },
+        },
+        now,
+      ),
+    ).toMatchObject({ phase: "failed", label: "Continuation cancelled" });
+  });
+  it("requires current execution evidence, without treating output silence as failure", () => {
+    expect(project(run({ lastOutputAt: new Date(0) })).phase).toBe("working");
+    expect(
+      project(run(), coordinator({ leaseExpiresAt: new Date(0) })),
+    ).toMatchObject({ phase: "reconnecting", label: "Confirming execution" });
+    expect(
+      project(
+        run({ runtimeMode: "legacy", processPid: process.pid }),
+        undefined,
+      ).phase,
+    ).toBe("working");
+  });
+  it("distinguishes provider work, finalization and timed retry", () => {
+    expect(
+      project(
+        run({ executionControlDeadlineAt: new Date(now.getTime() + 60_000) }),
+      ).phase,
+    ).toBe("finishing");
+    expect(
+      project(
+        run({ status: "failed" }),
+        coordinator({
+          phase: "retryable_failure",
+          nextAttemptAt: new Date(now.getTime() + 30_000),
+          attempt: 2,
+        }),
+      ),
+    ).toMatchObject({ phase: "retry_scheduled", attempt: 2, maxAttempts: 3 });
+    expect(
+      project(
+        run({ status: "failed" }),
+        coordinator({ phase: "retryable_failure", nextAttemptAt: new Date(0) }),
+      ).phase,
+    ).toBe("reconnecting");
+  });
+  it("includes the original legacy attempt in the displayed incident budget", () => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryAttempt: 1 }), undefined, [], undefined, now)).toMatchObject({ attempt: 2, maxAttempts: 3 });
+  });
+  it("keeps saved governed work in shutdown reconciliation without offering a new attempt", () => {
+    expect(project(
+      run({ status: "failed", errorCode: "native_governed_wait_settlement_pending" }),
+      coordinator({ phase: "retryable_failure", failureCode: "native_governed_wait_settlement_pending",
+        nextAttemptAt: new Date(now.getTime() + 30_000) }),
+    )).toMatchObject({ phase: "finishing", label: "Finishing shutdown", permittedActions: ["inspect_run"],
+      nextAction: "The work and waiting state are saved. Paperclip is confirming shutdown before continuing." });
+  });
+  it("shows pending interaction only after productive work has stopped", () => {
+    expect(
+      project(run(), coordinator(), [{ kind: "connection_intent" }]).phase,
+    ).toBe("working");
+    expect(
+      project(run({ status: "succeeded" }), undefined, [
+        { kind: "connection_intent" },
+      ]).phase,
+    ).toBe("waiting_for_access");
+    expect(
+      project(run({ status: "succeeded" }), undefined, [
+        { kind: "ask_user_questions" },
+      ]).phase,
+    ).toBe("waiting_for_answer");
+  });
+  it("retains replacement lineage and exposes operator-owned failures for legacy runs", () => {
+    expect(
+      project(
+        run({ status: "failed" }),
+        coordinator({
+          phase: "terminal_failure",
+          failureDetail: { successorRunId: "replacement" },
+        }),
+      ),
+    ).toMatchObject({ phase: "completed", successorRunId: "replacement" });
+    expect(
+      projectExecution(
+        run({ runtimeMode: "legacy", status: "failed" }),
+        undefined,
+        [],
+        {
+          cause: "uncertain_external_action",
+          nextAction: "Reconcile the email delivery.",
+        },
+        now,
+      ),
+    ).toMatchObject({
+      phase: "recovery_needed",
+      recoveryOwner: "board",
+      nextAction: "Reconcile the email delivery.",
+    });
+  });
+  it("bounds recovery checking and surfaces its next action if verification never finishes", () => {
+    const c = coordinator({
+      phase: "terminal_failure",
+      failureCode: "native_provider_terminal_failed",
+    });
+    expect(project(run({ status: "failed", finishedAt: now }), c).label).toBe(
+      "Checking recovery",
+    );
+    expect(
+      project(
+        run({ status: "failed", finishedAt: new Date(now.getTime() - 60_000) }),
+        c,
+      ).phase,
+    ).toBe("recovery_needed");
+    expect(
+      project(
+        run({ status: "failed", finishedAt: now }),
+        coordinator({
+          ...c,
+          failureDetail: { replacementDenied: "uncertain_provider_action" },
+        }),
+      ).phase,
+    ).toBe("recovery_needed");
+  });
+});

@@ -1,0 +1,28 @@
+{
+  "commandDigest": "sha256:98936d763497bd6f0e5605f52831a344f456357de58c457e440e69a1a468a2f4",
+  "declaration": {
+    "schema": "paperclip.acpx_profile_declaration.v1",
+    "agent": "copilot",
+    "agentProfileVersion": 9,
+    "acpxVersion": "0.13.1",
+    "agentServerVersion": "1.0.88",
+    "protocolPolicyRevision": "copilot-agent-manual-v1",
+    "acpxPatchSha256": "bd5393058a218040d217fa85449d59a6f30507de54cd645bf0ef21422823f85e",
+    "policySha256": "a4be69be43db84052560420a3ca546a665c9165573c24d543eb33d144ba138a3",
+    "distributionSourceSha256": "c0a65e247fc47b263bd369a3d5ab505c4b323d4e6493be8a9ecbeb0e9dbb9107",
+    "agentFilesBinding": "registered-runtime-context-v1",
+    "systemInstructionDelivery": "COPILOT_HOME/copilot-instructions.md:replace-under-lifetime-lease-before-launch:v1",
+    "sharedRuntimeContract": "paperclip.acpx-runtime-contract.v1",
+    "innerDistributionSourceSha256": "9bb08347eed01f1ab44e065c8b06ead9be3a25973d6e6329dc4c0a099096279a",
+    "upstreamAppSha256": "7b48282a19b5b0814a0c96ad5e3a125173d792cc55f9525b2effea962f6063c0",
+    "patchedAppSha256": "61f8eebe0c30cc03b311c6818b2acb158a6d16ca58c8bfac5ebd42db095c2679",
+    "messageIdentityContract": "copilot-native-message-id-v1",
+    "ownedDistributionDelivery": "COPILOT_CLI_DIST_DIR:lease-owned-guarded-inner-distribution:v1",
+    "permissionContextContract": "copilot-edit-permission-context-v1",
+    "permissionContextSourceSha256": "fe1bb611bea289d81b1c7c973fbb01b93de133a7caa8fe78b7ff4ee1f485b224",
+    "permissionAdapterSourceSha256": "2bc34ac7899ac2729909459321e5a8a3668342cc61921e8c95e672719c6d91f2",
+    "permissionLocationsSourceSha256": "f39a81da395b6e23aa2a1a45572a28846e5e81bfd3d764d9a456f74a79c752e9",
+    "permissionRedactionSourceSha256": "687270d7bbe3dccce6c2fed8664e76cda724b43e545cb153b9f54b018de52927",
+    "permissionClassifierSourceSha256": "1161eabd82e26133e3b3db3ab567f65d52808b03f176e93497e02c8330349fb4"
+  }
+}
