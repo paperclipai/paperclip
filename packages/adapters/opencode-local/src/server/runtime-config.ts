@@ -32,9 +32,10 @@ function runtimeMcpServerKey(server: AdapterRuntimeMcpServer): string {
 
 function buildRuntimeMcpConfig(
   servers: AdapterRuntimeMcpServer[],
+  reservedNames: Iterable<string>,
   notes: string[],
 ): Record<string, unknown> {
-  const usedNames = new Set<string>();
+  const usedNames = new Set<string>(reservedNames);
   const entries: Record<string, unknown> = {};
   let skipped = 0;
   for (const server of servers) {
@@ -284,17 +285,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const runtimeMcpServers = input.runtimeMcpServers ?? [];
   if (runtimeMcpServers.length > 0) {
     const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
-    const managedMcp = buildRuntimeMcpConfig(runtimeMcpServers, notes);
+    const managedMcp = buildRuntimeMcpConfig(runtimeMcpServers, Object.keys(existingMcp), notes);
     if (Object.keys(managedMcp).length > 0) {
       nextConfig.mcp = { ...existingMcp, ...managedMcp };
     }
   }
 
+  // The copied source config may be a symlink into persistent operator storage,
+  // so replace it with a fresh private file before writing run tokens into it.
+  await fs.rm(runtimeConfigPath, { force: true });
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  // The file may already exist from the copied source config, in which case the
-  // create-time mode above is ignored. Tokens can live in this file, so tighten
-  // it explicitly on every write.
-  await fs.chmod(runtimeConfigPath, 0o600);
   if (input.sandboxToolOomPreference) {
     try {
       await installSandboxToolMemoryPreference(runtimeConfigDir);
