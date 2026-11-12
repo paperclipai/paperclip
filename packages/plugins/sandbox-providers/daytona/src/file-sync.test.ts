@@ -338,17 +338,31 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
     expect(await fs.readFile(path.join(target, "references", "agents", "qa.md"), "utf8")).toBe("QA instructions");
     expect((await fs.stat(path.join(target, "references", "agents"))).mode & 0o777).toBe(0o555);
     expect((await fs.stat(path.join(target, "references", "agents", "qa.md"))).mode & 0o777).toBe(0o444);
+    // Recovery re-materializes the same admitted bytes on the host with new
+    // timestamps. That is still the same bundle: keep it, never fail on it.
+    const qa = path.join(target, "references", "agents", "qa.md");
+    const agentsDir = path.join(target, "references", "agents");
+    const resumedAt = new Date(Date.now() + 3_600_000);
+    for (const entry of [qa, agentsDir, path.join(target, "references", "overview.md")]) await fs.utimes(entry, resumedAt, resumedAt);
+    await performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "rematerialized-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] });
+    expect((await fs.stat(qa)).mtime.getTime()).toBe(resumedAt.getTime());
     // Never treat a corrupted read-only bundle as a cache hit, even if its
     // file size, permissions and timestamp still match the source archive.
-    const qa = path.join(target, "references", "agents", "qa.md");
+    // Repair it in place instead of failing the run.
     const before = await fs.stat(qa);
+    await fs.chmod(agentsDir, 0o755);
     await fs.chmod(qa, 0o644);
     await fs.writeFile(qa, "XX instructions");
     await fs.chmod(qa, 0o444);
+    await fs.chmod(agentsDir, 0o555);
     await fs.utimes(qa, before.atime, before.mtime);
-    await expect(performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
-      operations: [{ operationId: "corrupt-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] })).rejects.toThrow("syncIn extract");
-    expect(await fs.readFile(qa, "utf8")).toBe("XX instructions");
+    await performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "corrupt-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] });
+    expect(await fs.readFile(qa, "utf8")).toBe("QA instructions");
+    expect((await fs.stat(agentsDir)).mode & 0o777).toBe(0o555);
+    expect((await fs.stat(qa)).mode & 0o777).toBe(0o444);
+    expect(await fs.readFile(path.join(target, "unrelated.txt"), "utf8")).toBe("keep me");
     expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
 
   } finally {
