@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverrideSchema, skillSourceCreateSchema, type SkillSecurityOverrideRequest } from '@paperclipai/shared';
+import { SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, skillSecurityOverrideSchema, skillSourceCreateSchema, type SkillSecurityOverrideRequest, type SkillSourceSecurityOverride } from '@paperclipai/shared';
 import { DEFAULT_JSON_BODY_LIMIT_BYTES } from '../http/body-limits.js';
 import { githubFixture } from './helpers/github-skills.js';
 import { scanGitHubSkills } from '../services/github-skill-source.js';
@@ -72,7 +72,8 @@ describe('skill security overrides', () => {
 
   it('applies an approval a renewal kept for an installed version only at the commit of that version', async () => {
     const installedCommit = 'a'.repeat(40);
-    const grant = { commitSha: 'b'.repeat(40), trustFutureUpdates: false, files: [{ path: 'hooks/install.sh', sha256: hash(`${hook}
+    const grant: SkillSourceSecurityOverride = { commitSha: 'b'.repeat(40), trustFutureUpdates: false, reason: 'Reviewed the new hook by hand.',
+      approvedByUserId: 'admin-user', approvedAt: '2026-11-12T00:00:00.000Z', files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(`${hook}
 echo updated`) }],
       retained: [{ commitSha: installedCommit, files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(hook) }] }] };
     const installed = await scanGitHubSkills({ ...repository, commitSha: installedCommit }, githubFixture(files, {}, installedCommit), { securityOverrides: [grant] });

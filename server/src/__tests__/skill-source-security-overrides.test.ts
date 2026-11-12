@@ -274,6 +274,19 @@ echo updated`;
     expect(listed.securityOverride).toMatchObject({ commitSha: second, fileCount: 1 });
   });
 
+  it('reports the override permission only when both the stored and the resolved repository allow it', async () => {
+    const base = githubFixture({ 'skills/one/SKILL.md': md('one') }, {}, first);
+    const renamed = (async (url: string, signal?: AbortSignal) => base(url.replace('/repos/acme/old-skills', '/repos/acme/skills'), signal)) as typeof base;
+    renamed.openSnapshot = base.openSnapshot;
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {}, read: () => renamed };
+    const input = { repositoryUrl: 'https://github.com/acme/old-skills', packageMode: 'repository' as const };
+    const denying = (denied: string) => async ({ sourceLocator }: { sourceLocator: string }) => { if (sourceLocator === denied) throw forbidden('Denied by skill policy.'); };
+    const service = skillSourceService(db);
+    expect((await service.discover(input, { ...context, authorizeSecurityOverride: denying('https://github.com/acme/old-skills') })).canOverrideSecurity).toBe(false);
+    expect((await service.discover(input, { ...context, authorizeSecurityOverride: denying('https://github.com/acme/skills') })).canOverrideSecurity).toBe(false);
+    expect((await service.discover(input, { ...context, authorizeSecurityOverride: async () => {} })).canOverrideSecurity).toBe(true);
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,

@@ -117,7 +117,9 @@ export function skillSourceService(db: Db) {
     await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
     const { skills: _files, repositoryFiles: _repositoryFiles, repositorySubset: _subset, defaultBranch: _defaultBranch, treeSha: _tree, downloadBytes: _download, scanBytes: _scan, ...result } = await scanGitHubSkills(input, context.read(input.connectionId ?? null), { ...options, retainFiles: false });
     // Approving and withdrawing an approval take the same permission, so report it whatever this commit flags.
-    const canOverrideSecurity = await canApproveSecurityOverride(context, result.repositoryUrl);
+    // Saving checks the URL as typed or stored and, when it resolves elsewhere, the canonical repository too.
+    const canOverrideSecurity = await canApproveSecurityOverride(context, input.repositoryUrl)
+      && (result.repositoryUrl === input.repositoryUrl || await canApproveSecurityOverride(context, result.repositoryUrl));
     return { ...result, canOverrideSecurity };
   }
   async function canApproveSecurityOverride(context: SkillSourceContext, sourceLocator: string) {
