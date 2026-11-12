@@ -19,7 +19,7 @@ function removeTree(directory) {
       if (entry.isDirectory()) makeWritable(path.join(current, entry.name));
     }
   };
-  try { if (lstatSync(directory).isDirectory()) makeWritable(directory); } catch { /* already gone */ }
+  try { if (lstatSync(directory).isDirectory()) makeWritable(directory); } catch {}
   rmSync(directory, { recursive: true, force: true });
 }
 
