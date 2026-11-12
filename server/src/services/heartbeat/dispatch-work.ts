@@ -2,6 +2,7 @@ import type { RunDispatchScope } from "../run-dispatch-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerDeadlineWork } from "../deadline-work.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { createQueuedRunRedriveSchedule, type UndispatchedQueuedRun } from "../queued-run-dispatch-liveness.js";
 
 export function registerRunDispatchWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -9,6 +10,7 @@ export function registerRunDispatchWork(
     promoteDueScheduledRetries(): Promise<unknown>;
     nextScheduledRetryAt(): Promise<number | null>;
     resumeQueuedRunsAfterDrain(scope?: RunDispatchScope): Promise<unknown>;
+    listUndispatchedQueuedRuns?(): Promise<UndispatchedQueuedRun[]>;
     schedulingSuppressed(): Promise<boolean>;
   },
   canRun: () => boolean,
@@ -26,6 +28,7 @@ export function registerRunDispatchWork(
     next: () => suppressed ? Promise.resolve(null) : owner.nextScheduledRetryAt(),
   });
   const scopes = new Set<string>(["*"]);
+  const redrive = createQueuedRunRedriveSchedule();
   const queue = registerDeadlineWork(coordinator, DELIVERY_QUEUES.queuedRunDispatch, {
     retryMs: 30_000,
     notificationCoalesceMs: 1_000,
@@ -48,7 +51,12 @@ export function registerRunDispatchWork(
         }
       }
     },
-    next: async () => null,
+    next: async () => {
+      if (!owner.listUndispatchedQueuedRuns || await owner.schedulingSuppressed()) return null;
+      const plan = redrive.plan(await owner.listUndispatchedQueuedRuns());
+      for (const companyId of plan.companyIds) scopes.add(JSON.stringify({ companyId }));
+      return plan.nextAt;
+    },
   });
   return {
     retries,

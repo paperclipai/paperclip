@@ -29,6 +29,8 @@ import {
   type OwnershipReport,
 } from "../recovery/ownership-invariant-report.js";
 import { deferredWorkIntentWait, promoteDeferredWorkIntents, saveUndeliveredUserComments } from "../work-intent-outbox.js";
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
+import { QUEUED_RUN_NOT_DISPATCHED } from "../queued-run-dispatch-liveness.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -865,6 +867,12 @@ export async function applyOwnershipReportBackstops(db: Db, report: OwnershipRep
   for (const companyId of companies) {
     await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId, trigger: "reconciler_backstop" }))
       .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"); });
+  }
+  const undispatched = new Set(report.violations.filter(violation => violation.reason === QUEUED_RUN_NOT_DISPATCHED)
+    .flatMap(violation => violation.companyId ? [violation.companyId] : []));
+  for (const companyId of undispatched) {
+    await db.transaction(tx => notifyQueuedRunDispatch(tx, { companyId }))
+      .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "queued run dispatch backstop failed"); });
   }
   return { retryNeeded };
 }

@@ -26,7 +26,9 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { applyOwnershipReportBackstops, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import {
   createOwnershipReportState,
   OWNERSHIP_INVARIANT_VIOLATION_ACTION,
@@ -959,6 +961,42 @@ describe("report-only ownership reconciliation", () => {
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
     expect(report.nextDueAt?.getTime()).toBe(updatedAt.getTime() + 5 * 60_000);
+  });
+
+  it("reports and re-drives a queued run that no dispatch started while its agent had nothing running", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continuation", status: "in_progress", assigneeAgentId: agentId });
+    const [stranded] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId }, createdAt: minutesAgo(19) }).returning();
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+      expect(report.violations.filter(violation => violation.kind === "queued_run")).toEqual([
+        expect.objectContaining({ rule: "I7_visible_next_action", recordId: stranded!.id, runId: stranded!.id,
+          issueId, companyId, reason: "queued_run_not_dispatched" })]);
+      await applyOwnershipReportBackstops(db, report);
+      expect(signals).toContain("settled");
+    } finally { unsubscribe(); }
+  });
+
+  it("does not report a queued run behind a running run, on a paused agent, or still inside its grace window", async () => {
+    const otherAgent = randomUUID();
+    const pausedAgent = randomUUID();
+    await db.insert(agents).values([
+      { id: otherAgent, companyId, name: "Busy", role: "engineer", adapterType: "codex_local" },
+      { id: pausedAgent, companyId, name: "Paused", role: "engineer", adapterType: "codex_local", status: "paused" },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId: otherAgent, status: "running", invocationSource: "manual" },
+      { companyId, agentId: otherAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(30) },
+      { companyId, agentId: pausedAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(30) },
+    ]);
+    const createdAt = minutesAgo(1);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.kind === "queued_run")).toEqual([]);
+    expect(report.nextDueAt?.getTime()).toBeLessThanOrEqual(createdAt.getTime() + 5 * 60_000);
   });
 
   it("retries a violation whose activity row failed to save", async () => {
