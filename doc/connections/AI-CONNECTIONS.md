@@ -1086,7 +1086,8 @@ Claude profile import and transcript retention are execution-configuration setti
 Their shared `ClaudeRuntimePolicyFields` controls render under the Claude
 configuration's **Advanced** disclosure, outside agent heartbeat/run scheduling.
 A direct agent and a selected Legacy Claude pool member use the same typed
-adapter settings; per-member pool integration is tracked in PR #19481. Cache and
-transcript storage stay isolated per company, agent, task and account. Workspace
+adapter settings; per-member pool integration is tracked in PR #19481. Plugin caches are scoped per company and agent, with content-addressed profile
+snapshots shared across that agent's tasks and accounts. Transcript storage is
+also scoped by task and account identity. Workspace
 project trust is a separate source-specific grant in PR #19216 and cannot be
 implicitly enabled by these configuration values.
