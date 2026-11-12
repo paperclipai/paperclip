@@ -631,7 +631,9 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, mat
                       starred={starredAgents.has(node.id)}
                       resourceName={node.name}
                       pending={starPending}
-                      error={membershipMutation.isError && membershipMutation.variables?.resourceId === node.id}
+                      error={
+                        membershipMutation.isError && membershipMutation.variables?.resourceId === node.id // query-error-ok: mutation feedback; cached cards remain visible
+                      }
                       onToggle={(starred) => membershipMutation.mutate({ resourceType: "agent", resourceId: node.id, resourceName: node.name, starred })}
                     />
                   )}
