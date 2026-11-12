@@ -4,6 +4,7 @@ import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScop
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
+import { isYieldingRunStarts } from "./run-start-handover.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
@@ -1342,7 +1343,8 @@ export function heartbeatService(
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
-    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed(),
+    // A newer server that already starts runs takes new run starts during a deploy overlap.
+    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed() || isYieldingRunStarts(),
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,

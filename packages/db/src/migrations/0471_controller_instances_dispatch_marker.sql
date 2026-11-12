@@ -1,0 +1,2 @@
+ALTER TABLE "controller_instances" ADD COLUMN "dispatching_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "controller_instances" ADD COLUMN "dispatch_lease_expires_at" timestamp with time zone;

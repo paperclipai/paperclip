@@ -29,6 +29,7 @@ export const DELIVERY_QUEUES = {
   staleIssueLocks: "stale-issue-locks",
   scheduledRetryDispatch: "scheduled-retry-dispatch",
   queuedRunDispatch: "queued-run-dispatch",
+  runStartHandover: "run-start-handover",
   statusCardEvaluation: "status-card-evaluation",
   runEvidenceMigration: "run-evidence-migration",
   providerTraceRetention: "provider-trace-retention",

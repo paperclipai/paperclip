@@ -2447,6 +2447,76 @@ for the next deadline. A failed transition write is logged and does not stop
 the claims that already committed. Only a failure of the candidate scan itself
 fails the recovery pass.
 
+### Run starts during a deploy overlap
+
+A Cloud deploy starts the new server while the old server still serves. Once
+the new server can start runs, it takes over the start of new runs, and the old
+server leaves new starts to it. The old server never stops admitting before the
+new server admits, so there is always one server that starts runs. Admission
+is handed over, never paused.
+
+- **Marker.** The new server marks that it starts runs on its own
+  `controller_instances` row. It sets `dispatching_at`, the time it began
+  starting runs, which is set once and kept. It also sets
+  `dispatch_lease_expires_at`, a short lease of 20 seconds. The new server
+  writes the marker right after its startup queued-run dispatch pass
+  (`queued_run_pass` in the startup timeline). At that point its queued-run
+  dispatch queue is registered and has scanned the whole queue once. The same
+  statement creates the boot's row if the row does not exist, so the new boot's
+  epoch is ordered after the old boot's. The new server then publishes a
+  `run-start-handover` hint and sweeps its queued-run dispatch, so runs the old
+  server left queued start at once. Another component reads "a replacement
+  starts runs" as a row with a higher `epoch` than the old boot where
+  `dispatching_at is not null`, `dispatch_lease_expires_at > now()`, and
+  `stopped_at` and `fenced_at` are both null.
+- **Renewal.** The new server renews the lease every 5 seconds, but only while
+  an older boot that is neither stopped nor fenced may still serve, and for at
+  most 30 minutes. A lone server, or a server whose predecessor has stopped,
+  writes the marker once and never renews it, so an idle database can still
+  sleep. The marker is written only where servers overlap and hear each
+  other's notifications: the instance lease is on, the notification channel is
+  configured, and the scheduler is enabled. A self-hosted server is unchanged.
+- **The old server.** Every queued-run claim reads an in-memory flag through
+  the existing run-admission gate, so the dispatch path runs no query. The
+  flag is updated in three ways:
+  - The `run-start-handover` notification.
+  - A background re-read, at most every 2 seconds while the server dispatches.
+  - A single read that a dispatch pass waits for, but only when the server
+    has not read the marker for 30 seconds. This happens only for the first
+    pass after an idle stretch.
+
+  A read that fails or takes longer than 1 second leaves the server admitting.
+  While it yields, the old server rechecks every 3 seconds and keeps its
+  notification listener on. For starts it skips, it notifies the new server's
+  queued-run dispatch at most once a second, so the new server starts those
+  runs without waiting for a sweep.
+- **Who yields.** A server yields only to a newer boot by epoch that has a
+  live marker. It never yields to an older boot, to itself, or to a row
+  without the marker. Rows from releases without this rule never carry the
+  marker, so in a mixed-version overlap nothing changes in either direction.
+  A server that has no row of its own does not yield.
+- **Failure.** When the new server closes run admission at shutdown (a
+  rollback or a failed deploy), it clears its lease and sends the hint. It
+  does the same while it drains, waits in standby, or cannot dispatch. If it
+  crashes, the lease lapses within 20 seconds. In every case the old server's
+  recheck resumes admission and runs its queued-run pass again. This happens
+  within about 3 seconds of a clear, or about 23 seconds after a crash.
+- **What counts as starting a new run.** Every queued-to-running claim counts:
+  wake dispatch, scheduled retries promoted to queued, continuations, Retry,
+  and the startup fresh-run pass. These all go through
+  `startNextQueuedRunForAgent`. The yield happens before a claim, and a claim
+  stays one atomic queued-to-running update, so a run cannot be started twice
+  or left half-claimed. The following continue on the old server and are
+  handed over at SIGTERM as before: turns of runs it already started, native
+  session resume and reattach, finalization, lease renewal, result
+  application, and wakeups it accepts (these stay queued for the new server).
+
+A post-deploy audit should find no run claimed by the old server more than
+about 2 seconds after the new server's `dispatching_at`. That window is the
+background re-read, and it applies only when the old server was not already
+listening for notifications. The gap from `dispatching_at` to the first run
+that the new server starts should be seconds.
+
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 
 ### Issue-thread interaction resolution
