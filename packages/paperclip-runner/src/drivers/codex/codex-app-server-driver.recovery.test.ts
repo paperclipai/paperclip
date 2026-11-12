@@ -250,6 +250,53 @@ describe("Codex app-server Codex driver", () => {
     });
     expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
   });
+  // Staging: a server replacement left the remote Runner alive mid-turn. The
+  // new controller reattached, verified the same process, and its recovery
+  // read failed with "PRP command session.snapshot timed out". The failure
+  // cleanup then killed the live Runner, so the same-run reattachment found
+  // the process gone and the in-flight turn was lost.
+  describe("a recovery that fails on its way to a live remote Runner", () => {
+    async function recoverWith(fail: (method: string) => Promise<never> | null, signal?: AbortSignal) {
+      const originalTransport = new FakeCodexTransport();
+      const recoveryTransport = new FakeCodexTransport();
+      const request = recoveryTransport.request.bind(recoveryTransport);
+      vi.spyOn(recoveryTransport, "request").mockImplementation(async (method, params) =>
+        fail(method) ?? request(method, params));
+      const close = vi.spyOn(recoveryTransport, "close");
+      const driver = makeDriver([originalTransport, recoveryTransport]);
+      const original = await driver.openSession({
+        runId: "run-runner-kept", normalizedSessionId: "session-runner-kept", workingDirectory: WORKSPACE,
+      });
+      await original.startTurn({ message: { role: "user", text: "Work." } });
+      const checkpoint = await original.snapshot();
+      await original.close({ reason: "controller detached for restart" });
+      const recovery = driver.recoverSession!(checkpoint, { signal: signal ?? new AbortController().signal });
+      return { recovery, close, recoveryTransport };
+    }
+
+    it("keeps the Runner for the same run's reattachment when its snapshot times out", async () => {
+      const { recovery, close, recoveryTransport } = await recoverWith(method => method === "thread/read"
+        ? Promise.reject(new Error("provider_transport_failed: PRP command session.snapshot timed out")) : null);
+      expect(await recovery).toMatchObject({ recovered: false,
+        reason: expect.stringContaining("session.snapshot timed out") });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledWith(undefined, { retainUnsettledRemoteRunner: true });
+      expect(recoveryTransport.calls.some(call => call.method === "turn/start" || call.method === "thread/start")).toBe(false);
+    });
+
+    it("keeps the Runner when the recovery deadline aborts a hung read", async () => {
+      const controller = new AbortController();
+      const { recovery, close } = await recoverWith(method => {
+        if (method !== "thread/read") return null;
+        setTimeout(() => controller.abort(new Error("native session provider recovery timed out")), 0);
+        return new Promise<never>(() => {});
+      }, controller.signal);
+      await expect(recovery).rejects.toThrow("native session provider recovery timed out");
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledWith(undefined, { retainUnsettledRemoteRunner: true });
+    });
+  });
+
   it.each([
     "initial-read",
     "reconcile-read",
@@ -302,6 +349,8 @@ describe("Codex app-server Codex driver", () => {
         }),
       ).rejects.toBe(fault);
       expect(close).toHaveBeenCalledTimes(1);
+      // An integrity fault still stops the Runner.
+      expect(close.mock.calls[0]).toEqual([]);
       expect(
         recoveryTransport.calls.some((call) => call.method === "thread/start"),
       ).toBe(false);

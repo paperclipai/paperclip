@@ -75,7 +75,9 @@ const DRIVER_KIND = "codex_app_server";
 const DRIVER_VERSION = "codex-v2";
 
 interface BootstrapCancellation {
-  close(): Promise<void>;
+  /** `retainRunner` keeps an unsettled remote Runner alive for the same run's
+   * next reattachment. Only the first close decides. */
+  close(retainRunner?: boolean): Promise<void>;
   detach(): void;
   wait<T>(operation: Promise<T>): Promise<T>;
 }
@@ -83,10 +85,13 @@ interface BootstrapCancellation {
 function bootstrapCancellation(
   transport: CodexAppServerTransport,
   signal: AbortSignal | undefined,
+  options: { retainRunnerOnAbort?: boolean } = {},
 ): BootstrapCancellation {
   let closePromise: Promise<void> | null = null;
-  const close = (): Promise<void> => {
-    closePromise ??= transport.close();
+  const close = (retainRunner = false): Promise<void> => {
+    closePromise ??= retainRunner
+      ? transport.close(undefined, { retainUnsettledRemoteRunner: true })
+      : transport.close();
     return closePromise;
   };
   let rejectAborted!: (reason: unknown) => void;
@@ -101,7 +106,7 @@ function bootstrapCancellation(
     // until its pending RPCs have been rejected and TERM/KILL cleanup has
     // completed. The cancellation reason remains authoritative if cleanup
     // itself reports a secondary failure.
-    void close().then(
+    void close(options.retainRunnerOnAbort === true).then(
       () =>
         rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
       () =>
@@ -453,7 +458,11 @@ export class CodexAppServerDriver implements HarnessDriver {
         activeTurnId: snapshot.activeTurnId,
       },
     });
-    const cancellation = bootstrapCancellation(transport, options.signal);
+    // A recovery that fails or times out on its way to a live Runner keeps
+    // that Runner for the same run's next reattachment: the Runner may still
+    // own an in-flight turn, and killing it loses the turn. Explicit identity
+    // refusals and protocol integrity faults still stop it.
+    const cancellation = bootstrapCancellation(transport, options.signal, { retainRunnerOnAbort: true });
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const initialize = await cancellation.wait(this.#initialize(transport));
@@ -772,7 +781,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         session,
       };
     } catch (error) {
-      await cancellation.close().catch(() => {});
+      await cancellation.close(!(error instanceof NativeSessionProtocolIntegrityError)).catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
       // A Runner with no saved control-plane state for this session can never
