@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
-  agentWakeupRequests, agents, approvals, companies, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions,
-  issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
+  agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRuns, issueApprovals,
+  issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
 } from "@paperclipai/db";
 import {
   EXECUTION_RECONCILIATION_CAUSES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionReconciliation,
@@ -195,8 +195,34 @@ async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect)
   return [...names].slice(0, 20);
 }
 
+export type FreshContinuationCreatedObjects = { subtasks: string[]; comments: string[]; documents: string[] };
+
+const quoted = (value: string, max = 80) => `"${value.replace(/\s+/g, " ").trim().slice(0, max)}${value.length > max ? "..." : ""}"`;
+
+/** Paperclip objects the cut-off run already created. They exist now, whatever
+ * the run's own outcome, so the continuation must not create them again. */
+async function createdObjects(tx: Db, run: typeof heartbeatRuns.$inferSelect): Promise<FreshContinuationCreatedObjects> {
+  const [children, comments, revisions] = await Promise.all([
+    tx.select({ identifier: issues.identifier, title: issues.title }).from(issues).where(and(
+      eq(issues.companyId, run.companyId), eq(issues.originRunId, run.id), isNull(issues.hiddenAt)))
+      .orderBy(asc(issues.createdAt)).limit(20),
+    tx.select({ body: issueComments.body }).from(issueComments).where(and(
+      eq(issueComments.companyId, run.companyId), eq(issueComments.createdByRunId, run.id), isNull(issueComments.deletedAt)))
+      .orderBy(asc(issueComments.createdAt)).limit(10),
+    tx.selectDistinct({ title: documents.title }).from(documentRevisions)
+      .innerJoin(documents, eq(documents.id, documentRevisions.documentId))
+      .where(and(eq(documentRevisions.companyId, run.companyId), eq(documentRevisions.createdByRunId, run.id))).limit(10),
+  ]);
+  return {
+    subtasks: children.map(child => `${child.identifier ?? "subtask"} ${quoted(child.title)}`),
+    comments: comments.map(comment => quoted(comment.body)),
+    documents: revisions.map(revision => quoted(revision.title ?? "untitled document")),
+  };
+}
+
 /** The opening context of the continuation. It names no person who must act. */
-export function freshContinuationNote(input: { runId: string; unverified: string[]; workspace: "restored_last_save" | "kept" }) {
+export function freshContinuationNote(input: { runId: string; unverified: string[]; workspace: "restored_last_save" | "kept";
+  created?: FreshContinuationCreatedObjects }) {
   const actions = input.unverified.length
     ? `These actions of that run have unverified outcomes: ${input.unverified.join(", ")}. For each one, first check whether it took effect.`
     : "No action of that run is recorded with an unknown outcome; check the task's recent history before repeating any side effect.";
@@ -209,7 +235,15 @@ export function freshContinuationNote(input: { runId: string; unverified: string
     + "If an action did not take effect, or repeating it is safe, do it again and continue the task. "
     + "If repeating it would be a governed or irreversible action, request it through the normal approval step. "
     + "Nothing about the previous attempt needs to be restored before you continue.";
-  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files} ${actions} ${guidance}`;
+  const created = input.created;
+  const existing = created && (created.subtasks.length || created.comments.length || created.documents.length)
+    ? ` That run already did these, and they exist now: ${[
+      created.subtasks.length ? `created subtasks ${created.subtasks.join(", ")}` : null,
+      created.comments.length ? `posted comments ${created.comments.join(", ")}` : null,
+      created.documents.length ? `saved documents ${created.documents.join(", ")}` : null,
+    ].filter(Boolean).join("; ")}. Do not create or post them again; read them and continue from where they leave off.`
+    : "";
+  return `The previous attempt (run ${input.runId}) was cut off before it finished. ${files}${existing} ${actions} ${guidance}`;
 }
 
 const USER_TEXT = "The previous run was cut off. Paperclip continues the task in a fresh run from its last saved work.";
@@ -497,7 +531,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // continuation runs first, and saved input follows it.
   if (isolation === "fresh_isolated_workspace" && !issue.executionWorkspaceId && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
-  const note = freshContinuationNote({ runId: run.id, unverified,
+  const created = await createdObjects(tx, run);
+  const note = freshContinuationNote({ runId: run.id, unverified, created,
     workspace: isolation === "writer_ended" ? "kept" : "restored_last_save" });
   const decision: ExecutionReconciliation & { providerStopProof: "writer_ended" | "isolated" } = { runId: run.id, providerStopped: true,
     // Only a proven end is a stop. `isolated` means exactly: the old run's agent
@@ -514,7 +549,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const freshContinuation = { schema: FRESH_CONTINUATION_SCHEMA, sourceRunId: run.id, trigger: input.trigger,
     failureCode: run.errorCode ?? null, delivery, recordedAt: now.toISOString(), isolation,
     stopProof: isolation === "writer_ended" ? "writer_ended" : fenced ? "unproven_epoch_abandoned" : "unproven_isolated",
-    unverifiedActions: unverified, ...(fenced ? { workspace: fenced } : {}) };
+    unverifiedActions: unverified, createdObjects: created, ...(fenced ? { workspace: fenced } : {}) };
   const reconciliation = { ...decision, actorId: FRESH_CONTINUATION_ACTOR, recordedAt: now.toISOString() };
   // Who, what, why and when. A fresh run is not a replay: the interrupted turn
   // is not re-sent, no tool call or write is re-executed, and any governed

@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions,
-  issues, nativeRunFinalizations, toolInvocations,
+  issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -787,6 +787,25 @@ suite("fresh-continuation fallback", () => {
     expect(decision.outcomeEvidence).toContain(`run ${f.runId}) was cut off`);
     expect(decision.outcomeEvidence).toContain("github.create_pull_request");
     expect(decision.outcomeEvidence).not.toMatch(adminText);
+  }, 60_000);
+
+  it("names the subtasks, comments and documents the cut-off run already created, so the fresh run does not repeat them", async () => {
+    // Release-swap wave: the interrupted run and its continuation each created the two
+    // subtasks, and a DONE comment was posted twice.
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_restart_recovery_blocked" });
+    for (const title of ["SM sub 1 b3d70e77s1", "SM sub 2 b3d70e77s2"])
+      await db.insert(issues).values({ companyId, title, status: "todo", assigneeAgentId: agentId, parentId: f.issueId,
+        originRunId: f.runId } as typeof issues.$inferInsert);
+    await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorAgentId: agentId, createdByRunId: f.runId,
+      body: "DONE-0d981334" } as typeof issueComments.$inferInsert);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" })).toMatchObject({ kind: "continued" });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    const decision = hold!.evidence.executionReconciliation as Record<string, string>;
+    expect(decision.outcomeEvidence).toContain('"SM sub 1 b3d70e77s1"');
+    expect(decision.outcomeEvidence).toContain('"SM sub 2 b3d70e77s2"');
+    expect(decision.outcomeEvidence).toContain('"DONE-0d981334"');
+    expect(decision.outcomeEvidence).toContain("Do not create or post them again");
+    expect(hold!.evidence.freshContinuation).toMatchObject({ createdObjects: { subtasks: expect.arrayContaining([expect.stringContaining("SM sub 1")]) } });
   }, 60_000);
 
   it.each([
