@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, and } from "drizzle-orm";
-import { activityLog, agents, authUsers, companyMemberships, companies, createDb, heartbeatRuns, issues, issueComments } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, companies, createDb, heartbeatRuns, issues, issueComments, projectAccessMembers, projects, projectWorkspaces } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -112,6 +112,23 @@ describe("runner task reassignment", () => {
     });
     await f.authority.execute(f.call);
     expect(await f.target()).toMatchObject({ assigneeAgentId: f.nextId, status: "todo", executionRunId: null, checkoutRunId: null });
+  });
+
+  it("refuses a private-project task for a non-member before stopping the current run", async () => {
+    const f = await fixture("in_progress");
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Private repo", visibility: "private", status: "planned" }).returning();
+    await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project!.id, name: "repo", cwd: "/srv/example/repo", isPrimary: true });
+    await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project!.id, subjectType: "agent", subjectId: f.agentId });
+    await db.update(issues).set({ projectId: project!.id, visibility: "private", privacyRootIssueId: f.targetId }).where(eq(issues.id, f.targetId));
+    await expect(f.authority.execute(f.call)).rejects.toMatchObject({ status: 409,
+      details: { code: "agent_not_assignable", reason: "assignee_lacks_project_access", assigneeAgentId: f.nextId } });
+    expect(f.stopTaskForReassignment).not.toHaveBeenCalled();
+    expect(f.enqueueWakeup).not.toHaveBeenCalled();
+    expect(await f.target()).toMatchObject({ assigneeAgentId: f.agentId, status: "in_progress", statusVersion: 0 });
+
+    await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project!.id, subjectType: "agent", subjectId: f.nextId });
+    await f.authority.execute({ ...f.call, callId: "member", arguments: { ...f.call.arguments, idempotencyKey: "member" } });
+    expect((await f.target()).assigneeAgentId).toBe(f.nextId);
   });
 
   it("does not transfer ownership if stop fails or a new run races the stop", async () => {

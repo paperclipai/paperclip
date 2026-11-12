@@ -10,6 +10,7 @@ import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { withExternalAdmissionGuard, type ExternalAdmissionTransaction } from "../modules/external-agents/index.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { assertAssigneeCanAccessTaskProject } from "./task-workspace-access.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { authorizationDeniedDetails, authorizationService, type AuthorizationActor } from "./authorization.js";
 import { assertActorCanReadCase, assertCaseTrustedForExecution, canActorReceiveCase, retainCaseAccessSource } from "./case-access.js";
@@ -96,6 +97,8 @@ async function authorizeTask(tx: Db, actor: AuthorizationActor, companyId: strin
   if (options.validateRecipient !== false) {
     try {
       await assertAssignableAgent(tx, companyId, toAgentId, { kind: "work" });
+      await assertAssigneeCanAccessTaskProject(tx, { companyId, projectId, assigneeAgentId: toAgentId,
+        workspaceSelection: issue?.workspaceSelection });
     } catch (error) {
       if (options.invalidRecipientAsUnprocessable && error instanceof HttpError && (error.status === 404 || error.status === 409)) {
         throw unprocessable(error.message, error.details);

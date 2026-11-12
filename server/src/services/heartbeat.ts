@@ -12,6 +12,7 @@ import { isVerifiedDependencyInteractionResponse } from "./queued-interaction-re
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { registerProviderLimitResumeWork, type PrepareChatRetry } from "./native-runtime/provider-limit-resume.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
+import { projectSuppliesWorkspaceFiles } from "./task-workspace-access.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
 import { listUndispatchedQueuedRuns } from "./queued-run-dispatch-liveness.js";
@@ -2432,16 +2433,7 @@ export function heartbeatService(
             .select({
               id: projects.id,
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
-              hasWorkspace: exists(
-                db.select({ id: projectWorkspaces.id })
-                  .from(projectWorkspaces)
-                  .where(and(
-                    eq(projectWorkspaces.projectId, projects.id),
-                    eq(projectWorkspaces.companyId, agent.companyId),
-                    sql`(nullif(btrim(${projectWorkspaces.cwd}), '') is not null
-                      or nullif(btrim(${projectWorkspaces.repoUrl}), '') is not null)`,
-                  )),
-              ).mapWith(Boolean),
+              hasWorkspace: projectSuppliesWorkspaceFiles(db, agent.companyId, projects.id).mapWith(Boolean),
               hasGitSource: exists(db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
                 .where(and(eq(projectWorkspaces.projectId, projects.id), eq(projectWorkspaces.companyId, agent.companyId),
                   sql`nullif(btrim(${projectWorkspaces.repoUrl}), '') is not null`))).mapWith(Boolean),

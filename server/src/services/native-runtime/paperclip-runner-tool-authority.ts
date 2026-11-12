@@ -43,6 +43,7 @@ import { sendAgentChatMessage } from "../agent-chat-messages.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { captureRunnerToolResult, fitRunnerToolResultPage, READ_TOOL_RESULT, READ_TOOL_RESULT_DEFINITION, readToolResultSchema, RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
+import { assertAssigneeCanAccessTaskProject } from "../task-workspace-access.js";
 import { approvalReadSqlCondition, canActorReadApproval, authorizationService, issueReadSqlCondition, type AuthorizationActor } from "../authorization.js";
 import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { normalizeIssueExecutionPolicy, redactIssueMonitorExternalRef } from "../issue-execution-policy.js";
@@ -2291,6 +2292,8 @@ export class PaperclipRunnerToolAuthority {
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
       if (assigneeAgentId) await assertAssignableAgent(tx, this.binding.companyId, assigneeAgentId, { kind: "work" });
+      // Refuse before the prepare phase stops the current owner's run.
+      if (assigneeAgentId && assigneeAgentId !== target.assigneeAgentId) await assertAssigneeCanAccessTaskProject(tx, { ...target, assigneeAgentId });
       if (assigneeUserId) await this.#assertCompanyPerson(tx, assigneeUserId);
       const [externalChat] = await tx.select({ id: chatConversations.id }).from(chatConversations).where(and(
         eq(chatConversations.companyId, this.binding.companyId), eq(chatConversations.issueId, taskId),

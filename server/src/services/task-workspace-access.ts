@@ -1,7 +1,7 @@
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { agents, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
-import { forbidden } from "../errors.js";
+import { and, eq, exists, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
+import { conflict, forbidden } from "../errors.js";
 import { accessService } from "./access.js";
 import { executionWorkspaceReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
@@ -63,25 +63,76 @@ export async function taskWorkspaceProjectRequirements(db: Db, companyId: string
   return result;
 }
 
+/** The project access refusal run setup gives this actor for the project's
+ * files, or null when the actor may use them. Run setup and assignment both
+ * use this decision, so an assignment is refused exactly when setup would be. */
+export async function taskWorkspaceProjectAccessDenial(
+  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string,
+  options: { taskContainerOnly?: boolean } = {},
+) {
+  const decision = await measureRunPhase("workspace.access.authorization", () => accessService(db as Db).decide({
+    actor, action: "project:read", resource: { type: "project", companyId, projectId },
+  }));
+  if (decision.allowed) return null;
+  // A person's "My private tasks" project only parks their private tasks. An
+  // issue-level grant exposes the task without its project, so when that
+  // project supplies no workspace files, task access is enough to run it.
+  if (options.taskContainerOnly && decision.reason === "deny_project_private"
+    && await personalProjectHasNoWorkspaceFiles(db, companyId, projectId)) return null;
+  return decision;
+}
+
 export async function assertTaskWorkspaceSourceProjectAccess(
   db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string | null,
   options: { taskContainerOnly?: boolean } = {},
 ) {
   if (!projectId) return;
-  const decision = await measureRunPhase("workspace.access.authorization", () => accessService(db as Db).decide({
-    actor, action: "project:read", resource: { type: "project", companyId, projectId },
-  }));
-  if (!decision.allowed) {
-    // A person's "My private tasks" project only parks their private tasks. An
-    // issue-level grant exposes the task without its project, so when that
-    // project supplies no workspace files, task access is enough to run it.
-    if (options.taskContainerOnly && decision.reason === "deny_project_private"
-      && await personalProjectHasNoWorkspaceFiles(db, companyId, projectId)) return;
-    if (actor.type === "agent" && decision.reason === "deny_low_trust_boundary") {
-      throw new ProjectAccessDeniedError(projectId);
-    }
-    throw forbidden(decision.explanation);
+  const decision = await taskWorkspaceProjectAccessDenial(db, actor, companyId, projectId, options);
+  if (!decision) return;
+  if (actor.type === "agent" && decision.reason === "deny_low_trust_boundary") {
+    throw new ProjectAccessDeniedError(projectId);
   }
+  throw forbidden(decision.explanation);
+}
+
+/** True when a project workspace names files (a directory or repository). Run
+ * setup checks project access only for a task project that supplies files. */
+export function projectSuppliesWorkspaceFiles(db: Db | DbTransaction, companyId: string, projectId: SQLWrapper) {
+  return exists(db.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(and(
+    eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, companyId),
+    sql`(nullif(btrim(${projectWorkspaces.cwd}), '') is not null
+      or nullif(btrim(${projectWorkspaces.repoUrl}), '') is not null)`,
+  )));
+}
+
+/** Refuse an agent assignment whose runs would fail project access at setup.
+ * Assignment grants the agent only the task, never the private project, so a
+ * non-member would wake, fail setup and strand the task. This never changes
+ * project access; a project access manager decides who joins the project. */
+export async function assertAssigneeCanAccessTaskProject(
+  db: Db | DbTransaction,
+  task: { companyId: string; projectId: string | null | undefined; assigneeAgentId: string | null | undefined;
+    workspaceSelection?: { selection?: { kind?: string } | null } | null },
+) {
+  const { companyId, projectId, assigneeAgentId } = task;
+  if (!assigneeAgentId || !projectId) return;
+  // A task-directory run never reads the project's files.
+  if (task.workspaceSelection?.selection?.kind === "task_directory") return;
+  const [project] = await db.select({ id: projects.id }).from(projects).where(and(
+    eq(projects.id, projectId), eq(projects.companyId, companyId), eq(projects.visibility, "private"),
+    projectSuppliesWorkspaceFiles(db, companyId, projects.id),
+  ));
+  if (!project) return;
+  const denial = await taskWorkspaceProjectAccessDenial(db, { type: "agent", agentId: assigneeAgentId, companyId },
+    companyId, projectId, { taskContainerOnly: true });
+  if (denial?.reason !== "deny_project_private") return;
+  // Name neither the project nor its id: the caller may not be able to read it.
+  throw conflict(
+    "Cannot assign this task to that agent: the agent is not a project access member of the task's private project, "
+      + "so its runs cannot open the project's workspace. Ask someone who manages the project's access to add the agent "
+      + "as a project access member, or choose another assignee or project.",
+    { code: "agent_not_assignable", reason: "assignee_lacks_project_access", companyId, assigneeAgentId },
+  );
 }
 
 async function personalProjectHasNoWorkspaceFiles(db: Db | DbTransaction, companyId: string, projectId: string) {
