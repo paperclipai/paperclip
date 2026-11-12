@@ -53,26 +53,45 @@ export function runRow(run: Json): HostedRunRow {
   };
 }
 
-export async function hostedCompanyRuns(api: ReadApi, companyId: string, agentIds: readonly string[]): Promise<HostedRunRow[]> {
-  const rows: HostedRunRow[] = [];
-  for (const agentId of agentIds) {
-    const runs = await api.get<Json[]>(`/api/companies/${companyId}/heartbeat-runs?agentId=${encodeURIComponent(agentId)}&limit=1000`);
-    rows.push(...runs.filter(run => run.agentId === agentId).map(runRow));
-  }
-  return rows;
-}
+export const RUN_PAGE = 1_000;
+export const ISSUE_PAGE = 500;
+export const EVENT_PAGE = 500;
 
 export async function hostedIssues(api: ReadApi, companyId: string, agentIds: readonly string[]): Promise<HostedIssueRow[]> {
   const byId = new Map<string, HostedIssueRow>();
   for (const agentId of agentIds) {
-    const issues = await api.get<Json[]>(`/api/companies/${companyId}/issues?assigneeAgentId=${encodeURIComponent(agentId)}&includeAgentCreatedTasks=true&limit=1000`);
-    for (const issue of issues) {
-      if (issue.assigneeAgentId !== agentId) continue;
-      byId.set(String(issue.id), { id: String(issue.id), identifier: text(issue.identifier), title: String(issue.title ?? ""), status: String(issue.status),
-        parentId: text(issue.parentId), assigneeAgentId: text(issue.assigneeAgentId), hidden: Boolean(issue.hiddenAt) });
+    for (let offset = 0; ; offset += ISSUE_PAGE) {
+      const page = await api.get<Json[]>(`/api/companies/${companyId}/issues?assigneeAgentId=${encodeURIComponent(agentId)}&includeAgentCreatedTasks=true`
+        + `&limit=${ISSUE_PAGE}&offset=${offset}`);
+      for (const issue of page) {
+        if (issue.assigneeAgentId !== agentId) continue;
+        byId.set(String(issue.id), { id: String(issue.id), identifier: text(issue.identifier), title: String(issue.title ?? ""), status: String(issue.status),
+          parentId: text(issue.parentId), assigneeAgentId: text(issue.assigneeAgentId), hidden: Boolean(issue.hiddenAt) });
+      }
+      if (page.length < ISSUE_PAGE) break;
     }
   }
   return [...byId.values()];
+}
+
+export async function hostedCompanyRuns(api: ReadApi, companyId: string, agentIds: readonly string[]): Promise<HostedRunRow[]> {
+  const rows = new Map<string, HostedRunRow>();
+  let truncated = false;
+  for (const agentId of agentIds) {
+    const page = await api.get<Json[]>(`/api/companies/${companyId}/heartbeat-runs?agentId=${encodeURIComponent(agentId)}&limit=${RUN_PAGE}`);
+    if (page.length >= RUN_PAGE) truncated = true;
+    for (const run of page) if (run.agentId === agentId) rows.set(String(run.id), runRow(run));
+  }
+  if (!truncated) return [...rows.values()];
+  const ours = new Set(agentIds);
+  for (const issue of await hostedIssues(api, companyId, agentIds)) {
+    const runs = await api.get<Json[]>(`/api/issues/${issue.id}/runs`);
+    for (const run of runs) {
+      if (!ours.has(String(run.agentId)) || rows.has(String(run.runId))) continue;
+      rows.set(String(run.runId), runRow({ ...run, id: run.runId, issueId: issue.id }));
+    }
+  }
+  return [...rows.values()];
 }
 
 export function startedIssues(issues: readonly HostedIssueRow[], runs: readonly HostedRunRow[]): HostedIssueRow[] {
@@ -115,14 +134,25 @@ export function gradeRuns(runs: readonly HostedRunRow[]): GradeRun[] {
     finishedAt: run.finishedAt, lastActivityAt: run.lastActivityAt }));
 }
 
+export async function runEvents(api: ReadApi, runId: string): Promise<Json[]> {
+  const events: Json[] = [];
+  for (let afterSeq = 0; ;) {
+    const page = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${EVENT_PAGE}`);
+    events.push(...page);
+    const last = Number(page.at(-1)?.seq);
+    if (page.length < EVENT_PAGE || !Number.isFinite(last) || last <= afterSeq) return events;
+    afterSeq = last;
+  }
+}
+
 export async function failureChain(api: ReadApi, runId: string): Promise<string[]> {
-  const events = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/events?limit=1000`).catch(() => [] as Json[]);
+  const events = await runEvents(api, runId).catch(() => [] as Json[]);
   return events.filter(event => event.level === "error" || event.level === "warn" || /fail|error|lost/i.test(String(event.eventType)))
     .slice(-6).map(event => `${event.eventType}${event.message ? `: ${String(event.message).slice(0, 240)}` : ""}`);
 }
 
 export async function firstEventAfter(api: ReadApi, runId: string, after: number): Promise<number | null> {
-  const events = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/events?limit=1000`).catch(() => [] as Json[]);
+  const events = await runEvents(api, runId).catch(() => [] as Json[]);
   const times = events.map(event => ms(event.createdAt)).filter((at): at is number => at !== null && at > after);
   return times.length ? Math.min(...times) : null;
 }

@@ -102,7 +102,7 @@ describe("hosted API readers", () => {
     const releases = detectReleases([{ at: 0, ok: true, status: 200, ms: 1, processStartedAt: "a", commit: "x" },
       { at: 1_000, ok: true, status: 200, ms: 1, processStartedAt: "b", commit: "y" }], { now: 1_000_000 });
     const graded = await gradeHosted({ api, companyId: "c1", agentIds: ["a1"], releases, health: { requests: 2, failures: 0, slow: 0, longestGapMs: 1_000, longestGap: null },
-      apiContinuity: { requests: 0, failures: 0, slow: 0, longestGapMs: 0, longestGap: null }, observedClicks: new Map(), lastReleaseAt: Date.now() - 10_000,
+      apiContinuity: { requests: 0, failures: 0, slow: 0, longestGapMs: 0, longestGap: null }, stopObserver: async () => {}, observedClicks: () => new Map(), lastReleaseAt: Date.now() - 10_000,
       settleMs: 5, drainMs: 5, dir, cancelled: () => false, record: () => {}, pollMs: 5 });
     expect(writes.filter(write => write.route.endsWith("/retry"))).toEqual([{ method: "POST", route: "/api/issues/i2/retry", body: { idempotencyKey: expect.any(String), observedRunId: "r2" } }]);
     expect(graded.headline).toBe("1 / 3 tasks completed without human action");
@@ -130,6 +130,7 @@ describe("hosted API readers", () => {
       "/api/companies/c1/issues": (route: string) => route.includes("assigneeAgentId=a1") ? [{ id: "i1", assigneeAgentId: "a1" }, { id: "x", assigneeAgentId: "other" }] : [],
       "/api/companies/c1/secrets": [{ id: "s1", name: "restart-chaos rc-x OPENROUTER_API_KEY" }, { id: "s2", name: "OPENROUTER_API_KEY" }, { id: "s3", name: "restart-chaos rc-xy OPENROUTER_API_KEY" }],
       "/api/companies/c1/projects": [{ id: "p1", name: "Restart chaos rc-x" }, { id: "p2", name: "Real project" }],
+      "/api/agents/a1": { id: "a1", status: "terminated" },
     }, writes);
     const report = await cleanupHosted({ api, label: "rc-x", companyId: "c1", state: null, record: () => {} });
     expect(writes.map(write => `${write.method} ${write.route}`)).toEqual(["PATCH /api/agents/a1", "POST /api/heartbeat-runs/r1/cancel", "PATCH /api/issues/i1",

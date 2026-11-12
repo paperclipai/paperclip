@@ -8,7 +8,7 @@ import { parseHostedCommand, type HostedOptions } from "./hosted-config.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity, detectReleases, identityOf, releaseMarkdown, type DetectedRelease, type HealthSample } from "./hosted-release.js";
 import { cleanupHosted, inventory, loadState, resolveCompany, setupHosted, type HostedState } from "./hosted-setup.js";
-import { HostedWorkload, planHostedTasks } from "./hosted-workload.js";
+import { HostedWorkload, planHostedTasks, type HostedTaskRecord } from "./hosted-workload.js";
 import type { RetryClick } from "./release-swap-grade.js";
 import { waitForAgentsReady } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -19,6 +19,36 @@ const POLL_MS = 15_000;
 
 export function releasesReached(releases: readonly DetectedRelease[], wanted: number): boolean {
   return wanted > 0 && releases.filter(release => release.settled).length >= wanted;
+}
+
+export function arrivalsDone(wanted: number, remaining: number, active: number, releases: readonly DetectedRelease[]): boolean {
+  return wanted === 0 ? remaining === 0 && active === 0 : releasesReached(releases, wanted);
+}
+
+export function observedClicks(records: readonly HostedTaskRecord[]): Map<string, RetryClick[]> {
+  return new Map(records.flatMap(entry => entry.issueId && entry.retryClicks.length ? [[entry.issueId, [...entry.retryClicks]] as const] : []));
+}
+
+export function keepPolling(workload: Pick<HostedWorkload, "poll">, pollMs = POLL_MS): { stop: () => Promise<void> } {
+  let running = true;
+  let wake: (() => void) | null = null;
+  const loop = (async () => {
+    while (running) {
+      await workload.poll().catch(() => undefined);
+      if (!running) break;
+      await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, pollMs).unref?.(); });
+    }
+  })();
+  return { stop: async () => { running = false; wake?.(); await loop; } };
+}
+
+export async function finalizeHosted(input: { api: Parameters<typeof cleanupHosted>[0]["api"]; keep: boolean; label: string; dir: string; state: HostedState | null;
+  record: (kind: string, data: Record<string, unknown>) => void }): Promise<{ errors: string[] } | null> {
+  if (input.keep) return null;
+  const state = input.state ?? await loadState(input.dir);
+  if (!state) return null;
+  return await cleanupHosted({ api: input.api, label: input.label, companyId: state.companyId, state, record: input.record })
+    .catch(error => ({ errors: [String(error)] }));
 }
 
 function watchIdentity(timeline: Timeline, samplesPath: string) {
@@ -81,7 +111,7 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
   if (options.mode === "observe") return await observe(options, probe, api, dir, started, cancelled, timeline);
 
   let state: HostedState | null = null;
-  let workload: HostedWorkload | null = null;
+  let polling: { stop: () => Promise<void> } | null = null;
   let exit = 2;
   try {
     const companyId = await resolveCompany(api, options.companyId);
@@ -89,7 +119,7 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
     await waitForAgentsReady(api as unknown as ChaosApi, Object.fromEntries(Object.entries(state.agents).map(([adapter, agent]) => [adapter, { id: agent!.id }])),
       timeline, 10 * 60_000, 2_000, cancelled);
     const plans = planHostedTasks(options, options.tasks ?? 2_000);
-    workload = new HostedWorkload({ api, label: options.label, companyId, projectId: state.projectId, agents: state.agents, plans,
+    const workload = new HostedWorkload({ api, label: options.label, companyId, projectId: state.projectId, agents: state.agents, plans,
       concurrency: options.concurrency, record });
     let lastPoll = 0;
     for (;;) {
@@ -98,23 +128,18 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
       const reached = options.releases === 0 ? workload.remaining === 0 : releases.length >= options.releases;
       if (!reached && !cancelled()) await workload.launchDue(now);
       if (now - lastPoll >= POLL_MS) { lastPoll = now; await workload.poll(now); }
-      const settled = options.releases === 0 ? workload.active(now).length === 0 : releasesReached(releases, options.releases);
-      if (cancelled() || settled || now - started > options.maxWaitMs) break;
+      if (cancelled() || arrivalsDone(options.releases, workload.remaining, workload.active(now).length, releases) || now - started > options.maxWaitMs) break;
       await delay(LOOP_MS);
     }
     for (const entry of workload.records) if (entry.issueId) state.issueIds.push(entry.issueId);
     timeline.add("hosted_arrivals_ended", { launched: workload.launched, releases: detectReleases(probe.samples).length, interrupted, timedOut: Date.now() - started > options.maxWaitMs });
     const releases = detectReleases(probe.samples, { now: Date.now() });
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
-    let grading = true;
-    const keepPolling = (async () => { while (grading) { await workload!.poll().catch(() => undefined); await delay(POLL_MS); } })();
-    const clicks = new Map<string, RetryClick[]>(workload.records.flatMap(entry => entry.issueId && entry.retryClicks.length ? [[entry.issueId, entry.retryClicks] as const] : []));
+    polling = keepPolling(workload);
     const graded = await gradeHosted({ api, companyId, agentIds: Object.values(state.agents).map(agent => agent!.id), releases,
-      health: continuity(probe.samples), apiContinuity: continuity(requestSamples(api.requests)), observedClicks: clicks,
-      lastReleaseAt: releases.at(-1)?.lastOldAt ?? Date.now(), settleMs: options.releases === 0 ? Math.min(options.settleMs, 60_000) : options.settleMs,
-      drainMs: options.drainMs, dir, cancelled, record });
-    grading = false;
-    await keepPolling;
+      health: continuity(probe.samples), apiContinuity: continuity(requestSamples(api.requests)),
+      stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records),
+      lastReleaseAt: releases.at(-1)?.lastOldAt ?? Date.now(), settleMs: options.settleMs, drainMs: options.drainMs, dir, cancelled, record });
     console.info(`\n${graded.markdown}`);
     const short = options.releases > 0 && !releasesReached(releases, options.releases);
     exit = graded.pass && !short && !interrupted ? 0 : 1;
@@ -123,14 +148,12 @@ export async function runHosted(argv: readonly string[]): Promise<number> {
     console.error(error);
     exit = 2;
   } finally {
+    await polling?.stop();
     await probe.stop();
     await writeFile(path.join(dir, "health-summary.json"), `${JSON.stringify({ releases: detectReleases(probe.samples), health: continuity(probe.samples),
       api: continuity(requestSamples(api.requests)), inventory: census }, null, 2)}\n`, { mode: 0o600 });
-    if (state && !options.keep) {
-      const report = await cleanupHosted({ api, label: options.label, companyId: state.companyId, state, record })
-        .catch(error => ({ errors: [String(error)] }));
-      if (report.errors.length) exit = Math.max(exit, 1);
-    }
+    const cleaned = await finalizeHosted({ api, keep: options.keep, label: options.label, dir, state, record });
+    if (cleaned && cleaned.errors.length) exit = Math.max(exit, 1);
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }

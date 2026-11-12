@@ -23,7 +23,8 @@ export interface HostedGradeInput {
   releases: DetectedRelease[];
   health: ContinuityReport;
   apiContinuity: ContinuityReport;
-  observedClicks: ReadonlyMap<string, RetryClick[]>;
+  stopObserver: () => Promise<void>;
+  observedClicks: () => ReadonlyMap<string, RetryClick[]>;
   lastReleaseAt: number;
   settleMs: number;
   drainMs: number;
@@ -44,7 +45,7 @@ export async function drainHosted(input: Pick<HostedGradeInput, "api" | "company
   const now = input.now ?? Date.now;
   const settledAt = input.lastReleaseAt + input.settleMs;
   const capAt = Math.max(settledAt, input.lastReleaseAt + input.drainMs);
-  const window = Math.min(input.settleMs, PROGRESS_WINDOW_MS);
+  const window = PROGRESS_WINDOW_MS;
   input.record("hosted_settling", { settleUntil: new Date(settledAt).toISOString(), capAt: new Date(capAt).toISOString() });
   while (!input.cancelled() && now() < settledAt) await delay(Math.min(input.pollMs ?? 15_000, Math.max(1, settledAt - now())));
   for (;;) {
@@ -63,7 +64,8 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const now = input.now ?? Date.now;
   const drained = await drainHosted(input);
   input.record("hosted_drained", drained);
-  const clicks = new Map<string, RetryClick[]>([...input.observedClicks].map(([id, list]) => [id, [...list]]));
+  await input.stopObserver();
+  const clicks = new Map<string, RetryClick[]>([...input.observedClicks()].map(([id, list]) => [id, [...list]]));
   const views = new Map<string, Json>();
   const readViews = async (ids: readonly string[]) => {
     for (const id of ids) views.set(id, await api.get<Json>(`/api/issues/${id}`).catch(error => ({ status: "unreadable", error: String(error) })));
@@ -106,7 +108,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const unreadable = issues.filter(issue => (views.get(issue.id) ?? { status: "unreadable" }).status === "unreadable" || person.unreadable.includes(issue.id));
   if (unreadable.length) input.record("hosted_views_unreadable", { count: unreadable.length, issueIds: unreadable.map(issue => issue.id) });
   const grades: TaskGrade[] = issues.filter(issue => !unreadable.includes(issue)).map(issue => gradeReleaseSwapTask({
-    now: gradedAt, staleAfterMs: input.settleMs, issueId: issue.id, identifier: issue.identifier, title: issue.title, ...issueViewFields(views.get(issue.id)!),
+    now: gradedAt, staleAfterMs: PROGRESS_WINDOW_MS, issueId: issue.id, identifier: issue.identifier, title: issue.title, ...issueViewFields(views.get(issue.id)!),
     runs: gradeRuns(runsByIssue.get(issue.id) ?? []), queuedWakes: 0, retryClicks: clicks.get(issue.id) ?? [],
     pendingApproval: person.approvals.has(issue.id), pendingQuestion: person.questions.has(issue.id) }));
   const facts: SwapRunFact[] = runs.map(run => ({ runId: run.runId, issueId: run.issueId, status: run.status, errorCode: run.errorCode,

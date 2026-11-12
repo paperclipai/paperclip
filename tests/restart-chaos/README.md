@@ -720,7 +720,10 @@ run's agents, the task view from `/api/issues/:id`, pending questions and approv
 approvals, failure chains and next events from `/api/heartbeat-runs/:id/events`, and duplicated comments and
 subtasks from comments and the issue list. Per release the table counts failed runs and the time from the old
 build's last answer to each surviving run's next event. Web and API continuity are reported for both the health
-probe and every API request the harness made: requests, failures, slow answers and the longest gap between answers.
+probe and every API request the harness made: requests, failures (any answer that is not 2xx, or no answer), slow
+answers and the longest gap between successful answers. Runs come from the company run list, or from every task's
+run list when that list is full, so no task's early runs are lost. A queued or running run with no activity for 5
+minutes is not a live owner, the same window the drain uses.
 
 These fields are unavailable over the API and are reported as unavailable, not guessed:
 
@@ -733,7 +736,8 @@ These fields are unavailable over the API and are reported as unavailable, not g
 
 **Cleanup.** At the end of every run (unless `--hosted-keep`), and with `--hosted-cleanup-only --hosted-label <label>`:
 pause the run's agents, cancel their queued and running runs (which releases their sandboxes), archive (hide) their
-tasks, remove the agents, delete the run's secrets, and archive its project. Only objects whose name carries the
+tasks, terminate and remove the agents (an agent with cost history stays terminated, as the product requires), delete
+the run's secrets, and archive its project. A setup that fails part-way is cleaned up from `hosted-state.json`. Only objects whose name carries the
 label are touched.
 
 ## Absolute symlink in the workspace (F1)

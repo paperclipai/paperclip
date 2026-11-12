@@ -1,7 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { runnerProfiles } from "../runner-e2e/catalog.js";
 import type { SecretReference, SecretReferenceMap } from "../runner-e2e/types.js";
+import { ChaosApiError } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, PROFILE_FOR_ADAPTER } from "./config.js";
 import type { HostedApi } from "./hosted-api.js";
 import type { HostedOptions } from "./hosted-config.js";
@@ -149,8 +151,27 @@ export interface CleanupReport {
   errors: string[];
 }
 
+export const TERMINATE_WAIT_MS = 120_000;
+
+async function removeAgent(api: SetupApi, agentId: string, pollMs: number): Promise<void> {
+  const current = await api.get<Json>(`/api/agents/${agentId}`).catch(() => null);
+  if (current === null) return;
+  if (current.status !== "terminated") await api.post(`/api/agents/${agentId}/terminate`);
+  for (const until = Date.now() + TERMINATE_WAIT_MS; ;) {
+    const agent = await api.get<Json>(`/api/agents/${agentId}`);
+    if (agent.status === "terminated") break;
+    if (Date.now() >= until) throw new Error(`agent still ${String(agent.status)} after ${TERMINATE_WAIT_MS / 1000} s; run --hosted-cleanup-only again`);
+    await delay(pollMs);
+  }
+  try {
+    await api.delete(`/api/agents/${agentId}`, { allowNotFound: true });
+  } catch (error) {
+    if (!(error instanceof ChaosApiError && error.status === 409 && error.message.includes("agent_cost_history_retained"))) throw error;
+  }
+}
+
 export async function cleanupHosted(input: { api: SetupApi; label: string; companyId: string; state: HostedState | null;
-  record: (kind: string, data: Record<string, unknown>) => void }): Promise<CleanupReport> {
+  record: (kind: string, data: Record<string, unknown>) => void; terminatePollMs?: number }): Promise<CleanupReport> {
   const { api, label, companyId } = input;
   const report: CleanupReport = { runsCancelled: 0, tasksArchived: 0, agentsPaused: 0, agentsRemoved: 0, secretsDeleted: 0, projectArchived: false, errors: [] };
   const attempt = async (what: string, action: () => Promise<unknown>) => {
@@ -161,7 +182,7 @@ export async function cleanupHosted(input: { api: SetupApi; label: string; compa
   const stateIds = new Set(Object.values(input.state?.agents ?? {}).map(agent => agent!.id));
   const ours = agents.filter(agent => stateIds.size === 0 || stateIds.has(String(agent.id)));
   for (const agent of ours) {
-    if (await attempt(`pause ${agent.id}`, () => api.patch(`/api/agents/${agent.id}`, { status: "paused" }))) report.agentsPaused += 1;
+    if (agent.status !== "terminated" && await attempt(`pause ${agent.id}`, () => api.patch(`/api/agents/${agent.id}`, { status: "paused" }))) report.agentsPaused += 1;
     const runs = await api.get<Json[]>(`/api/companies/${companyId}/heartbeat-runs?agentId=${agent.id}&limit=1000`).catch(() => [] as Json[]);
     for (const run of runs.filter(run => run.agentId === agent.id && ["queued", "running", "scheduled_retry"].includes(String(run.status)))) {
       if (await attempt(`cancel run ${run.id}`, () => api.post(`/api/heartbeat-runs/${run.id}/cancel`))) report.runsCancelled += 1;
@@ -172,7 +193,7 @@ export async function cleanupHosted(input: { api: SetupApi; label: string; compa
     }
   }
   for (const agent of ours) {
-    if (await attempt(`remove agent ${agent.id}`, () => api.delete(`/api/agents/${agent.id}`, { allowNotFound: true }))) report.agentsRemoved += 1;
+    if (await attempt(`remove agent ${agent.id}`, () => removeAgent(api, String(agent.id), input.terminatePollMs ?? 2_000))) report.agentsRemoved += 1;
   }
   const secrets = (await api.get<Json[]>(`/api/companies/${companyId}/secrets`).catch(() => [] as Json[]))
     .filter(secret => String(secret.name).startsWith(`restart-chaos ${label} `));

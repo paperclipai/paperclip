@@ -28,7 +28,7 @@ export function hostedToken(target: HostedTarget, env: NodeJS.ProcessEnv = proce
     + "Ask the owner to approve a board sign-in for this host first (README: Hosted mode, Sign-in).");
 }
 
-export interface RequestRecord { at: number; ok: boolean; status: number | null; ms: number; method: string }
+export interface RequestRecord { at: number; ok: boolean; reachable: boolean; status: number | null; ms: number; method: string }
 
 export class HostedApi {
   readonly requests: RequestRecord[] = [];
@@ -48,10 +48,10 @@ export class HostedApi {
           ...(body === undefined ? {} : { "content-type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await response.text();
-      this.requests.push({ at: started, ok: response.status < 500, status: response.status, ms: Date.now() - started, method });
+      this.requests.push({ at: started, ok: response.ok, reachable: response.status < 500, status: response.status, ms: Date.now() - started, method });
       return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text) };
     } catch (error) {
-      this.requests.push({ at: started, ok: false, status: null, ms: Date.now() - started, method });
+      this.requests.push({ at: started, ok: false, reachable: false, status: null, ms: Date.now() - started, method });
       return { status: null, text: error instanceof Error ? error.message : String(error), retryAfterMs: null };
     }
   }
