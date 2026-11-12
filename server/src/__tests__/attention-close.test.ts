@@ -25,6 +25,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { approvalRoutes } from "../routes/approvals.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { attentionCloseModes, attentionService } from "../services/attention.js";
 import { decisionHistoryService, interactionHistoryLabel } from "../services/decision-history.js";
 
@@ -98,7 +99,7 @@ describeEmbeddedPostgres("attention close, transfer and approval cancel (PAP-749
       adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
     });
     for (const userId of [SCOTT, DOTTA, RILEY]) {
-      await db.insert(authUsers).values({ id: userId, name: userId, email: `${userId}-${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(authUsers).values({ id: userId, name: userId, email: `${userId}-${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
       await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "admin" });
     }
     return { companyId, workerId };
@@ -394,6 +395,63 @@ describeEmbeddedPostgres("attention close, transfer and approval cancel (PAP-749
     expect(sources.every((row) => row.status === "pending")).toBe(true);
     const closed = await activity(companyId, "attention.closed");
     expect(closed.map((entry) => (entry.details as Record<string, unknown>).mode).sort()).toEqual(["archive", "snooze"]);
+  });
+
+  it("does not let a company writer take another person's addressed request and approve it", async () => {
+    const { companyId, workerId } = await seedCompany("CTA");
+    await db.update(companyMemberships).set({ membershipRole: "operator" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, SCOTT)));
+    const issueId = await insertIssue(companyId, { createdByUserId: DOTTA });
+    const sourceId = await insertInteraction(companyId, issueId, workerId, { addresseeUserId: DOTTA });
+    await request(app(board(companyId, SCOTT))).post(transferUrl(companyId, "issue_thread_interaction", sourceId)).send({ userId: SCOTT }).expect(403);
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, sourceId));
+    expect(row).toMatchObject({ addresseeUserId: DOTTA, status: "pending" });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await expect(issueThreadInteractionService(db).acceptInteraction(
+      issue, sourceId, {}, { userId: SCOTT },
+    )).rejects.toMatchObject({ status: 403, details: { code: "interaction_addressee_mismatch" } });
+    expect(await activity(companyId, "attention.transferred")).toEqual([]);
+  });
+
+  it("lets the addressed writer delegate without giving other writers routing administration", async () => {
+    const { companyId, workerId } = await seedCompany("CTO");
+    await db.update(companyMemberships).set({ membershipRole: "operator" }).where(eq(companyMemberships.companyId, companyId));
+    const issueId = await insertIssue(companyId);
+    const sourceId = await insertInteraction(companyId, issueId, workerId, { addresseeUserId: DOTTA });
+    const url = transferUrl(companyId, "issue_thread_interaction", sourceId);
+    await request(app(board(companyId, DOTTA))).post(url).send({ userId: RILEY }).expect(200);
+    await request(app(board(companyId, DOTTA))).post(url).send({ userId: RILEY }).expect(200);
+    await request(app(board(companyId, SCOTT))).post(url).send({ userId: SCOTT }).expect(403);
+  });
+
+  it.each(["interaction", "review"] as const)("never routes a request to its excluded %s creator, even for an administrator", async (restriction) => {
+    const { companyId, workerId } = await seedCompany(restriction === "review" ? "CTR" : "CTI");
+    const issueId = await insertIssue(companyId, { status: restriction === "review" ? "in_review" : "todo", createdByUserId: RILEY });
+    const sourceId = await insertInteraction(companyId, issueId, workerId, { addresseeUserId: DOTTA });
+    await db.update(issueThreadInteractions).set({ createdByAgentId: null, createdByUserId: RILEY,
+      effectiveResolverPolicy: restriction === "interaction" ? "not_creator" : "anyone", resolverPolicyProvenance: "explicit" }).where(eq(issueThreadInteractions.id, sourceId));
+    if (restriction === "review") await db.update(issues).set({ reviewPolicy: "not_creator" }).where(eq(issues.id, issueId));
+    await request(app(board(companyId, SCOTT))).post(transferUrl(companyId, "issue_thread_interaction", sourceId)).send({ userId: RILEY }).expect(403);
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, sourceId)))[0].addresseeUserId).toBe(DOTTA);
+    expect(await activity(companyId, "attention.transferred")).toEqual([]);
+  });
+
+  it("does not let a viewer claim or route an ownerless request", async () => {
+    const { companyId, workerId } = await seedCompany("CTV");
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, SCOTT)));
+    const issueId = await insertIssue(companyId);
+    const sourceId = await insertInteraction(companyId, issueId, workerId);
+    const viewer = app(board(companyId, SCOTT));
+    await request(viewer).post(transferUrl(companyId, "issue_thread_interaction", sourceId)).send({ userId: RILEY }).expect(403);
+    await request(viewer).post(`/api/companies/${companyId}/attention/issue_thread_interaction/${sourceId}/claim`).expect(403);
+  });
+
+  it("does not let an excluded creator claim an ownerless request", async () => {
+    const { companyId, workerId } = await seedCompany("CTC");
+    const issueId = await insertIssue(companyId);
+    const sourceId = await insertInteraction(companyId, issueId, workerId);
+    await db.update(issueThreadInteractions).set({ createdByAgentId: null, createdByUserId: SCOTT, effectiveResolverPolicy: "not_creator", resolverPolicyProvenance: "explicit" }).where(eq(issueThreadInteractions.id, sourceId));
+    await request(app(board(companyId, SCOTT))).post(`/api/companies/${companyId}/attention/issue_thread_interaction/${sourceId}/claim`).expect(403);
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, sourceId)))[0].addresseeUserId).toBeNull();
   });
 
   it("transfers a card to another person who can answer it, with 400/403/404/409/422", async () => {

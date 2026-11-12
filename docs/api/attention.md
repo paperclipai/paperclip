@@ -54,12 +54,17 @@ POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/transfer
 
 Claim has no body. Transfer takes `{ "userId": "<user ID>", "reason": "optional" }`.
 These operations support `issue_thread_interaction` sources. Claim assigns an
-ownerless request to the caller. Transfer assigns it to an active company writer
-who can read the task and satisfy its resolver rules. A chat question stays with
-its chat owner. A request to an agent that can still answer stays with that agent.
+ownerless request to the caller. Changing an addressed request requires its current
+addressee or an active company owner/administrator (or an instance administrator).
+Transfer assigns it to a writer who can read the task and satisfy the interaction
+creator exclusions and the task review policy. Viewers cannot claim or transfer
+requests. A chat question stays with its chat owner. A request to an agent that
+can still answer stays with that agent.
 
-Placement changes do not grant resolution permission. Concurrent claims and
-transfers use a compare-and-set update. An identical repeated assignment returns
+The addressee is part of resolution authorization, so routing validates authority
+and the recipient under task and interaction row locks before updating it. Inbox
+view placement alone grants no authority. Concurrent claims and transfers retain
+their compare-and-set checks. An identical repeated assignment returns
 `alreadyClaimed` or `alreadyTransferred`. Changes record `attention.claimed` or
 `attention.transferred` activity.
 

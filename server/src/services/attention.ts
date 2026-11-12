@@ -63,7 +63,7 @@ import type {
   IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { withoutSqlStatementText } from "@paperclipai/shared";
-import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import {
@@ -74,11 +74,11 @@ import {
 import { attentionIssueCondition, executionIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
-import { canActorReadApproval, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { authorizationService, canActorReadApproval, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { humanCreatedIssueCondition } from "./issue-participation.js";
 import { attentionAlreadyClosedError } from "./attention-already-closed.js";
 import { inboxDismissalService } from "./inbox-dismissals.js";
-import { assertInteractionAddresseeUserAvailable } from "./issue-thread-interactions.js";
+import { assertInteractionRoutingRecipientAllowed } from "./issue-thread-interactions.js";
 import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { activeIssueInteractionCondition, deferrableInteractionCondition } from "./issue-question-context.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
@@ -1645,6 +1645,30 @@ export async function resolveIssueAudienceContextMap(
   return result;
 }
 
+/** The task is locked first, as in resolution, before locking its interaction.
+ * Read access and mutation authority are rechecked against that task snapshot. */
+async function lockAttentionRoutingSource(db: Db, companyId: string, sourceId: string, actor: AuthorizationActor) {
+  if (actor.type !== "board" || !actor.userId) throw forbidden("A signed-in user is required to route a request.");
+  const readCondition = await issueReadSqlCondition(db, actor);
+  const [observed] = await db.select({ issueId: issues.id,
+    addresseeUserId: issueThreadInteractions.addresseeUserId, addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+  }).from(issueThreadInteractions).innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId)).where(and(
+    eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.id, sourceId), eq(issues.companyId, companyId), readCondition,
+  )).limit(1);
+  if (!observed) throw notFound("Card not found");
+  const [issue] = await db.select().from(issues).where(and(
+    eq(issues.id, observed.issueId), eq(issues.companyId, companyId), readCondition,
+  )).for("update");
+  if (!issue) throw notFound("Card not found");
+  const write = await authorizationService(db).decide({ actor, action: "issue:mutate", resource: { ...issue, type: "issue", issueId: issue.id } });
+  if (!write.allowed) throw forbidden("Issue write access is required to route a request.");
+  const [interaction] = await db.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issue.id), eq(issueThreadInteractions.id, sourceId),
+  )).for("update");
+  if (!interaction) throw notFound("Card not found");
+  return { issue, interaction, observed };
+}
+
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
@@ -2817,81 +2841,68 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       if (!(ATTENTION_CLAIMABLE_SOURCE_KINDS as readonly string[]).includes(input.sourceKind)) {
         throw unprocessable("This card has no addressee to claim. Open it to act on it.");
       }
-      const readCondition = await issueReadSqlCondition(db, input.actor);
-      const [row] = await db
-        .select({
-          id: issueThreadInteractions.id,
-          issueId: issueThreadInteractions.issueId,
-          status: issueThreadInteractions.status,
-          addresseeUserId: issueThreadInteractions.addresseeUserId,
-          addresseeAgentId: issueThreadInteractions.addresseeAgentId,
-          resolvedByUserId: issueThreadInteractions.resolvedByUserId,
-          resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
-          resolvedAt: issueThreadInteractions.resolvedAt,
-        })
-        .from(issueThreadInteractions)
-        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
-        .where(and(
-          eq(issueThreadInteractions.companyId, companyId),
-          eq(issueThreadInteractions.id, input.sourceId),
-          eq(issues.companyId, companyId),
-          readCondition,
-        ))
-        .limit(1);
-      if (!row) throw notFound("Card not found");
-      const result = {
-        sourceKind: "issue_thread_interaction" as const,
-        sourceId: row.id,
-        issueId: row.issueId,
-        claimedByUserId: input.userId,
-      };
-      if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
-        throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
-      }
-      if (row.addresseeUserId === input.userId) {
-        return { ...result, alreadyClaimed: true, previousAddresseeAgentId: null };
-      }
-      if (row.addresseeUserId) {
-        throw conflict("This card is already for another person", { addresseeUserId: row.addresseeUserId });
-      }
-      const contexts = await resolveIssueAudienceContextMap(db, companyId, [row.issueId]);
-      const config = await loadCompanyAttentionConfig(db, companyId);
-      const audience = resolveAttentionAudience({ issueId: row.issueId, addresseeUserId: row.addresseeUserId }, contexts.get(row.issueId) ?? null, config);
-      if (audience.kind === "user") {
-        throw conflict("This card already has an owner", { addresseeUserId: audience.userId });
-      }
-      if (row.addresseeAgentId) {
-        // A request to an agent that can still run stays with that agent; only
-        // a stuck agent's request reaches the pool (plan §1, special conditions).
-        const companyAgentRows: AgentOrgRow[] = await db
-          .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
-          .from(agents)
-          .where(eq(agents.companyId, companyId));
-        const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
-        if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
-          throw conflict("This request is for an agent that can still answer it");
+      if (input.userId !== input.actor.userId) throw forbidden("A claim must name the signed-in user.");
+      return db.transaction(async tx => {
+        const db = tx as unknown as Db;
+        const { issue, interaction } = await lockAttentionRoutingSource(db, companyId, input.sourceId, input.actor);
+        const row = { ...interaction, issueStatus: issue.status, executionPolicy: issue.executionPolicy,
+          assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+          conversationAgentId: issue.conversationAgentId, conversationUserId: issue.conversationUserId };
+        const result = {
+          sourceKind: "issue_thread_interaction" as const,
+          sourceId: row.id,
+          issueId: row.issueId,
+          claimedByUserId: input.userId,
+        };
+        if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
+          throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
         }
-      }
-      // An interaction names an agent or a user, never both, so the claim
-      // replaces a stuck agent addressee. The status and empty-addressee guard
-      // make two simultaneous claims resolve to one winner.
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({ addresseeUserId: input.userId, addresseeAgentId: null, updatedAt: new Date() })
-        .where(and(
-          eq(issueThreadInteractions.companyId, companyId),
-          eq(issueThreadInteractions.id, row.id),
-          inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
-          isNull(issueThreadInteractions.addresseeUserId),
-        ))
-        .returning({ id: issueThreadInteractions.id });
-      if (!updated) {
-        const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
-          sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
-        });
-        throw closed ?? conflict("Someone else claimed this card first");
-      }
-      return { ...result, alreadyClaimed: false, previousAddresseeAgentId: row.addresseeAgentId };
+        if (row.addresseeUserId === input.userId) {
+          return { ...result, alreadyClaimed: true, previousAddresseeAgentId: null };
+        }
+        if (row.addresseeUserId) {
+          throw conflict("This card is already for another person", { addresseeUserId: row.addresseeUserId });
+        }
+        const contexts = await resolveIssueAudienceContextMap(db, companyId, [row.issueId]);
+        const config = await loadCompanyAttentionConfig(db, companyId);
+        const audience = resolveAttentionAudience({ issueId: row.issueId, addresseeUserId: row.addresseeUserId }, contexts.get(row.issueId) ?? null, config);
+        if (audience.kind === "user") {
+          throw conflict("This card already has an owner", { addresseeUserId: audience.userId });
+        }
+        if (row.addresseeAgentId) {
+          // A request to an agent that can still run stays with that agent; only
+          // a stuck agent's request reaches the pool (plan §1, special conditions).
+          const companyAgentRows: AgentOrgRow[] = await db
+            .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
+            .from(agents)
+            .where(eq(agents.companyId, companyId));
+          const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
+          if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
+            throw conflict("This request is for an agent that can still answer it");
+          }
+        }
+        await assertInteractionRoutingRecipientAllowed(db, issue, interaction, input.userId);
+        // An interaction names an agent or a user, never both, so the claim
+        // replaces a stuck agent addressee. The status and empty-addressee guard
+        // make two simultaneous claims resolve to one winner.
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({ addresseeUserId: input.userId, addresseeAgentId: null, updatedAt: new Date() })
+          .where(and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.id, row.id),
+            inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+            isNull(issueThreadInteractions.addresseeUserId),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        if (!updated) {
+          const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
+            sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
+          });
+          throw closed ?? conflict("Someone else claimed this card first");
+        }
+        return { ...result, alreadyClaimed: false, previousAddresseeAgentId: row.addresseeAgentId };
+      });
     },
 
     /**
@@ -2997,9 +3008,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
     /**
      * Transfer a card to a different person, "Route to @x" (PAP-749 plan §2,
      * Rule 6). Like Claim, it stores the person as the addressee, so the card
-     * moves to their "For you" and only they may answer it. Any board user
-     * with write access may route a card, as for withdraw; the new owner must
-     * be able to answer it. The caller writes the activity entry.
+     * moves to their "For you" and only they may answer it. Only its current
+     * addressee or a routing administrator may change an addressed request;
+     * the new owner must satisfy its own resolver and review rules. The caller
+     * writes the activity entry.
      */
     transfer: async (
       companyId: string,
@@ -3008,100 +3020,77 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       if (!(ATTENTION_CLAIMABLE_SOURCE_KINDS as readonly string[]).includes(input.sourceKind)) {
         throw unprocessable("This card has no addressee to transfer. Open it to act on it.");
       }
-      const readCondition = await issueReadSqlCondition(db, input.actor);
-      const [row] = await db
-        .select({
-          id: issueThreadInteractions.id,
-          kind: issueThreadInteractions.kind,
-          status: issueThreadInteractions.status,
-          addresseeUserId: issueThreadInteractions.addresseeUserId,
-          addresseeAgentId: issueThreadInteractions.addresseeAgentId,
-          resolvedByUserId: issueThreadInteractions.resolvedByUserId,
-          resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
-          resolvedAt: issueThreadInteractions.resolvedAt,
-          issueId: issues.id,
-          issueStatus: issues.status,
-          executionPolicy: issues.executionPolicy,
-          assigneeAgentId: issues.assigneeAgentId,
-          assigneeUserId: issues.assigneeUserId,
-          conversationAgentId: issues.conversationAgentId,
-          conversationUserId: issues.conversationUserId,
-        })
-        .from(issueThreadInteractions)
-        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
-        .where(and(
-          eq(issueThreadInteractions.companyId, companyId),
-          eq(issueThreadInteractions.id, input.sourceId),
-          eq(issues.companyId, companyId),
-          readCondition,
-        ))
-        .limit(1);
-      if (!row) throw notFound("Card not found");
-      const result = {
-        sourceKind: "issue_thread_interaction" as const,
-        sourceId: row.id,
-        issueId: row.issueId,
-        transferredToUserId: input.toUserId,
-        previousAddresseeUserId: row.addresseeUserId,
-      };
-      if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
-        throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
-      }
-      if (row.addresseeUserId === input.toUserId) {
-        return { ...result, alreadyTransferred: true, previousAddresseeAgentId: null };
-      }
-      if (row.kind === "ask_user_questions" && row.conversationAgentId && row.conversationUserId) {
-        // Chat ownership is server-owned: a chat question stays with its owner.
-        throw unprocessable("A chat question stays with the person in the chat.", {
-          code: "interaction_chat_addressee_mismatch",
-        });
-      }
-      if (row.addresseeAgentId) {
-        // A request to an agent that can still run stays with that agent.
-        const companyAgentRows: AgentOrgRow[] = await db
-          .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
-          .from(agents)
-          .where(eq(agents.companyId, companyId));
-        const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
-        if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
-          throw conflict("This request is for an agent that can still answer it");
+      return db.transaction(async tx => {
+        const db = tx as unknown as Db;
+        const { issue, interaction, observed } = await lockAttentionRoutingSource(db, companyId, input.sourceId, input.actor);
+        const row = { ...interaction, issueStatus: issue.status, executionPolicy: issue.executionPolicy,
+          assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+          conversationAgentId: issue.conversationAgentId, conversationUserId: issue.conversationUserId };
+        const result = {
+          sourceKind: "issue_thread_interaction" as const,
+          sourceId: row.id,
+          issueId: row.issueId,
+          transferredToUserId: input.toUserId,
+          previousAddresseeUserId: row.addresseeUserId,
+        };
+        if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
+          throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
         }
-      }
-      const recipientRead = await issueReadSqlCondition(db, { type: "board", userId: input.toUserId });
-      const [readableTask] = await db.select({ id: issues.id }).from(issues).where(and(
-        eq(issues.companyId, companyId), eq(issues.id, row.issueId), recipientRead,
-      )).limit(1);
-      if (!readableTask) throw unprocessable("This person cannot access the task.");
-      // The new owner must be a person who may answer requests on this task.
-      await assertInteractionAddresseeUserAvailable(db, { id: row.issueId, companyId }, {
-        executionPolicy: row.executionPolicy,
-        status: row.issueStatus,
-        assigneeAgentId: row.assigneeAgentId,
-        assigneeUserId: row.assigneeUserId,
-        conversationAgentId: row.conversationAgentId,
-        conversationUserId: row.conversationUserId,
-      }, input.toUserId);
-      // Compare-and-set on the addressee seen above, so two people routing the
-      // same card at once resolve to one winner instead of a silent overwrite.
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({ addresseeUserId: input.toUserId, addresseeAgentId: null, updatedAt: new Date() })
-        .where(and(
-          eq(issueThreadInteractions.companyId, companyId),
-          eq(issueThreadInteractions.id, row.id),
-          inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
-          row.addresseeUserId === null
-            ? isNull(issueThreadInteractions.addresseeUserId)
-            : eq(issueThreadInteractions.addresseeUserId, row.addresseeUserId),
-        ))
-        .returning({ id: issueThreadInteractions.id });
-      if (!updated) {
-        const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
-          sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
-        });
-        throw closed ?? conflict("Someone else routed this card first");
-      }
-      return { ...result, alreadyTransferred: false, previousAddresseeAgentId: row.addresseeAgentId };
+        if (row.addresseeUserId === input.toUserId) {
+          return { ...result, alreadyTransferred: true, previousAddresseeAgentId: null };
+        }
+        if (row.addresseeUserId !== observed.addresseeUserId || row.addresseeAgentId !== observed.addresseeAgentId) {
+          throw conflict("Someone else routed this card first");
+        }
+        if (row.addresseeUserId && row.addresseeUserId !== input.actor.userId) {
+          const admin = await authorizationService(db).decide({ actor: input.actor, action: "attention:route", resource: { type: "company", companyId } });
+          if (!admin.allowed) throw forbidden("Only the addressed user or a routing administrator can transfer this request.");
+        }
+        if (row.kind === "ask_user_questions" && row.conversationAgentId && row.conversationUserId) {
+          // Chat ownership is server-owned: a chat question stays with its owner.
+          throw unprocessable("A chat question stays with the person in the chat.", {
+            code: "interaction_chat_addressee_mismatch",
+          });
+        }
+        if (row.addresseeAgentId) {
+          // A request to an agent that can still run stays with that agent.
+          const companyAgentRows: AgentOrgRow[] = await db
+            .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
+            .from(agents)
+            .where(eq(agents.companyId, companyId));
+          const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
+          if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
+            throw conflict("This request is for an agent that can still answer it");
+          }
+        }
+        const recipientRead = await issueReadSqlCondition(db, { type: "board", userId: input.toUserId });
+        const [readableTask] = await db.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, companyId), eq(issues.id, row.issueId), recipientRead,
+        )).limit(1);
+        if (!readableTask) throw unprocessable("This person cannot access the task.");
+        await assertInteractionRoutingRecipientAllowed(db, issue, interaction, input.toUserId);
+        // Compare-and-set on the addressee seen above, so two people routing the
+        // same card at once resolve to one winner instead of a silent overwrite.
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({ addresseeUserId: input.toUserId, addresseeAgentId: null, updatedAt: new Date() })
+          .where(and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.id, row.id),
+            inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+            row.addresseeUserId === null
+              ? isNull(issueThreadInteractions.addresseeUserId)
+              : eq(issueThreadInteractions.addresseeUserId, row.addresseeUserId),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        if (!updated) {
+          const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
+            sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
+          });
+          throw closed ?? conflict("Someone else routed this card first");
+        }
+        return { ...result, alreadyTransferred: false, previousAddresseeAgentId: row.addresseeAgentId };
+      });
     },
   };
 }
