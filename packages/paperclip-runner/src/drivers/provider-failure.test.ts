@@ -113,6 +113,23 @@ describe("provider failure boundary", () => {
         .toMatchObject({ category: "rate_limit", retryAt: after(ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS) });
     });
 
+    it.each([
+      ["the error code beneath a rate-limit title",
+        { category: "limit", title: "API Error: 429 rate limit exceeded", details: '{"error_code":"REQUEST_LIMIT_EXCEEDED"}' },
+        ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS],
+      ["a user-defined rate limit", { category: "limit", title: "User-defined rate limit exceeded" }, ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS],
+      ["user-defined rate limits in the details",
+        { category: "limit", title: "API Error: 429", details: "Request rejected: user-defined rate limit(s) exceeded" },
+        ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS],
+      ["a tokens-per-hour window", { category: "limit", title: "Tokens-per-hour (TPH) rate limit exceeded" }, ACPX_RATE_LIMIT_WINDOW_RETRY_DELAY_MS],
+      ["a tokens-per-minute window",
+        { category: "limit", title: "Exceeded the tokens-per-minute (TPM) rate limit" },
+        ACPX_RATE_LIMIT_PER_MINUTE_RETRY_DELAY_MS],
+    ])("recognises %s without any other window wording", (_wording, failure, delay) => {
+      vi.useFakeTimers({ now });
+      expect(terminal(failure)).toMatchObject({ category: "rate_limit", retryAt: after(delay) });
+    });
+
     it("sets no retry time without window wording, with a reported reset, or outside a rate limit", () => {
       vi.useFakeTimers({ now });
       for (const failure of [
