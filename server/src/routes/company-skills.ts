@@ -476,7 +476,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
   });
   router.post("/companies/:companyId/skill-sources/preview", validate(skillSourcePreviewSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    res.json(await sourceOperation(req, companyId, context => sourceSvc.preview(req.body, context)));
+    res.json(await sourceOperation(req, companyId, context => sourceSvc.preview(companyId, req.body, context)));
   });
   router.post("/companies/:companyId/skill-sources", validate(skillSourceCreateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -1278,6 +1278,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
       }
       const diff = await diffGitHubSkillUpdate({
         repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
+        securityOverrides: [managed.securityOverride],
       }, read, controller.signal);
       const result: SkillSourceUpdateDiff = diff.supported
         ? { supported: true, reason: null, currentRef, latestRef: latest.sha, hasUpdate: true, files: diff.files, truncated: diff.truncated }

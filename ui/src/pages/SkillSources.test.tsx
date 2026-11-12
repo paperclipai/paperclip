@@ -383,6 +383,33 @@ describe('GitHub skill source import', () => {
       commitSha, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: flagged.path, sha256: flagged.sha256 }],
     } }));
   });
+  it('lets an administrator scan a saved source again to renew trust in flagged files', async () => {
+    context.sourceId = connectedSource.id;
+    const commitSha = 'f'.repeat(40);
+    const flagged = { path: 'hooks/install.sh', code: 'remote_fetch_exec', message: 'Remote-fetch or dynamic execution pattern is not allowed.', sha256: 'd'.repeat(64), overridable: true };
+    const saved = { ...connectedSource, packageMode: 'repository' as const, entries: [], securityOverride: { commitSha: 'a'.repeat(40), reason: 'Reviewed earlier.',
+      trustFutureUpdates: false, approvedByUserId: 'admin', approvedAt: '2026-11-01T00:00:00.000Z', files: [{ path: flagged.path, code: flagged.code, sha256: 'a'.repeat(64) }] } };
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([saved]);
+    vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue({ ...discovery, trackingRef: 'HEAD', commitSha, packageMode: 'repository', canOverrideSecurity: true,
+      securityFindings: [flagged], repositoryPackage: { files: [], requirements: null, error: null, warnings: [] },
+      candidates: [{ path: 'skills/main/SKILL.md', name: 'Main', description: null, fileCount: 1, error: null, warnings: [] }] });
+    vi.mocked(skillSourcesApi.select).mockImplementation(() => new Promise(() => {}));
+    await mount();
+    expect(document.querySelector('section[aria-label="Security review"] button[role="checkbox"]')).toBeNull();
+    await act(async () => button('Scan for flagged files').click());
+    await flush();
+    expect(skillSourcesApi.discoverStream).toHaveBeenCalledWith('company-1', expect.objectContaining({ repositoryUrl: saved.repositoryUrl, trackingRef: 'HEAD' }), expect.any(Function), expect.any(AbortSignal));
+    await act(async () => document.querySelector<HTMLButtonElement>('section[aria-label="Security review"] button[role="checkbox"]')!.click());
+    await act(async () => {
+      const element = document.querySelector<HTMLTextAreaElement>('section[aria-label="Security review"] textarea')!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(element, 'Reviewed the new commit by hand.');
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => button('Save selection').click());
+    expect(skillSourcesApi.select).toHaveBeenCalledWith('company-1', saved.id, expect.objectContaining({ securityOverride: {
+      commitSha, reason: 'Reviewed the new commit by hand.', trustFutureUpdates: false, files: [{ path: flagged.path, sha256: flagged.sha256 }],
+    } }));
+  });
   it('explains that only administrators can include flagged files', async () => {
     sessionStorage.setItem('paperclip.skill-source-draft:company-1:new', JSON.stringify({ packageMode: 'repository', selectedPaths: ['skills/main/SKILL.md'],
       discovery: { ...discovery, packageMode: 'repository', canOverrideSecurity: false,

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { CompanySkillVersionFileInventoryEntry, SkillSourceUpdateDiffFile, SkillSourcePackageMode } from '@paperclipai/shared';
 import { unprocessable } from '../errors.js';
-import { scanGitHubSkillsWithPackageFallback, type GitHubRead, type ScannedSkillSource } from './github-skill-source.js';
+import { scanGitHubSkillsWithPackageFallback, type GitHubRead, type ScannedSkillSource, type SkillScanOptions } from './github-skill-source.js';
 
 // Bounded LCS work for one file, after trimming the shared head and tail of the two files.
 const MAX_DIFF_CELLS = 4_000_000;
@@ -151,13 +151,15 @@ function packageSnapshot(scan: ScannedSkillSource, input: { packageMode?: SkillS
 export type GitHubSkillUpdateDiff = ({ supported: true } & SkillPackageDiff) | { supported: false; reason: string };
 
 export async function diffGitHubSkillUpdate(
-  input: { repositoryUrl: string; packageMode?: SkillSourcePackageMode; skillPath: string; installedCommitSha: string; latestCommitSha: string },
+  input: { repositoryUrl: string; packageMode?: SkillSourcePackageMode; skillPath: string; installedCommitSha: string; latestCommitSha: string;
+    /** The source's recorded approval, so approved files compare like the refresh that publishes them. */
+    securityOverrides?: SkillScanOptions['securityOverrides'] },
   read: GitHubRead,
   signal?: AbortSignal,
 ): Promise<GitHubSkillUpdateDiff> {
   const snapshotAt = async (commitSha: string) => {
     signal?.throwIfAborted();
-    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, commitSha, onlySkillPath: input.skillPath }, read, { signal });
+    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, commitSha, onlySkillPath: input.skillPath }, read, { signal, securityOverrides: input.securityOverrides });
     if (scan.commitSha.toLowerCase() !== commitSha.toLowerCase()) throw unprocessable('The source snapshot did not match the requested revision.');
     return packageSnapshot(scan, input);
   };

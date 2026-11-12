@@ -14,9 +14,10 @@ export const skillSourcePreviewSchema = skillSourceDiscoverySchema.extend({
   filePath: repoPath.refine(value => value.length > 0, 'A file path is required'),
 });
 const sha = z.string().regex(/^[a-f0-9]{40}$/i);
+// Matches the server's repository scan file limit, so every flagged file in a supported repository can be approved at once.
 export const skillSecurityOverrideSchema = z.object({
   commitSha: sha,
-  files: z.array(z.object({ path: repoPath.refine(value => value.length > 0, 'A file path is required'), sha256: z.string().regex(/^[a-f0-9]{64}$/i) })).min(1).max(1000)
+  files: z.array(z.object({ path: repoPath.refine(value => value.length > 0, 'A file path is required'), sha256: z.string().regex(/^[a-f0-9]{64}$/i) })).min(1).max(10_000)
     .refine(files => new Set(files.map(file => file.path)).size === files.length, 'Each file can be approved once.'),
   reason: z.string().trim().min(10, 'Explain why this repository is trusted.').max(2000),
   trustFutureUpdates: z.boolean().default(false),

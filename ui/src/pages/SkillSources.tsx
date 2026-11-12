@@ -4,7 +4,7 @@ import { SkillSourceBranchRepair } from "@/components/skill-studio/SkillSourceBr
 import { SkillSourceSyncControls } from "@/components/skill-studio/SkillSourceSyncControls";
 import { SkillsPageNavigation } from "@/components/skill-studio/SkillsNavigationTabs";
 import { GithubIcon } from "@/components/icons/github-icon";
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, Plus, ExternalLink, Check, Lock, GitBranch, FileText, MoreVertical, CircleAlert } from 'lucide-react';
 import { parseGitHubSkillRepositoryUrl, type SkillSourceDisconnectRequest, type SkillSource, type SkillSourceDiscovery, type SkillSourceRefreshResult, type SkillSourceScanProgress } from '@paperclipai/shared';
@@ -27,7 +27,7 @@ import { SkillImportProgress, type FoundSkill } from './skills/SkillImportProgre
 import { SkillPackagePreview } from './skills/SkillPackagePreview';
 import { SkillSourceTree, type SkillTreeCandidate } from './skills/SkillSourceTree';
 import { SkillImportWarnings, skillImportWarnings } from './skills/SkillImportWarnings';
-import { SkillSecurityReview, emptySkillSecurityTrust, skillSecurityOverrideRequest, type SkillSecurityTrust } from './skills/SkillSecurityReview';
+import { SkillSecurityReview, emptySkillSecurityTrust, overridableSecurityFiles, skillSecurityOverrideRequest, type SkillSecurityTrust } from './skills/SkillSecurityReview';
 import { timeAgo } from '@/lib/timeAgo';
 import { skillRoute } from '@/lib/company-skill-routes';
 import { consumeSkillSourceReturn, rememberSkillSourceReturn } from '@/lib/skill-source-connect-return';
@@ -302,7 +302,9 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
     setDiscovery(result.discovery); setPackageMode(result.discovery.packageMode ?? packageMode); setConnectionId(result.connectionId); setSecurityTrust(emptySkillSecurityTrust);
     if (!source) { setSelected(new Set(result.discovery.candidates.map(candidate => candidate.path))); setExcludedFolders([]); }
   } });
-  const securityOverride = discovery?.canOverrideSecurity ? skillSecurityOverrideRequest(securityTrust, discovery.commitSha, discovery.securityFindings) : null;
+  const securityFindings = discovery?.securityFindings;
+  const overridableFiles = useMemo(() => overridableSecurityFiles(securityFindings), [securityFindings]);
+  const securityOverride = discovery?.canOverrideSecurity ? skillSecurityOverrideRequest(securityTrust, discovery.commitSha, overridableFiles) : null;
   const save = useMutation({ mutationFn: () => source
     ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, packageMode, selectedPaths: [...selected], excludedFolders, connectionId: sourceConnectionId, ...(securityOverride ? { securityOverride } : {}) })
     : skillSourcesApi.create(companyId, { repositoryUrl: discovery!.repositoryUrl, trackingRef: discovery!.trackingRef, commitSha: discovery!.commitSha, packageMode, connectionId, selectedPaths: [...selected], excludedFolders, ...(securityOverride ? { securityOverride } : {}) }),
@@ -369,6 +371,8 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
         {!source && <span className="break-all">{discovery?.fullName}</span>}
         <span className="inline-flex items-center gap-1.5"><GitBranch className="size-3.5" /><span className="font-mono">{source?.trackingRef === 'HEAD' ? 'Default branch' : source?.trackingRef ?? discovery?.trackingRef}</span></span>
         <a href={source?.repositoryUrl ?? discovery?.repositoryUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-foreground">View on GitHub<ExternalLink className="size-3" /></a>
+        {/* A saved source has no scan yet; scanning the latest commit lists flagged files so an administrator can review them again. */}
+        {source && !discovery && <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => scan.mutate(packageMode)}><RefreshCw className="size-4" />Scan for flagged files</Button>}
       </div>}
       {source?.lastError && <p role="alert" className="text-sm text-destructive">{source.lastError}{' '}<Link onClick={rememberReturn} to={source.connectionId ? `/apps/${source.connectionId}/permissions` : connectHref} className="underline">Manage GitHub connection</Link></p>}
       {ready && !save.isPending && !scan.isPending && <div className="space-y-3">

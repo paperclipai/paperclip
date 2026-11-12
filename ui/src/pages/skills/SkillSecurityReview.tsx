@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, useMemo } from 'react';
 import { ShieldAlert, ShieldCheck } from 'lucide-react';
 import type { SkillSecurityFinding, SkillSecurityOverrideRequest, SkillSourceSecurityOverride } from '@paperclipai/shared';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -12,6 +12,7 @@ export interface SkillSecurityTrust {
 
 export const emptySkillSecurityTrust: SkillSecurityTrust = { trusted: false, reason: '', trustFutureUpdates: false };
 const MIN_REASON_LENGTH = 10;
+const NO_FINDINGS: SkillSecurityFinding[] = [];
 
 /** Flagged files an administrator can still choose to include; one entry per path. */
 export function overridableSecurityFiles(findings: SkillSecurityFinding[] = []) {
@@ -23,9 +24,11 @@ export function overridableSecurityFiles(findings: SkillSecurityFinding[] = []) 
   return [...files.values()];
 }
 
-/** The request for the server, or null when nothing is trusted. Undefined while the reason is incomplete. */
-export function skillSecurityOverrideRequest(trust: SkillSecurityTrust, commitSha: string | undefined, findings: SkillSecurityFinding[] = []): SkillSecurityOverrideRequest | null | undefined {
-  const files = overridableSecurityFiles(findings);
+/**
+ * The request for the server, or null when nothing is trusted. Undefined while the reason is incomplete.
+ * Takes the result of `overridableSecurityFiles`, so callers can compute it once per scan instead of per keystroke.
+ */
+export function skillSecurityOverrideRequest(trust: SkillSecurityTrust, commitSha: string | undefined, files: SkillSecurityFinding[]): SkillSecurityOverrideRequest | null | undefined {
   if (!trust.trusted || !files.length || !commitSha) return null;
   if (trust.reason.trim().length < MIN_REASON_LENGTH) return undefined;
   return { commitSha, reason: trust.reason.trim(), trustFutureUpdates: trust.trustFutureUpdates,
@@ -36,7 +39,7 @@ export function skillSecurityOverrideRequest(trust: SkillSecurityTrust, commitSh
  * Separates suspicious patterns an administrator may accept from real risks
  * that always stay blocked. Trust allows importing files, never running them.
  */
-export function SkillSecurityReview({ findings = [], repository, commitSha, canOverride, value, onChange, disabled, recorded }: {
+export function SkillSecurityReview({ findings = NO_FINDINGS, repository, commitSha, canOverride, value, onChange, disabled, recorded }: {
   findings?: SkillSecurityFinding[];
   repository: string;
   commitSha?: string;
@@ -47,9 +50,20 @@ export function SkillSecurityReview({ findings = [], repository, commitSha, canO
   recorded?: SkillSourceSecurityOverride | null;
 }) {
   const id = useId();
-  const overridable = overridableSecurityFiles(findings);
-  const blocked = findings.filter(finding => !finding.overridable);
-  const accepted = [...new Set(findings.filter(finding => finding.accepted).map(finding => finding.path))];
+  // A scan can report thousands of findings. Derive the groups and their rows once per scan,
+  // not on every keystroke in the reason field.
+  const { overridable, blocked, accepted, blockedRows, overridableRows } = useMemo(() => {
+    const overridable = overridableSecurityFiles(findings);
+    const blocked = findings.filter(finding => !finding.overridable);
+    const accepted = [...new Set(findings.filter(finding => finding.accepted).map(finding => finding.path))];
+    return { overridable, blocked, accepted,
+      blockedRows: blocked.map(finding => <li key={`${finding.path}:${finding.code}`} className="break-words">
+        <span className="font-mono">{finding.path}</span> — {finding.message}
+      </li>),
+      overridableRows: overridable.map(finding => <li key={finding.path} className="break-words">
+        <span className="font-mono">{finding.path}</span> — {finding.message}
+      </li>) };
+  }, [findings]);
   if (!overridable.length && !blocked.length && !accepted.length && !recorded) return null;
   const short = commitSha?.slice(0, 7);
   const reasonMissing = value.trusted && value.reason.trim().length < MIN_REASON_LENGTH;
@@ -57,16 +71,12 @@ export function SkillSecurityReview({ findings = [], repository, commitSha, canO
     <h3 className="flex items-center gap-2 font-medium"><ShieldAlert className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />Security review</h3>
     {blocked.length > 0 && <div className="space-y-1">
       <p className="text-xs font-medium">Always blocked</p>
-      <ul className="space-y-1 text-xs text-muted-foreground">{blocked.map(finding => <li key={`${finding.path}:${finding.code}`} className="break-words">
-        <span className="font-mono">{finding.path}</span> — {finding.message}
-      </li>)}</ul>
+      <ul className="space-y-1 text-xs text-muted-foreground">{blockedRows}</ul>
       <p className="text-xs text-muted-foreground">These findings point to real risks, such as leaking credentials, and can’t be overridden.</p>
     </div>}
     {overridable.length > 0 && <div className="space-y-2">
       <p className="text-xs font-medium">Flagged patterns</p>
-      <ul className="space-y-1 text-xs text-muted-foreground">{overridable.map(finding => <li key={finding.path} className="break-words">
-        <span className="font-mono">{finding.path}</span> — {finding.message}
-      </li>)}</ul>
+      <ul className="space-y-1 text-xs text-muted-foreground">{overridableRows}</ul>
       {canOverride ? <div className="space-y-2">
         <label className="flex items-start gap-2" htmlFor={`${id}-trust`}>
           <Checkbox id={`${id}-trust`} className="mt-0.5" checked={value.trusted} disabled={disabled}

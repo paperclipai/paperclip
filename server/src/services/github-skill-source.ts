@@ -326,8 +326,8 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
 }
 
 /** Reauthorize the caller and re-audit the selected package; never trust a client-supplied manifest. */
-export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, read: GitHubRead): Promise<SkillSourceFilePreview> {
-  const scan = await scanGitHubSkillsWithPackageFallback({ ...input, onlySkillPath: input.skillPath }, read);
+export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, read: GitHubRead, securityOverrides: SkillScanOptions['securityOverrides'] = []): Promise<SkillSourceFilePreview> {
+  const scan = await scanGitHubSkillsWithPackageFallback({ ...input, onlySkillPath: input.skillPath }, read, { securityOverrides });
   if (scan.commitSha.toLowerCase() !== input.commitSha.toLowerCase()) throw unprocessable('The preview commit did not match the requested snapshot.');
   const skill = scan.skills.find(candidate => candidate.path === input.skillPath);
   if (!skill) throw notFound('Skill package not found at this commit.');

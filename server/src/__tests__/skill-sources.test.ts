@@ -579,9 +579,9 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     const service = skillSourceService(db);
     const input = { repositoryUrl: 'https://github.com/acme/skills', connectionId: randomUUID(), commitSha: sha, skillPath: 'SKILL.md', filePath: 'SKILL.md' };
     const read = vi.fn(() => githubFixture({ 'SKILL.md': md('preview') }));
-    await expect(service.preview(input, { ...context, read, authorize: async () => { throw new Error('denied'); } })).rejects.toThrow('denied');
+    await expect(service.preview(companyId, input, { ...context, read, authorize: async () => { throw new Error('denied'); } })).rejects.toThrow('denied');
     expect(read).not.toHaveBeenCalled();
-    expect((await service.preview(input, { ...context, read })).content).toBe(md('preview'));
+    expect((await service.preview(companyId, input, { ...context, read })).content).toBe(md('preview'));
     expect(read).toHaveBeenCalledWith(input.connectionId);
   });
 

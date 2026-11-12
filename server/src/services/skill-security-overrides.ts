@@ -39,11 +39,20 @@ export function securityOverrideAcceptor(
   const active = grants.filter((grant): grant is OverrideGrant => Boolean(grant));
   if (!active.length) return undefined;
   const commit = commitSha.toLowerCase();
+  // Index once per scan: a repository can hold thousands of audited and approved files.
+  const byPath = new Map<string, Array<{ sha256: string; sameCommit: boolean; trustFutureUpdates: boolean }>>();
+  for (const grant of active) {
+    const sameCommit = grant.commitSha.toLowerCase() === commit;
+    for (const file of grant.files) {
+      const approvals = byPath.get(file.path) ?? [];
+      approvals.push({ sha256: file.sha256.toLowerCase(), sameCommit, trustFutureUpdates: grant.trustFutureUpdates });
+      byPath.set(file.path, approvals);
+    }
+  }
   return (filePath, sha256, code) => {
     if (!isSkillSecurityOverridableCode(code)) return false;
-    const repositoryPath = toRepositoryPath(filePath);
-    return active.some(grant => grant.files.some(file => file.path === repositoryPath
-      && ((grant.commitSha.toLowerCase() === commit && file.sha256.toLowerCase() === sha256.toLowerCase()) || grant.trustFutureUpdates)));
+    const hash = sha256.toLowerCase();
+    return (byPath.get(toRepositoryPath(filePath)) ?? []).some(approval => (approval.sameCommit && approval.sha256 === hash) || approval.trustFutureUpdates);
   };
 }
 
@@ -93,9 +102,10 @@ export function verifySecurityOverride(request: SkillSecurityOverrideRequest, sc
   if (scan.commitSha.toLowerCase() !== request.commitSha.toLowerCase()) {
     throw conflict('The repository changed after the security review. Scan it again and review the flagged files.', { code: 'skill_security_override_stale' });
   }
-  const findings = scan.securityFindings ?? [];
+  const findingsByPath = new Map<string, SkillSecurityFinding[]>();
+  for (const finding of scan.securityFindings ?? []) findingsByPath.set(finding.path, [...(findingsByPath.get(finding.path) ?? []), finding]);
   for (const file of request.files) {
-    const matches = findings.filter(finding => finding.path === file.path);
+    const matches = findingsByPath.get(file.path) ?? [];
     if (!matches.length) throw unprocessable(`${file.path} is not flagged at this commit. Scan again before approving.`, { code: 'skill_security_override_stale' });
     if (matches.some(finding => !finding.overridable)) {
       throw unprocessable(`${file.path} contains a finding that can never be overridden.`, { code: 'skill_security_override_forbidden' });
@@ -107,10 +117,12 @@ export function verifySecurityOverride(request: SkillSecurityOverrideRequest, sc
 }
 
 export function recordedSecurityOverride(request: SkillSecurityOverrideRequest, findings: SkillSecurityFinding[], userId: string | null, now = new Date()): SkillSourceSecurityOverride {
+  const overridableCode = new Map<string, string>();
+  for (const finding of findings) if (finding.overridable && !overridableCode.has(finding.path)) overridableCode.set(finding.path, finding.code);
   return {
     commitSha: request.commitSha.toLowerCase(),
     files: request.files.map(file => ({ path: file.path, sha256: file.sha256.toLowerCase(),
-      code: findings.find(finding => finding.path === file.path && finding.overridable)?.code ?? 'remote_fetch_exec' }))
+      code: overridableCode.get(file.path) ?? 'remote_fetch_exec' }))
       .sort((left, right) => left.path.localeCompare(right.path)),
     reason: request.reason.trim(),
     trustFutureUpdates: request.trustFutureUpdates,
