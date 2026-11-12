@@ -903,6 +903,8 @@ describe("iMessage Photon channel control plane", () => {
       expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls);
       if (lateConfigLoss) {
         const receiverStarts = vi.spyOn(PhotonReceiver.prototype, "start");
+        const rawClients: GrpcAdvancedIMessage[] = [];
+        const rawAdapters: PhotonChatAdapter[] = [];
         const currentInitialize = PhotonChatAdapter.prototype.initialize;
         const initialize = vi.isMockFunction(currentInitialize) ? currentInitialize.getMockImplementation() : currentInitialize;
         if (!initialize) throw new Error("Normal controlled Photon initialize implementation is absent");
@@ -911,8 +913,21 @@ describe("iMessage Photon channel control plane", () => {
         // Actual SDK initialization is after the normal lease/reservation and
         // constructor/context attachment, before its final placement callback.
         const initializing = vi.spyOn(PhotonChatAdapter.prototype, "initialize").mockImplementation(async function (this: PhotonChatAdapter, chat) {
+          if (armed) {
+            expect(allocations).toHaveBeenCalledTimes(1);
+            const allocated = allocations.mock.results.at(-1);
+            if (allocated?.type !== "return") throw new Error("Normal constructed Photon client result is absent");
+            const raw = allocated.value;
+            expect(this.client).toBe(raw);
+            expect(raw).not.toBe(t!.f.client);
+            rawClients.push(raw);
+            rawAdapters.push(this);
+            vi.spyOn(raw, "close"); // Observe the SAME normal close implementation.
+          }
           const initialized = await initialize.call(this, chat);
           if (!armed) return initialized;
+          expect(rawClients).toHaveLength(1);
+          expect(vi.mocked(rawClients[0].close)).toHaveBeenCalledTimes(1);
           armed = false; entered++;
           await request(listener).post("/api/tools/oauth/cloud-connector/enrollment").set("Connection", "close")
             .send({ companyId }).expect(201);
@@ -932,7 +947,16 @@ describe("iMessage Photon channel control plane", () => {
           expect(await state.read("checkpoint")).toEqual(originalCheckpoint);
           expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toMatchObject({
             phase: "external", handoffId: recovered.handoffId, binding: recovered.binding, acceptedSequence: recovered.acceptedSequence });
-          expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls + 1);
+          // No new receiver owns f.client. Normal adapter disconnect instead
+          // joins the exact raw client already closed by controlled initialize.
+          expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls);
+          expect(rawClients).toHaveLength(1);
+          const rawClose = vi.mocked(rawClients[0].close);
+          expect(rawClose).toHaveBeenCalledTimes(2);
+          expect(rawClose.mock.results.every(result => result.type === "return")).toBe(true);
+          await Promise.all(rawClose.mock.results.map(result => result.value));
+          expect(rawAdapters).toHaveLength(1);
+          await rawAdapters[0].joinDisconnectAttempt();
         } finally {
           if (vi.isMockFunction(currentInitialize)) initializing.mockImplementation(initialize);
           else initializing.mockRestore();
