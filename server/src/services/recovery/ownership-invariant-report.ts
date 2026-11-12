@@ -11,6 +11,7 @@ import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { persistActivity } from "../activity-log.js";
+import { listUndispatchedQueuedRuns, QUEUED_RUN_NOT_DISPATCHED, readQueuedRunExecutionWindow } from "../queued-run-dispatch-liveness.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 import { LEGACY_OWNER_REASONS, recordVersionAttestations } from "./owner-gone-attestation.js";
 import {
@@ -134,6 +135,8 @@ const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 /** An in-progress issue must show a next action within this time. */
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
+/** A queued run whose ready agent runs nothing should start within this time. */
+const QUEUED_RUN_DISPATCH_GRACE_MS = 5 * 60_000;
 /** Records read per kind (and per I3/I7 check) per pass; beyond this the
  * kind is reported truncated (a named coverage gap). */
 const MAX_RECORDS_PER_KIND = 2_000;
@@ -616,6 +619,27 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
   return { violations, nextDueAt };
 }
 
+/** A queued run counts as an issue's next action only while dispatch can still
+ * start it. One that stays queued past the grace window while its ready agent
+ * runs nothing has lost its dispatch signal (invariant 7). */
+async function checkQueuedRunsDispatched(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
+  const window = await readQueuedRunExecutionWindow(db);
+  if (!window.dispatches) return { violations: [], nextDueAt: null };
+  const runs = await listUndispatchedQueuedRuns(db, { pageSize: limit, createdAfter: window.createdAfter });
+  const cutoff = now.getTime() - QUEUED_RUN_DISPATCH_GRACE_MS;
+  const violations: InvariantViolation[] = [];
+  let nextDueAt: Date | null = null;
+  for (const run of runs) {
+    if (run.createdAt.getTime() < cutoff) {
+      violations.push({ rule: "I7_visible_next_action", kind: "queued_run", recordId: run.runId, companyId: run.companyId,
+        runId: run.runId, issueId: run.issueId, reason: QUEUED_RUN_NOT_DISPATCHED });
+    } else {
+      nextDueAt ??= new Date(run.createdAt.getTime() + QUEUED_RUN_DISPATCH_GRACE_MS);
+    }
+  }
+  return { violations, nextDueAt };
+}
+
 export async function runOwnershipReconciliationPass(db: Db, options: {
   state: OwnershipReportState;
   kinds?: readonly OwnableKind[];
@@ -727,6 +751,11 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     },
     async () => {
       const result = await checkVisibleNextAction(db, now, limit);
+      if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
+      return result.violations;
+    },
+    async () => {
+      const result = await checkQueuedRunsDispatched(db, now, limit);
       if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
       return result.violations;
     },

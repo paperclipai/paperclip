@@ -92,7 +92,12 @@ export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadAp
 const COMPANY_COST_SEGMENTS = ["summary", "by-agent", "by-agent-model", "by-provider", "by-biller", "by-project", "data-quality"];
 export interface SavedAccountingTarget { companyId?: string; task?: Pick<Entity, "id" | "identifier">; originalRunId?: string;
   /** Run-record reads the reading run itself cites in its saved result, as `GET /api/heartbeat-runs/<runId>`. */
-  citedRunReads?: readonly string[] }
+  citedRunReads?: readonly string[];
+  /** Run records this reading run saved with `saveResponse`, read back from the product's saved asset. */
+  savedRunRecords?: readonly SavedRunRecord[] }
+/** A `call_api` read saved with `saveResponse` becomes a company asset that the product logs as
+ * `asset.created` by the reading run. Its saved content names the record actually read. */
+export interface SavedRunRecord { runId: string; assetId: string; recordId: string; companyId: string }
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
   const companyDigests = companyId ? apiReadDigests(COMPANY_COST_SEGMENTS.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
@@ -102,9 +107,30 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   // A re-read of the run record can carry extra input fields that change its digest. It still counts when the reading
   // run's own saved result names exactly that read of the original run; a read of any other run does not.
   const originalRunCited = !!originalRunId && (target.citedRunReads ?? []).some(ref => ref === `GET /api/heartbeat-runs/${originalRunId}`);
+  // The input digest covers every field the model sent (e.g. saveResponse), so a valid re-read can have an
+  // unlisted digest. A response the run saved is bound by its content instead: the saved run record is the original run.
+  const originalRunSaved = !!originalRunId && (target.savedRunRecords ?? []).some(saved => saved.runId === runId
+    && saved.recordId === originalRunId && (!companyId || saved.companyId === companyId));
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
-      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited)));
+      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
+}
+/** Run records the given run saved through `call_api` `saveResponse`, from the product's own activity and asset. */
+export async function savedRunRecordReads(ctx: ChatCatalogContext, runId: string, agentId: string): Promise<SavedRunRecord[]> {
+  const companyId = ctx.input.fixtures.company.id;
+  const activity = await ctx.input.api.get<Array<{ action?: string; entityId?: string; runId?: string | null; agentId?: string | null; details?: Record<string, unknown> | null }>>(
+    `/api/companies/${companyId}/activity?limit=1000`);
+  const saved: SavedRunRecord[] = [];
+  for (const row of activity.filter(row => row.action === "asset.created" && row.runId === runId && row.agentId === agentId
+    && row.details?.source === "runner.call_api" && typeof row.entityId === "string").slice(0, 10)) {
+    const body = await ctx.input.api.bytes(`/api/assets/${row.entityId}/content`).catch(() => undefined);
+    if (!body || body.byteLength > 4_194_304) continue;
+    let record: Record<string, unknown>; try { record = objectRecord(JSON.parse(body.toString("utf8"))); } catch { continue; }
+    // A heartbeat run record: its own id, company, agent and status.
+    if (typeof record.id === "string" && typeof record.companyId === "string" && typeof record.agentId === "string" && typeof record.status === "string")
+      saved.push({ runId, assetId: row.entityId!, recordId: record.id, companyId: record.companyId });
+  }
+  return saved;
 }
 /** `GET /api/heartbeat-runs/<runId>` reads a run cites as its own verification or evidence. */
 export function citedRunReads(run: { resultJson?: unknown } | undefined) {
@@ -179,7 +205,8 @@ export function gradeAccounting(value: unknown) {
     // saved accounting: the post-retry run must read it through a product cost projection.
     const calls = Array.isArray(o.state.leadApiCalls) ? o.state.leadApiCalls as LeadApiCall[] : undefined;
     const preflight = o.state.preflightTask as Entity | undefined;
-    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, { companyId: o.companyId, task: preflight, originalRunId: String(o.state.originalRunId ?? ""), citedRunReads: citedRunReads(finalRun) }),
+    const savedRunRecords = Array.isArray(o.state.savedRunRecords) ? o.state.savedRunRecords as SavedRunRecord[] : [];
+    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, { companyId: o.companyId, task: preflight, originalRunId: String(o.state.originalRunId ?? ""), citedRunReads: citedRunReads(finalRun), savedRunRecords }),
       "After the human retry, the chat run reads the saved cost projections before explaining whether the cost is recorded or still unresolved.");
     const initialIds = Array.isArray(o.state.initialReplyCommentIds) ? o.state.initialReplyCommentIds as string[] : [];
     c.add("initial-guidance-links-saved-cost-retry", initialIds.length > 0 && costsPageLinked(o, initialIds),
@@ -215,6 +242,7 @@ async function observeAccounting(ctx: ChatCatalogContext, state: Record<string, 
       calls.push(...leadApiCalls(events.map(row => ({ ...row, runId: row.runId ?? run.id }))));
     }
     state.leadApiCalls = calls;
+    state.savedRunRecords = await savedRunRecordReads(ctx, String(state.finalReplyRunId), ctx.input.fixtures.agent.id);
   }
   return observeIdentity(ctx, state);
 }
@@ -257,7 +285,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
       return { ...state };
     } catch (error) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); throw error; }
   }, gradeAccounting, {
-    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v4", sourceFiles: repairSources,
+    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v5", sourceFiles: repairSources,
     async cleanup(ctx) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); }, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] },
     async act(ctx, state) {
