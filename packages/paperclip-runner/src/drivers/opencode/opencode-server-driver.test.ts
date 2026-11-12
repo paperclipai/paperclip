@@ -3062,6 +3062,45 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("saves an answer once when the model restates it after the completion call", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-restatement",
+      normalizedSessionId: "answer-then-restatement",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-restatement" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets).",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
   it.each(["session.idle", "session.status", "session.error", "aborted"])("settles accepted completion before a racing %s event", async terminalType => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-completion-race-"));
