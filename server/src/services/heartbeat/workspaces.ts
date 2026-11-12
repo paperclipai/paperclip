@@ -546,6 +546,11 @@ export async function prepareProjectRepositoryWorkspaces(input: {
       throw new Error("Invalid project repository checkout path");
     }) : null;
     if (linked && !await isVerifiedNestedRepositoryBase(linked.base, baseCandidates!, repoUrl)) throw new Error("Invalid project repository checkout path");
+    // A linked checkout skips materialization, where Azure access is otherwise checked.
+    if (linked && isAzureDevOpsRemote(repoUrl)) {
+      const projectId = input.sharedBase?.projectId;
+      await withAnonymousGitFallback(input.resolveGitAuth ? (url) => input.resolveGitAuth!(url, projectId) : async () => null)(repoUrl);
+    }
     const configuredLocalSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL ? workspace.cwd : null;
     const localSource = configuredLocalSource
       && await fs.stat(configuredLocalSource).then((entry) => entry.isDirectory()).catch(() => false)

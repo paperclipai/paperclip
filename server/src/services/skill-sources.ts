@@ -471,7 +471,11 @@ export function skillSourceService(db: Db) {
     await skillAccessService(db).assertSource(companyId, id);
     const source = await row(companyId, id);
     await context.authorize('skills.edit', { sourceType: 'git', sourceLocator: source.repositoryUrl });
-    if (isAzureRepository(source.repositoryUrl) && (input.connectionId !== undefined || input.trackingRef !== undefined))
+    const azure = isAzureRepository(source.repositoryUrl);
+    // Azure access comes from the project authorization. Saving the current connection
+    // again only moves the refresh identity to the caller, which repairs a source whose
+    // setup person lost company access.
+    if (azure && (input.trackingRef !== undefined || (input.connectionId !== undefined && input.connectionId !== source.connectionId)))
       throw unprocessable('Update the Azure DevOps connection or branch in its project settings.');
     // Validate a replacement connection before binding unattended work to it.
     let reader: GitHubRead | undefined;
@@ -480,7 +484,7 @@ export function skillSourceService(db: Db) {
         .where(and(eq(projectSkillSources.companyId, companyId), eq(projectSkillSources.sourceId, id), eq(projectSkillSources.active, true))).limit(1);
       if (source.accessScope === 'projects' || binding) throw unprocessable('Update the repository branch in its project settings.');
     }
-    if (input.connectionId !== undefined || input.trackingRef !== undefined) {
+    if (!azure && (input.connectionId !== undefined || input.trackingRef !== undefined)) {
       reader = context.read(input.connectionId !== undefined ? input.connectionId : source.connectionId);
       const repository = await reader(`/repos/${source.fullName}`) as { id: number; default_branch: string };
       if (source.repositoryId && String(repository.id) !== source.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
@@ -507,7 +511,7 @@ export function skillSourceService(db: Db) {
         ...(input.importNewSkills !== undefined ? { importNewSkills: input.importNewSkills } : {}),
         ...(input.connectionId !== undefined ? { connectionId: reader?.connectionId ?? input.connectionId,
           refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId ?? null,
-          refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader?.grantId ?? null, lastError: null } : {}),
+          refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: azure ? source.refreshGrantId : reader?.grantId ?? null, lastError: null } : {}),
         ...(input.trackingRef !== undefined ? { trackingRef: input.trackingRef, lastError: null, failureCount: 0 } : {}),
         revision: sql`${sources.revision} + 1`, nextSyncAt: new Date(),
       }).where(and(scope(companyId, id), eq(sources.revision, input.revision), or(isNull(sources.leaseToken), lt(sources.leaseExpiresAt, new Date())))).returning();

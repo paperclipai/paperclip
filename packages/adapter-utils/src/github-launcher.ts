@@ -184,6 +184,7 @@ ${options.brokerFile ? String.raw`
     }
   } catch {}
 ` : ''}
+  let hostAzureRemote = null;
 ${options.hostGitHub ? String.raw`
   // This mode is selected by the controller when staging the launcher, not by
   // an agent-controlled environment variable. Azure still requires the broker.
@@ -193,7 +194,8 @@ ${options.hostGitHub ? String.raw`
     process.stderr.write('Paperclip: select one repository for this Git operation.\n');
     process.exit(1);
   }
-  if (!azureRemote(process.argv.slice(2), env) && !requiresGitHubConnection(process.argv.slice(2), env)) {
+  hostAzureRemote = azureRemote(process.argv.slice(2), env);
+  if (!hostAzureRemote && !requiresGitHubConnection(process.argv.slice(2), env)) {
     delete env.PAPERCLIP_GITHUB_BROKER_TOKEN;
     delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
     env.PATH = originalPath.join(path.delimiter);
@@ -238,6 +240,12 @@ ${options.hostGitHub ? String.raw`
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     const askBroker = !isLocalGit(process.argv.slice(2));
     const repositoryUrl = askBroker ? azureRemote(process.argv.slice(2), env) : null;
+    // Host URL rewrites do not apply once credentials are isolated, so Git would
+    // contact a different destination than the one that selected Azure.
+    if (hostAzureRemote && hostAzureRemote !== 'paperclip:unresolved-git-remote' && repositoryUrl !== hostAzureRemote) {
+      process.stderr.write('Paperclip: this Azure DevOps destination depends on host Git URL rewrites. Use the Azure DevOps repository URL.\n');
+      process.exit(1);
+    }
     const strictGitHub = askBroker && !repositoryUrl && requiresGitHubConnection(process.argv.slice(2), env);
     try {
     let response;

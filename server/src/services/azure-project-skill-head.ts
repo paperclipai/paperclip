@@ -58,12 +58,14 @@ function parseHead(output: Buffer, ref: string): { commitSha: string; ref: strin
     return { sha: match[1]!.toLowerCase(), ref: match[2]! };
   });
   const candidates = expectedRefs(ref);
-  const bases = rows.filter(row => candidates.includes(row.ref));
+  // ls-remote matches ref-name suffixes, so `main` also returns rows such as `refs/heads/release/main`.
+  const relevant = rows.filter(row => candidates.some(candidate => row.ref === candidate || row.ref === `${candidate}^{}`));
+  const bases = relevant.filter(row => candidates.includes(row.ref));
   if (bases.length !== 1) throw unavailable();
   const base = bases[0]!;
   const peeledName = `${base.ref}^{}`;
-  const peeled = rows.filter(row => row.ref === peeledName);
-  if (rows.some(row => row.ref !== base.ref && row.ref !== peeledName) || peeled.length > 1 ||
+  const peeled = relevant.filter(row => row.ref === peeledName);
+  if (relevant.some(row => row.ref !== base.ref && row.ref !== peeledName) || peeled.length > 1 ||
       (peeled.length && !base.ref.startsWith('refs/tags/'))) throw unavailable();
   return { commitSha: peeled[0]?.sha ?? base.sha, ref: base.ref };
 }

@@ -269,4 +269,25 @@ const support = await getEmbeddedPostgresTestSupport();
     const [afterRevoke] = await db.select().from(companySkills).where(eq(companySkills.id, skillId));
     expect(afterRevoke?.markdown).toContain('Version two.');
   }, 30_000);
+
+  it('lets another authorized person take over refresh by saving the current Azure connection', async () => {
+    const adopted = await withSkillActor({ ...actor, companyIds: [companyId] },
+      () => adoptProjectSkillRepository(db, companyId, workspaceId, async () => undefined));
+    await db.update(projectSkillSources).set({ nextSyncAt: new Date(Date.now() - 10_000) }).where(eq(projectSkillSources.id, adopted.bindingId));
+    await skillSourceSyncService(db, { context: async setup => context(setup) }).tick(new Date(Date.now() - 5_000));
+    const [binding] = await db.select().from(projectSkillSources).where(eq(projectSkillSources.id, adopted.bindingId));
+    sourceId = binding!.sourceId!;
+    await db.update(companySkillSources).set({ refreshUserId: 'departed-user' }).where(eq(companySkillSources.id, sourceId));
+    const [before] = await db.select().from(companySkillSources).where(eq(companySkillSources.id, sourceId));
+    const bob: SkillSourceContext = { ...context(), setup: { userId: 'bob', agentId: null, localTrusted: false, grantId: null } };
+    const service = skillSourceService(db);
+    await expect(service.settings(companyId, sourceId, { revision: before!.revision, connectionId: crypto.randomUUID() }, bob))
+      .rejects.toThrow('Update the Azure DevOps connection or branch in its project settings.');
+    await expect(service.settings(companyId, sourceId, { revision: before!.revision, trackingRef: 'release' }, bob))
+      .rejects.toThrow('Update the Azure DevOps connection or branch in its project settings.');
+    await service.settings(companyId, sourceId, { revision: before!.revision, connectionId: before!.connectionId }, bob);
+    const [after] = await db.select().from(companySkillSources).where(eq(companySkillSources.id, sourceId));
+    expect(after).toMatchObject({ refreshUserId: 'bob', refreshAgentId: null, connectionId: before!.connectionId,
+      refreshGrantId: before!.refreshGrantId, trackingRef: before!.trackingRef });
+  });
 });

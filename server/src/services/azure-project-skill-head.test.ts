@@ -85,6 +85,13 @@ describe('Azure DevOps project skill ref head', () => {
     expect(resolveCredentials).toHaveBeenCalledTimes(2);
   });
 
+  it('ignores suffix matches from other branches when reading a short ref', async () => {
+    const resolveCredentials = vi.fn(async () => credentials());
+    const git = fakeGit({ output: `${'b'.repeat(40)}\trefs/heads/release/main\n${sha}\trefs/heads/main\n${'c'.repeat(40)}\trefs/tags/v1/main\n` });
+    await expect(readAzureProjectSkillHead(database, input, { resolveCredentials, spawn: git.spawn }))
+      .resolves.toEqual({ commitSha: sha, ref: 'refs/heads/main' });
+  });
+
   it('rejects ambiguous short refs instead of choosing between a branch and tag', async () => {
     const resolveCredentials = vi.fn(async () => credentials());
     const git = fakeGit({ output: `${sha}\trefs/heads/main\n${'b'.repeat(40)}\trefs/tags/main\n` });
