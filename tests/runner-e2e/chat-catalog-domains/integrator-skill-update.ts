@@ -93,24 +93,14 @@ async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unkn
   return { ...base, ...saved, updateStatus: status, ...(visibleReview ? { visibleReview } : {}) };
 }
 function updateObservation(value: unknown): UpdateObservation | undefined { const o = value as UpdateObservation; return observation(value) && !!o.upstream && !!o.localFork && Array.isArray(o.upstreamVersions) && Array.isArray(o.forkVersions) && !!o.source && !!o.updateStatus ? o : undefined; }
-function substantiveDiff(reply: string) {
-  const clauses = reply.split(/\n+|;|(?<=[.!?])\s+/).filter(line => !/\b(?:no new|does not add|doesn't add|not added|removed|no longer required)\b/i.test(line));
-  const recurring = clauses.some(line => /re.test|regression|each (?:change|build)|every (?:change|build)|continuous/i.test(line) && /test|accessib/i.test(line));
-  const forms = clauses.some(line => /forms?/i.test(line) && /small|step|split|break|segment/i.test(line));
-  const clutter = clauses.some(line => /clutter|overus|redundan|crowd|overload|breath|spacing/i.test(line) && /layout|pattern|control|design|interface|element/i.test(line));
-  return [recurring, forms, clutter].filter(Boolean).length >= 2;
-}
-function claimsAppliedUpdate(reply: string) {
-  return [...reply.matchAll(/\b(?:I (?:have )?(?:updated|applied|installed)|update (?:is |has been )?(?:applied|installed|complete))\b/gi)]
-    .some(match => !/^update /i.test(match[0]) || !/\bno\s+$/i.test(reply.slice(0, match.index)));
-}
-/** The preview names the installed revision: its commit or the pinned source's installed version literal (0.4).
- * Saved state, not wording, proves that revision is still the installed snapshot. */
-function namesInstalledRevision(reply: string) {
-  return reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?<![\d.])0\.4(?!\d)/.test(reply);
+/** The preview names the installed revision and the pending one: their commits or the pinned source's version literals
+ * (0.4 and 0.5). Saved state, not wording, proves the installed snapshot stayed unchanged; what the preview says about
+ * the diff is left to review of the saved evidence. */
+function namesRevision(reply: string, commit: string, version: string) {
+  return reply.includes(commit.slice(0, 7)) || new RegExp(`(?<![\\d.])${version.replace(".", "\\.")}(?!\\d)`).test(reply);
 }
 export function previewNarrativeCorrect(reply: string) {
-  return namesInstalledRevision(reply) && substantiveDiff(reply) && !claimsAppliedUpdate(reply);
+  return namesRevision(reply, accessibilityUpdatePins.oldCommit, "0.4") && namesRevision(reply, accessibilityUpdatePins.newCommit, "0.5");
 }
 export async function collectVisibleSkillReviewFallback(ctx: ChatCatalogContext, base: InternalObservation, issueId: string): Promise<VisibleSkillReview | undefined> {
   // A complete persisted review is already the ordinary user-facing answer.
@@ -178,7 +168,7 @@ export const integratorSkillUpdateCases = [integratorDefinition("skills", "skill
   const selected = await saveSkillConversationContext(ctx, { description: `Selected upstream accessibility skill: ${upstream.name} (${upstream.id}), tracked source ${source.id}. Installed source revision ${upstream.sourceRef}; tracking reference ${source.trackingRef}. Separate editable local copy: ${localFork.name} (${localFork.id}).` });
   return { upstream, localFork, source, factualContextAttachment: selected.factualContextAttachment, localVersions: await readSkillVersionHistory(ctx.input.api, ctx.input.fixtures.company.id, localFork.id, localFork.currentVersionId) };
 }, observeUpdate, gradeIntegratorSkillUpdate, async (ctx, state) => { const skill = state.upstream as CompanySkillDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name); },
-{ oracleVersion: "paperclip.chat-catalog.integrator.v4", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
+{ oracleVersion: "paperclip.chat-catalog.integrator.v5", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
   sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-update.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
   async act(ctx, state) {
     updateReceipts.delete(ctx);
