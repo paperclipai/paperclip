@@ -222,3 +222,37 @@ describe("paused escalation path warning", () => {
     expect(result.orgChainHealth.pausedAncestors).toEqual([]);
   });
 });
+
+describe("agents indexed by id", () => {
+  it("gives the eligibility of the agent list for every agent, also through cycles, missing managers and duplicates", () => {
+    const agents = [
+      agent({ id: "root", name: "CEO", reportsTo: null }),
+      agent({ id: "manager-1", name: "CTO", status: "paused", reportsTo: "root" }),
+      agent(),
+      agent({ id: "terminated-manager", name: "Former lead", status: "terminated", reportsTo: "root" }),
+      agent({ id: "under-terminated", name: "Report", reportsTo: "terminated-manager" }),
+      agent({ id: "under-missing", name: "Orphan", reportsTo: "nobody" }),
+      agent({ id: "under-other-company", name: "Borrowed", reportsTo: "elsewhere" }),
+      agent({ id: "elsewhere", name: "Other lead", companyId: "company-2", reportsTo: null }),
+      agent({ id: "cycle-1", name: "Loop one", reportsTo: "cycle-2" }),
+      agent({ id: "cycle-2", name: "Loop two", reportsTo: "cycle-1" }),
+      agent({ id: "pending", name: "New hire", status: "pending_approval", reportsTo: "root" }),
+      // The id of the first agent again: the last record of an id wins.
+      agent({ id: "root", name: "CEO", status: "terminated", reportsTo: null }),
+    ];
+    const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
+
+    for (const target of agents) {
+      expect(getAgentWorkEligibility({ agent: target, agents: agentsById }), target.id)
+        .toEqual(getAgentWorkEligibility({ agent: target, agents }));
+      expect(getAgentOrgChainHealth({ agent: target, agents: agentsById }), target.id)
+        .toEqual(getAgentOrgChainHealth({ agent: target, agents }));
+      expect(isAgentInvokable({ agent: target, agents: agentsById })).toBe(isAgentInvokable({ agent: target, agents }));
+      expect(isAgentAssignableToWork({ agent: target, agents: agentsById }))
+        .toBe(isAgentAssignableToWork({ agent: target, agents }));
+    }
+    // Every chain of this company passes through the terminated root record.
+    expect(agents.filter((target) => isAgentInvokable({ agent: target, agents: agentsById })).map((target) => target.id))
+      .toEqual(["root", "elsewhere"]);
+  });
+});
