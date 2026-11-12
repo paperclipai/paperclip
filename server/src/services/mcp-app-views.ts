@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolMcpAppViews } from "@paperclipai/db";
-import type { McpAppCallToolResult, McpAppToolUi, McpAppViewSummary } from "@paperclipai/shared";
+import { getAppDefinitionForApplicationKey, type McpAppCallToolResult, type McpAppToolUi, type McpAppViewSummary } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 
 /** Views shown per task. The chat renders the newest calls; older ones fall back to the plain tool row. */
@@ -58,6 +58,7 @@ export async function recordMcpAppView(db: Db, input: {
     catalogEntryId?: string | null;
     upstreamToolName?: string | null;
     applicationDisplayName?: string | null;
+    applicationKey?: string | null;
   };
   invocationId: string;
   toolInput: unknown;
@@ -79,7 +80,8 @@ export async function recordMcpAppView(db: Db, input: {
       responsibleUserId: input.session.responsibleUserId ?? null,
       connectionId: input.tool.connectionId,
       catalogEntryId: input.tool.catalogEntryId ?? null,
-      applicationName: input.tool.applicationDisplayName ?? "App",
+      // The catalog app's name ("Circleback"), not the connection's ("Circleback for the organization").
+      applicationName: getAppDefinitionForApplicationKey(input.tool.applicationKey)?.name ?? input.tool.applicationDisplayName ?? "App",
       toolName: input.tool.name,
       upstreamToolName: input.tool.upstreamToolName ?? input.tool.name,
       resourceUri: ui.resourceUri,

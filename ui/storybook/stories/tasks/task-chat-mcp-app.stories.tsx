@@ -3,9 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
 import type { McpAppCallToolResult } from "@paperclipai/shared";
 import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
+import { McpAppTurnViews } from "@/components/mcp-app/McpAppTurnViews";
 import { McpAppViewContent } from "@/components/mcp-app/McpAppView";
-import { TaskChatToolCard } from "@/components/task-chat/TaskChatToolCard";
-import type { TaskChatToolItem } from "@/components/task-chat/task-chat-model";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   ISSUE_ID,
@@ -15,21 +14,12 @@ import {
   RUN_ID,
 } from "../../support/mcp-app/fixtures";
 
-const toolRow: TaskChatToolItem = {
-  id: `${RUN_ID}:tool:toolu_display_meetings`,
-  kind: "tool",
-  name: "Display meetings",
-  rawName: "mcp__paperclip__mcp_circleback-44444444_displaymeetings",
-  status: "completed",
-  input: { meetingIds: ["m1", "m2"] },
-};
-
 function Frame({ children }: { children: ReactNode }) {
   return <div className="mx-auto w-full max-w-(--tc-shell-max-w) p-6">{children}</div>;
 }
 
-/** The production tool row with its recorded view already in the query cache. */
-function SeededToolRow() {
+/** The production reply-level block with the run's recorded view in the query cache. */
+function SeededRunViews() {
   const queryClient = useQueryClient();
   const [seeded] = useState(() => {
     queryClient.setQueryData(queryKeys.mcpApps.views(ISSUE_ID), [MEETINGS_VIEW_SUMMARY]);
@@ -40,7 +30,8 @@ function SeededToolRow() {
   return (
     <McpAppIssueProvider issueId={ISSUE_ID}>
       <Frame>
-        <TaskChatToolCard item={toolRow} />
+        <McpAppTurnViews runId={RUN_ID} />
+        <p className="mt-3 text-sm text-foreground">Your most recent meetings are shown above.</p>
       </Frame>
     </McpAppIssueProvider>
   );
@@ -77,7 +68,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "MCP Apps (io.modelcontextprotocol/ui) views under their tool row, such as Circleback meeting cards. The view runs in an opaque-origin sandboxed iframe and talks to Paperclip only through the MCP Apps postMessage protocol: initialize, tool input and result, size changes, tool calls and opening links.",
+          "MCP Apps (io.modelcontextprotocol/ui) views shown with the agent's reply, such as Circleback meeting cards. The view runs in an opaque-origin sandboxed iframe and talks to Paperclip only through the MCP Apps postMessage protocol: initialize, tool input and result, size changes, tool calls and opening links.",
       },
     },
     paperclip: {
@@ -95,7 +86,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const InToolRow: Story = { name: "01 · Meeting cards under the tool row", render: () => <SeededToolRow />, args: { state: "ready" } };
+export const WithReply: Story = { name: "01 · Meeting cards with the agent's reply", render: () => <SeededRunViews />, args: { state: "ready" } };
 export const Ready: Story = { name: "02 · View (Refresh calls a tool)", args: { state: "ready" } };
 export const Loading: Story = { name: "03 · Loading", args: { state: "loading" } };
 export const ErrorFallback: Story = { name: "04 · View unavailable", args: { state: "error" } };

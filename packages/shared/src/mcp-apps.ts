@@ -11,7 +11,7 @@ export const MCP_APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 export const MCP_APPS_PROTOCOL_VERSION = "2026-01-26";
 /** Largest view document Paperclip renders. Larger documents fall back to the plain tool row. */
-export const MCP_APP_MAX_HTML_BYTES = 2 * 1024 * 1024;
+export const MCP_APP_MAX_HTML_BYTES = 4 * 1024 * 1024;
 
 /** Client capability Paperclip advertises in `initialize` to MCP servers. */
 export const MCP_APPS_CLIENT_CAPABILITY = {

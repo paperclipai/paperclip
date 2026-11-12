@@ -5596,6 +5596,8 @@ export function createToolGatewayService(
     method: string;
     params: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
+    /** Larger limit for MCP Apps view documents, which go to the browser, never to an agent. */
+    maxResponseBytes?: number;
   }): Promise<unknown> {
     const grant = await resolveConnectionGrant(input.session, input.connection);
     const endpoint = await resolvedRemoteEndpoint(
@@ -5631,7 +5633,7 @@ export function createToolGatewayService(
     const response = options.remoteHttpRequest
       ? await options.remoteHttpRequest(endpoint, contextInit)
       : await guardedRemoteHttpFetch(endpoint, contextInit, remoteHttpFetchOptions());
-    const body = await readBoundedRemoteResponse(response);
+    const body = await readBoundedRemoteResponse(response, undefined, input.maxResponseBytes);
     if (!response.ok) {
       await markRemoteConnectionHealth(
         input.connection,
@@ -5696,6 +5698,7 @@ export function createToolGatewayService(
     method: string;
     params?: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
+    maxResponseBytes?: number;
   }): Promise<unknown> {
     const [application] = await db.select({ applicationKey: toolApplications.applicationKey }).from(toolApplications)
       .where(and(eq(toolApplications.id, input.connection.applicationId), eq(toolApplications.companyId, input.session.companyId))).limit(1);
@@ -6014,11 +6017,12 @@ export function createToolGatewayService(
   async function readBoundedRemoteResponse(
     response: Response,
     onBytes?: (bytes: number) => void,
+    maxBytes = MAX_REMOTE_MCP_RESPONSE_BYTES,
   ): Promise<string> {
     const contentLength = response.headers.get("content-length");
     if (
       contentLength &&
-      Number(contentLength) > MAX_REMOTE_MCP_RESPONSE_BYTES
+      Number(contentLength) > maxBytes
     ) {
       throw responseTooLargeError();
     }
@@ -6028,7 +6032,7 @@ export function createToolGatewayService(
     if (!reader) {
       const body = await response.text();
       onBytes?.(Buffer.byteLength(body, "utf8"));
-      if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+      if (Buffer.byteLength(body, "utf8") > maxBytes) {
         throw responseTooLargeError();
       }
       return body;
@@ -6044,7 +6048,7 @@ export function createToolGatewayService(
         if (done) break;
         bytes += value.byteLength;
         onBytes?.(bytes);
-        if (bytes > MAX_REMOTE_MCP_RESPONSE_BYTES) throw responseTooLargeError();
+        if (bytes > maxBytes) throw responseTooLargeError();
         body += decoder.decode(value, { stream: true });
       }
       return body + decoder.decode();
@@ -10208,6 +10212,8 @@ export function createToolGatewayService(
         connection,
         method: "resources/read",
         params: { uri: input.view.resourceUri },
+        // JSON (or SSE) framing escapes the document, so allow headroom over the HTML limit.
+        maxResponseBytes: MCP_APP_MAX_HTML_BYTES * 2,
       });
       const resource = readMcpAppResource(result, input.view.resourceUri);
       if (!resource) {

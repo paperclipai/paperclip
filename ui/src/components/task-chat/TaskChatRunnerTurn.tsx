@@ -1,4 +1,5 @@
 import { groupImageResources } from "./image-resources";
+import { McpAppTurnViews } from "@/components/mcp-app/McpAppTurnViews";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -307,6 +308,7 @@ export function TaskChatRunnerTurn({
           ))}
         </div>
       ) : null}
+      <McpAppTurnViews runId={runId} />
       {final ? (
         <div
           className="w-full"

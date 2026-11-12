@@ -17,7 +17,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const actor = { actorType: "user" as const, actorId: "circleback-reviewer" };
 const redirectUri = "https://paperclip.fixture.test/api/tools/oauth/callback";
 const VIEW_URI = "ui://circleback/meetings.html";
-const VIEW_HTML = "<!doctype html><html><body><div id=cards>Meetings</div><script>/* view */</script></body></html>";
+// Real views bundle their scripts; Circleback's is about 3.5 MB. This one is
+// larger than the 1 MB limit on agent-facing tool results.
+const VIEW_HTML = `<!doctype html><html><body><div id=cards>Meetings</div><script>/* ${"view bundle ".repeat(120_000)} */</script></body></html>`;
 
 // Circleback-shaped server: a model+app view tool, an app-only refresh tool,
 // a model-only view tool, and a plain read tool.
