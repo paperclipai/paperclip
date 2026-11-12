@@ -74,3 +74,11 @@ it("rejects consumption that leaves the queue or task unfinished", () => {
   const queued = inTurn(); queued.state.queueEmptyAfterDelivery = false; expect(gradeQueueEdit(queued).passed).toBe(false);
   const open = inTurn(); open.state.taskDone = false; expect(gradeQueueEdit(open).passed).toBe(false);
 });
+function mixed() {
+  const o = valid(); o.state.workerHistoryReads = { color: "2026-11-12T21:52:30.494Z" }; o.state.inTurnOutcomeApplied = true; return o;
+}
+it("accepts the running turn reading only the edited message and one continuation delivering the unread one", () => expect(gradeQueueEdit(mixed()).passed).toBe(true));
+it("rejects the edited message read in the running turn whose change was never saved, even with a continuation", () => {
+  const o = mixed(); o.state.inTurnOutcomeApplied = false; expect(gradeQueueEdit(o).passed).toBe(false);
+});
+it("rejects a continuation that re-delivers the message the running turn already read", () => { const o = mixed(); o.state.nativeDeliveryBound = false; expect(gradeQueueEdit(o).passed).toBe(false); });

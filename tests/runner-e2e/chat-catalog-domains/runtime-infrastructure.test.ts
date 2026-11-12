@@ -1,5 +1,9 @@
-import { expect, it } from "vitest";
-import { freshContinuationRecord, gradeInfrastructureRecovery, readSourceRecoveryRecord } from "./runtime-infrastructure.js";
+import { expect, it, vi } from "vitest";
+import { freshContinuationRecord, gradeInfrastructureRecovery, nativeInfrastructureLoss, readSourceRecoveryRecord } from "./runtime-infrastructure.js";
+vi.mock("./runtime-busy-worker.js", async importOriginal => ({ ...await importOriginal<typeof import("./runtime-busy-worker.js")>(),
+  busyRuntimeWorker: async () => ({ worker: { id: "morgan" }, task: { id: "website" }, gate: {}, workerRunId: "run" }) }));
+vi.mock("./runtime-native-fault.js", async importOriginal => ({ ...await importOriginal<typeof import("./runtime-native-fault.js")>(),
+  faultOwnedNativeProcess: async () => ({ id: "run", processPid: 7, errorCode: "native_runner_process_exited", status: "running", nativePhase: "running" }) }));
 import { savedCall } from "./api-read-receipts.test-fixtures.js";
 function record(overrides: Record<string, unknown> = {}) {
   return { id: "recovery", companyId: "company", sourceIssueId: "website", kind: "active_run_watchdog", status: "resolved", outcome: "restored", cause: "native_session_retry_exhausted",
@@ -92,3 +96,23 @@ it("reads the recovery record only from exact product tool output", () => {
 });
 it("rejects duplicate repair chains", () => { const o = valid(); o.tasks.push({ id: "repair", status: "todo", assigneeAgentId: "morgan" }); expect(grade(o)).toBe(false); });
 it("rejects missing actual source recovery evidence", () => expect(gradeInfrastructureRecovery(undefined).passed).toBe(false));
+
+function lossContext(successorAfter: number, successor: Record<string, unknown> = {}) {
+  let faults = 0, pid = 100;
+  const next = { id: "next", companyId: "company", agentId: "morgan", retryOfRunId: "run", contextSnapshot: { issueId: "website" }, ...successor };
+  return { input: { fixtures: { company: { id: "company" } }, evidence: async () => {}, api: { get: async (path: string) => {
+      if (path === "/api/heartbeat-runs/next") return next;
+      return { id: "run", status: "running", processPid: ++pid, nativePhase: "running" };
+    } } },
+    allRuns: async () => { faults++; return [{ id: "run" }, ...(faults >= successorAfter ? [{ id: "next" }] : [])]; } };
+}
+it("accepts the fresh continuation of the interrupted run appearing right after the last Runner loss", async () => {
+  await expect(nativeInfrastructureLoss(lossContext(3) as never)).resolves.toMatchObject({ setupFaults: [{}, {}, {}] });
+});
+it("rejects a replacement run before the last Runner loss", async () => {
+  await expect(nativeInfrastructureLoss(lossContext(2) as never)).rejects.toThrow(/undeclared replacement/);
+});
+it("rejects a run after the last Runner loss that does not continue the interrupted run", async () => {
+  await expect(nativeInfrastructureLoss(lossContext(3, { retryOfRunId: "other" }) as never)).rejects.toThrow(/undeclared replacement/);
+  await expect(nativeInfrastructureLoss(lossContext(3, { agentId: "riley" }) as never)).rejects.toThrow(/undeclared replacement/);
+});

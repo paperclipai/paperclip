@@ -81,7 +81,10 @@ export async function nativeInfrastructureLoss(ctx: ChatCatalogContext) {
     const failed = await faultOwnedNativeProcess(ctx, { runId: active.id, issueId: task.id, agentId: state.worker.id });
     faults.push({ runId: failed.id, pid: failed.processPid, errorCode: failed.errorCode }); previousPid = active.processPid;
     await ctx.input.evidence(`runtime-infrastructure-attempt-${attempt}.json`, { runId: active.id, attempt, processPid: active.processPid, errorCode: failed.errorCode, status: failed.status, nativePhase: failed.nativePhase });
-    if ((await ctx.allRuns()).length !== 1) throw new Error("Infrastructure setup created an undeclared replacement heartbeat instead of same-run coordinator recovery");
+    const others = (await ctx.allRuns()).filter(row => row.id !== state.workerRunId);
+    const successor = attempt === 3 && others.length === 1 ? await ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${others[0]!.id}`) : undefined;
+    if (others.length && !continuesFailedRun(successor, state.workerRunId, ctx.input.fixtures.company.id, task.id, state.worker.id))
+      throw new Error("Infrastructure setup created an undeclared replacement heartbeat instead of same-run coordinator recovery");
   }
   return { ...state, setupFaults: faults };
 }

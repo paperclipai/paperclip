@@ -73,10 +73,10 @@ export function gradeQueueEdit(value: unknown) {
   const queued = Array.isArray(s.queuedComments) ? s.queuedComments as Array<{ id: string; updatedAt?: unknown }> : [];
   const reads = s.workerHistoryReads as Record<string, string> | undefined, worker = s.worker as Entity | undefined;
   const continuations = o.runs.filter(row => row.agentId === worker?.id && row.id !== s.workerRunId);
-  const targetRead = readCurrentRevision(reads, queued.find(row => row.id === s.targetId));
-  const consumedInTurn = queued.length === 2 && queued.every(row => readCurrentRevision(reads, row)) && continuations.length === 0 && o.runs.length === 2
-    && s.inTurnOutcomeApplied === true;
-  const consumedByContinuation = !targetRead && continuations.length === 1 && s.consumingRunCount === 1 && s.nativeDeliveryBound === true && o.runs.length === 3;
+  const targetRead = readCurrentRevision(reads, queued.find(row => row.id === s.targetId)), unread = queued.filter(row => !readCurrentRevision(reads, row));
+  const consumedInTurn = queued.length === 2 && unread.length === 0 && continuations.length === 0 && o.runs.length === 2 && s.inTurnOutcomeApplied === true;
+  const consumedByContinuation = unread.length > 0 && continuations.length === 1 && s.consumingRunCount === 1 && s.nativeDeliveryBound === true && o.runs.length === 3
+    && (!targetRead || s.inTurnOutcomeApplied === true);
   c.add("edited-message-consumed-once", queued.length === 2 && queued[0]?.id === s.targetId && (consumedInTurn || consumedByContinuation)
     && s.queueEmptyAfterDelivery === true && s.taskDone === true && o.runs.every(row => row.status === "succeeded") && s.initialRevisionRetained === true,
   "The edited message is consumed exactly once: the running turn read its current revision and saved the change with no continuation, or one ordinary continuation receives it in its final order.");
