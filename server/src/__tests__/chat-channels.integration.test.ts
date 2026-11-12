@@ -65892,11 +65892,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["person", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
-    const f = await currentGitHubTaskRetryFixture(false);
+  it.each(["person", "person_with_input_before_stop", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+    const f = await currentGitHubTaskRetryFixture(initiator === "person_with_input_before_stop");
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
       const leaseId = randomUUID(), providerLeaseId = randomUUID(), workspaceId = randomUUID(), snapshotId = randomUUID();
+      if (f.pending) {
+        await db.update(agentWakeupRequests).set({ requestedAt: new Date(Date.now() - 60_000) })
+          .where(eq(agentWakeupRequests.id, f.pending.id));
+        await db.update(chatActions).set({ createdAt: new Date(Date.now() - 60_000) }).where(eq(chatActions.id, f.pending.id));
+        await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 30_000) }).where(eq(heartbeatRuns.id, f.runId));
+      }
       await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
       await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId,
         name: "Review workspace", providerType: "cloud_sandbox", mode: "isolated_workspace", strategyType: "project_primary",
@@ -66020,6 +66026,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         eq(activityLog.action, "issue.retry_continued_from_saved_work")));
       expect(activity).toHaveLength(1);
       expect(activity[0].details).toMatchObject({ requestId: request.requestId, refusedChatActionId: request.chatActionId });
+      if (f.pending) expect((await readAgentWakeupRequestsById(f.pending.id))[0]).toMatchObject({ status: "coalesced",
+        runId: null, payload: { coalescedIntoWakeupRequestId: request.requestId } });
     } finally { await f.service.shutdown(); }
   }, 90_000);
 
