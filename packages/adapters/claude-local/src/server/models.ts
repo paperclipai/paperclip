@@ -19,7 +19,7 @@ const BEDROCK_MODELS: AdapterModel[] = [
   { id: "us.anthropic.claude-opus-5-5", label: "Bedrock Opus 5.5" },
   // Sonnet 5.5's documented Bedrock ID is dateless, like Fable 5.1 and Opus 5.5.
   { id: "us.anthropic.claude-sonnet-5-5", label: "Bedrock Sonnet 5.5" },
-  { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  { id: "us.anthropic.claude-haiku-5-5", label: "Bedrock Haiku 5.5" },
   { id: "us.anthropic.claude-fable-5", label: "Bedrock Fable 5" },
   { id: "us.anthropic.claude-opus-5", label: "Bedrock Opus 5" },
   { id: "us.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
@@ -28,6 +28,7 @@ const BEDROCK_MODELS: AdapterModel[] = [
   { id: "us.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
   { id: "us.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6" },
   { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
+  { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
 ];
 
 let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null = null;
