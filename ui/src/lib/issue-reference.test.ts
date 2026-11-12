@@ -34,8 +34,6 @@ describe("issue-reference", () => {
   });
 
   it("keeps another company's prefix instead of resolving the link into the viewer's company", () => {
-    // Recorded chat-eval shape (access.other-company): a reply in COM linked
-    // /BIR/issues/BIR-1, and the chat rendered it as /COM/issues/BIR-1.
     expect(parseIssueReferenceFromHref("/BIR/issues/BIR-1")).toEqual({
       issuePathId: "BIR-1", href: "/BIR/issues/BIR-1",
     });
@@ -46,7 +44,6 @@ describe("issue-reference", () => {
     expect(parseIssueReferenceFromHref("/issues/BIR-1", known)?.href).toBe("/BIR/issues/BIR-1");
     expect(parseIssueReferenceFromHref("BIR-1", known)?.href).toBe("/BIR/issues/BIR-1");
     expect(parseIssueReferenceFromHref("issue://BIR-1", known)?.href).toBe("/BIR/issues/BIR-1");
-    // Without company knowledge, an unprefixed reference still resolves in the viewer's company.
     expect(parseIssueReferenceFromHref("/issues/BIR-1")?.href).toBe("/issues/BIR-1");
   });
 

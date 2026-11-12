@@ -806,8 +806,6 @@ describe("MarkdownBody", () => {
   });
 
   it("keeps another company's task link in that company", () => {
-    // Recorded chat-eval shape (access.other-company): a COM chat reply linked
-    // /BIR/issues/BIR-1, and the chat opened /COM/issues/BIR-1 instead.
     mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "COM" }, { issuePrefix: "BIR" }] });
     const html = renderMarkdown("I can't read [BIR-1](/BIR/issues/BIR-1); BIR-1 and [this link](/issues/BIR-1) stay in Birch.", [
       { identifier: "BIR-1", status: "todo" },

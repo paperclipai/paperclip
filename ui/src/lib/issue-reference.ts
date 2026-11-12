@@ -1,4 +1,4 @@
-import { extractCompanyPrefixFromPath } from "./company-routes";
+import { extractCompanyPrefixFromPath } from "./company-routes.js";
 type MarkdownNode = {
   type: string;
   value?: string;
@@ -70,14 +70,6 @@ export function parseIssueReferenceFromHref(
   };
 }
 
-/**
- * Internal href for an issue reference. An unprefixed `/issues/...` path is
- * resolved against the viewer's active company when it is rendered, so a
- * reference that names its company must keep that company: an explicit
- * `/BIR/issues/...` path keeps `BIR`, and an identifier whose prefix belongs
- * to a known company (`BIR-1`) is placed under that company. Otherwise the link
- * would open the wrong company's task with the same number.
- */
 function issueHref(
   issuePathId: string,
   suffix: string,
