@@ -2097,7 +2097,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.import-preview.v2",
+    "oracleVersion": "paperclip.chat-catalog.identity.import-preview.v3",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
