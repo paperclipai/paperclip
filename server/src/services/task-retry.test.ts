@@ -964,6 +964,7 @@ describe("durable task Retry admission", () => {
       const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
         eq(heartbeatRuns.status, "queued")));
       expect(queued).toHaveLength(1);
+      expect(queued[0].retryOfRunId).toBe(source.id);
       expect(queued[0].contextSnapshot).toMatchObject({ issueId: input.issueId, previousRunId: source.id,
         taskRetryRequestId: receipt.requestId, forceFreshSession: true, responsibleUserId: input.actorId });
       expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])

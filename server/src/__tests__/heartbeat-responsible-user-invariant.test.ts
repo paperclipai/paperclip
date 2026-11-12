@@ -23,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { initializeRunIdentity } from "../services/run-identity.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
@@ -351,6 +352,36 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect(await waitForRun(db, second!.id)).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
     expect(await waitForRun(db, first!.id)).toMatchObject({ status: "succeeded", responsibleUserId: ownerUserId });
+  });
+
+  it("keeps adopted comment authors on an explicit task retry instead of the source run's user", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID();
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Retrying operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
+      membershipRole: "operator", status: "active" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Retried task", status: "in_progress",
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed",
+      invocationSource: "on_demand", contextSnapshot: { issueId } }).returning();
+    await initializeRunIdentity(db, { companyId, runId: source.id, issueId,
+      responsibleUserId: ownerUserId, cause: "dispatch" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: operatorId,
+      body: "While retrying, also check the sidebar" });
+    const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued",
+      invocationSource: "on_demand", retryOfRunId: source.id,
+      contextSnapshot: { issueId, taskRetryRequestId: randomUUID(), wakeCommentIds: [commentId],
+        responsibleUserId: ownerUserId } }).returning();
+    await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
+    const driver = createLifecycleDriver(db, {} as never);
+    const currentAgent = async () => (await db.select().from(agents).where(eq(agents.id, agentId)))[0];
+    await driver.onReady!(await currentAgent());
+    const completed = await waitForRun(db, retry.id);
+    expect(completed?.error).toBeNull();
+    expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
   });
 
   it("denies a manual wake of another user's private conversation", async () => {

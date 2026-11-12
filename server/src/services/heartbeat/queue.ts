@@ -2422,6 +2422,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       triggerDetail,
       payload,
     });
+    delete enrichedContextSnapshot.explicitRetryOfRunId;
     const isManualContextCompactionWake = () => Boolean(
       reason === CONTEXT_COMPACTION_WAKE_REASON && source === "on_demand" && triggerDetail === "manual"
       && opts.manualUserWake === true && opts.requestedByActorType === "user"
@@ -2466,6 +2467,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       enrichedContextSnapshot.forceFreshSession = true;
       enrichedContextSnapshot.previousRunId = retry.sourceRunId;
       enrichedContextSnapshot.taskRetryRequestId = receipt.id;
+      enrichedContextSnapshot.explicitRetryOfRunId = retry.sourceRunId;
       if (retry.boardMessageOrigin) enrichedContextSnapshot.boardMessageRetry = true;
     }
 
@@ -2540,6 +2542,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           companyId: failed.companyId, runId: failed.id, actorId: opts.requestedByActorId,
         } });
       }
+      enrichedContextSnapshot.explicitRetryOfRunId = failed.id;
       if (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner") {
         enrichedContextSnapshot.previousRunId = failed.id;
         enrichedContextSnapshot.forceFreshSession = true;
@@ -3513,7 +3516,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const [previousRetry] = await tx.select().from(heartbeatRuns).where(and(
               eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.agentId, agentId),
               eq(heartbeatRuns.retryOfRunId, opts.failedRunId),
-              sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'retry_failed_run'`,
+              sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' in ('retry_failed_run', 'task_retry')`,
             )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
             if (previousRetry) return { kind: "replayed" as const, run: previousRetry };
           }
@@ -4727,7 +4730,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               wakeupRequestId: wakeupRequest.id,
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
-                : opts.failedRunId ?? automaticParentRunId,
+                : readNonEmptyString(enrichedContextSnapshot.explicitRetryOfRunId) ?? opts.failedRunId ?? automaticParentRunId,
               contextSnapshot: adoptedComments.length
                 ? withQueuedCommentIdsInRunContext(
                     enrichedContextSnapshot,

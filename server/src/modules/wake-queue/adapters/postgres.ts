@@ -10,6 +10,7 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
+import { readTaskRetryIntent } from "../../../services/task-retry.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
@@ -570,6 +571,23 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async finalizePromotedWake(input) {
       await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issue.id });
+      const explicitRetrySourceId = readTaskRetryIntent(input.payload)?.sourceRunId
+        ?? readNonEmptyString(input.contextSnapshot.explicitRetryOfRunId);
+      const explicitRetryOfRunId = explicitRetrySourceId
+        ? (await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.id, explicitRetrySourceId),
+            eq(heartbeatRuns.agentId, input.deferredAgent.id),
+            sql`coalesce(
+              ${heartbeatRuns.issueId}::text,
+              ${heartbeatRuns.nativeIssueId}::text,
+              nullif(${heartbeatRuns.contextSnapshot}->>'issueId', ''),
+              nullif(${heartbeatRuns.contextSnapshot}->>'taskId', ''),
+              nullif(${heartbeatRuns.contextSnapshot}->>'taskKey', '')
+            ) = ${input.issue.id}`,
+            notInArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          )).limit(1))[0]?.id ?? null
+        : null;
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -581,7 +599,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           wakeupRequestId: input.wakeId,
           retryOfRunId: input.authorizedFailedChatRetry
             ? readNonEmptyString(input.contextSnapshot.retryOfRunId)
-            : null,
+            : explicitRetryOfRunId,
           contextSnapshot: input.contextSnapshot,
           responsibleUserId: input.responsibleUserId,
           sessionIdBefore: input.sessionBefore,

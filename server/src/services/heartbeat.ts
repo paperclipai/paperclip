@@ -2521,7 +2521,7 @@ export function heartbeatService(
         interactionId: readNonEmptyString(context.interactionId),
         issueId,
         messageIds:
-          (run.retryOfRunId || context.retryOfRunId) && !isFailedChatRunRetry
+          (run.retryOfRunId || context.retryOfRunId) && !isFailedChatRunRetry && !readNonEmptyString(context.taskRetryRequestId)
             ? []
             : queuedCommentIdsFromRunContext(context).length
               ? queuedCommentIdsFromRunContext(context)
