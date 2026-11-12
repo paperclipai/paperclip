@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { hostname } from "node:os";
 import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   executeNativeSession,
@@ -13,6 +14,9 @@ import {
   type NativeSession,
 } from "../vendor/paperclip-runner/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { registerNativeCleanupReleaseWake } from "../services/native-runtime/native-cleanup-release-wake.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -22,13 +26,6 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-/**
- * Reassignment stops the previous assignee's native run mid-turn. Its session
- * close continues in this process, and the runner refuses every new session of
- * the task until that close settles. The new assignee's run was dispatched into
- * that gate one second later and failed with native_session_cleanup_quarantined;
- * only a Retry continued the task. Admission now waits for the close instead.
- */
 describeEmbeddedPostgres("queued native run behind the task's previous session cleanup", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -57,9 +54,9 @@ describeEmbeddedPostgres("queued native run behind the task's previous session c
     return { companyId, previousId, nextId, issueId };
   }
 
-  /** The previous assignee's session, stopped by the reassignment, still closing. */
-  async function retainPreviousSessionClose(f: Awaited<ReturnType<typeof seed>>, close: () => Promise<void>) {
-    const runId = randomUUID();
+  async function retainPreviousSessionClose(f: Awaited<ReturnType<typeof seed>>, close: () => Promise<void>,
+    owner: { runId: string; runnerInstanceId: string } = { runId: randomUUID(), runnerInstanceId: randomUUID() }) {
+    const runId = owner.runId;
     const identity = { runId, sessionId: `closing-${runId}`, companyId: f.companyId, issueId: f.issueId, agentId: f.previousId };
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
     const session: NativeSession = {
@@ -85,7 +82,7 @@ describeEmbeddedPostgres("queued native run behind the task's previous session c
       controlPlane: { openRun: async () => {}, checkpointSession: async () => {},
         appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
         replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: async () => {} },
-      runnerInstanceId: randomUUID(), controlPlaneInstanceId: "control",
+      runnerInstanceId: owner.runnerInstanceId, controlPlaneInstanceId: "control",
     })).rejects.toThrow("stopped for reassignment");
   }
 
@@ -98,24 +95,67 @@ describeEmbeddedPostgres("queued native run behind the task's previous session c
 
   const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
-  it("keeps the new assignee's run queued while the close settles, then admits it", async () => {
-    const f = await seed();
-    let settle = () => {};
-    await retainPreviousSessionClose(f, () => new Promise<void>(resolve => { settle = resolve; }));
-    expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBe("pending");
+  function dispatchWorker() {
+    const heartbeat = heartbeatService(db);
+    const wakeFailure = vi.fn();
+    const unregisterWake = registerNativeCleanupReleaseWake(db, wakeFailure);
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.queuedRunDispatch, () => {
+      void heartbeat.resumeQueuedRuns();
+    });
+    return { wakeFailure, stop: () => { unsubscribe(); unregisterWake(); } };
+  }
 
-    const run = await queueNextAssigneeRun(f);
-    await heartbeatService(db).resumeQueuedRuns();
-    expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+  async function recordStoppedOwner(f: Awaited<ReturnType<typeof seed>>, owner: { runId: string; runnerInstanceId: string }) {
+    await db.insert(heartbeatRuns).values({ id: owner.runId, companyId: f.companyId, agentId: f.previousId,
+      invocationSource: "assignment", status: "cancelled", errorCode: "issue_reassigned", runtimeMode: "native",
+      nativeIssueId: f.issueId, runnerInstanceId: owner.runnerInstanceId, startedAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(), contextSnapshot: { issueId: f.issueId } });
+    const processStartedAt = new Date(Date.now() - 60_000).toISOString();
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: owner.runId, agentId: f.previousId,
+      eventType: "native.local_process_stopped",
+      payload: { processPid: 99_999_993, processGroupId: 99_999_993, processStartedAt, hostname: hostname() } });
+  }
 
-    settle();
-    await expect.poll(() => nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBeNull();
-    await heartbeatService(db).resumeQueuedRuns();
-    await expect.poll(async () => (await readRun(run.id)).status).not.toBe("queued");
-    expect((await readRun(run.id)).errorCode).not.toBe("native_session_cleanup_quarantined");
+  it("starts the new assignee's run by itself once the previous close settles", async () => {
+    const worker = dispatchWorker();
+    try {
+      const f = await seed();
+      let settle = () => {};
+      await retainPreviousSessionClose(f, () => new Promise<void>(resolve => { settle = resolve; }));
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBe("pending");
+
+      const run = await queueNextAssigneeRun(f);
+      await heartbeatService(db).resumeQueuedRuns();
+      expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+
+      settle();
+      await expect.poll(async () => (await readRun(run.id)).status, { timeout: 15_000 }).not.toBe("queued");
+      expect((await readRun(run.id)).errorCode).not.toBe("native_session_cleanup_quarantined");
+      expect(worker.wakeFailure).not.toHaveBeenCalled();
+    } finally {
+      worker.stop();
+    }
   });
 
-  it("does not dispatch into a close that needs proof the old session stopped", async () => {
+  it("starts the new assignee's run by itself when an unrecoverable close's owner is proven stopped", async () => {
+    const worker = dispatchWorker();
+    try {
+      const f = await seed();
+      const owner = { runId: randomUUID(), runnerInstanceId: randomUUID() };
+      await recordStoppedOwner(f, owner);
+      const run = await queueNextAssigneeRun(f);
+      await retainPreviousSessionClose(f, async () => {
+        throw new NativeSessionCloseUnrecoverableError({ runnerSuspended: true, providerDrained: false });
+      }, owner);
+      await expect.poll(async () => (await readRun(run.id)).status, { timeout: 15_000 }).not.toBe("queued");
+      expect((await readRun(run.id)).errorCode).not.toBe("native_session_cleanup_quarantined");
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBeNull();
+    } finally {
+      worker.stop();
+    }
+  });
+
+  it("keeps the run queued while an unrecoverable close's owner is not proven stopped", async () => {
     const f = await seed();
     await retainPreviousSessionClose(f, async () => {
       throw new NativeSessionCloseUnrecoverableError({ runnerSuspended: true, providerDrained: false });
@@ -124,8 +164,6 @@ describeEmbeddedPostgres("queued native run behind the task's previous session c
 
     const run = await queueNextAssigneeRun(f);
     await heartbeatService(db).resumeQueuedRuns();
-    // Not failed with native_session_cleanup_quarantined: it waits, and the
-    // gate is retired as soon as the old runner and provider are proven stopped.
     expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null, errorCode: null });
   });
 

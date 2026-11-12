@@ -1068,9 +1068,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
     }
     if (issueId && !run.startedAt && agent.adapterType === "paperclip_runner") {
-      // A previous native session of this task (any agent's, such as the
-      // assignee before a reassignment) may still be closing. Wait for it
-      // instead of dispatching a run its cleanup gate can only refuse.
       const cleanupBlock = await nativeCleanupHoldsAdmission(db, { companyId: run.companyId, issueId });
       if (cleanupBlock) {
         logger.info({ runId: run.id, agentId: run.agentId, companyId: run.companyId, issueId,
