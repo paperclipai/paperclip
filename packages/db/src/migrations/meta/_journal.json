@@ -3277,6 +3277,13 @@
       "when": 1794428870590,
       "tag": "0469_zippy_photon",
       "breakpoints": true
+    },
+    {
+      "idx": 470,
+      "version": "7",
+      "when": 1794456193363,
+      "tag": "0470_hesitant_hairball",
+      "breakpoints": true
     }
   ]
 }
