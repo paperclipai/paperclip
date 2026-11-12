@@ -8,7 +8,7 @@ import { submitTaskReply } from "../user-actions.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
 import { releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { humanQueuedRuntime, otherText, probeConsumedHumanQueue } from "./runtime-queue-controls.js";
+import { humanQueuedRuntime, probeConsumedHumanQueue } from "./runtime-queue-controls.js";
 import { runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
 
@@ -21,41 +21,16 @@ export function promptCarries(prompt: string | undefined, body: string) {
 export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
   return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
 }
-interface MarkdownSection { heading: string; lines: string[] }
-export function markdownSections(body: string): MarkdownSection[] {
-  const lines = body.split(/\r?\n/), sections: MarkdownSection[] = [];
-  lines.forEach((line, index) => {
-    const level = /^(#{1,6})\s/.exec(line)?.[1]!.length; if (!level) return;
-    const end = lines.findIndex((next, at) => at > index && (/^(#{1,6})\s/.exec(next)?.[1]!.length ?? 7) <= level);
-    sections.push({ heading: line.trim(), lines: lines.slice(index + 1, end < 0 ? lines.length : end) });
-  });
-  return sections;
-}
-export const keepFontText = "Keep the accessible-font requirement";
-const keptRequests = [otherText, keepFontText].map(text => text.toLowerCase().replace(/[.\s]+$/, ""));
-function keptRequestLine(line: string) {
-  const text = line.replace(/^(?:[-*+]|\d+[.)])\s+/, "").replace(/[*_`]/g, "").trim().toLowerCase();
-  return keptRequests.some(request => text.includes(request));
-}
-export function contactSectionRemoved(consumed: string, previous: string | undefined, final: string, label: string) {
-  const carrying = markdownSections(consumed).filter(section => [section.heading, ...section.lines].some(line => line.includes(label)));
-  const titled = carrying.filter(section => section.heading.includes(label));
-  const earlier = new Set(markdownSections(previous ?? "").map(section => section.heading));
-  const added = carrying.filter(section => !earlier.has(section.heading)).sort((a, b) => a.lines.length - b.lines.length);
-  const blocks = titled.length ? titled : added.slice(0, 1);
-  if (!blocks.length) return false;
-  const sections = markdownSections(final), finalLines = new Set(final.split(/\r?\n/).map(line => line.trim()));
-  return blocks.every(block => !sections.some(section => section.heading === block.heading)
-    && block.lines.map(line => line.trim()).filter(line => line.length >= 20 && !keptRequestLine(line)).every(line => !finalLines.has(line)));
-}
+const labelledHeading = (body: string, label: string) => body.split(/\r?\n/).some(line => /^#{1,6}\s/.test(line) && line.includes(label));
 export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null; createdByRunId?: string | null }>, latestRevisionId: unknown, consumerRunId: string, label: string) {
   const number = (row: object) => Number((row as { revisionNumber?: unknown }).revisionNumber);
   const revisions = [...rows].sort((a, b) => number(a) - number(b));
+  const final = revisions.find(row => row.id === latestRevisionId);
   const saves = revisions.filter(row => row.createdByRunId === consumerRunId && (row.body ?? "").includes(label));
-  const consumed = saves.at(-1), final = revisions.find(row => row.id === latestRevisionId);
-  if (!consumed) return !(final?.body ?? "").includes(label);
+  if (!saves.length) return !(final?.body ?? "").includes(label);
   const previous = revisions.filter(row => number(row) < number(saves[0]!)).at(-1);
-  return !!final && contactSectionRemoved(consumed.body ?? "", previous?.body ?? undefined, final.body ?? "", label);
+  const hadSection = [previous, ...saves].some(row => labelledHeading(row?.body ?? "", label));
+  return !!final && hadSection && !labelledHeading(final.body ?? "", label);
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -85,7 +60,7 @@ export function gradeDiscard(value: unknown) {
   return c.result();
 }
 export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-message", ctx => humanQueuedRuntime(ctx, contactText), gradeDiscard, {
-  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v5",
+  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v6",
   sourceFiles: ["chat-catalog-domains/runtime-discard.ts", "chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -110,7 +85,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     await ctx.input.capture("actual-human-contact-discard", "Only the eligible contact request has left the real task queue", "runtime-discard.png");
     // This new, explicit human request is a distinct later instruction. It
     // deliberately reaches normal native delivery before its cancellation.
-    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}. ${keepFontText} and finish this task.`;
+    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}. Keep the accessible-font requirement and finish this task.`;
     await submitTaskReply(ctx.input.page, secondText);
     const secondQueue = await pollUntil({ label: "Distinct human contact request genuinely queued", deadlineAt: Date.now() + 20_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(queuePath), accept: q => q.entries.length === 2 && q.entries.some(row => row.comment.body === secondText) });

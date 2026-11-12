@@ -5493,7 +5493,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime-discard.v5",
+    "oracleVersion": "paperclip.chat-catalog.runtime-discard.v6",
     "coverageGaps": [],
     "expectedRunCount": 5,
     "expectedHumanMessageCount": 2,
