@@ -20,13 +20,6 @@ export function markdownLinkTargets(text: string): string[] {
     ...[...text.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!),
   ];
 }
-/**
- * Inline Markdown links whose visible label names a task identifier other than the task the link opens, e.g.
- * `[COM-2 Launch open website](/COM/issues/COM-1)`. Only structure is compared: identifier-shaped tokens in the
- * label that share the target's prefix must include the target's identifier. Labels without such a token, and
- * targets that are not task pages, are not judged. A target written as a task id is compared through
- * `identifierFor` when the caller can resolve it; otherwise it is not judged.
- */
 export function mislabeledIssueLinks(text: string, identifierFor: (pathId: string) => string | undefined = () => undefined): string[] {
   const identifier = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
   return [...text.matchAll(/\[((?:[^\[\]]|\[[^\]]*\])*)\]\(\s*<?([^)\s>]+)>?[^)]*\)?/g)].flatMap(match => {

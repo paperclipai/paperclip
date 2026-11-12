@@ -150,11 +150,9 @@ describe("task links whose visible identifier names another task", () => {
     expect(mislabeledIssueLinks("Open [COM-1](/COM/issues/COM-1) in [Launch](/COM/projects/launch).")).toEqual([]);
     expect(mislabeledIssueLinks("The [open COM-1 task](/COM/issues/com-1#document-plan) and [this one](/COM/issues/COM-2).")).toEqual([]);
     expect(mislabeledIssueLinks("[COM-1 Launch open website](/COM/issues/task-uuid)", id => id === "task-uuid" ? "COM-1" : undefined)).toEqual([]);
-    // A token with another prefix (a checksum name, a foreign tracker key) is not a claim about this task.
     expect(mislabeledIssueLinks("[SHA-256 notes for COM-1](/COM/issues/COM-1)")).toEqual([]);
   });
   it("rejects a link whose label names a different task than it opens", () => {
-    // Recorded chat-eval reply (navigation-preferences.find-project-view).
     expect(mislabeledIssueLinks("Open tasks: [COM-2 Launch open website](/COM/issues/COM-1)... correction:")).toEqual(["[COM-2 Launch open website](/COM/issues/COM-1)"]);
     expect(mislabeledIssueLinks("[COM-2](/COM/issues/task-uuid)", id => id === "task-uuid" ? "COM-1" : undefined)).toHaveLength(1);
   });

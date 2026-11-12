@@ -18,7 +18,6 @@ describe("actual addressed connection resolver boundary",()=>{
   ]){const o=valid();mutate(o);expect(gradeWrongResolver(o).passed).toBe(false);}
  });
  it("grades the refused routes, pending card and linked request, not the reply's words",()=>{
-  // Reworded valid replies: different wording, the request linked by identifier or by id.
   for(const [reply,links] of [["That request is addressed to Alex, so Alex has to finish it from [their card](/CMP/issues/related).",["/CMP/issues/related"]],["Alex has to connect Notion from the card on [CMP-1](http://paperclip.test/CMP/issues/CMP-1).",["http://paperclip.test/CMP/issues/CMP-1"]]] as const){const o=valid();o.reply=reply;o.links=[...links];expect(gradeWrongResolver(o).passed).toBe(true);}
   expect(gradeWrongResolver(undefined).passed).toBe(false);
  });

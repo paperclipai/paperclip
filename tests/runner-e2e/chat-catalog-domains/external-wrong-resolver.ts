@@ -15,13 +15,10 @@ export function gradeWrongResolver(value:unknown){
  const denied=o.state.denied as Record<string,number>|undefined;
  c.add("all-addressed-resolution-surfaces-deny-other-person",!!denied&&["setupOptions","phase","complete","decline"].every(key=>denied[key]===403)&&o.state.waitingVisible===true&&o.state.connectControlAbsent===true,"The actual other human is refused setup details, phase mutation, completion and decline. Their visible card exposes waiting identity rather than a usable authorization control.");
  c.add("pending-work-and-identity-preserved",!!before&&!!after&&after.id===before.id&&after.kind===before.kind&&after.sourceRunId===before.sourceRunId&&after.payload?.serviceSlug===before.payload.serviceSlug&&after.addresseeUserId===before.addresseeUserId&&after.status==="pending"&&!after.result&&!after.resolvedByUserId&&!after.resolvedByAgentId&&o.state.relatedStatusUnchanged===true&&o.state.alexSourceRunCount===1&&o.connections.length===0&&o.state.canonicalSourceDifferent===true,"Unauthorized responses neither release the pending task nor create a connection, readdress the card, or schedule another Alex-source run.");
- // Reply wording is not graded. The chat must point the person at Alex's actual pending request, whose card
- // names the required resolver ("Waiting for Alex", verified after following the link); the refused routes and
- // the unchanged pending card prove the boundary held.
+ // Reply wording is not graded: the refused resolution routes and the unchanged pending card prove the boundary held.
  c.add("reply-links-alex-pending-request",!!related&&typeof o.state.companyPrefix==="string"&&linksRelatedRequest(o,related,o.state.companyPrefix),"The reply links Alex's actual pending request in this company, where the card shows whose action is required.");
  return c.result();
 }
-/** The reply's rendered same-origin link to the related task that holds Alex's card, by id or identifier. */
 export function relatedRequestHref(o:{links:string[];origin:string},related:Entity,companyPrefix:string):string|undefined{
  return o.links.find(link=>{try{const url=new URL(link,o.origin),parts=url.pathname.split("/").filter(Boolean);return url.origin===o.origin&&parts.length===3&&parts[0]===companyPrefix&&parts[1]==="issues"&&[related.id,related.identifier].some(value=>value===decodeURIComponent(parts[2]!));}catch{return false;}});
 }
