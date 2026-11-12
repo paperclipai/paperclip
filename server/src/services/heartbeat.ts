@@ -260,6 +260,7 @@ export {
   stripPaperclipSessionMetadataFromSessionParams,
   resolveTaskSessionConfigFreshness,
 } from "./heartbeat/workspaces.js";
+import { IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
 import { boundHeartbeatRunEventPayloadForStorage } from "./heartbeat/run-log.js";
 export {
   boundHeartbeatRunEventPayloadForStorage,
@@ -1048,6 +1049,7 @@ export function heartbeatService(
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
+    finalizeWorkspaceSourceLockWait,
     finalizeAgentDirectoryBusyDeferral,
     promoteDueScheduledRetries,
     nextScheduledRetryAt,
@@ -3963,6 +3965,18 @@ export function heartbeatService(
             logger.error(
               { err: deferralErr, runId },
               "failed to finalize workspace-busy deferral",
+            );
+          },
+        );
+      } else if (outerErr instanceof IsolatedRepositorySourceBusy) {
+        // A bounded workspace source lock wait ran out while this run was
+        // preparing: resource contention, not a failure. The finally block
+        // below still releases leases, runtime services, and scratch.
+        await finalizeWorkspaceSourceLockWait(run, outerErr).catch(
+          (deferralErr) => {
+            logger.error(
+              { err: deferralErr, runId },
+              "failed to finalize source-lock wait deferral",
             );
           },
         );

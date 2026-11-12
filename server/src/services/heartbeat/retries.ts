@@ -32,6 +32,7 @@ import {
 } from "../execution-recovery-attempt.js";
 import { isReplacedPreparation, isServerReplacementInterruption } from "../server-replacement-interruption.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
+import { IsolatedRepositorySourceBusy } from "../workspace-source-lock.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
@@ -1867,6 +1868,112 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }).catch(() => undefined);
   }
 
+  // Terminal handling for an IsolatedRepositorySourceBusy thrown while run
+  // preparation waited on a workspace source lock: contention is not a
+  // failure, so cancel the run as expected and park it as a scheduled retry in
+  // the same uncharged lane as a shared-workspace wait. When no retry can be
+  // scheduled the run fails, and its error names the SQLSTATE that ended the
+  // last wait.
+  async function finalizeWorkspaceSourceLockWait(
+    run: typeof heartbeatRuns.$inferSelect,
+    error: IsolatedRepositorySourceBusy,
+  ) {
+    const now = new Date();
+    const runContext = parseObject(run.contextSnapshot);
+    const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
+      error: error.message,
+      errorCode: WORKSPACE_BUSY_ERROR_CODE,
+      finishedAt: now,
+      resultJson: {
+        executionRecovery: {
+          kind: "workspace_wait",
+          providerWorkStarted: false,
+        },
+        cancellation: {
+          source: "control_plane",
+          expected: true,
+          initiator: { type: "system" },
+          reason: "Waiting for a workspace source lock",
+          recordedAt: now.toISOString(),
+        },
+      },
+      contextSnapshot: runContext,
+    });
+    if (!cancelWrite.updated) {
+      logger.info(
+        { runId: run.id, currentStatus: cancelWrite.run?.status ?? null },
+        "skipping source-lock wait finalization because the run already left running state",
+      );
+      return;
+    }
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: now,
+      error: error.message,
+    }).catch(() => undefined);
+
+    const cancelledRun =
+      cancelWrite.run ?? (await getRun(run.id).catch(() => null));
+    const agentRow = await getAgent(run.agentId).catch(() => null);
+    let scheduleOutcome: string | null = null;
+    if (cancelledRun && agentRow) {
+      const scheduleResult = await scheduleBoundedRetryForRun(
+        cancelledRun,
+        agentRow,
+        {
+          now,
+          retryReason: WORKSPACE_BUSY_RETRY_REASON,
+          wakeReason: WORKSPACE_BUSY_RETRY_WAKE_REASON,
+          // Always admit the next attempt: the wait is bounded by the lock
+          // timeout on each try, not by an attempt counter.
+          maxAttempts: (cancelledRun.scheduledRetryAttempt ?? 0) + 1,
+          delayMs: computeWorkspaceBusyRetryDelayMs(),
+        },
+      ).catch((scheduleErr) => {
+        logger.error(
+          { err: scheduleErr, runId: run.id },
+          "failed to schedule a retry after a bounded source-lock wait",
+        );
+        return null;
+      });
+      scheduleOutcome = scheduleResult?.outcome ?? null;
+    }
+
+    if (cancelledRun && scheduleOutcome === "scheduled") {
+      await appendRunEvent(cancelledRun, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: `Deferred: ${error.message}. The run waits for the workspace source lock to free.`,
+        payload: { retryScheduled: true },
+      }).catch(() => undefined);
+      await finalizeAgentStatus(run.agentId, "cancelled", null, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+      }).catch(() => undefined);
+      return;
+    }
+
+    const sqlstate = error.sqlstate ?? "55P03";
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "setup_failed",
+      error: `${error.message} (last workspace source lock wait ended with SQLSTATE ${sqlstate})`,
+      updatedAt: now,
+    }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
+    if (cancelledRun) {
+      await releaseIssueExecutionAndPromote(cancelledRun).catch(
+        (releaseErr) => {
+          logger.error(
+            { err: releaseErr, runId: run.id },
+            "failed to release issue execution after a bounded source-lock wait",
+          );
+        },
+      );
+    }
+    await finalizeAgentStatus(run.agentId, "failed", null, {
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+    }).catch(() => undefined);
+  }
+
   async function scheduleInteractionContinuationInfrastructureRetryIfEligible(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -2165,6 +2272,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
+    finalizeWorkspaceSourceLockWait,
     finalizeAgentDirectoryBusyDeferral,
     promoteDueScheduledRetries,
     nextScheduledRetryAt,

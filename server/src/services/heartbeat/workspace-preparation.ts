@@ -173,6 +173,8 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+const WORKSPACE_SOURCE_LOCK_WAIT = { waitMs: 30_000 } as const;
+
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
   const sourceIssueId = input.reuse.reusableExistingExecutionWorkspace?.sourceIssueId
     ?? input.reuse.existingExecutionWorkspace?.sourceIssueId ?? input.task.issueId;
@@ -180,7 +182,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   // A run can be dispatched from inside another operation's source scope, for
   // example by a recovery timer. Its preparation owns its own locks.
   if (!sourceIssueId) return withIndependentWorkspaceSourceLocks(db, { companyId: input.agent.companyId },
-    () => prepareHeartbeatWorkspaceLocked(db, input));
+    () => prepareHeartbeatWorkspaceLocked(db, input), false, WORKSPACE_SOURCE_LOCK_WAIT);
   return withIndependentWorkspaceSourceLocks(db, { companyId: input.agent.companyId,
     issueIds: [...new Set([sourceIssueId, input.task.issueId].filter((id): id is string => Boolean(id)))] }, async () => {
     const reuse = { ...input.reuse };
@@ -194,7 +196,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
       if (current && readRemoteWorkspaceAuthority(current.metadata)) reuse[key] = current;
     }
     return prepareHeartbeatWorkspaceLocked(db, { ...input, reuse });
-  });
+  }, false, WORKSPACE_SOURCE_LOCK_WAIT);
 }
 
 async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspacePreparationInput) {
