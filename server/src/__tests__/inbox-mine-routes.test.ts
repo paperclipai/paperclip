@@ -178,6 +178,30 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     }
   });
 
+  it("keeps an agent's assigned private task in its queue only when its responsible user may open it", async () => {
+    const f = await seed("Agent queue privacy");
+    const other = `other-${randomUUID()}`;
+    const agent = await addAgent(f.companyId);
+    const ownId = randomUUID(), otherId = randomUUID();
+    await addTask(f.companyId, f.userId, {
+      id: ownId, title: "OWN_PRIVATE_TASK", visibility: "private", privacyRootIssueId: ownId,
+      responsibleUserId: f.userId, assigneeAgentId: agent.id,
+    });
+    await addTask(f.companyId, other, {
+      id: otherId, title: "OTHER_PRIVATE_TASK", visibility: "private", privacyRootIssueId: otherId,
+      responsibleUserId: other, assigneeAgentId: agent.id,
+    });
+    const app = appFor(null, {}, {
+      type: "agent", agentId: agent.id, companyId: f.companyId, source: "agent_key", onBehalfOfUserId: f.userId,
+    });
+
+    const queue = await request(app).get("/api/agents/me/inbox-lite").expect(200);
+    expect((queue.body as Array<{ id: string }>).map(row => row.id)).toEqual([ownId]);
+    const mine = await request(app).get("/api/agents/me/inbox/mine").query({ userId: f.userId }).expect(200);
+    expect((mine.body as Array<{ id: string }>).map(row => row.id)).toEqual([ownId]);
+    expect(JSON.stringify([queue.body, mine.body])).not.toContain("OTHER_PRIVATE_TASK");
+  });
+
   it("owns the 100-task and 200-run bounds and rejects caller filters or unauthorized identities", async () => {
     const f = await seed("Snapshot bounds");
     const ids = Array.from({ length: 105 }, () => randomUUID());
