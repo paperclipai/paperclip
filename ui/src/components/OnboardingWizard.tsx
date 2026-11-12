@@ -1321,12 +1321,15 @@ function OnboardingWizardInner({
   }, [moreAdapters, adapterType]);
 
   /**
-   * A source chosen from the visible row. Read off the row rather than off
+   * A source chosen from the visible rows. Read off the rows rather than off
    * `adapterType` alone, because a restored draft can name an adapter this step
-   * no longer offers — a selection the customer cannot see.
+   * no longer offers — a selection the customer cannot see. Both rows count:
+   * the recommended row and "More harnesses" — a pick from More is a real
+   * selection, and excluding it left `connectStepReady` false forever.
    */
   const sourceSelected =
-    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+    sourcePicked &&
+    [...recommendedAdapters, ...moreAdapters].some((opt) => opt.type === adapterType);
 
   /**
    * Whether the connect step may advance.

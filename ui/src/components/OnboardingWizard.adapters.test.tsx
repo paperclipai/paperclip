@@ -417,6 +417,25 @@ describe("OnboardingWizard adapter selection", () => {
     );
     expect(cursorCloudButton).toBeUndefined();
 
+    // Picking the visible "More harnesses" option is a real selection: the
+    // step's Connect button must go live. Before the fix, `sourceSelected`
+    // searched only the recommended row, so `connectStepReady` stayed false
+    // and onboarding could not continue from a More pick.
+    await act(async () => {
+      cursorButton?.click();
+    });
+    await flushReact();
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    });
+    await flushReact();
+
+    const connectButton = Array.from(document.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.trim() === "Connect",
+    );
+    expect(connectButton).toBeTruthy();
+    expect(connectButton?.disabled).toBe(false);
+
     await act(async () => {
       root.unmount();
     });
