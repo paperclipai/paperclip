@@ -2485,8 +2485,14 @@ is handed over, never paused.
     old. The pass waits at most 1 second for that read.
 
   The read is a single flight. A database statement timeout cancels it, so a
-  slow read never piles further reads onto the shared pool. A read that fails
-  leaves the server admitting. While it yields, the old server rechecks every
+  slow read never piles further reads onto the shared pool. Marker writes are
+  liveness writes and use the small liveness pool. An unanswered read never
+  keeps a server yielding:
+  - A read that fails leaves the server admitting.
+  - A dispatch that gets no answer within 1 second admits.
+  - A yield always ends when the replacement's last seen lease runs out on
+    this server's own clock, whether or not a read is still waiting for a
+    connection. While it yields, the old server rechecks every
   3 seconds on the shared worker scheduler and keeps its notification
   listener on. For starts it skips, it notifies the new server's queued-run
   dispatch at most once a second, so the new server starts those runs without

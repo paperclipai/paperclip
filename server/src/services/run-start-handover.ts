@@ -1,5 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { livenessDb, type Db } from "@paperclipai/db";
 import { publishDatabaseWorkHint } from "@paperclipai/db/work-signals";
 import { logger } from "../middleware/logger.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "./controller-process-identity.js";
@@ -25,8 +25,12 @@ import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "./task-admi
  * `dispatching_at is not null and dispatch_lease_expires_at > now()
  *  and stopped_at is null and fenced_at is null`.
  *
- * Database use: the server's shared pool, at most one read and one write of
- * this module in flight at a time, each bounded by a statement timeout.
+ * Database use: marker writes are liveness writes on the server's small liveness
+ * pool, so they never queue behind slow statements on the shared pool. Reads use
+ * the shared pool. At most one read and one write are in flight, each bounded by
+ * a statement timeout. An unanswered read never keeps this server yielding: a
+ * dispatch that cannot get an answer within a second admits, and a yield always
+ * ends when the replacement's last seen lease runs out on this server's clock.
  */
 export const RUN_START_HANDOVER_RENEW_MS = 5_000;
 export const RUN_START_HANDOVER_TTL_MS = 20_000;
@@ -95,14 +99,16 @@ export function createRunStartHandover(input: {
 
   // Older-server side: the in-memory flag every run start reads.
   let yieldingTo: string | null = null;
+  /** Local-clock end of the replacement's last seen lease: a yield is never kept past it, read or no read. */
+  let yieldUntil = Number.NEGATIVE_INFINITY;
   let lastReadAt = Number.NEGATIVE_INFINITY;
   let reading: Promise<void> | null = null;
   let readRequested = false;
   let lastSkipHintAt = Number.NEGATIVE_INFINITY;
 
   /** One statement under a statement timeout, so a slow database cancels it instead of holding a pool connection. */
-  function bounded<T>(statement: SQL, timeoutMs: number): Promise<T[]> {
-    return db.transaction(async tx => {
+  function bounded<T>(statement: SQL, timeoutMs: number, pool: Db = db): Promise<T[]> {
+    return pool.transaction(async tx => {
       await tx.execute(sql`select set_config('statement_timeout', ${String(timeoutMs)}, true)`);
       return await tx.execute(statement) as unknown as T[];
     });
@@ -129,13 +135,14 @@ export function createRunStartHandover(input: {
       returning exists (select 1 from controller_instances older
         where older.epoch < controller_instances.epoch and older.boot_id <> ${bootId}
           and older.stopped_at is null and older.fenced_at is null
-          and older.lease_expires_at > now() - ${interval(t.olderBootWindowMs)}) as "olderMayServe"`, t.writeStatementTimeoutMs);
+          and older.lease_expires_at > now() - ${interval(t.olderBootWindowMs)}) as "olderMayServe"`, t.writeStatementTimeoutMs,
+      livenessDb(db));
     return row ?? null;
   }
 
   async function clearLease() {
     await bounded(sql`update controller_instances set dispatch_lease_expires_at = null
-      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs);
+      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs, livenessDb(db));
     // Only a clear that succeeded ends the marker; a failed one is retried by the next release or renewal.
     leaseHeld = false;
     markerMayBeLive = false;
@@ -170,22 +177,30 @@ export function createRunStartHandover(input: {
   /** Read whether a newer boot starts runs now. A failed or cancelled read resumes run starts here. */
   async function read(): Promise<void> {
     let next: string | null = null;
+    let until = Number.NEGATIVE_INFINITY;
+    const askedAt = Date.now();
     try {
-      const [row] = await bounded<{ bootId: string }>(sql`
-        select newer.boot_id as "bootId" from controller_instances me
+      const [row] = await bounded<{ bootId: string; remainingMs: number }>(sql`
+        select newer.boot_id as "bootId",
+          extract(epoch from newer.dispatch_lease_expires_at - now()) * 1000 as "remainingMs"
+        from controller_instances me
         join controller_instances newer on newer.epoch > me.epoch and newer.boot_id <> me.boot_id
         where me.boot_id = ${bootId} and newer.dispatching_at is not null
           and newer.dispatch_lease_expires_at > now()
           and newer.stopped_at is null and newer.fenced_at is null
         order by newer.epoch desc limit 1`, t.readStatementTimeoutMs);
       next = row?.bootId ?? null;
+      // Counted from when the read was asked, so time spent waiting for the answer only shortens the yield.
+      if (row) until = askedAt + Number(row.remainingMs);
     } catch (error) {
       logger.warn({ err: error }, "run start hand-over read failed; this server keeps starting runs");
     }
     lastReadAt = Date.now();
     if (stopped) return;
     const previous = yieldingTo;
-    yieldingTo = next;
+    yieldingTo = next && until > Date.now() ? next : null;
+    yieldUntil = until;
+    next = yieldingTo;
     if (next && !previous) {
       logger.info({ replacementBootId: next }, "a newer server is starting runs; this server leaves new run starts to it");
       skipHint(true);
@@ -196,6 +211,17 @@ export function createRunStartHandover(input: {
       changed();
       input.onResume?.();
     }
+    // Schedule the next recheck from this answer.
+    if (yieldingTo) worker.wake();
+  }
+
+  /** The replacement's lease ran out on this server's clock: start runs again even if no read has answered. */
+  function expireYield() {
+    if (!yieldingTo || Date.now() < yieldUntil) return;
+    logger.warn({ replacementBootId: yieldingTo }, "the newer server's run start lease ran out; this server starts runs again");
+    yieldingTo = null;
+    changed();
+    queueMicrotask(() => input.onResume?.());
   }
 
   /** Single flight: a slow read stays tracked until it settles, so reads never pile up on the pool. */
@@ -217,7 +243,7 @@ export function createRunStartHandover(input: {
     const deadlines: number[] = [];
     // Renew while handing over and able to start runs; a drain change wakes the worker otherwise.
     if (handingOver() && input.canDispatch()) deadlines.push(lastWriteAt + t.renewMs);
-    if (yieldingTo) deadlines.push(lastReadAt + t.recheckMs);
+    if (yieldingTo) deadlines.push(reading ? yieldUntil : Math.min(lastReadAt + t.recheckMs, yieldUntil));
     return deadlines.length ? Math.max(Date.now(), Math.min(...deadlines)) : null;
   }
 
@@ -229,10 +255,12 @@ export function createRunStartHandover(input: {
     onSettled: () => { readRequested = true; },
     run: async () => {
       if (stopped) return;
+      expireYield();
       if (handingOver()) await maintainLease();
-      if (readRequested || (yieldingTo && Date.now() - lastReadAt >= t.recheckMs)) {
+      if (readRequested || (yieldingTo && !reading && Date.now() - lastReadAt >= t.recheckMs)) {
         readRequested = false;
-        await refresh();
+        // Not awaited: a read stuck behind the pool must not hold the worker, whose lease-expiry deadline still fires.
+        void refresh();
       }
     },
     hasPending: async () => false,
@@ -259,6 +287,7 @@ export function createRunStartHandover(input: {
     },
     /** The hot-path flag: a newer server starts runs, so this one starts none. Never queries inline. */
     isYielding(): boolean {
+      expireYield();
       if (yieldingTo) skipHint();
       return yieldingTo !== null;
     },
@@ -266,9 +295,20 @@ export function createRunStartHandover(input: {
     refreshIfStale(): Promise<void> | null {
       if (stopped || Date.now() - lastReadAt < t.staleAwaitMs) return null;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      // The read keeps running (and stays the single flight) if this caller stops waiting.
-      return Promise.race([refresh(), new Promise<void>(resolve => { timer = setTimeout(resolve, t.readWaitMs); })])
-        .finally(() => clearTimeout(timer));
+      const read = refresh();
+      // The read keeps running (and stays the single flight) if this caller stops waiting. Until it
+      // answers, an unconfirmed yield is not trusted: this server admits rather than risk a pause.
+      const waited = new Promise<void>(resolve => {
+        timer = setTimeout(() => {
+          if (reading === read && yieldingTo) {
+            logger.warn({ replacementBootId: yieldingTo }, "run start hand-over read is slow; this server starts runs until it answers");
+            yieldingTo = null;
+            changed();
+          }
+          resolve();
+        }, t.readWaitMs);
+      });
+      return Promise.race([read, waited]).finally(() => clearTimeout(timer));
     },
     refresh,
     /** This server holds a hand-over an older server may be reading. */

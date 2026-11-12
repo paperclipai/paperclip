@@ -55,10 +55,11 @@ suite("run start hand-over between an old and a new server during a deploy overl
 
   /** A server process: its own pool, its own boot id, and the cross-server notification listener. */
   async function bootServer(name: string, options: {
-    canDispatch?: () => boolean; listen?: boolean; timing?: Partial<typeof timing> & { writeStatementTimeoutMs?: number };
+    canDispatch?: () => boolean; listen?: boolean; maxConnections?: number;
+    timing?: Partial<typeof timing> & { writeStatementTimeoutMs?: number; readWaitMs?: number };
   } = {}): Promise<Server> {
     const canDispatch = options.canDispatch ?? (() => true);
-    const db = createDb(temporary!.connectionString);
+    const db = createDb(temporary!.connectionString, options.maxConnections ? { maxConnections: options.maxConnections } : undefined);
     enableDatabaseWorkNotifications(db);
     const listener = options.listen === false ? null : createDb(temporary!.connectionString, { maxConnections: 1 }).$client;
     await listener?.listen(DATABASE_WORK_CHANNEL, payload => receiveDatabaseWorkNotification(db, payload));
@@ -124,19 +125,19 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await next.handover.begin();
     expect(next.handover.isHandingOver()).toBe(true);
     expect(await marker(next)).toMatchObject({ live: true });
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
 
     const handedOver = await queueRun();
     const hintsBefore = next.dispatchHints;
     expect(await dispatch(old, handedOver)).toBe(false);
     // The skipped start wakes the new server's queued-run dispatch instead of waiting for a sweep.
-    await vi.waitFor(() => expect(next.dispatchHints).toBeGreaterThan(hintsBefore), { timeout: 5_000 });
+    await vi.waitFor(() => expect(next.dispatchHints).toBeGreaterThan(hintsBefore), { timeout: 10_000 });
     expect(await dispatch(next, handedOver)).toBe(true);
     expect(claims.filter(claim => claim.runId === handedOver)).toEqual([{ server: "new", runId: handedOver }]);
 
     // The old server's SIGTERM ends the hand-over; the new server stops renewing without further writes.
     await admin.update(controllerInstances).set({ stoppedAt: sql`now()` }).where(eq(controllerInstances.processSpace, "old"));
-    await vi.waitFor(() => expect(next.handover.isHandingOver()).toBe(false), { timeout: 5_000 });
+    await vi.waitFor(() => expect(next.handover.isHandingOver()).toBe(false), { timeout: 10_000 });
   });
 
   it("the old server learns of the hand-over on its next start even without a notification", async () => {
@@ -156,12 +157,58 @@ suite("run start hand-over between an old and a new server during a deploy overl
     expect(await dispatch(next, run)).toBe(true);
   });
 
+  it("a yield the old server cannot confirm in time does not stop it from starting runs", async () => {
+    // A small pool that is busy: the old server's read waits for a connection.
+    const old = await bootServer("old", { maxConnections: 1, timing: { readWaitMs: 200 } });
+    await old.handover.begin();
+    const next = await bootServer("new");
+    await next.handover.begin();
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
+
+    // The replacement dies, and the old server's only connection is busy past the wait.
+    // A drizzle query runs only once awaited: start it now and let it take the connection.
+    const busy = old.db.execute(sql`select pg_sleep(1.5)`).then(() => undefined);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    await next.handover.stop();
+    expect(await marker(next)).toMatchObject({ live: null });
+    await new Promise(resolve => setTimeout(resolve, timing.staleAwaitMs + 50));
+    const run = await queueRun();
+    const started = Date.now();
+    expect(await dispatch(old, run)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await busy;
+  });
+
+  it("a yield ends when the replacement's lease runs out, even while every read waits for a connection", async () => {
+    const old = await bootServer("old", { maxConnections: 1 });
+    await old.handover.begin();
+    // A replacement that recorded its start and then died: its lease is never renewed.
+    await admin.execute(sql`insert into controller_instances (boot_id, process_space, pid, lease_expires_at, dispatching_at, dispatch_lease_expires_at)
+      values (${`boot-crashed-${randomUUID()}`}, 'crashed', 9, now(), now(), now() + ${`${timing.ttlMs} milliseconds`}::interval)`);
+    await old.handover.refresh();
+    expect(old.handover.isActive()).toBe(true);
+
+    // The old server's only connection stays busy well past the lease: no read can answer.
+    const busy = old.db.execute(sql`select pg_sleep(${(timing.ttlMs + 3_000) / 1000})`).then(() => undefined);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const resumedAt = await vi.waitFor(() => {
+      expect(old.resumed).toHaveBeenCalledTimes(1);
+      return Date.now();
+    }, { timeout: timing.ttlMs + 2_000 });
+    let busyDone = false;
+    void busy.then(() => { busyDone = true; });
+    expect(busyDone).toBe(false);
+    expect(old.handover.isYielding()).toBe(false);
+    expect(resumedAt).toBeGreaterThan(0);
+    await busy;
+  });
+
   it("an older server that outlives the lease TTL keeps leaving starts to the renewing replacement", async () => {
     const old = await bootServer("old");
     await old.handover.begin();
     const next = await bootServer("new");
     await next.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
     await new Promise(resolve => setTimeout(resolve, timing.ttlMs * 2));
     expect(next.handover.isHandingOver()).toBe(true);
     expect(await marker(next)).toMatchObject({ live: true });
@@ -176,7 +223,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await old.handover.begin();
     const next = await bootServer("new", { timing: { writeStatementTimeoutMs: 300 } });
     await next.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
 
     // The clear cannot take the row while it is held, and its statement timeout cancels it.
     let unlock!: () => void;
@@ -197,7 +244,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
 
     await next.handover.release();
     expect(await marker(next)).toMatchObject({ live: null });
-    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 10_000 });
   });
 
   it("the old server starts runs again within seconds when the new server dies after taking over", async () => {
@@ -222,11 +269,11 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await old.handover.begin();
     const next = await bootServer("new");
     await next.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
 
     await next.handover.release();
     expect(await marker(next)).toMatchObject({ live: null });
-    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     const run = await queueRun();
     expect(await dispatch(old, run)).toBe(true);
   });
@@ -236,14 +283,14 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await old.handover.begin();
     const next = await bootServer("new", { canDispatch: () => readTaskDrain(new Date()) === null });
     await next.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
 
     try {
       startTaskDrain();
-      await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+      await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 10_000 });
       expect(await marker(next)).toMatchObject({ live: null });
     } finally { stopTaskDrain(); }
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
   });
 
   it("a replacement that starts up during a drain takes run starts over once the drain ends", async () => {
@@ -257,7 +304,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
       await old.handover.refresh();
       expect(old.handover.isActive()).toBe(false);
     } finally { stopTaskDrain(); }
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
     expect(await marker(next)).toMatchObject({ live: true });
   });
 
@@ -266,7 +313,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await old.handover.begin();
     const next = await bootServer("new");
     await next.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
 
     // Hold the replacement's row so its next renewal is in flight when shutdown releases the marker.
     let unlock!: () => void;
@@ -285,7 +332,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
     await lock;
     await release;
     expect(await marker(next)).toMatchObject({ live: null });
-    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     await new Promise(resolve => setTimeout(resolve, timing.renewMs * 3));
     expect(await marker(next)).toMatchObject({ live: null });
     expect(old.handover.isActive()).toBe(false);

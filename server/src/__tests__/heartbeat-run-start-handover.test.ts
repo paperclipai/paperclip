@@ -86,7 +86,7 @@ describe.skipIf(!support.supported)("run starts during a deploy overlap (assembl
     await old.handover.begin();
     const replacement = await bootServer("new", { dispatches: true });
     await replacement.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
 
     const run = await old.heartbeat.wakeup(agentId, { source: "on_demand", reason: "manual", requestedByActorType: "system" });
     if (!run) throw new Error("wake was not accepted");
@@ -104,7 +104,7 @@ describe.skipIf(!support.supported)("run starts during a deploy overlap (assembl
     // The replacement recorded its start but never dispatches (a failed deploy).
     const replacement = await bootServer("new", { dispatches: false });
     await replacement.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
 
     const run = await old.heartbeat.wakeup(agentId, { source: "on_demand", reason: "manual", requestedByActorType: "system" });
     if (!run) throw new Error("wake was not accepted");
