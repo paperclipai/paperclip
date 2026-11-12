@@ -6,7 +6,8 @@ import { SUPERSEDED_WORKSPACE_EXPORT_KEY, SUPERSEDED_WORKSPACE_EXPORT_SCHEMA } f
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "../remote-workspace-epoch-abandonment.js";
 import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
-import { hasConfirmedSandboxStopAndRetain, hasStopOnlyCleanup, prepareUnconfirmedSourceSandboxStop } from "../sandbox-stop-and-retain.js";
+import { hasConfirmedSandboxStopAndRetain, hasStopOnlyCleanup, prepareUnconfirmedSourceSandboxStop,
+  SANDBOX_ALLOCATION_HOLDER_STATUSES } from "../sandbox-stop-and-retain.js";
 import { logActivity } from "../activity-log.js";
 import { hasRequiredWorkspaceRecovery } from "../workspace-restore-recovery-state.js";
 
@@ -157,7 +158,7 @@ async function requestSourceSandboxStop(db: Db, lease: typeof environmentLeases.
   // A sandbox another lease holds is never stopped from here.
   const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
     ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider),
-    eq(environmentLeases.providerLeaseId, lease.providerLeaseId), inArray(environmentLeases.status, ["active", "pending_cleanup"])))
+    eq(environmentLeases.providerLeaseId, lease.providerLeaseId), inArray(environmentLeases.status, [...SANDBOX_ALLOCATION_HOLDER_STATUSES])))
     .limit(1);
   if (other) return "in_use";
   // The pending-cleanup sweep dispatches the stop and retries it until the

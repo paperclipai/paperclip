@@ -285,6 +285,44 @@ describe("a superseded run whose workspace export failed", () => {
     expect(await notices(f)).toEqual([]);
   }, 60_000);
 
+  it("continues from the last save when Paperclip's own stop finds the sandbox already gone", async () => {
+    const f = await supersededExport("never_requested");
+    await endedAgo(f, 2 * 60 * 60_000);
+    await checkThroughProjectionWorker(f);
+    const stopping = await lease(f.lease.id);
+    // The provider answers the stop-only dispatch with its "gone" receipt
+    // (boxd: destroyed; Daytona: not found, reported as destroyed).
+    let woken = 0;
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeRunProjection, () => { woken++; });
+    try {
+      expect(await settleStopOnlyCleanup(db, stopping, { attemptId: String(stopping.metadata!.pendingCleanupAttemptId),
+        receipt: { providerLeaseId: f.providerLeaseId, state: "destroyed" } })).toMatchObject({ status: "released" });
+      await vi.waitFor(() => expect(woken).toBeGreaterThan(0));
+    } finally { unsubscribe(); }
+    expect((await lease(f.lease.id)).metadata).not.toHaveProperty("sandboxStopAndRetainReceipt");
+    expect(await checkThroughProjectionWorker(f)).toBeNull();
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata))
+      .toMatchObject({ writerRunId: null, dirty: false, epoch: 2 });
+    expect(await writerHold(f)).toEqual({ kind: "free" });
+    expect(await preservation(f)).toBeNull();
+  }, 60_000);
+
+  it("never stops a sandbox a retained warm lease still holds, says so once and keeps checking", async () => {
+    const f = await supersededExport("never_requested");
+    await endedAgo(f, 2 * 60 * 60_000);
+    const source = await lease(f.lease.id);
+    const { id: _id, ...shape } = source;
+    await db.insert(environmentLeases).values({ ...shape, id: randomUUID(), heartbeatRunId: null, status: "retained",
+      leasePolicy: "reuse_by_environment", releasedAt: null, metadata: { remoteCwd: source.metadata?.remoteCwd } });
+    const before = Date.now();
+    const next = await checkThroughProjectionWorker(f);
+    expect(next?.dueAt).toBeGreaterThanOrEqual(before + 15 * 60_000);
+    // The source lease is untouched: no stop intent was written.
+    expect(await lease(f.lease.id)).toEqual(source);
+    expect((await notices(f)).map(row => row.details)).toEqual([expect.objectContaining({ reason: "sandbox_in_use" })]);
+    expect(await writerHold(f)).toMatchObject({ kind: "held", writer: { runId: f.runId } });
+  }, 60_000);
+
   it("leaves a superseded result alone when it never failed in the workspace export", async () => {
     const f = await supersededExport();
     await db.update(nativeRunFinalizations).set({ failureDetail: { originalFailureCode: "native_status_conflict",
