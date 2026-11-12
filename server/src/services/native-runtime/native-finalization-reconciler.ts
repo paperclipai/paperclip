@@ -29,6 +29,8 @@ import {
   type OwnershipReport,
 } from "../recovery/ownership-invariant-report.js";
 import { deferredWorkIntentWait, promoteDeferredWorkIntents, saveUndeliveredUserComments } from "../work-intent-outbox.js";
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
+import { QUEUED_RUN_NOT_DISPATCHED } from "../queued-run-dispatch-liveness.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -55,7 +57,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
-import { resumeNativeWorkspaceFinalization, recordNativeWorkspaceFinalizationFailure } from "./native-workspace-finalizer.js";
+import { attemptNativeWorkspaceFinalization, recordNativeWorkspaceFinalizationFailure } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
   cleanupNativeWorkspaceSync,
@@ -242,6 +244,7 @@ export async function claimNativeSessionResumptions(input: {
         const failureCode = originalFailureCode;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, row.run.companyId);
         await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
+        await notifyQueuedRunDispatch(tx, { companyId: row.run.companyId });
         await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           leaseOwner: null,
@@ -651,23 +654,21 @@ async function reconcileNativeFinalizationsPass(
       if (!recoveryDecision.effects.some((effect) => effect.kind === "resume_workspace_operation")) {
         throw new Error("native_reconciliation_workspace_resume_policy_missing");
       }
-      const operation = await resumeNativeWorkspaceFinalization({
+      const outcome = await attemptNativeWorkspaceFinalization({
         db,
         runId: row.runId,
         environmentRuntime: options.environmentRuntime,
         pluginWorkerManager: options.pluginWorkerManager,
       });
       // Busy is ownership, not another failed export or retry-budget debit.
-      if (!operation) continue;
-      const workspaceFinalizeStatus =
-        operation.status === "succeeded" ? "succeeded" : "failed";
-      if (workspaceFinalizeStatus === "failed") {
-        const failure = await recordNativeWorkspaceFinalizationFailure(db, row.runId, operation);
+      if (outcome.kind !== "completed" && outcome.kind !== "failed") continue;
+      if (outcome.kind === "failed" || outcome.operation.status !== "succeeded") {
+        const failure = await recordNativeWorkspaceFinalizationFailure(db, row.runId, outcome.operation);
         results.push({
           ...failure,
           reconciliationAction: "resume_workspace_operation" as const,
-          workspaceOperationId: operation.id,
-          workspaceFinalizeStatus,
+          ...(outcome.kind === "completed" ? { workspaceOperationId: outcome.operation.id } : {}),
+          workspaceFinalizeStatus: "failed" as const,
           reconciliationDecision: recoveryDecision,
         });
         if (failure.phase === "terminal_failure") {
@@ -682,6 +683,8 @@ async function reconcileNativeFinalizationsPass(
         }
         continue;
       }
+      const { operation } = outcome;
+      const workspaceFinalizeStatus = "succeeded" as const;
       if (options.skipNativeResultCommit && row.coordinatorPhase !== "committed") continue;
       try {
         const finalized = await finalizeNativeRun({
@@ -865,6 +868,12 @@ export async function applyOwnershipReportBackstops(db: Db, report: OwnershipRep
   for (const companyId of companies) {
     await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId, trigger: "reconciler_backstop" }))
       .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"); });
+  }
+  const undispatched = new Set(report.newViolations.filter(violation => violation.reason === QUEUED_RUN_NOT_DISPATCHED)
+    .flatMap(violation => violation.companyId ? [violation.companyId] : []));
+  for (const companyId of undispatched) {
+    await db.transaction(tx => notifyQueuedRunDispatch(tx, { companyId }))
+      .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "queued run dispatch backstop failed"); });
   }
   return { retryNeeded };
 }

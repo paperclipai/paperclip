@@ -346,6 +346,19 @@ export async function withReleasedNativeRunProcess<T extends {
 }
 
 /** Recover the exact stopped identity after the mutable run fields were cleared. */
+export async function readUnidentifiedLocalRunnerStop(db: Db, companyId: string, runId: string): Promise<boolean> {
+  const [latest, launch] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, runId),
+      isNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED])))
+    .orderBy(desc(heartbeatRunEvents.seq)).limit(2);
+  if (latest?.eventType !== LOCAL_PROCESS_STOPPED || latest.payload?.basis !== "unidentified_runner_absent" ||
+      launch?.eventType !== PROCESS_START_REQUESTED || launch.payload?.hostname !== os.hostname()) return false;
+  const { noLocalRunnerProcessForRun } = await import("./native-runtime/native-session-executor.js");
+  return noLocalRunnerProcessForRun(runId);
+}
+
 export async function readNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
   const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
     .from(heartbeatRunEvents)

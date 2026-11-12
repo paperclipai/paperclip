@@ -115,12 +115,14 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
         }
       : undefined,
     controlPlaneRegistration: async (authority, attachmentIdentity) => {
-      await input.beforeConnect?.(attachmentIdentity, authority);
-      if (input.controllerPersistence && input.binding.issueId) {
-        await nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
-          binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },
-        })(authority, attachmentIdentity);
-      }
+      await measureNativeRunnerSpan(input.trace, "runner.checkpoint.register", async () => {
+        await input.beforeConnect?.(attachmentIdentity, authority);
+        if (input.controllerPersistence && input.binding.issueId) {
+          await nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
+            binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },
+          })(authority, attachmentIdentity);
+        }
+      }, { parentName: "runner.session.startup" });
       return measureNativeRunnerSpan(
         input.trace,
         "runner.transport.connect",

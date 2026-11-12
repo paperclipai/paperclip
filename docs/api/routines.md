@@ -187,6 +187,8 @@ POST /api/routines/{routineId}/run
 
 Fires a run immediately, bypassing the schedule. Concurrency policy still applies.
 
+A run an agent starts through this endpoint is always recorded with source `manual`; the server ignores a `source` value an agent sends. Board callers may send `manual` or `api`.
+
 `triggerId` is optional. When supplied, the server validates the trigger belongs to this routine (`403`) and is enabled (`409`), then records the run against that trigger and updates its `lastFiredAt`. Omit it for a generic manual run with no trigger attribution.
 
 ## Fire Public Trigger

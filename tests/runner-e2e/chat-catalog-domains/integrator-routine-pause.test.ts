@@ -18,6 +18,9 @@ describe("routine schedule pause versus actual in-flight work", () => {
     expect(gradeIntegratorRoutinePause(paraphrase).passed).toBe(true);
     const finishing = valid(); finishing.state.pauseCheckpoint.reply = "Paused the routine. COM-2 had already started and is still finishing under Morgan.";
     expect(gradeIntegratorRoutinePause(finishing).passed).toBe(true);
+    // Full cohort 4: a correct reply offering how to stop the run is not a cancellation claim.
+    const offer = valid(); offer.state.pauseCheckpoint.reply = "Paused Daily launch summaries. COM-2 is still running under Morgan. If you want that one stopped too, use Pause on its task page.";
+    expect(gradeIntegratorRoutinePause(offer).passed).toBe(true);
     const empty = valid(); empty.state.pauseCheckpoint.reply = " ";
     expect(gradeIntegratorRoutinePause(empty).passed).toBe(false);
   });
@@ -30,10 +33,12 @@ describe("routine schedule pause versus actual in-flight work", () => {
     const fake = valid(); fake.state.pauseCheckpoint.runs[0]!.status = "succeeded";
     expect(gradeIntegratorRoutinePause(fake).passed).toBe(false);
   });
-  it("rejects false cancellation and actual cancellation instead of normal completion", () => {
-    const falseReply = valid(); falseReply.state.pauseCheckpoint.reply = "Paused the schedule and cancelled the running task.";
-    expect(gradeIntegratorRoutinePause(falseReply).passed).toBe(false);
+  it("rejects actual cancellation instead of normal completion", () => {
     const cancelled = valid(); cancelled.runs[0]!.status = "cancelled";
     expect(gradeIntegratorRoutinePause(cancelled).passed).toBe(false);
+    const cancelledTask = valid(); cancelledTask.tasks[1]!.status = "cancelled";
+    expect(gradeIntegratorRoutinePause(cancelledTask).passed).toBe(false);
+    const stoppedAtResponse = valid(); stoppedAtResponse.state.pauseCheckpoint.runs[0]!.status = "cancelled";
+    expect(gradeIntegratorRoutinePause(stoppedAtResponse).passed).toBe(false);
   });
 });

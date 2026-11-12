@@ -21,7 +21,7 @@ function fixture(failAt?: number) {
   const versions = () => missingHistory ? [] : [{ id: "old", fileInventory: [{ path: "SKILL.md", content: old }] }, ...(installed() ? [{ id: "new", fileInventory: [{ path: "SKILL.md", content: next }] }] : [])];
   port.versions = id => id === "up" ? versions() : [{ id: "local" }];
   const source = () => ({ id: "source", companyId: "company", fullName: foreignRepo ? "foreign/repository" : "KreerC/ACCESSIBILITY.md", revision: changed, lastScanCommit: installed() ? pins.newCommit : pins.oldCommit, trackingRef: mutable ? "main" : pins.newCommit, automaticUpdates: false });
-  const preview = "The currently installed version is 0.4. The new revision adds continuous accessibility regression tests and splits long forms into smaller steps. I have not applied it.";
+  const preview = "The currently installed version is 0.4. The new revision 0.5 adds continuous accessibility regression tests and splits long forms into smaller steps. I have not applied it.";
   const state: Record<string, unknown> = { upstream: upstream(), localFork: local, source: source(), localVersions: [{ id: "local" }] };
   const runs = () => Array.from({ length: phase ? 2 : 1 }, (_, i) => ({ id: "native-" + i, status: i === phase && !ready() ? "running" : "succeeded" }));
   port.observe = () => ({ scenarioId: "skills.review-update", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state, runs: runs(),

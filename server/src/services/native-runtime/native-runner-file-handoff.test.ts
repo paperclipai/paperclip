@@ -1,3 +1,8 @@
+import express from "express";
+import request from "supertest";
+import {
+  createRunnerAttachmentGrant, RUNNER_ATTACHMENT_DOWNLOAD_PATH, runnerAttachmentDownloadRoutes,
+} from "./runner-attachment-download.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -164,12 +169,13 @@ describe("native runner file handoff", () => {
     filename: string;
     body: Buffer;
     commentBody: string;
+    contentType?: string;
   }) {
     const stored = await input.storage.putFile({
       companyId,
       namespace: `issues/${issueId}`,
       originalFilename: input.filename,
-      contentType: "text/plain",
+      contentType: input.contentType ?? "text/plain",
       body: input.body,
     });
     const comment = await issueService(db).addComment(
@@ -933,6 +939,79 @@ describe("native runner file handoff", () => {
       }),
     ]);
     await remoteStage.cleanup();
+
+    const remoteCleanup = vi.fn(async () => undefined);
+    const stageRemoteAttachment = vi.fn(async () => ({
+      workspaceRelativePath: ".paperclip-inbound/remote-fixture/content", cleanup: remoteCleanup,
+    }));
+    const supported = await stageNativeRunnerWakeAttachments({
+      db, binding: { companyId, issueId, runId, agentId, workspaceRoot: "/remote/workspace", executionTargetKind: "remote" },
+      storage, stageRemoteAttachment,
+    });
+    expect(stageRemoteAttachment).toHaveBeenCalledExactlyOnceWith({ body, contentType: "text/plain" });
+    expect(supported.attachments).toEqual([expect.objectContaining({ id: attachment.id,
+      workspaceRelativePath: ".paperclip-inbound/remote-fixture/content", unavailableReason: null })]);
+    await supported.cleanup();
+    expect(remoteCleanup).toHaveBeenCalledOnce();
+
+    stageRemoteAttachment.mockClear();
+    const binding = { companyId, issueId, runId, agentId, workspaceRoot: "/remote/workspace", executionTargetKind: "remote" as const };
+    const env = { PAPERCLIP_AGENT_JWT_SECRET: randomUUID() };
+    const app = express();
+    app.use(runnerAttachmentDownloadRoutes(db, storage, env));
+    const downloadRemoteAttachment = vi.fn(async (source: Parameters<typeof createRunnerAttachmentGrant>[1]) => {
+      const grant = createRunnerAttachmentGrant(binding, source, "test-turn", "https://tenant.example/file", env);
+      const response = await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH)
+        .set("Authorization", `Bearer ${grant.token}`).expect(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.body).toEqual(body);
+      const forged = createRunnerAttachmentGrant({ ...binding, companyId: randomUUID() }, source, "test-turn", grant.url, env);
+      await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH).set("Authorization", `Bearer ${forged.token}`).expect(404);
+      const expired = createRunnerAttachmentGrant(binding, source, "test-turn", grant.url, env, Date.now() - 31_000);
+      await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH).set("Authorization", `Bearer ${expired.token}`).expect(404);
+      await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH).expect(404);
+      return "/run/attachment-downloads/fixture.txt";
+    });
+    const downloaded = await stageNativeRunnerWakeAttachments({ db, binding, storage, stageRemoteAttachment, downloadRemoteAttachment });
+    expect(downloadRemoteAttachment).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "wake", attachmentId: attachment.id }));
+    expect(downloaded.attachments[0]).toMatchObject({ runnerLocalPath: "/run/attachment-downloads/fixture.txt", unavailableReason: null });
+    expect(stageRemoteAttachment).not.toHaveBeenCalled();
+    await downloaded.cleanup();
+
+    const fallback = await stageNativeRunnerWakeAttachments({
+      db, binding, storage, stageRemoteAttachment, downloadRemoteAttachment: async () => null,
+    });
+    expect(fallback.attachments[0]).toMatchObject({ workspaceRelativePath: ".paperclip-inbound/remote-fixture/content" });
+    await fallback.cleanup();
+
+    stageRemoteAttachment.mockClear();
+    await expect(stageNativeRunnerWakeAttachments({
+      db, binding: { companyId: randomUUID(), issueId, runId, agentId, workspaceRoot: "/remote/workspace", executionTargetKind: "remote" },
+      storage, stageRemoteAttachment,
+    })).rejects.toThrow("not_authorized");
+    expect(stageRemoteAttachment).not.toHaveBeenCalled();
+  });
+
+  it("verifies a current image before remote staging and reports unavailable bytes honestly", async () => {
+    const storage = createStorageService(createLocalDiskStorageProvider(storageRoot));
+    const body = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lRkAAAAASUVORK5CYII=", "base64");
+    const { attachment, comment } = await createInboundAttachmentFixture({ storage, filename: "fixture.png", body,
+      commentBody: "Inspect this image", contentType: "image/png" });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWake: { comments: [{ id: comment.id, attachments: [{ id: attachment.id }] }] } } }).where(eq(heartbeatRuns.id, runId));
+    const stageRemoteAttachment = vi.fn(async () => ({ workspaceRelativePath: ".paperclip-inbound/remote-image/content", cleanup: async () => {} }));
+    const binding = { companyId, issueId, runId, agentId, workspaceRoot: "/remote/workspace", executionTargetKind: "remote" as const };
+    const stage = await stageNativeRunnerWakeAttachments({ db, binding, storage, stageRemoteAttachment });
+    expect(stageRemoteAttachment).toHaveBeenCalledExactlyOnceWith({ body, contentType: "image/png" });
+    expect(stage.attachments[0]).toMatchObject({ contentType: "image/png", unavailableReason: null });
+    expect(renderNativeRunnerStagedAttachmentPrompt(stage.attachments)).toContain("image-capable file reader");
+    await stage.cleanup();
+
+    await db.update(assets).set({ sha256: "0".repeat(64) }).where(eq(assets.id, attachment.assetId));
+    stageRemoteAttachment.mockClear();
+    const unavailable = await stageNativeRunnerWakeAttachments({ db, binding, storage, stageRemoteAttachment });
+    expect(unavailable.attachments[0]).toMatchObject({ workspaceRelativePath: null, unavailableReason: "attachment_staging_failed" });
+    expect(stageRemoteAttachment).not.toHaveBeenCalled();
+    await unavailable.cleanup();
   });
 
   it("excludes an older same-issue attachment when the current wake selects a newer file", async () => {

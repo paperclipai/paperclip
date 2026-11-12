@@ -75,9 +75,23 @@ const DRIVER_KIND = "codex_app_server";
 const DRIVER_VERSION = "codex-v2";
 
 interface BootstrapCancellation {
-  close(): Promise<void>;
+  /** `keepRunner` detaches this controller from a durable Runner exactly as a
+   * server restart does: no turn stop, no suspend, no signal. The Runner and
+   * its in-flight turn stay for the same run's next reattachment. Only the
+   * first close decides. */
+  close(keepRunner?: boolean): Promise<void>;
   detach(): void;
   wait<T>(operation: Promise<T>): Promise<T>;
+}
+
+/** A recovery failure that says nothing about the Runner's identity or state:
+ * a command or transport timed out or was lost. Any identity or authority
+ * refusal, even one that also mentions a timeout, is not transient. */
+export function isTransientRunnerRecoveryFailure(error: unknown): boolean {
+  if (error instanceof NativeSessionProtocolIntegrityError) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  if (/mismatch|different|identity|authority|integrity|incompatible/i.test(message)) return false;
+  return /provider_transport_failed|PRP command \S+ timed out|runnerd transport closed while waiting/.test(message);
 }
 
 function bootstrapCancellation(
@@ -85,8 +99,10 @@ function bootstrapCancellation(
   signal: AbortSignal | undefined,
 ): BootstrapCancellation {
   let closePromise: Promise<void> | null = null;
-  const close = (): Promise<void> => {
-    closePromise ??= transport.close();
+  const close = (keepRunner = false): Promise<void> => {
+    closePromise ??= keepRunner && transport.detachControllerForRestart
+      ? transport.detachControllerForRestart()
+      : transport.close();
     return closePromise;
   };
   let rejectAborted!: (reason: unknown) => void;
@@ -453,6 +469,12 @@ export class CodexAppServerDriver implements HarnessDriver {
         activeTurnId: snapshot.activeTurnId,
       },
     });
+    // A recovery whose Runner command timed out or lost its transport detaches
+    // from the Runner, as a restart does, for the same run's next
+    // reattachment: the Runner may still own an in-flight turn, and stopping
+    // or killing it loses the turn. An abort (a Stop or the recovery
+    // deadline), identity refusals, other recovery failures and protocol
+    // integrity faults still close and stop it.
     const cancellation = bootstrapCancellation(transport, options.signal);
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
@@ -772,7 +794,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         session,
       };
     } catch (error) {
-      await cancellation.close().catch(() => {});
+      await cancellation.close(isTransientRunnerRecoveryFailure(error)).catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
       // A Runner with no saved control-plane state for this session can never

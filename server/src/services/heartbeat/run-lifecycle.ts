@@ -48,6 +48,7 @@ import { isWaitingConversation } from "../agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED } from "../native-local-process-stop.js";
 import {
   hasAcknowledgedNativeReassignmentStopIntent,
+  hasAcknowledgedNativeLifecycleStopIntent,
   hasAcknowledgedNativeStopIntent,
 } from "../acknowledged-native-stop.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -1402,7 +1403,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
     // Teardown can beat the cancellation finalizer. Preserve the acknowledged
     // user intent instead of reporting an infrastructure interruption.
-    if (hasAcknowledgedNativeStopIntent(run) || hasAcknowledgedNativeReassignmentStopIntent(run)) terminalStatus = "cancelled";
+    if (hasAcknowledgedNativeStopIntent(run) || hasAcknowledgedNativeReassignmentStopIntent(run)
+      || hasAcknowledgedNativeLifecycleStopIntent(run)) terminalStatus = "cancelled";
 
     const message = `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
     // Match both "running" and "queued". A queued run has released its lease but

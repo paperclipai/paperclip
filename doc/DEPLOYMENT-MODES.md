@@ -83,6 +83,7 @@ Paperclip now treats **bind** as a separate concern from auth:
 - loopback-only host binding
 - no human login flow
 - optimized for fastest local startup
+- implicit board access belongs to the operator's own local processes. On Linux and macOS, a request that comes from inside an agent run's process tree receives no implicit board access and must authenticate with the run's own credentials. Other platforms keep the previous behavior.
 
 ## `authenticated + private`
 

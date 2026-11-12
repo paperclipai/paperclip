@@ -10,6 +10,7 @@ pub mod acpx_provider_session;
 pub mod acpx_provider_state;
 pub mod acpx_sidecar_transport;
 mod acpx_turn_dispatch;
+mod attachment_download;
 pub mod aws_agentcore_provider;
 pub mod claude_managed_provider;
 pub mod codex_provider;

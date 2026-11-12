@@ -442,7 +442,10 @@ function setSecurityHeaders(response: ServerResponse): void {
 }
 
 function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+    server.closeIdleConnections();
+  });
 }
 
 function withCancellationAndTimeout<T>(

@@ -102,6 +102,9 @@ type DbOrTransaction = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DeliveryRow = typeof chatDeliveries.$inferSelect;
 type RetryRuntimeFence = { credentialFingerprint: string; generation: number };
 const FAILED_RUN_RETRY_IDENTITY_CONTENTION_MS = 60_000;
+const FAILED_CHAT_RETRY_DIAGNOSTIC = "This chat request can't be repeated exactly as it was sent. Retry continues the task from its saved work instead.";
+const FAILED_CHAT_RETRY_DIAGNOSTICS = [FAILED_CHAT_RETRY_DIAGNOSTIC,
+  "The exact failed chat request can no longer be retried safely. Check its current connection, access, and recovery state."];
 export type ChatFailedRetrySource = Awaited<ReturnType<ReturnType<typeof createChatFailedRunRetry>["failedChatRetrySource"]>>;
 
 type ChatFailedRunRetryOptions = {
@@ -139,8 +142,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     "prior_result_publication" | "prior_interaction" | "source_authorization", authorityReason?: ChatWakeAuthorityReason) =>
     conflict(
       reason === "accepted_result_without_new_input"
-        ? "This attempt already recorded a result. Send a new message on the task to continue from the saved work."
-        : "The exact failed chat request can no longer be retried safely. Check its current connection, access, and recovery state.",
+        ? "This attempt already saved its result, so it is not repeated. Retry continues from that saved result."
+        : FAILED_CHAT_RETRY_DIAGNOSTIC,
       { code: "chat_failed_run_retry_not_authorized", ...(reason ? { reason } : {}), ...(reason === "source_authorization" && authorityReason ? { authorityReason } : {}) },
     );
   class FailedChatRetryPublicationReadError extends Error {
@@ -227,8 +230,9 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     run: typeof heartbeatRuns.$inferSelect,
     allowWorkspacePreparation = false,
   ): Promise<boolean> {
-    const retryDiagnostic = "The exact failed chat request can no longer be retried safely. Check its current connection, access, and recovery state.";
-    const failedRetry = run.errorCode === "chat_failed_run_retry_not_authorized" && run.error === retryDiagnostic;
+    const failedRetry = run.errorCode === "chat_failed_run_retry_not_authorized" &&
+      FAILED_CHAT_RETRY_DIAGNOSTICS.includes(run.error ?? "");
+    const retryDiagnostic = failedRetry ? run.error : null;
     const validation = run.resultJson?.workspaceValidation as Record<string, unknown> | undefined;
     const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
     const workspaceValidation = run.errorCode === "workspace_validation_failed" &&
@@ -572,6 +576,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       "provider_session_open_rejected",
       "provider_session_open_timeout",
       "local_runtime_api_listener_unavailable",
+      "runner_ingress_startup_failed",
     ];
     if (
       !coordinator ||

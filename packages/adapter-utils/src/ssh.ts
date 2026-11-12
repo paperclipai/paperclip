@@ -323,6 +323,10 @@ async function spawnText(
     });
 
     if (options.stdin != null && child.stdin) {
+      child.stdin.on("error", (error) => {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(error, { code: null }));
+      });
       child.stdin.end(options.stdin);
     }
   });
