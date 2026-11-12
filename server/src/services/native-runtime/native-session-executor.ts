@@ -25,7 +25,7 @@ import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HAR
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
-import { rehydratePinnedInstructionAsset, rehydratePinnedSkillAssets } from "./runtime-context.js";
+import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
@@ -8995,7 +8995,7 @@ export function nativeSessionFailureSourceCode(
   // before startup completes, and session.open precedes every prompt. The
   // outcome is unknown, so durable evidence (no provider event, no checkpoint)
   // still decides whether a same-run bootstrap retry is safe.
-  if (/^(?:runner_local_connect_failed|runner_direct_wss_failed|runner_ingress_unavailable): PRP command session\.open timed out$/.test(message)) {
+  if (/^(?:runner_local_connect_failed|runner_direct_wss_failed|runner_ingress_unavailable): PRP command session\.open timed out(?: \([^()]*\))?$/.test(message)) {
     return "provider_session_open_timeout";
   }
   // This process has no HTTP listener (graceful shutdown closes it first), so
@@ -16409,9 +16409,13 @@ async function createRunnerdBackendWithinSessionClaim(
       : remoteRunnerFilesystemRoot
         ? posix.join(remoteRunnerFilesystemRoot, directory.name)
         : null;
-  const sourceRuntimeContext = "runtimeContext" in input.execution
-    ? await rehydratePinnedSkillAssets(input.db, input.execution.binding, input.execution.runtimeContext)
+  // A reconnect to a live remote Runner stages nothing unless it relaunches, so
+  // it does not wait on this server's skill cache before reaching the Runner.
+  const runtimeContextSource = "runtimeContext" in input.execution
+    ? await prepareRuntimeContextSource(input.db, input.execution.binding, input.execution.runtimeContext,
+      { deferUntilStaged: input.restartRecovery?.kind === "reattach_remote_runner" && remoteRunnerFilesystemRoot !== null })
     : null;
+  const sourceRuntimeContext = runtimeContextSource?.described ?? null;
   const remoteRuntimeContext: NativeRuntimeContextSnapshot | null =
     remoteRunnerFilesystemRoot && sourceRuntimeContext
       ? {
@@ -17220,8 +17224,8 @@ async function createRunnerdBackendWithinSessionClaim(
               location: directory.location,
               targetPath: remotePersistencePath(directory),
             })),
-            runtimeContext: remoteRunnerFilesystemRoot && sourceRuntimeContext && remoteRuntimeContext
-              ? { source: sourceRuntimeContext, target: remoteRuntimeContext, filesystemRoot: remoteRunnerFilesystemRoot }
+            runtimeContext: remoteRunnerFilesystemRoot && runtimeContextSource && remoteRuntimeContext
+              ? { source: await runtimeContextSource.forStaging(), target: remoteRuntimeContext, filesystemRoot: remoteRunnerFilesystemRoot }
               : null,
             caBundleMapping: remoteCaBundleMapping,
             stageFile: asset => stageRemoteRunnerFile({ target: remoteTarget, runner: remoteCommandRunner, ...asset }),

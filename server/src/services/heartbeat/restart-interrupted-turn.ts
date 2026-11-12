@@ -4,6 +4,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import type { NativeRestartRecoveryClaim } from "../native-runtime/native-restart-recovery.js";
 import { isUserCommentContinuationReason } from "../explicit-native-continuation.js";
 import { requestTaskRetry } from "../task-retry.js";
+import { EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../queued-comment-delivery.js";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH } from "../native-runtime/remote-recovery-lease-mismatch.js";
@@ -107,7 +108,30 @@ async function chainUsedAutomaticRetry(db: Db, run: { companyId: string; id: str
   return visited.size >= MAX_RETRY_CHAIN;
 }
 
-type Outcome = { requested: true; requestId: string } | { requested: false; reason: string };
+type PrepareChatRetry = NonNullable<Parameters<typeof requestTaskRetry>[0]["prepareChatRetry"]>;
+
+/** A connected conversation's Retry goes through the chat service, which the
+ * app registers at startup. Without it, a connected task keeps its Retry. */
+let interruptedTurnChatRetry: PrepareChatRetry | undefined;
+export function registerInterruptedTurnChatRetry(prepare: PrepareChatRetry | undefined) {
+  interruptedTurnChatRetry = prepare;
+}
+
+/** The chat or comment message that woke the run is still on the task and was
+ * not written by a run, so the run still owes it an answer. */
+async function wakeMessageStillOwed(db: Db, companyId: string, issueId: string, reason: string | null | undefined,
+  context: Record<string, unknown>, wake: { payload: Record<string, unknown> | null }) {
+  if (reason !== EXTERNAL_CHAT_MESSAGE_WAKE_REASON && !isUserCommentContinuationReason(reason)) return false;
+  const commentId = typeof context.wakeCommentId === "string" ? context.wakeCommentId
+    : typeof wake.payload?.commentId === "string" ? wake.payload.commentId : null;
+  if (!commentId) return false;
+  const [comment] = await db.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+    sql`${issueComments.id}::text = ${commentId}`, isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId)));
+  return comment !== undefined;
+}
+
+type Outcome ={ requested: true; requestId: string } | { requested: false; reason: string };
 
 /**
  * Reattachment runs after a server restart and for a same-run retry of a remote
@@ -118,9 +142,9 @@ type Outcome = { requested: true; requestId: string } | { requested: false; reas
  * proven gone; an in-flight turn's outcome is then unknown and recorded, and the
  * Retry's fresh session never replays it. Without that proof the in-flight turn
  * keeps the visible Retry. A system wake continues this way only when the
- * controller journal proved that no turn was ever issued, or when it was an
- * automatic retry of owed work whose Runner is proven gone, under the run's
- * responsible user. Admission keeps every gate, including stop proof and
+ * controller journal proved that no turn was ever issued, or when it carried
+ * owed work (an automatic retry, a system assignment, or a chat message still
+ * on the task) whose Runner is proven gone, under the run's responsible user. Admission keeps every gate, including stop proof and
  * saved-work recovery before the next turn.
  */
 export async function requestRestartInterruptedTurnRetry(db: Db, claim: NativeRestartRecoveryClaim): Promise<Outcome> {
@@ -155,7 +179,12 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
     // ever issued: nothing the run did can be repeated, so the Retry runs once
     // under the run's responsible user. Missing events alone prove nothing,
     // because a turn can reach the provider before its events are stored.
-    const owedRedelivery = run.retryOfRunId !== null && runnerExit !== null;
+    // Work the wake still owes the task also continues once the Runner is
+    // proven gone: an automatic retry of earlier owed work, a system
+    // assignment (a routine's dispatch), or a chat message that is still on
+    // the task. Monitors and other system wakes keep their policy.
+    const owedRedelivery = runnerExit !== null && wake !== undefined && (run.retryOfRunId !== null
+      || reason === "issue_assigned" || await wakeMessageStillOwed(db, run.companyId, issueId, reason, context, wake));
     if (!wake || reason === "task_retry" || !run.responsibleUserId
       || !(owedRedelivery || await hasProvenNoProviderTurn(db, run, runnerExit)))
       return { requested: false, reason: "not_user_request" };
@@ -177,6 +206,11 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
       eq(issueComments.authorUserId, userActorId), isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
     )) : [];
     if (!comment && reason !== "issue_assigned") return { requested: false, reason: "message_unavailable" };
+  } else if (reason === EXTERNAL_CHAT_MESSAGE_WAKE_REASON) {
+    // A linked person's chat message is stored by the chat bridge, not always
+    // as that person's own comment, so the message itself must still be there.
+    if (!await wakeMessageStillOwed(db, run.companyId, issueId, reason, context, wake!))
+      return { requested: false, reason: "message_unavailable" };
   } else return { requested: false, reason: "not_user_request" };
   if (!actorId) return { requested: false, reason: "not_user_request" };
   const [issue] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
@@ -187,7 +221,8 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
   try {
     const receipt = await requestTaskRetry({ db, companyId: run.companyId, issueId, actorId,
       actorSource: actorId === "local-board" ? "local_implicit" : "session",
-      idempotencyKey: `${RESTART_RETRY_KEY_PREFIX}${run.id}`, observedRunId: run.id, initiatedBy: "restart_recovery" });
+      idempotencyKey: `${RESTART_RETRY_KEY_PREFIX}${run.id}`, observedRunId: run.id, initiatedBy: "restart_recovery",
+      prepareChatRetry: interruptedTurnChatRetry });
     return receipt.accepted && receipt.requestId
       ? { requested: true, requestId: receipt.requestId } : { requested: false, reason: "retry_stale" };
   } catch (error) {

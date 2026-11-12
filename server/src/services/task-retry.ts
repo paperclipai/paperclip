@@ -18,13 +18,14 @@ import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from
 import { NativeWorkspaceFinalizationBusyError } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
-import { deferredChatInputPredicate, resumeDeferredChatWake } from "./durable-chat-wakeup.js";
+import { deferredChatInputPredicate, resumeDeferredChatWake, unadmittedChatWakeupCondition } from "./durable-chat-wakeup.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
 import { rearmExhaustedNativeFinalization } from "./native-runtime/exhausted-finalization-retry.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
+import { selectTaskRetryInput } from "./chat-channels/task-retry-input.js";
 
 export async function taskRetryMutationAllowed(db: Db, input: {
   companyId: string; issueId: string; actorId: string; actorSource: TaskRetryIntent["actorSource"];
@@ -241,6 +242,11 @@ function automaticRetryActor(input: Pick<TaskRetryRequest, "initiatedBy" | "acto
 const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
 const TASK_RETRY_CONTENTION_DELAY_MS = 100;
 
+function isExactChatReplayRefusal(error: unknown) {
+  return error instanceof HttpError && error.status === 409 &&
+    (error.details as Record<string, unknown> | undefined)?.code === "chat_failed_run_retry_not_authorized";
+}
+
 function isTaskRetryContention(error: unknown) {
   return error instanceof NativeChatReviewPresentationContentionError || isExternalChatWaitAuthorizationContention(error);
 }
@@ -418,9 +424,15 @@ function admitTaskRetry(input: TaskRetryRequest) {
         await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: id });
       }
     }
-    if (chat && !active && !busy && !boardMessageOrigin && !intent.queuedChatRequestId && (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
-        latest.responsibleUserId === input.actorId) {
-      throw conflict("This saved message cannot be retried safely. Send a new message on the task to continue from saved work.",
+    const savedBoardTurn = Boolean(chat && !active && !busy && !boardMessageOrigin && !intent.queuedChatRequestId &&
+      (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
+      latest.responsibleUserId === input.actorId);
+    const hasUnadmittedChatInput = async () => (await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, issue.id),
+      eq(issues.companyId, issue.companyId), unadmittedChatWakeupCondition(issues.id, issues.companyId))).limit(1)).length > 0 ||
+      Boolean((await selectTaskRetryInput(tx, { companyId: issue.companyId, issueId: issue.id,
+        agentId: issue.assigneeAgentId!, failedRunId: latest.id }))?.sourceActionIds.length);
+    if (savedBoardTurn && (input.initiatedBy || await hasUnadmittedChatInput())) {
+      throw conflict("This saved message can't be repeated exactly as it was sent. Retry continues the task from its saved work instead.",
         { code: "chat_failed_run_retry_not_authorized", reason: "saved_board_message_not_replayable" });
     }
     await tx.insert(agentWakeupRequests).values({ id, companyId: issue.companyId, agentId: issue.assigneeAgentId,
@@ -429,12 +441,23 @@ function admitTaskRetry(input: TaskRetryRequest) {
       status: active || busy ? "coalesced" : "deferred_issue_execution",
       runId: active?.runId ?? (busy ? latest.id : null),
       payload: { issueId: issue.id, taskRetry: intent }, finishedAt: active || busy ? new Date() : null });
-    if (chat && !boardMessageOrigin && !intent.queuedChatRequestId && !active && !busy) {
-      if (!input.prepareChatRetry) throw conflict("Retry is unavailable for this connected conversation.");
-      intent.chatActionId = (await input.prepareChatRetry(db, { companyId: issue.companyId, issueId: issue.id,
-        agentId: issue.assigneeAgentId, failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id })).actionId;
-      await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent } })
-        .where(eq(agentWakeupRequests.id, id));
+    if (chat && !boardMessageOrigin && !intent.queuedChatRequestId && !active && !busy && !savedBoardTurn) {
+      if (!input.prepareChatRetry && input.initiatedBy) throw conflict("Retry is unavailable for this connected conversation.");
+      const prepareChatRetry = input.prepareChatRetry ?? (() => { throw conflict("Retry is unavailable for this connected conversation.",
+        { code: "chat_failed_run_retry_not_authorized" }); });
+      const scope = { companyId: issue.companyId, issueId: issue.id, agentId: issue.assigneeAgentId,
+        failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id };
+      const prepared = await tx.transaction(savepoint => prepareChatRetry(savepoint as unknown as Db, scope))
+        .catch(async error => {
+          if (input.initiatedBy || !isExactChatReplayRefusal(error)) throw error;
+          if (await hasUnadmittedChatInput()) throw error;
+          return null;
+        });
+      if (prepared) {
+        intent.chatActionId = prepared.actionId;
+        await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent } })
+          .where(eq(agentWakeupRequests.id, id));
+      }
     }
     if (!busy) {
       for (const action of records) {

@@ -49,6 +49,7 @@ import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepa
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
+import { adoptsLiveRemoteRunner } from "./heartbeat/live-runner-adoption.js";
 import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
 import { watchShutdownHandoff } from "./heartbeat/shutdown-handoff.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
@@ -1019,7 +1020,7 @@ export function heartbeatService(
     // Bound at call time: the heartbeat recovery module is created below.
     settleLostRunProcess: scope => recoverActiveExecutions(scope),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
-    scheduleRecoveryRetry: async (runId) => {
+    scheduleRecoveryRetry: async (runId, outcome) => {
       const [run] = await db
         .select()
         .from(heartbeatRuns)
@@ -1028,6 +1029,10 @@ export function heartbeatService(
       const agent = await getAgent(run.agentId);
       if (!agent || agent.companyId !== run.companyId) return null;
       const result = await scheduleBoundedRetryForRun(run, agent);
+      // The scheduler's own lane verdict, so the sweep reports exhaustion even
+      // when its lane (for example interrupted_preparation after cleanup)
+      // differs from the synchronous budget check below.
+      if (outcome && result.outcome === "retry_exhausted") outcome.retryExhausted = true;
       return result.outcome === "scheduled" ? result.run : null;
     },
     // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
@@ -2822,7 +2827,8 @@ export function heartbeatService(
       let nativeChatExpectedCwd = selectedNativeChatExpectedCwd;
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
         run, agent,
-        task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest },
+        task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest,
+          adoptingLiveRunner: adoptsLiveRemoteRunner({ run, restartRecovery: runOptions.nativeRestartRecovery, leaseOwner: runOptions.nativeLeaseOwner }) },
         config: { sourceWorkspaceConfig, aiBinding },
         policy: { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode },
         environment: { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput },

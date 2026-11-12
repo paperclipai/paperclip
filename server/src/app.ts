@@ -226,6 +226,7 @@ import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-w
 import { chatFailedRetryNoticeWork } from "./services/chat-failed-retry-notice-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import { heartbeatService } from "./services/heartbeat.js";
+import { registerInterruptedTurnChatRetry } from "./services/heartbeat/restart-interrupted-turn.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
@@ -603,6 +604,8 @@ export async function createApp(
     storage: opts.storageService,
   });
   if (opts.budgetResumeDelivery) opts.budgetResumeDelivery.prepareChatRetry = chatChannels.prepareFailedChatRunRetry;
+  // A restart's automatic Retry of a connected conversation needs the same callback.
+  registerInterruptedTurnChatRetry(chatChannels.prepareFailedChatRunRetry);
   // Voice capabilities are verified by the signed callback route, not by
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
