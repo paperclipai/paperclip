@@ -123,6 +123,7 @@ describe("issue-thread interaction resolver audience", () => {
     })).toMatchObject({
       allowed: false,
       code: "review_policy_denied",
+      message: "Whoever sent this task for review cannot also approve or reject it; someone else must submit the verdict.",
       details: {
         policy: "not_creator",
         allowedActor: "writer_other_than_review_requester",
