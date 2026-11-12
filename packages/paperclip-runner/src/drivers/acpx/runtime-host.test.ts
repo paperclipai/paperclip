@@ -20,7 +20,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
-import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {

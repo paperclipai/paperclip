@@ -1,1 +1,0 @@
-ALTER TABLE "company_skill_sources" ADD COLUMN "security_override" jsonb;

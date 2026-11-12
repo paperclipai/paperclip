@@ -114,6 +114,24 @@ describe("on-demand agent avatars", () => {
     const png = await pool.render(request);
     expect(await sharp(png).metadata()).toMatchObject({ width: 48, height: 48, format: "png", hasAlpha: true });
   }, 20_000);
+  it("serves angled portraits separately while keeping the default front cache intact", async () => {
+    const service = createAgentAvatarService(await storage()); cleanups.push(() => service.close());
+    const url = await serve(service);
+    const front = await fetch(url + "?size=256&scale=2");
+    const portrait = await fetch(url + "?size=256&scale=2&view=portrait");
+    expect(portrait.status).toBe(200);
+    expect(portrait.headers.get("etag")).not.toBe(front.headers.get("etag"));
+    await front.arrayBuffer();
+    const bytes = Buffer.from(await portrait.arrayBuffer());
+    expect(await sharp(bytes).metadata()).toMatchObject({ width: 512, height: 512, format: "png", hasAlpha: true });
+    const explicitFront = await fetch(url + "?size=256&scale=2&view=front");
+    expect(explicitFront.headers.get("etag")).toBe(front.headers.get("etag"));
+    await explicitFront.arrayBuffer();
+    const cached = await fetch(url + "?size=256&scale=2&view=portrait", { headers: { "If-None-Match": portrait.headers.get("etag")! } });
+    expect(cached.status).toBe(304);
+    expect(avatarCacheKey({ ...request, view: "portrait" })).not.toBe(avatarCacheKey(request));
+    expect(avatarCacheKey({ ...request, view: "front" })).toBe(avatarCacheKey(request));
+  }, 20_000);
   it("preserves transparent background pixels in ordinary 512px avatars", async () => {
     const pool = createAgentAvatarPool(1); cleanups.push(() => pool.close());
     const png = await pool.render({ ...request, size: 512, scale: 1 });
@@ -155,7 +173,7 @@ describe("on-demand agent avatars", () => {
     await first.arrayBuffer();
     const second = await fetch(url + "?size=24&scale=2", { headers: { "If-None-Match": first.headers.get("etag")! } });
     expect(second.status).toBe(304);
-    for (const suffix of ["?size=99999", "?scale=3", "?color=red", "?size=24&size=32"]) {
+    for (const suffix of ["?size=99999", "?scale=3", "?color=red", "?size=24&size=32", "?view=invalid"]) {
       const invalid = await fetch(url + suffix); expect(invalid.status).toBe(400); await invalid.text();
     }
     expect(render).toHaveBeenCalledTimes(1);

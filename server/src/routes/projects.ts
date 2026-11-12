@@ -54,8 +54,6 @@ import {
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
-import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
@@ -87,7 +85,6 @@ export function projectRoutes(db: Db) {
     enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
   });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
-  const environmentsSvc = environmentService(db);
 
   /**
    * Managed-sandbox-only policy (`enableManagedSandboxOnly`): a project
@@ -114,19 +111,24 @@ export function projectRoutes(db: Db) {
     );
   }
 
-  async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
-    if (environmentId === undefined || environmentId === null) return;
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ["local", "ssh", "sandbox"],
-    });
-  }
-
-  function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
-    if (!policy || typeof policy !== "object" || !("environmentId" in policy)) {
-      return undefined;
+  /**
+   * PAP-749 task 1d: the project's decision owner gets this project's ownerless
+   * Needs You cards, so only a board user may choose them, and they must be an
+   * active member of the company. `null` clears it; agents cannot change it.
+   */
+  async function assertProjectDecisionOwner(
+    req: Request,
+    companyId: string,
+    decisionOwnerUserId: unknown,
+    current: string | null = null,
+  ) {
+    if (decisionOwnerUserId === undefined || decisionOwnerUserId === current) return;
+    if (req.actor.type !== "board") throw forbidden("Only board users can set a project's decision owner");
+    if (typeof decisionOwnerUserId !== "string") return;
+    const membership = await access.getMembership(companyId, "user", decisionOwnerUserId);
+    if (membership?.status !== "active") {
+      throw unprocessable("Project decision owner must be an active member of this company");
     }
-    const environmentId = (policy as { environmentId?: unknown }).environmentId;
-    return typeof environmentId === "string" || environmentId === null ? environmentId : undefined;
   }
 
   async function resolveCompanyIdForProjectReference(req: Request) {
@@ -173,9 +175,9 @@ export function projectRoutes(db: Db) {
     return false;
   }
 
-  async function assertProjectWorkspaceWriteAllowed(req: Request, res: Response, project: { id?: string; companyId: string }) {
+  async function assertProjectWorkspaceWriteAllowed(req: Request, res: Response, project: { id: string; companyId: string }) {
     const assigneeAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
-    const decision = await access.decide({ actor: req.actor, action: project.id ? "project:write_workspace" : "tasks:assign",
+    const decision = await access.decide({ actor: req.actor, action: "project:write_workspace",
       resource: { type: "issue", companyId: project.companyId, projectId: project.id, assigneeAgentId },
       scope: { projectId: project.id, assigneeAgentId } });
     if (decision.allowed) return true;
@@ -401,12 +403,7 @@ export function projectRoutes(db: Db) {
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
-    if ((environmentId || readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy))
-      && !(await assertProjectWorkspaceWriteAllowed(req, res, { companyId }))) return;
-    await assertProjectEnvironmentSelection(
-      companyId,
-      readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
-    );
+    await assertProjectDecisionOwner(req, companyId, projectData.decisionOwnerUserId);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       [
@@ -524,9 +521,6 @@ export function projectRoutes(db: Db) {
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const body = { ...req.body };
-    const nextEnvironmentId = body.environmentId !== undefined ? body.environmentId : readProjectPolicyEnvironmentId(body.executionWorkspacePolicy);
-    const environmentChanged = nextEnvironmentId !== undefined && nextEnvironmentId !== (existing.environmentId ?? null);
-    if (environmentChanged && !(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
     if (body.visibility !== undefined) {
       if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
     }
@@ -535,9 +529,7 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
     );
-    if (environmentChanged && body.environmentId === undefined) {
-      await assertProjectEnvironmentSelection(existing.companyId, nextEnvironmentId);
-    }
+    await assertProjectDecisionOwner(req, existing.companyId, body.decisionOwnerUserId, existing.decisionOwnerUserId ?? null);
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }

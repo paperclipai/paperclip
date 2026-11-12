@@ -61,18 +61,19 @@ export async function projectEnvironmentOptions(db: Db, companyId: string, actor
   for (const group of groups) group.environments.sort((a, b) => a.name.localeCompare(b.name));
   groups.sort((a, b) => a.environments[0].name.localeCompare(b.environments[0].name));
   const defaultAvailable = preferred && groups.some(group => group.environments.some(environment => environment.id === preferred.id));
+  const defaultEnvironmentId = defaultAvailable ? preferred!.id : groups.length === 1 ? groups[0].environments[0].id : null;
   return {
     groups,
-    defaultEnvironmentId: defaultAvailable ? preferred?.id ?? null : null,
-    error: !defaultAvailable && (preferredEnvironmentId || forcedKubernetes || managedOnly || environments.length > 0)
+    defaultEnvironmentId,
+    error: !defaultEnvironmentId && (preferredEnvironmentId || forcedKubernetes || managedOnly || environments.length > 0)
       ? "The default environment cannot use project workspace storage. Select an available environment or repair the default environment configuration."
       : null,
   };
 }
 
-export async function resolveProjectEnvironment(db: Db, companyId: string, rawPolicy: unknown, actor: ProjectCreationEnvironment = {}) {
+export async function withDefaultProjectStorage(db: Db, companyId: string, rawPolicy: unknown, actor: ProjectCreationEnvironment = {}) {
   const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
-  if (policy?.storageProviderPluginId !== undefined && !actor.environmentId && actor.expectedStorageProviderPluginId === undefined) return { environmentId: null, executionWorkspacePolicy: rawPolicy };
+  if (policy?.storageProviderPluginId !== undefined && !actor.environmentId && actor.expectedStorageProviderPluginId === undefined) return rawPolicy;
   const options = await projectEnvironmentOptions(db, companyId, actor);
   const environmentId = actor.environmentId?.toLowerCase() ?? options.defaultEnvironmentId;
   const group = options.groups.find(value => value.environments.some(environment => environment.id === environmentId));
@@ -85,7 +86,7 @@ export async function resolveProjectEnvironment(db: Db, companyId: string, rawPo
   if (policy?.storageProviderPluginId !== undefined && policy.storageProviderPluginId !== pluginId) {
     throw conflict("The selected environment cannot use the requested project workspace storage.", { code: "project_environment_incompatible" });
   }
-  return { environmentId: environmentId ?? null, executionWorkspacePolicy: pluginId || policy?.storageProviderPluginId !== undefined
+  return pluginId || policy?.storageProviderPluginId !== undefined
     ? { enabled: true, ...policy, storageProviderPluginId: pluginId }
-    : rawPolicy };
+    : rawPolicy;
 }

@@ -46,8 +46,13 @@ import { alias } from "drizzle-orm/pg-core";
  */
 export function executionRecoverySettlementNote(input: {
   current: boolean; cause: string; workspaceRestoreFailed: boolean;
+  /** The hold's recorded trigger; a same-run retry is not a server restart. */
+  trigger?: unknown;
 }): string {
   if (!input.current) return "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+  if (input.cause === "native_restart_recovery_blocked" && input.trigger === "same_run_retry") {
+    return "Automatic retry of this run stopped. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
   if (input.cause === "native_restart_recovery_blocked") {
     return "Automatic recovery stopped after a server restart because the previous execution could not be verified. Saved work is preserved; actions with unverified outcomes will not be repeated.";
   }
@@ -696,7 +701,7 @@ export async function settleUnrecoverableExecutions(
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
         const note = executionRecoverySettlementNote({ current, cause: action.cause,
-          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson) });
+          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson), trigger: action.evidence.trigger });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;

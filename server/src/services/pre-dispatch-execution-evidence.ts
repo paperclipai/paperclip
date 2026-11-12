@@ -8,8 +8,27 @@ export function isPreDispatchResourceWait(run: Pick<typeof heartbeatRuns.$inferS
   const evidence = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   return run.runtimeMode === "legacy" && run.status === "cancelled" && evidence?.providerWorkStarted === false &&
     (run.errorCode === "workspace_busy" && evidence.kind === "workspace_wait" ||
+      run.errorCode === "agent_directory_busy" && evidence.kind === "agent_directory_wait" ||
       ["ai_connection_busy", "ai_connection_pool_exhausted", "provider_limit_wait"].includes(run.errorCode ?? "") &&
       evidence.kind === "ai_connection_wait");
+}
+
+export function isAgentDirectoryPreparationWait(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
+  const evidence = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  const cancellation = run.resultJson?.cancellation as Record<string, unknown> | undefined;
+  return run.runtimeMode === "legacy" && run.status === "cancelled" && run.errorCode === "agent_directory_busy"
+    && evidence?.kind === "agent_directory_wait" && evidence.providerWorkStarted === false
+    && cancellation?.source === "control_plane" && cancellation.expected === true;
+}
+
+export function agentDirectoryPreparationWaitPredicate() {
+  return sql`(${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.status} = 'cancelled'
+    and ${heartbeatRuns.errorCode} = 'agent_directory_busy'
+    and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'agent_directory_wait'
+    and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb
+    and ${heartbeatRuns.resultJson}#>>'{cancellation,source}' = 'control_plane'
+    and ${heartbeatRuns.resultJson}#>'{cancellation,expected}' = 'true'::jsonb)`;
 }
 
 export function executionStartedEventPredicate() {
