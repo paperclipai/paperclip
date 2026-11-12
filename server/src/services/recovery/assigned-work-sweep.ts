@@ -57,6 +57,8 @@ export const ASSIGNED_WORK_REPORT_LIMIT = 2_000;
 
 const OPEN_STATUSES = ["todo", "in_progress", "blocked"] as const;
 const PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
+/** How long a deferred wake counts as pending when no run holds its task. */
+const DEFERRED_WAKE_PENDING_BOUND_MS = 5 * 60_000;
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
@@ -195,6 +197,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       database.select({ issueId: sql<string>`${agentWakeupRequests.payload}->>'issueId'`, count: sql<number>`count(*)::int` })
         .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
           inArray(agentWakeupRequests.status, PENDING_WAKE_STATUSES),
+          // A wake deferred behind a run is promoted when that run releases the
+          // task. With no live run (checked first), one older than the bound has
+          // nothing left that will promote it, so it is not a pending path.
+          sql`(${agentWakeupRequests.status} <> 'deferred_issue_execution'
+            or ${agentWakeupRequests.createdAt} > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)`,
           sql`${agentWakeupRequests.payload}->>'issueId' = any(${idParam})`))
         .groupBy(sql`${agentWakeupRequests.payload}->>'issueId'`),
       database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
