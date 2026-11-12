@@ -5,7 +5,7 @@ import { replayCommand } from "./config.js";
 import type { TimelineEntry } from "./timeline.js";
 import type { FaultReceipt, OracleArtifacts, TaskGrade, TaskRecord, WavePlan } from "./types.js";
 
-export { captureWakeEvidence } from "./wake-evidence.js";
+export { captureWakeEvidence, wakeEvidenceOnce } from "./wake-evidence.js";
 
 const LOG_BEFORE_BYTES = 128 * 1024;
 const LOG_AFTER_BYTES = 512 * 1024;

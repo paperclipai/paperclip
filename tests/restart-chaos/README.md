@@ -1815,6 +1815,13 @@ re-arms the task's own triggered faults instead of using their offsets.
   overlap. The run's owning controller is listed as `owner`. `wake-evidence/servers.json` lists every controller and
   harness server window.
 
+  - **Process exit:** a controller's lifetime also ends at the process exit the harness recorded, so a hard-killed
+    server is not listed as serving later work.
+  - **Aged waves:** in TM2/TM3 waves, the database times are put back at their real times before they are compared
+    with the harness clock.
+  - **Failed waves:** the capture also runs, once, on the failure path before PostgreSQL stops. If the task list does
+    not exist yet, it writes one `issue-<id>.json` per issue that has runs.
+
 ## Grading notes
 
 - A task is restart-crossing when a run overlaps a fault window or the task was

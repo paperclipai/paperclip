@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, controllerInstances, createDb, heartbeatRuns, issues, type Db } from "../../packages/db/src/index.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../server/src/__tests__/helpers/embedded-postgres.js";
-import { captureWakeEvidence, servingAt, wakeEvidenceForIssue, type ControllerRow } from "./wake-evidence.js";
+import { boundByProcessExit, captureWakeEvidence, servingAt, unshiftRows, wakeEvidenceForIssue, wakeEvidenceOnce, type ControllerRow } from "./wake-evidence.js";
 import { runEvents } from "./evidence.js";
 import { stagingMixDescription, followUpComment } from "./staging-mix.js";
 import type { ChaosApi } from "./api.js";
@@ -26,6 +26,40 @@ describe("wake evidence", () => {
     expect(servingAt(550_000, controllers, windows).map(server => [server.pid, server.processSpace, server.harnessRole])).toEqual([[100, "space-a", "primary"], [200, "space-b", "secondary"]]);
     expect(servingAt(800_000, controllers, windows).map(server => [server.pid, server.bootId])).toEqual([[200, "boot-b"], [300, null]]);
     expect(servingAt(null, controllers, windows)).toEqual([]);
+  });
+
+  it("ends a hard-killed controller at its recorded process exit, so it is not listed as serving a later run", () => {
+    const killed: ControllerRow[] = [{ bootId: "boot-k", epoch: 1, processSpace: "space-k", pid: 100, startedAt: 1_000, endedAt: null },
+      { bootId: "boot-n", epoch: 2, processSpace: "space-n", pid: 200, startedAt: 61_000, endedAt: null }];
+    const windows = [{ pid: 100, role: "primary" as const, spawnedAt: 0, exitedAt: 60_000, frozen: [] },
+      { pid: 200, role: "primary" as const, spawnedAt: 60_500, exitedAt: null, frozen: [] }];
+    expect(boundByProcessExit(killed, windows).map(controller => controller.endedAt)).toEqual([60_000, null]);
+    expect(servingAt(90_000, boundByProcessExit(killed, windows), windows).map(server => server.pid)).toEqual([200]);
+    const evidence = wakeEvidenceForIssue("i1", { runs: [{ id: "r1", issueId: "i1", createdAt: 90_000, controllerBootId: "boot-n" }], wakes: [], statusChanges: [],
+      controllers: killed, windows });
+    expect(evidence.runs[0]!.servingAtCreate.map(server => server.pid)).toEqual([200]);
+    expect(boundByProcessExit(killed, [{ pid: 100, role: "primary", spawnedAt: 500_000, exitedAt: 600_000, frozen: [] }])[0]!.endedAt).toBeNull();
+  });
+
+  it("puts aged database times back at their real times before comparing them with the harness clock", () => {
+    const shifts = [{ faultId: "f1", ageMs: 26 * 3_600_000, appliedAt: 2_000_000_000_000, waveStartedAt: 1_999_999_000_000 }];
+    const aged = 1_999_999_500_000 - 26 * 3_600_000;
+    const [row] = unshiftRows([{ createdAt: aged, finishedAt: null, contextSnapshot: { at: new Date(aged).toISOString() } }], ["createdAt", "finishedAt"], ["contextSnapshot"], shifts);
+    expect(row).toEqual({ createdAt: 1_999_999_500_000, finishedAt: null, contextSnapshot: { at: new Date(1_999_999_500_000).toISOString() } });
+    expect(unshiftRows([{ createdAt: 1_999_999_600_000 }], ["createdAt"], [], shifts)[0]!.createdAt).toBe(1_999_999_600_000);
+    expect(unshiftRows([{ createdAt: aged }], ["createdAt"], [], [])[0]!.createdAt).toBe(aged);
+  });
+
+  it("captures once, falls back to every issue when the task list is not available yet, and records a failure", async () => {
+    const notes: Array<[string, Record<string, unknown>]> = [];
+    let opened = 0;
+    const capture = wakeEvidenceOnce({ databaseUrl: () => "postgres://unused", companyId: "c1", waveDir: "/nonexistent/wave", windows: [], shifts: [],
+      observers: () => { throw new ReferenceError("launched is not initialized"); }, redact: text => text, note: (kind, data) => notes.push([kind, data]),
+      open: () => { opened += 1; return { $client: { unsafe: async () => { throw new Error("database is gone"); }, end: async () => undefined } } as never; } });
+    await Promise.all([capture(), capture()]);
+    await capture();
+    expect(opened).toBe(1);
+    expect(notes).toEqual([["wake_evidence_failed", { error: "Error: database is gone" }]]);
   });
 
   it("joins each run to its wake, owner and status changes for one issue", () => {
@@ -107,6 +141,8 @@ describe.skipIf(!support.supported)("wake evidence against real PostgreSQL", () 
       expect(evidence.wakes[0].servingAtCreate.map((server: { pid: number }) => server.pid)).toEqual([4242]);
       expect(evidence.statusChanges).toMatchObject([{ action: "issue.updated", from: "in_progress", to: "done" }]);
       expect(JSON.parse(await readFile(path.join(waveDir, "wake-evidence", "servers.json"), "utf8")).controllers[0]).toMatchObject({ pid: 4242 });
+      expect(await captureWakeEvidence({ db, companyId, waveDir, observers: null, windows: [], redact: text => text })).toBe(1);
+      expect(JSON.parse(await readFile(path.join(waveDir, "wake-evidence", `issue-${issueId}.json`), "utf8")).runs[0]).toMatchObject({ runId });
     } finally {
       await rm(waveDir, { recursive: true, force: true });
     }
