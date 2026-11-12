@@ -328,6 +328,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               typeof oauth.resource === "string" && oauth.resource
                 ? oauth.resource
                 : null,
+            proxy: typeof asRecord(connection.config).proxy === "string" && (asRecord(connection.config).proxy as string).trim()
+              ? (asRecord(connection.config).proxy as string).trim()
+              : null,
           });
         } catch (error) {
           if (

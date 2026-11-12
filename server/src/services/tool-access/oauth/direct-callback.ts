@@ -148,6 +148,9 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       codeVerifier: stateRow.codeVerifier,
       code: input.code,
       resource: endpoints.resource,
+      proxy: typeof asRecord(connection.config).proxy === "string" && (asRecord(connection.config).proxy as string).trim()
+        ? (asRecord(connection.config).proxy as string).trim()
+        : null,
     });
     if (sourceTemplateKey === "google-workspace" && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
       throw unprocessable("Google did not return a supported permission grant. Reconnect and choose the Google services you want to use.", { code: "oauth_scope_grant_invalid" });

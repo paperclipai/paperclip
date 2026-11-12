@@ -1,6 +1,7 @@
 import { getConnectableAppDefinition, type AppDefinition, type ConnectionMethodDef, type ToolAppMetadataPreflightResult } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
 import { connectionMethodFor, connectionMethodForConnection, remoteEndpoint } from "../connection-methods.js";
+import { readRemoteHttpProxy } from "../../remote-http-endpoint-guard.js";
 import type { OAuthConnectionSettings, OAuthProviderEndpoints, OAuthTransport } from "./types.js";
 import type { createOAuthEndpointPolicy } from "./endpoint-policy.js";
 import { asRecord, oauthConfig, normalizeOauthScopes, isSmokeLabOAuthFixture, isSmokeLabOAuthUrl, originOf, oauthProviderForConnection, challengeOAuthHints, canonicalResourceIndicator, sameOAuthIssuer, protectedResourceMetadataUrls, wellKnownMetadataUrls, authServerMetadataUrls } from "./metadata.js";
@@ -53,9 +54,10 @@ export function createOAuthDiscovery({ fetchRemoteHttpUrl, assertRemoteEndpointA
 
   async function fetchJsonRecord(
     url: string,
+    proxy?: string | null,
   ): Promise<Record<string, unknown> | null> {
     try {
-      const response = await fetchRemoteHttpUrl(url);
+      const response = await fetchRemoteHttpUrl(url, undefined, proxy);
       if (!response.ok) return null;
       return asRecord((await response.json()) as unknown) ?? null;
     } catch {
@@ -69,7 +71,8 @@ export function createOAuthDiscovery({ fetchRemoteHttpUrl, assertRemoteEndpointA
     rejections: HttpError[] = [],
     firstPartyOrigin?: string | null,
   ): Promise<OAuthProviderEndpoints | null> {
-    const metadata = await fetchJsonRecord(metadataUrl);
+    const proxy = readRemoteHttpProxy(asRecord(connection.config));
+    const metadata = await fetchJsonRecord(metadataUrl, proxy);
     if (!metadata) return null;
     // Every endpoint below is a string the remote server chose, so none of them
     // is adopted before `safeOAuthEndpointUrl` has vetted its scheme and host.
@@ -121,7 +124,7 @@ export function createOAuthDiscovery({ fetchRemoteHttpUrl, assertRemoteEndpointA
         ? metadata.resource.trim()
         : null;
     for (const candidate of authServerMetadataUrls(metadata)) {
-      const authMetadata = await fetchJsonRecord(candidate.metadataUrl);
+      const authMetadata = await fetchJsonRecord(candidate.metadataUrl, proxy);
       if (!authMetadata) continue;
       const candidateAuthorizationUrl = safeOAuthEndpointUrl(
         "authorization",
