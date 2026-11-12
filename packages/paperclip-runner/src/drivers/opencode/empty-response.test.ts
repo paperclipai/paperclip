@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 
-it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-correction-matches"] as const)("handles an empty OpenCode response: %s", async mode => {
+it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches"] as const)("handles an empty OpenCode response: %s", async mode => {
   const root = await mkdtemp(join(tmpdir(), "opencode-empty-response-"));
   const command = join(root, "fake-opencode.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), command);
@@ -55,6 +55,13 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
               return;
             }
           }
+          if (mode === "reasoning-echo-reasoning-after" && number === 1) {
+            emit({ type: "message.part.updated", properties: { sessionID, part: { id: "part-1-text", messageID, sessionID, type: "text", text: recordedReasoning, time: { start: 1, end: 2 } } } });
+            emit({ type: "message.part.updated", properties: { sessionID, part: { id: "part-1-reasoning", messageID, sessionID, type: "reasoning", text: recordedReasoning, time: { start: 1, end: 3 } } } });
+            emit({ type: "session.idle", properties: { sessionID } });
+            emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
+            return;
+          }
           if (mode === "reasoning-echo-text-first" && number === 1) {
             const reasoningPart = { id: "part-1-reasoning", messageID, sessionID, type: "reasoning", text: recordedReasoning, time: { start: 1 } };
             emit({ type: "message.part.updated", properties: { sessionID, part: reasoningPart } });
@@ -76,7 +83,7 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
             emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
             return;
           }
-          const answer = mode === "normal" || mode === "foreign-idle" || mode === "queued-tool" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-correction-matches"].includes(mode);
+          const answer = mode === "normal" || mode === "foreign-idle" || mode === "queued-tool" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches"].includes(mode);
           emit({ type: "message.part.updated", properties: { sessionID, part: { id: `part-${number}`, messageID,
             type: answer ? "text" : "reasoning", text: answer ? (mode === "reasoning-echo-correction-matches" ? recordedReasoning : "Here is the actual final answer.") : "Synthetic reasoning must not become the answer.", time: { start: 1, end: 2 } } } });
           emit({ type: "session.idle", properties: { sessionID } });
@@ -116,7 +123,7 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
     }
     await vi.advanceTimersByTimeAsync(mode.endsWith("idle-stall") ? 20_001 : mode === "slow-native-tool" ? 1_999 : 5_001);
     const events = await completed;
-    const succeeds = ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-correction-matches"].includes(mode);
+    const succeeds = ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches"].includes(mode);
     expect(events.at(-1)?.eventType).toBe(succeeds ? "turn.completed" : "turn.failed");
     expect(events.filter(event => event.eventType === "turn.started")).toHaveLength(1);
     expect(events.every(event => !event.turnId || event.turnId === turnId)).toBe(true);
