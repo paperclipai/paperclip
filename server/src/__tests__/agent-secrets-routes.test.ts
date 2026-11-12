@@ -267,6 +267,19 @@ describeEmbeddedPostgres("agent secret routes", () => {
       .toBe(redacted[0].text);
   });
 
+  it("drops SQL statement text from run errors on every run read", async () => {
+    const fixture = await seedAgentRun();
+    const registry = createRunSecretRedactionRegistry(db);
+    const legacy = { id: fixture.heartbeatRunId, status: "failed", errorCode: "adapter_failed",
+      error: 'Failed query: select "token" from "secrets" where "id" = $1\nparams: sk-secret', resultJson: { failureCause: "40001" } };
+    const [listed] = await registry.redactForRuns(fixture.companyId, [legacy]);
+    expect(listed).toMatchObject({ id: fixture.heartbeatRunId, error: "Database query failed (40001)", resultJson: { failureCause: "40001" } });
+    expect(await registry.redactForRun(fixture.companyId, fixture.heartbeatRunId, legacy))
+      .toMatchObject({ error: "Database query failed (40001)" });
+    const plain = { id: fixture.heartbeatRunId, error: "Adapter failed" };
+    expect((await registry.redactForRuns(fixture.companyId, [plain]))[0]).toEqual(plain);
+  });
+
   it("denies low-trust, task-bridge, and skill-test callers on both routes", async () => {
     const lowTrust = await seedAgentRun({
       trustPreset: LOW_TRUST_REVIEW_PRESET,

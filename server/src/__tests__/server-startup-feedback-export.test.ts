@@ -16,7 +16,7 @@ import * as workspaceRecovery from "../services/workspace-recovery.js";
 import * as workspaceRecoveryWork from "../services/workspace-recovery-work.js";
 import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
+import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup, expirePendingInteractionsOnClosedIssues } from "../services/index.js";
 
 import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -159,6 +159,7 @@ const {
     registerIssueStateRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(),
       watchdogs: { reconciliationSnapshot: () => ({ revision: "startup-watchdogs:1", reconciled: true }), stop: vi.fn(async () => {}) } })),
     registerDeferredReceiptWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerProviderLimitResumeWork: vi.fn((_coordinator: unknown, _canRun: () => boolean, _prepareChatRetry?: () => unknown) => ({ ready: Promise.resolve() })),
     registerRunDispatchWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(),
       retries: { reconciliationSnapshot: () => ({ revision: "startup-retries:1", reconciled: true }), stop: vi.fn(async () => {}) } })),
     registerScheduledRetryCancellationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
@@ -540,6 +541,7 @@ vi.mock("../services/index.js", () => ({
     duplicates: 0,
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  expirePendingInteractionsOnClosedIssues: vi.fn(async () => ({ issues: 0, expired: 0, failed: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
   statusCardService: vi.fn(() => ({})),
@@ -1048,7 +1050,14 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.registerActiveRunSilenceWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.registerDeferredReceiptWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerProviderLimitResumeWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+    if (enabled) {
+      const [limitCoordinator, limitAdmitted, chatRetry] = heartbeatServiceMock.registerProviderLimitResumeWork.mock.calls[0];
+      expect(limitCoordinator).toBe((await createAppMock.mock.results.at(-1)!.value).locals.deliveryWork);
+      expect(limitAdmitted()).toBe(true);
+      expect(typeof chatRetry).toBe("function");
+    }
     if (enabled) {
       const [coordinator, admitted] = heartbeatServiceMock.registerRunDispatchWork.mock.calls[0];
       const app = await createAppMock.mock.results.at(-1)!.value;
@@ -1239,6 +1248,7 @@ describe("startServer feedback export wiring", () => {
     ["built-in agents", reconcileBuiltInAgentsOnStartup],
     ["managed homes", reconcileCodexLocalManagedHomesOnStartup],
     ["runtime services", reconcilePersistedRuntimeServicesOnStartup],
+    ["closed-issue interactions", expirePendingInteractionsOnClosedIssues],
   ] as const).flatMap(([name, reconcile]) => [false, true].map(fail => ({ name, reconcile, fail }))))
   ("counts detached $name startup writes after readiness (failure=$fail)", async ({ reconcile, fail }) => {
     let finishStartup!: () => void;

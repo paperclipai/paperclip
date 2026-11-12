@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
-  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 
@@ -43,6 +43,7 @@ export function createPluginRunnerTaskOwner(input: {
   accountIdentity?: string;
   credential?: PluginEnvironmentTaskCredential;
   onCredentials?: (credential: PluginEnvironmentTaskCredential) => Promise<void>;
+  onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
   onSessionRetained?: (state: Record<string, unknown>) => Promise<void>;
   onDispatched?: () => Promise<void> | void;
   pollMs?: number;
@@ -52,6 +53,7 @@ export function createPluginRunnerTaskOwner(input: {
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
   onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
+  githubCredentialBrokerVersion?: 1;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const taskId = input.taskId;
@@ -70,7 +72,7 @@ export function createPluginRunnerTaskOwner(input: {
   let adoptionVerified = false;
   let markReady!: () => void;
   let failReady!: (error: unknown) => void;
-  let confirmStopped: (code: number) => void = () => {};
+  let confirmStopped: (code: number, error?: Error) => void = () => {};
   let stoppedState: Extract<PluginEnvironmentTaskResult, { kind: "status" }> | undefined;
   let completed = false;
   let retiredBeforeClaim = false;
@@ -131,11 +133,8 @@ export function createPluginRunnerTaskOwner(input: {
           requirements.identity[key as keyof DurableRecoveryIdentity] !== value))) {
       throw new Error("Plugin Runner source reconciliation unavailable");
     }
-    if (input.githubBroker) {
-      const description = await call({ kind: "describe" });
-      if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
-        throw new Error("Update the environment plugin to support the GitHub credential broker v1");
-      }
+    if (input.githubBroker && input.githubCredentialBrokerVersion !== 1) {
+      throw new Error("Update the environment plugin to support the GitHub credential broker v1");
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
@@ -224,11 +223,11 @@ export function createPluginRunnerTaskOwner(input: {
         return true;
       } };
     const completion = new Promise<Awaited<RunnerProcessHandle["completion"]>>(resolve => {
-      confirmStopped = code => {
+      confirmStopped = (code, error) => {
         if (child.exitCode !== null) return;
         child.exitCode = code;
-        failReady(new Error("Plugin Runner stopped before connection"));
-        resolve({ code, signal: null, stdout: "", stderr: "" });
+        failReady(error ?? new Error("Plugin Runner stopped before connection"));
+        resolve({ code, signal: null, stdout: "", stderr: error?.message ?? "" });
       };
     });
     void (async () => {
@@ -247,9 +246,17 @@ export function createPluginRunnerTaskOwner(input: {
         return;
       }
       submitted = true;
-      try { await call(operation); } catch {
+      const result = await call(operation).catch(async () => {
         // Submission can have succeeded remotely. Inspect the same saved task.
         await readStatus();
+      });
+      if (result?.kind === "admission_rejected") {
+        submitted = false;
+        removeStartupAbort();
+        const error = new Error(`runner_task_admission_rejected: ${result.reason}`);
+        rejectFailure(error);
+        confirmStopped(1, error);
+        return;
       }
       let stopSent = false;
       while (child.exitCode === null) {
@@ -420,7 +427,29 @@ export function createPluginRunnerTaskOwner(input: {
     }
     return result.outcome;
   };
-  return { launcher, registration, driver, readWorkspaceFile, release, resume,
+  // A successor that discards this owner's session must not inherit its
+  // failed close. Repeat the unsettled checkpoint's task obligations: confirmed
+  // stop (sent once), credential handoff, then completion. Never reads state.
+  const retireSupersededTask = async () => {
+    if (!submitted || detached) return false;
+    if (!completed) {
+      stopRequested = true;
+      if (stoppedState?.executionStopped !== true) await stopAndConfirm();
+      if (input.accountIdentity && input.onCredentials) {
+        const snapshot = await call({ kind: "credentials", accountIdentity: input.accountIdentity });
+        if (snapshot.kind !== "credentials") throw new Error("Plugin Runner credential snapshot unavailable");
+        if (snapshot.credential !== null) await input.onCredentials(snapshot.credential);
+      }
+      await call({ kind: "complete" });
+      completed = true;
+      const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
+      if (identity) await input.onRetired?.(identity);
+    }
+    return stoppedState?.executionStopped === true && completed && !detached;
+  };
+  return { launcher, registration, driver, readWorkspaceFile, release, resume, retireSupersededTask,
+    // A warm transport outlives its first lease and invocation's private home.
+    credentialsUpdated: async (event: PrpEvent) => { await input.onCredentialsUpdated?.(event); },
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,

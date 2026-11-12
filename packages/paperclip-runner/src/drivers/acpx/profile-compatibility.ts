@@ -1,4 +1,4 @@
-import { QUALIFIED_ACPX_PROFILE_DATA } from "./generated-profiles.js";
+import { QUALIFIED_ACPX_PROFILE_DATA, QUALIFIED_ACPX_VERSION } from "./generated-profiles.js";
 
 /** Decodable profile revisions, not permission to launch them.
  * Exact current profile/package/digest admission is checked separately.
@@ -14,4 +14,10 @@ export function isSupportedAcpxProfileVersion(agent: string, value: unknown): va
   const current = QUALIFIED_ACPX_PROFILE_DATA[agent as keyof typeof QUALIFIED_ACPX_PROFILE_DATA].agentProfileVersion;
   const latest = Math.max(current, Object.hasOwn(RETAINED_THROUGH, agent) ? RETAINED_THROUGH[agent]! : 0);
   return (value as number) >= 1 && (value as number) <= latest;
+}
+
+const DECODABLE_ACPX_VERSIONS: ReadonlySet<unknown> = new Set(["0.13.1", QUALIFIED_ACPX_VERSION]);
+
+export function isDecodableAcpxVersion(value: unknown): boolean {
+  return DECODABLE_ACPX_VERSIONS.has(value);
 }

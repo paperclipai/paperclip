@@ -5,13 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agents,
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
+  issues,
   projects,
   workspaceOperations,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { getWorkspaceOperationLogStore } from "../services/workspace-operation-log-store.js";
@@ -151,6 +154,53 @@ describeEmbeddedPostgres("workspace operation reconciliation", () => {
       expect((await workspaceOperationService(db).getById(operation.id))?.executionWorkspaceId).toBe(scope.executionWorkspaceId);
     } finally { unsubscribe(); }
   });
+
+  it("keeps the finalization record when its write loses a deadlock to an issue-then-run locker", async () => {
+    const scope = await seedFinalizationWorkspace();
+    const agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId: scope.companyId, name: "Finalizer", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId: scope.companyId, title: "Finalize", status: "in_progress",
+      assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: scope.companyId, agentId, status: "running",
+      contextSnapshot: { issueId } });
+    const locker = createDb(externalUrl ?? tempDb!.connectionString);
+    let lockedIssue!: () => void, releaseLocker!: () => void;
+    const issueHeld = new Promise<void>(resolve => { lockedIssue = resolve; });
+    const lockerGate = new Promise<void>(resolve => { releaseLocker = resolve; });
+    const lockerDone = locker.transaction(async tx => {
+      await tx.execute(sql`set local deadlock_timeout = '20s'`);
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+      lockedIssue();
+      await lockerGate;
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+    });
+    try {
+      await Promise.race([issueHeld, lockerDone.then(() => { throw new Error("locker ended before it held the issue"); })]);
+      const recording = workspaceOperationService(db)
+        .createRecorder({ ...scope, heartbeatRunId: runId, issueId })
+        .recordOperation({ phase: "workspace_finalize", run: async () => ({ status: "failed" }) })
+        .then(value => ({ value }), error => ({ error }));
+      await vi.waitFor(async () => {
+        const [waiting] = await locker.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where wait_event_type = 'Lock' and query like 'insert into "workspace_operations"%'`);
+        expect(waiting?.count).toBe(1);
+      }, { timeout: 10_000, interval: 50 });
+      releaseLocker();
+      await lockerDone;
+      const outcome = await recording;
+      expect(outcome).not.toHaveProperty("error");
+      expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId)))
+        .map(row => [row.phase, row.status])).toEqual([["workspace_finalize", "failed"]]);
+    } finally {
+      releaseLocker();
+      await lockerDone.catch(() => undefined);
+      await locker.$client.end({ timeout: 1 });
+      await db.delete(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.delete(issues).where(eq(issues.id, issueId));
+      await db.delete(agents).where(eq(agents.id, agentId));
+    }
+  }, 30_000);
 
   it("does not publish a finalization receipt rolled back by the outer transaction", async () => {
     const scope = await seedFinalizationWorkspace();
