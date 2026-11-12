@@ -11,6 +11,7 @@ import path from "node:path";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { STORAGE_FAILURE_CLEANUP_MS } from "../storage/failure-cleanup.js";
+import { fileCryptoPoolLoad } from "../storage/file-crypto-pool.js";
 
 describe("streamed S3 multipart uploads", () => {
   it("delivers four slow part payloads concurrently before any part is drained", async () => {
@@ -529,6 +530,28 @@ describe("file-backed S3 multipart uploads", () => {
       expect(partOneAttempts).toBe(3);
       expect(send.mock.calls.filter(([command]) => command instanceof AbortMultipartUploadCommand)).toHaveLength(1);
       expect(abortedWhileInFlight).toBe(false);
+    } finally { send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
+  });
+
+  it.each(["cancelled", "removed"])("leaves no part digest running or waiting when the source is %s during the first round", async reason => {
+    const source = await sourceFile(FILE_PART_CONCURRENCY + 2);
+    const client = new S3Client({ region: "us-east-1" }), cancellation = new AbortController();
+    let digestsAtCleanup: ReturnType<typeof fileCryptoPoolLoad> | undefined;
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      if (command instanceof CreateMultipartUploadCommand) {
+        // The digests of the first round start right after this reply.
+        if (reason === "cancelled") setImmediate(() => cancellation.abort(new Error("run cancelled")));
+        else await fs.rm(source.file);
+        return { UploadId: "upload" };
+      }
+      if (command instanceof AbortMultipartUploadCommand) { digestsAtCleanup = fileCryptoPoolLoad(); return {}; }
+      throw new Error("must not send a part or complete the upload");
+    });
+    try {
+      await expect(putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+        contentLength: source.size, body: Buffer.alloc(0), sourceFile: source.file, signal: cancellation.signal })).rejects.toThrow();
+      expect(digestsAtCleanup).toEqual({ running: 0, waiting: 0 });
+      expect(fileCryptoPoolLoad()).toEqual({ running: 0, waiting: 0 });
     } finally { send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
   });
 

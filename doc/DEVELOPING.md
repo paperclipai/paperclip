@@ -2183,7 +2183,9 @@ admin can change it in instance settings.
 capabilities a release supports, for the control plane to read at a release
 commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
 (`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
-entries only while that list includes `pluginEnvironments`.
+entries only while that list includes `pluginEnvironments`. When sending a plugin
+environment, include `runnerLifecycleMode` only if the target release also lists
+`pluginEnvironmentRunnerLifecycleMode`.
 
 
 ### Experimental native remote workspace storage
@@ -2224,10 +2226,31 @@ S3 multipart uploads stream up to four parts concurrently. One producer reads
 the source in order, and bounded stream buffers preserve backpressure. Failed
 uploads cancel and settle their active requests before multipart cleanup.
 Snapshot publication still requires full object hash and size verification.
-Local snapshot hashing, encryption, and decryption use bounded 1 MiB filesystem
-stream buffers to reduce event-loop handoffs under background load. Each stream
-retains its existing integrity and cancellation checks; archive contents and
-saved snapshot formats are unchanged. Reproduce the scheduling effect with:
+Snapshot hashing, encryption, and decryption run on worker threads
+(`server/src/storage/file-crypto-pool.ts`), so they do not hold the server's
+thread. The Content-MD5 of each uploaded part is computed the same way. At most
+two jobs run at once, each through two reused 1 MiB buffers. A waiting job holds
+file names, not file contents, and a cancelled job stops at its next chunk.
+Every integrity check runs as before, with the same failures; archive contents
+and saved snapshot formats are unchanged. Reproduce the effect on the server's
+thread with:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-workspace-snapshot-crypto.ts --mib=1024
+```
+
+The benchmark saves and restores one synthetic archive through the real storage
+functions and the real S3 client. The object store is a local process that
+checks each part's Content-MD5. A third process requests a trivial route from
+the measured server and times each reply with its own clock. It reports
+main-thread busy time, the longest event-loop delay, process CPU time, wall
+time, peak memory, and the latency of the unrelated requests. To compare two
+revisions, run it from a checkout of each. The result is synthetic: the store
+is on loopback without TLS, and sandbox transfer is excluded.
+
+Archive transfers that still stream on the server's thread use bounded 1 MiB
+filesystem stream buffers to reduce event-loop handoffs under background load.
+Reproduce that scheduling effect with:
 
 ```sh
 node --expose-gc scripts/benchmark-workspace-archive-io.mjs
