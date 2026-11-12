@@ -76,7 +76,7 @@ export function gradeQueueEdit(value: unknown) {
   const targetRead = readCurrentRevision(reads, queued.find(row => row.id === s.targetId)), unread = queued.filter(row => !readCurrentRevision(reads, row));
   const consumedInTurn = queued.length === 2 && unread.length === 0 && continuations.length === 0 && o.runs.length === 2 && s.inTurnOutcomeApplied === true;
   const consumedByContinuation = unread.length > 0 && continuations.length === 1 && s.consumingRunCount === 1 && s.nativeDeliveryBound === true && o.runs.length === 3
-    && (!targetRead || s.inTurnOutcomeApplied === true);
+    && (!targetRead || s.inTurnOutcomeSaved === true && s.latestOutcomeKept === true);
   c.add("edited-message-consumed-once", queued.length === 2 && queued[0]?.id === s.targetId && (consumedInTurn || consumedByContinuation)
     && s.queueEmptyAfterDelivery === true && s.taskDone === true && o.runs.every(row => row.status === "succeeded") && s.initialRevisionRetained === true,
   "The edited message is consumed exactly once: the running turn read its current revision and saved the change with no continuation, or one ordinary continuation receives it in its final order.");
@@ -164,8 +164,10 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state);
     state.initialRevisionRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id);
-    state.inTurnOutcomeApplied = o.revisions.some(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id
-      && /\bblue\b/i.test(row.body ?? "") && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
+    const blue = o.revisions.filter(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id && /\bblue\b/i.test(row.body ?? ""));
+    const latest = (row: Entity) => o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id);
+    state.inTurnOutcomeApplied = blue.some(latest); state.inTurnOutcomeSaved = blue.length > 0;
+    state.latestOutcomeKept = blue.some(saved => o.revisions.some(row => row.documentId === saved.documentId && latest(row) && /\bblue\b/i.test(row.body ?? "")));
     return o;
   },
   async cleanup(ctx, state) { try { await cleanupIdentityProbes(ctx); } finally { await releaseRuntimeWorker(state); } },

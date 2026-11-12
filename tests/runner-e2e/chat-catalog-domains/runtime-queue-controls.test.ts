@@ -75,10 +75,16 @@ it("rejects consumption that leaves the queue or task unfinished", () => {
   const open = inTurn(); open.state.taskDone = false; expect(gradeQueueEdit(open).passed).toBe(false);
 });
 function mixed() {
-  const o = valid(); o.state.workerHistoryReads = { color: "2026-11-12T21:52:30.494Z" }; o.state.inTurnOutcomeApplied = true; return o;
+  const o = valid() as ReturnType<typeof valid> & { state: Record<string, unknown> };
+  Object.assign(o.state, { workerHistoryReads: { color: "2026-11-12T21:52:30.494Z" }, inTurnOutcomeApplied: false, inTurnOutcomeSaved: true, latestOutcomeKept: true });
+  return o;
 }
+it("grades the whole limit-1 partial read: the turn saved blue, the continuation got only the font note and saved the latest revision", () => {
+  const result = gradeQueueEdit(mixed()); expect(result.checks.filter(check => !check.passed)).toEqual([]); expect(result.passed).toBe(true);
+});
+it("rejects a partial read whose later continuation dropped the saved blue change", () => { const o = mixed(); o.state.latestOutcomeKept = false; expect(gradeQueueEdit(o).passed).toBe(false); });
 it("accepts the running turn reading only the edited message and one continuation delivering the unread one", () => expect(gradeQueueEdit(mixed()).passed).toBe(true));
 it("rejects the edited message read in the running turn whose change was never saved, even with a continuation", () => {
-  const o = mixed(); o.state.inTurnOutcomeApplied = false; expect(gradeQueueEdit(o).passed).toBe(false);
+  const o = mixed(); o.state.inTurnOutcomeSaved = false; expect(gradeQueueEdit(o).passed).toBe(false);
 });
 it("rejects a continuation that re-delivers the message the running turn already read", () => { const o = mixed(); o.state.nativeDeliveryBound = false; expect(gradeQueueEdit(o).passed).toBe(false); });
