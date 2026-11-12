@@ -64,8 +64,6 @@ describe("owner-routed routine change", () => {
     expect(gradeIntegratorRoutines(outside).passed).toBe(false);
   });
 
-  // Runs 43298807862 and 43300040122: the CEO's turn, Morgan's run on the routed task, and the CEO's completion
-  // follow-up on the source chat exceeded the old two-run bound.
   const followUp = (id: string, taskId = "delegated") => ({ id, agentId: "ceo", status: "succeeded",
     contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", paperclipWake: { chatCompletionUpdates: [{ id: taskId }] } } });
   const roles = (o: ReturnType<typeof valid>) => gradeIntegratorRoutines(o).checks.find(check => check.id === "declared-run-roles")?.passed;
