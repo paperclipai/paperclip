@@ -963,6 +963,14 @@ export function recoveryService(
     transientRetryBudgetSpent?: (
       run: typeof heartbeatRuns.$inferSelect,
     ) => boolean;
+    /**
+     * Whether a failed run stopped before provider work with a transient
+     * preparation failure that its own bounded retry continues. The sweep
+     * offers such a run to `scheduleRecoveryRetry` instead of escalating it.
+     */
+    ownsPreparationRetry?: (
+      run: typeof heartbeatRuns.$inferSelect,
+    ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     /**
      * The one settle path for a `running` legacy run whose adapter child is
@@ -1129,6 +1137,13 @@ export function recoveryService(
         sql`${heartbeatRuns.controllerBootId} <> ${legacyControllerBootId}`,
         sql`${heartbeatRuns.controllerLeaseExpiresAt} > now()`));
     return run?.leaseExpiresAt ?? null;
+  }
+
+  async function failedRunOwnsPreparationRetry(companyId: string, runId: string): Promise<boolean> {
+    if (!deps.ownsPreparationRetry || !deps.scheduleRecoveryRetry) return false;
+    const [run] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+    return Boolean(run && deps.ownsPreparationRetry(run));
   }
 
   async function hasActiveExecutionPath(
@@ -5834,7 +5849,16 @@ export function recoveryService(
           continue;
         }
 
-        if (classification.kind === "non_retryable") {
+        // A failed run that stopped before provider work with a transient
+        // preparation failure is continued by its own bounded retry. Its
+        // executor schedules that retry after the failed write, and a slow
+        // settlement or a stopped server can leave it unscheduled once the
+        // settling check above lapses. Offer it to the same idempotent
+        // scheduler below (one successor, the same budget); only exhaustion
+        // or a refused continuation escalates it.
+        const preparationRetry = classification.kind === "non_retryable" && latestRun!.agentId === agentId
+          && await failedRunOwnsPreparationRetry(issue.companyId, latestRun!.id);
+        if (classification.kind === "non_retryable" && !preparationRetry) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_progress",
@@ -5857,7 +5881,7 @@ export function recoveryService(
           continue;
         }
 
-        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (!preparationRetry && didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
           const { consecutive, latestFinishedAt } =
             await summarizeRecentContinuationRetries(
               issue.companyId,

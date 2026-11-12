@@ -160,6 +160,29 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
     || code === STORAGE_UNAVAILABLE_CODE;
 }
 
+/**
+ * The persisted form of the setup-failure decision in run completion: this
+ * failed legacy run stopped before provider work with a transient preparation
+ * code, so its own bounded retry (scheduleBoundedRetryForRun) continues it.
+ * The stranded-task sweep uses it to offer a run whose executor has not
+ * scheduled that retry (still settling, or its server stopped) to the same
+ * idempotent scheduler instead of escalating it.
+ */
+export function failedPreparationOwnsBoundedRetry(run: Pick<HeartbeatRun,
+  "status" | "runtimeMode" | "nativeSessionId" | "runnerInstanceId" | "errorCode" | "resultJson" | "contextSnapshot">): boolean {
+  if (run.status !== "failed" || run.runtimeMode !== "legacy" || run.nativeSessionId !== null || run.runnerInstanceId !== null
+    || !isTransientWorkspacePreparationCode(run.errorCode)) return false;
+  const recovery = parseObject(run.resultJson?.executionRecovery);
+  if (recovery.kind !== "bootstrap" || recovery.providerWorkStarted !== false) return false;
+  // A restore failure is retried only when its owner proved it retryable.
+  if (run.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE)
+    return parseObject(run.resultJson?.remoteWorkspaceRestore).retryable === true;
+  // An accepted interaction keeps its own continuation retry.
+  return !((run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+    || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE || run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
+    && isResolvedInteractionContinuationWakeContext(run.contextSnapshot));
+}
+
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 
