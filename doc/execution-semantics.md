@@ -3698,6 +3698,15 @@ is the current review participant. Before the receipt, the hold prevents a secon
 executor on the workspace. A snapshot-only save does not release the hold,
 because the task workspace does not contain the saved files.
 
+One stop leaves the stopped run's agent with nothing to reconcile: the run
+handed its own task to another agent, and that reassignment stopped it. The
+proof is the run's own `issue.updated` activity record, which names the new
+assignee and names the run itself as `interruptedRunId`. After the receipt, the
+hold of such a run does not apply to its agent either, so a task that comes
+back to that agent starts a fresh turn. A run that a person reassigned, that a
+provider failure ended, or that another run's hand-off preceded keeps its hold
+for its agent.
+
 A Stop or reassignment can reach a native run while its provider session is
 still opening. The startup owner then fences the late handle before any prompt,
 and the Stop acknowledgement records `nativeCancellation.beforeProviderTurn`.

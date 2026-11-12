@@ -5,7 +5,7 @@ import { legacyShutdownBeforeDispatchCondition } from "./legacy-shutdown-before-
 import { and, desc, eq, gt, inArray, not, or, sql, type SQL } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
@@ -247,16 +247,34 @@ export function interruptedPreparationBeforeProviderWorkCondition() {
 }
 
 /**
+ * The stopped run handed its own task to another agent, and that reassignment
+ * is what stopped it. Its turn ended at a call whose outcome the task records,
+ * so nothing of it is left to reconcile. The proof is the task update that the
+ * run itself made and that names the run as the one it interrupted. `stopped`
+ * and `task` are the SQL aliases of the stopped run and its task.
+ */
+export function stoppedByOwnHandOffCondition() {
+  return sql`exists (select 1 from ${activityLog} handoff
+    where handoff.company_id = stopped.company_id and handoff.action = 'issue.updated'
+      and handoff.entity_type = 'issue' and handoff.entity_id = task.id::text
+      and handoff.actor_type = 'agent' and handoff.agent_id = stopped.agent_id and handoff.run_id = stopped.id
+      and handoff.details->>'interruptedRunId' = stopped.id::text
+      and handoff.details->>'assigneeAgentId' <> stopped.agent_id::text)`;
+}
+
+/**
  * A file-preservation hold binds a newer task owner only until automatic
  * recovery saved the stopped run's files. That owner's turn is a fresh
  * assignment, not a replay: the stopped run's unknown outcomes stay with its
  * own agent, which keeps the hold. A Stop fenced before any provider turn, or a
  * shutdown that interrupted preparation before any provider work, has no
- * unknown outcome, so its hold releases for the same agent too. The proof is
- * the durable completed-recovery receipt bound to this action, so later reuse
- * of the workspace by the current owner (new epoch, writer or snapshot) cannot
- * re-arm the hold. A person who received the task through the stopped run's
- * own recorded hand-off is released the same way.
+ * unknown outcome, so its hold releases for the same agent too. So does the
+ * hold of a run that its own hand-off stopped, when the task returns to that
+ * run's agent. The proof is the durable completed-recovery receipt bound to
+ * this action, so later reuse of the workspace by the current owner (new
+ * epoch, writer or snapshot) cannot re-arm the hold. A person who received the
+ * task through the stopped run's own recorded hand-off is released the same
+ * way.
  */
 export function restoreHoldReleasedForCurrentOwnerPredicate() {
   const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
@@ -279,7 +297,8 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
               and task.execution_state->>'status' = 'pending'
               and task.execution_state->'currentParticipant'->>'type' = 'agent'
               and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
-            or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}))
+            or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}
+            or ${stoppedByOwnHandOffCondition()}))
           -- The stopped run handed this task to the person who owns it now
           -- (its own recorded hand-off). Its remaining outcomes were never
           -- that person's work; once its files are saved, the hold releases.
