@@ -36,7 +36,7 @@ vi.mock("../services/budget-reservations.js", async importOriginal => {
 const support = await getRecoveryPostgresSupport({});
 
 function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescriptorOnce?: { failed: boolean };
-  unretiredPredecessorOnce?: { failed: boolean; environmentId: string } } = {}):
+  unretiredPredecessorOnce?: { failed: boolean; environmentId: string }; turnMessages?: Map<string, string> } = {}):
   NonNullable<HeartbeatServiceOptions["nativeSessionBackendFactory"]> {
   return execution => {
     let identity: NativeRunIdentity;
@@ -47,7 +47,8 @@ function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescripto
       identity: () => identity,
       capabilities: async () => capabilities,
       attachRun: async input => { identity = input.identity; },
-      startTurn: async () => {
+      startTurn: async input => {
+        options.turnMessages?.set(identity.runId, JSON.stringify(input.message));
         const turnId = randomUUID();
         turn.resolve(turnId);
         return { turnId };
@@ -210,8 +211,9 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
     const { companyId, agentId } = fixture.current;
     const db = createDb(fixture.current.temporary.connectionString, { maxConnections: 4 });
     const [environment] = await db.insert(environments).values({ name: `reused-${randomUUID()}`, driver: "sandbox" }).returning();
+    const turnMessages = new Map<string, string>();
     const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db,
-      { unretiredPredecessorOnce: { failed: false, environmentId: environment!.id } }) });
+      { unretiredPredecessorOnce: { failed: false, environmentId: environment!.id }, turnMessages }) });
     try {
       await db.update(agents).set({ status: "idle", adapterConfig: { provider: "codex" } }).where(eq(agents.id, agentId));
       await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
@@ -235,13 +237,14 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
 
       expect(await heartbeat.promoteDueScheduledRetries()).toMatchObject({ promoted: 1 });
       await heartbeat.resumeQueuedRuns();
-      await waitForCondition("the retry to run", async () => ["succeeded", "failed"].includes(
-        (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor!.id)))[0]?.status ?? ""));
+      await waitForCondition("the retry to start its provider turn", () => turnMessages.has(successor!.id));
       await waitForCondition("the retry to settle", () => heartbeat.getTaskDrainStatus().quiescent);
       const [retried] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor!.id));
       const continuation = retried!.contextSnapshot?.executionContinuation as ExecutionContinuationEnvelope;
       expect(continuation.trigger).toMatchObject({ sourceRunId: run!.id, retriedReason: "issue_monitor_due" });
       expect(renderPaperclipWakePrompt(retried!.contextSnapshot?.paperclipWake)).toContain("- retried wake: issue_monitor_due");
+      expect(turnMessages.get(successor!.id)).toContain("- retried wake: issue_monitor_due");
+      expect(turnMessages.has(run!.id)).toBe(false);
     } finally {
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();
