@@ -8,18 +8,10 @@ import path from "node:path";
 import express from "express";
 import type { Db } from "@paperclipai/db";
 
-// Counts the `git` processes that health and liveness requests start, with the
-// routes built the way server/src/app.ts builds them (no injected server info).
-//
-// The server caches Git metadata for 3 seconds, so the count depends on how the
-// requests are spread over time. `burst` sends them back to back. `polled`
-// sends one request per poll interval; the clock that the server reads is moved
-// forward between requests, so the run does not wait for real time.
-
 const argument = (name: string) => process.argv.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1);
 const requests = Number(argument("--requests") ?? 200);
 const pollIntervalMs = Number(argument("--poll-interval-ms") ?? 5000);
-assert.ok(Number.isInteger(requests) && requests >= 1 && requests <= 100_000, "--requests must be an integer from 1 to 100000");
+assert.ok(Number.isInteger(requests) && requests >= 2 && requests <= 100_000, "--requests must be an integer from 2 to 100000");
 assert.ok(Number.isInteger(pollIntervalMs) && pollIntervalMs >= 1, "--poll-interval-ms must be a positive integer");
 assert.notEqual(process.platform, "win32", "the counting git stand-in needs a POSIX shell");
 
@@ -143,7 +135,6 @@ try {
     for (const pattern of patterns) {
       resetServerInfoCacheForTests();
       const execsBeforeRoutes = gitExecs();
-      // The same construction as server/src/app.ts: no `serverInfo` option.
       const app = express();
       app.use((req, _res, next) => {
         if (req.get("x-benchmark-actor") === "board") {
@@ -169,8 +160,6 @@ try {
       const started = process.hrtime.bigint();
       for (let index = 0; index < requests; index += 1) {
         clockOffsetMs += pattern.advanceMs;
-        // Alternate the two production pollers: the control plane (no board
-        // session) and the board UI (board session, full details).
         const board = index % 2 === 1;
         const response = await fetch(`${origin}/api/health`, board ? { headers: { "x-benchmark-actor": "board" } } : undefined);
         const text = await response.text();

@@ -11,9 +11,6 @@ import type { ServerGitInfo } from "@paperclipai/shared";
 const BUILD_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const POLL_INTERVAL_MS = 5000;
 
-// Git itself is real in this file. The mock only counts the git processes that
-// the server starts, so a test also fails when real Git disagrees with the
-// server about where a checkout is.
 const serverGit = vi.hoisted(() => ({ execFileSync: vi.fn() }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -30,8 +27,7 @@ const { resetStartupRecoveryStateForTests, setStartupRecoveryPhase } = await imp
 
 type HealthOptions = NonNullable<Parameters<typeof healthRoutes>[1]>;
 
-// The options that server/src/app.ts passes: no `serverInfo`.
-const productionHealthOptions: HealthOptions = {
+const healthOptionsAsAppPassesThem: HealthOptions = {
   deploymentMode: "authenticated",
   deploymentExposure: "private",
   authReady: true,
@@ -43,8 +39,7 @@ function serverGitStarts(): number {
   return serverGit.execFileSync.mock.calls.filter(([command]) => command === "git").length;
 }
 
-/** Runs real Git for the test fixture. The server's own starts are not counted here. */
-function git(cwd: string, ...args: string[]) {
+function fixtureGit(cwd: string, ...args: string[]) {
   const result = spawnSync("git", args, {
     cwd,
     encoding: "utf8",
@@ -63,15 +58,15 @@ function git(cwd: string, ...args: string[]) {
 
 function commit(checkout: string, subject: string): string {
   fs.writeFileSync(path.join(checkout, "file.txt"), `${subject}\n`);
-  expect(git(checkout, "add", "file.txt").status).toBe(0);
-  expect(git(checkout, "commit", "--quiet", "--message", subject).status).toBe(0);
-  return git(checkout, "rev-parse", "HEAD").stdout;
+  expect(fixtureGit(checkout, "add", "file.txt").status).toBe(0);
+  expect(fixtureGit(checkout, "commit", "--quiet", "--message", subject).status).toBe(0);
+  return fixtureGit(checkout, "rev-parse", "HEAD").stdout;
 }
 
 function createCheckout(): string {
   const checkout = path.join(home, "checkout");
   fs.mkdirSync(path.join(checkout, "server"), { recursive: true });
-  expect(git(checkout, "init", "--quiet", "--initial-branch=main").status).toBe(0);
+  expect(fixtureGit(checkout, "init", "--quiet", "--initial-branch=main").status).toBe(0);
   return checkout;
 }
 
@@ -92,12 +87,11 @@ function createServer(serverInfo?: HealthOptions["serverInfo"]) {
     next();
   });
   app.use("/api/liveness", serverInfo ? livenessRoutes(serverInfo) : livenessRoutes());
-  app.use("/api/health", healthRoutes(stubDatabase(), { ...productionHealthOptions, ...(serverInfo ? { serverInfo } : {}) }));
+  app.use("/api/health", healthRoutes(stubDatabase(), { ...healthOptionsAsAppPassesThem, ...(serverInfo ? { serverInfo } : {}) }));
   return app;
 }
 
-/** Each poll is one cache lifetime after the previous one, as real polls are. */
-async function poll(app: express.Express, polls = 1) {
+async function pollAfterCacheExpiry(app: express.Express, polls = 1) {
   const responses: Array<{ anonymous: string; board: string; liveness: string }> = [];
   for (let index = 0; index < polls; index += 1) {
     vi.setSystemTime(Date.now() + POLL_INTERVAL_MS);
@@ -139,8 +133,8 @@ describe("git processes behind health and liveness requests", () => {
     fs.mkdirSync(install);
     process.chdir(install);
     vi.stubEnv("PAPERCLIP_BUILD_COMMIT", BUILD_COMMIT);
-    // The assumption behind the fix: here real Git can only fail.
-    expect(git(install, "show", "-s", "--format=%H", "HEAD").status).not.toBe(0);
+    const realGitShowOutsideCheckout = fixtureGit(install, "show", "-s", "--format=%H", "HEAD");
+    expect(realGitShowOutsideCheckout.status).not.toBe(0);
     const buildGitInfo: ServerGitInfo = {
       available: true,
       fullSha: BUILD_COMMIT,
@@ -151,10 +145,10 @@ describe("git processes behind health and liveness requests", () => {
       localChanges: { available: false, unavailableReason: "git_status_unavailable" },
     };
 
-    const responses = await poll(createServer(), 5);
+    const responses = await pollAfterCacheExpiry(createServer(), 5);
 
-    // The reference server gets the snapshot injected, so it never reads Git.
-    const [reference] = await poll(createServer({ processStartedAt: getServerProcessStartedAt(), git: buildGitInfo }));
+    const serverWithInjectedSnapshot = createServer({ processStartedAt: getServerProcessStartedAt(), git: buildGitInfo });
+    const [reference] = await pollAfterCacheExpiry(serverWithInjectedSnapshot);
     for (const response of responses) expect(response).toEqual(reference);
     expect(JSON.parse(reference!.anonymous)).toMatchObject({ status: "ok", commit: BUILD_COMMIT });
     expect(JSON.parse(reference!.anonymous).serverInfo).toBeUndefined();
@@ -172,7 +166,7 @@ describe("git processes behind health and liveness requests", () => {
     process.chdir(path.join(checkout, "server"));
     const app = createServer();
 
-    const [first] = await poll(app);
+    const [first] = await pollAfterCacheExpiry(app);
     expect(JSON.parse(first!.board).serverInfo.git).toMatchObject({
       fullSha: firstCommit,
       branchName: "main",
@@ -181,26 +175,26 @@ describe("git processes behind health and liveness requests", () => {
     });
 
     const secondCommit = commit(checkout, "Second commit");
-    const [second] = await poll(app);
+    const [second] = await pollAfterCacheExpiry(app);
     expect(JSON.parse(second!.anonymous).commit).toBe(secondCommit);
     expect(JSON.parse(second!.board).serverInfo).toMatchObject({
       processStartedAt: getServerProcessStartedAt(),
       git: { fullSha: secondCommit, subject: "Second commit" },
     });
-    // Liveness keeps the commit that it read when the routes were created.
-    expect(JSON.parse(second!.liveness)).toEqual({ status: "ok", commit: firstCommit });
+    const commitReadAtRouteCreation = firstCommit;
+    expect(JSON.parse(second!.liveness)).toEqual({ status: "ok", commit: commitReadAtRouteCreation });
   });
 
   it("reads a linked worktree, where .git is a file", async () => {
     const checkout = createCheckout();
     commit(checkout, "First commit");
     const worktree = path.join(home, "worktree");
-    expect(git(checkout, "worktree", "add", "--quiet", "-b", "feature", worktree).status).toBe(0);
+    expect(fixtureGit(checkout, "worktree", "add", "--quiet", "-b", "feature", worktree).status).toBe(0);
     const worktreeCommit = commit(worktree, "Worktree commit");
     expect(fs.statSync(path.join(worktree, ".git")).isFile()).toBe(true);
     process.chdir(worktree);
 
-    const [response] = await poll(createServer());
+    const [response] = await pollAfterCacheExpiry(createServer());
 
     expect(JSON.parse(response!.board).serverInfo.git).toMatchObject({
       fullSha: worktreeCommit,
@@ -217,7 +211,7 @@ describe("git processes behind health and liveness requests", () => {
     process.chdir(install);
     vi.stubEnv("GIT_DIR", path.join(checkout, ".git"));
 
-    const [response] = await poll(createServer());
+    const [response] = await pollAfterCacheExpiry(createServer());
 
     expect(JSON.parse(response!.anonymous).commit).toBe(headCommit);
     expect(serverGitStarts()).toBeGreaterThan(0);
