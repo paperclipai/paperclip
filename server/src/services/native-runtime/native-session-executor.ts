@@ -841,6 +841,9 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
           await new Promise(resolve => setTimeout(resolve, warmRetirementDirectoryWait.pollMs));
           continue;
         }
+        await entry.instructionWorkingCopy?.retirementFailed?.().catch(receiptError => {
+          logger.warn({ err: receiptError, runId: entry.runId }, "could not keep the predecessor's agent files for later collection");
+        });
         throw new NativePredecessorRetirementDirectoryBusyError(entry.runId, error);
       }
       entry.retirementUnproven = true;

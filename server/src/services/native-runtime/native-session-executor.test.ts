@@ -11174,11 +11174,13 @@ describe("native warm session supervision", () => {
       const agentLock = { holder: null as string | null };
       const collected: string[] = [];
       const adopted: string[] = [];
+      const keptForCollection: string[] = [];
       const copy = (runId: string, preparationKey = "before") => ({ runId, root: `/tmp/${identity}`, preparationKey, hasChanges: async () => false,
         collectStopped: async () => {
           if (agentLock.holder !== null) throw new AgentDirectoryOperationBusyError();
           collected.push(runId);
-        } });
+        },
+        retirementFailed: async () => { keptForCollection.push(runId); } });
       const target = (providerLeaseId: string, outcome: "created" | "resumed" | "replacement") => ({ kind: "remote" as const,
         transport: "sandbox" as const, environmentId: identity, remoteCwd: `/tmp/${identity}`, sandboxLeaseAcquisition: { outcome, providerLeaseId } });
       const claim = (runId: string, claimTarget: ReturnType<typeof target>, adoptable = true) => claimWarmNativeInstructionCopy({
@@ -11191,7 +11193,7 @@ describe("native warm session supervision", () => {
         } });
       const start = () => executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
         runnerExecutionTarget: target("sandbox-a", "created"), instructionWorkingCopy: copy(identity) });
-      return { agentLock, collected, adopted, target, claim, start };
+      return { agentLock, collected, adopted, keptForCollection, target, claim, start };
     }
     const originalWait = { ...warmRetirementDirectoryWait };
     afterEach(() => { Object.assign(warmRetirementDirectoryWait, originalWait); });
@@ -11223,6 +11225,7 @@ describe("native warm session supervision", () => {
         const contended = await f.claim(`${identity}-follow-up`, f.target("sandbox-a", "resumed")).catch(error => error);
         expect(contended).toMatchObject({ code: "native_predecessor_retirement_directory_busy", predecessorRunId: identity });
         expect(contended.cause).toBeInstanceOf(AgentDirectoryOperationBusyError);
+        expect(f.keptForCollection).toEqual([`${identity}-follow-up`]);
         expect(await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "environment delete" }))
           .toMatchObject({ closed: 0, busy: 1, failed: 0 });
         expect(await f.claim(`${identity}-fresh-sandbox`, f.target("sandbox-b", "replacement")).catch(error => error))
