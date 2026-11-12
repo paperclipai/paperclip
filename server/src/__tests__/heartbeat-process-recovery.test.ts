@@ -266,6 +266,7 @@ import {
 import { claimNativeSessionResumptions } from "../services/native-runtime/native-finalization-reconciler.ts";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
+import { createWakeQueue } from "../modules/wake-queue/index.js";
 import { recordNativeAttentionAssessment } from "../services/native-runtime/work-assessments.js";
 import { routeNativeAttention } from "../services/native-runtime/native-interaction-bridge.js";
 import * as paperclipRunner from "../vendor/paperclip-runner/index.js";
@@ -15514,6 +15515,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       completionContractSha256: `child-result-contract-${runId}`, runnerInstanceId,
       startedAt: runStartedAt, finishedAt: new Date(),
     }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, executionLockedAt: runStartedAt }).where(eq(issues.id, issueId));
     await db.insert(issueComments).values({ companyId, issueId, authorType: "agent", authorAgentId: agentId,
       createdByRunId: runId, body: "Both children are done; merged their ledgers. Task complete." });
     await new PaperclipControlPlanePort(db, {
@@ -15533,18 +15535,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
-    const heartbeat = heartbeatService(db);
-    await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
-    await heartbeat.reconcileStrandedAssignedIssues();
+    await createWakeQueue(db, {
+      resolveResponsibleUserId: async () => "responsible-user",
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: {} as Parameters<typeof createWakeQueue>[1]["wakeAdmissionHelpers"],
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    }).releaseIssueExecution({ companyId, runId, now: new Date() });
 
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toEqual([
       expect.objectContaining({ reasonCode: expectedReason, toStatus: expectedStatus, applicationState: "applied" }),
     ]);
     expect(await db.select().from(issues).where(eq(issues.id, issueId)))
       .toEqual([expect.objectContaining({ status: expectedStatus })]);
-    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, childResult!.id)))
-      .toEqual([expect.objectContaining({ status: "deferred_issue_execution", runId: null })]);
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, childResult!.id));
+    if (savedRelativeToStart === "before") {
+      expect(wake).toMatchObject({ status: "cancelled", runId: null });
+      expect(runs).toHaveLength(1);
+    } else {
+      const successor = runs.find((run) => run.id !== runId);
+      expect(runs).toHaveLength(2);
+      expect(wake).toMatchObject({ runId: successor!.id });
+      expect(successor!.contextSnapshot).toMatchObject({ wakeReason: "issue_children_completed",
+        childIssueSummaries: [{ id: childId, status: "done", summary: "Ledger saved." }] });
+    }
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
