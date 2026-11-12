@@ -14722,6 +14722,14 @@ export async function readRemoteRunnerState(input: {
   }
 }
 
+export function remoteRunnerStateNeverConnected(state: Record<string, unknown>): boolean {
+  const empty = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === 0;
+  return state.lastConnectionProtocolVersion === null && state.lastControllerCommandSeq === 0
+    && state.reconnectCount === 0 && Array.isArray(state.outbox) && state.outbox.length === 0
+    && state.pendingTerminalDelivery === null && empty(state.processedCommands);
+}
+
 async function readRemoteRunnerProviderState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
@@ -16058,6 +16066,7 @@ async function createRunnerdBackendWithinSessionClaim(
         }) : undefined,
       }),
       warmTaskVersion: description.warmTaskVersion,
+      githubCredentialBrokerVersion: description.githubCredentialBrokerVersion,
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
@@ -16586,16 +16595,20 @@ async function createRunnerdBackendWithinSessionClaim(
     (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
     && provenOwnBootstrapRestart(state.notSuspendedRunId);
   const inspectOwnUnpreparedBootstrap = async (): Promise<string | null> => {
+    const runId = input.execution.binding.runId;
     if (!remoteCommandRunner || !remoteStateDirectory || archivedRotationRunnerStatePath
-      || !provenOwnBootstrapRestart(input.execution.binding.runId)
+      || input.restartRecovery?.kind !== "bootstrap_incomplete" || input.restartRecovery.runId !== runId
       || harnessBackupCandidates(root).some(candidate => existsSync(resolve(candidate, "manifest.json")))) return null;
     const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory })
       .then(record, () => null);
-    if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId
+    if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId || runnerState.runId !== runId
       || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
-      || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended"
-      || !provenOwnBootstrapRestart(typeof runnerState.runId === "string" ? runnerState.runId : null)) return null;
-    return input.execution.binding.runId;
+      || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended") return null;
+    if (!hasRemoteBootstrapRestartProof(runId) && !(remoteRunnerStateNeverConnected(runnerState)
+      && recordRemoteBootstrapRestartProof(runId, await stopStaleRemoteRunnerBeforeBootstrap({
+        execution: input.execution, runnerExecutionTarget: input.runnerExecutionTarget, identity: runnerState, onLog: input.onLog,
+      })))) return null;
+    return provenOwnBootstrapRestart(runId) ? runId : null;
   };
   const inspectRemoteHarnessState = async (
     source: "live" | "host_preparation" = "live",

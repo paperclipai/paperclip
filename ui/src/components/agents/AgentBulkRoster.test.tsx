@@ -131,7 +131,7 @@ describe("pending agent roster display", () => {
     const row = render({ setupAdapterPending: true,
       setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } });
     expect([...row.querySelectorAll("td")].slice(3).map(cell => cell.textContent)).toEqual([
-      "Google Antigravity", "Not configured", "Not available yet",
+      "Google Antigravity", "Not available yet", "Not configured",
     ]);
     const checkbox = row.querySelector<HTMLButtonElement>('[role="checkbox"]');
     expect(checkbox).not.toBeNull();
@@ -142,7 +142,7 @@ describe("pending agent roster display", () => {
   it("preserves ordinary process display without a saved setup choice", () => {
     const row = render({ setupAdapterPending: true });
     expect([...row.querySelectorAll("td")].slice(3).map(cell => cell.textContent)).toEqual([
-      "Process", "Managed externally", "Harness default",
+      "Process", "Harness default", "Managed externally",
     ]);
     const checkbox = row.querySelector<HTMLButtonElement>('[role="checkbox"]');
     expect(checkbox).not.toBeNull();

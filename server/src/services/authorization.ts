@@ -99,6 +99,7 @@ export type AuthorizationAction =
   | "agent_instructions:update"
   | "skill_config:update"
   | "agent:read"
+  | "attention:route"
   | "agent:wake"
   | "company_scope:read"
   | "decision_queue:manage"
@@ -196,6 +197,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     return null;
   }
   if (
+    action === "attention:route" ||
     action === "agent:read" ||
     action === "agent:wake" ||
     action === "company_scope:read" ||
@@ -2017,6 +2019,11 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       });
     }
 
+    if (input.action === "attention:route" && input.actor.type !== "board") {
+      return deny({ action: input.action, reason: "deny_unsupported_action",
+        explanation: "Only a human routing administrator can reroute another person's request." });
+    }
+
     if (input.action === "runtime:confirm_owner_stop" && input.actor.type !== "board") {
       return deny({ action: input.action, reason: "deny_unsupported_action",
         explanation: "Only a deployment administrator can confirm a workspace controller has stopped." });
@@ -2049,6 +2056,15 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           reason: "allow_instance_admin",
           explanation: "Allowed because the actor is an instance admin.",
         });
+      }
+      if (input.action === "attention:route") {
+        const membership = await getActiveMembership(companyId, "user", input.actor.userId ?? "");
+        if (membership?.membershipRole === "owner" || membership?.membershipRole === "admin") {
+          return allow({ action: input.action, reason: "allow_role_default",
+            explanation: "Allowed by the active company owner or administrator role." });
+        }
+        return deny({ action: input.action, reason: "deny_missing_grant",
+          explanation: "Only a company owner, company administrator, or instance administrator can reroute another person's request." });
       }
       if (input.action === "runtime:confirm_owner_stop") {
         const membership = await getActiveMembership(companyId, "user", input.actor.userId ?? "");
