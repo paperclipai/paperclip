@@ -32,7 +32,7 @@ diff --git a/dist/index.js b/dist/index.js
                // content: [messageContent],   — omitted: already rendered via item/started
 -              // rawInput: { ... }            — omitted: same reason
              },
-@@ -26988,4 +26988,18 @@
+@@ -26988,4 +26988,42 @@
  };
 +function paperclipBaseInstructions(request) {
 +  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") return void 0;
@@ -43,10 +43,34 @@ diff --git a/dist/index.js b/dist/index.js
 +  }
 +  return void 0;
 +}
++function paperclipGitMetadataRoots() {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") return [];
++  try {
++    const projected = JSON.parse(process.env.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]");
++    if (!Array.isArray(projected)) return [];
++    return uniqueStrings(projected.flatMap((value) => {
++      if (typeof value !== "string" || !path6.isAbsolute(value)) return [];
++      const normalized = path6.resolve(value);
++      return normalized === path6.parse(normalized).root ? [] : [normalized];
++    }));
++  } catch {
++    return [];
++  }
++}
 +function paperclipSandboxPolicy(sandboxPolicy) {
++  if (sandboxPolicy.type !== "workspaceWrite") return sandboxPolicy;
 +  const networkAccess = process.env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS;
-+  if (sandboxPolicy.type !== "workspaceWrite" || !["true", "false"].includes(networkAccess)) return sandboxPolicy;
-+  return { ...sandboxPolicy, networkAccess: networkAccess === "true" && process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled" };
++  const gitMetadataRoots = paperclipGitMetadataRoots();
++  if (!["true", "false"].includes(networkAccess) && gitMetadataRoots.length === 0) return sandboxPolicy;
++  return {
++    ...sandboxPolicy,
++    ...(["true", "false"].includes(networkAccess) ? {
++      networkAccess: networkAccess === "true" && process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled"
++    } : {}),
++    ...(gitMetadataRoots.length > 0 ? {
++      writableRoots: uniqueStrings([...sandboxPolicy.writableRoots, ...gitMetadataRoots])
++    } : {})
++  };
 +}
  var CodexAcpClient = class {
    codexClient;
