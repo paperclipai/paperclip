@@ -487,7 +487,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime-primary.v3",
+    "oracleVersion": "paperclip.chat-catalog.runtime-primary.v4",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -1238,10 +1238,10 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/identity-budgets-costs.ts",
-      "chat-catalog-domains/internal-comment-reference.ts",
+      "chat-rendered-links.ts",
       "chat-scenarios/budgets-costs.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.set-budget.v2",
+    "oracleVersion": "paperclip.chat-catalog.identity.set-budget.v3",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -2080,7 +2080,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.fast-responses.v2",
+    "oracleVersion": "paperclip.chat-catalog.identity.fast-responses.v3",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 420000,
