@@ -472,6 +472,33 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
     },
 
+    async isWatcherCommentDuringFinishingRun({ companyId, issueId, finishingRunId, commentIds }) {
+      if (run.companyId !== companyId || run.id !== finishingRunId || !run.startedAt) return false;
+      const uniqueCommentIds = [...new Set(commentIds)];
+      if (uniqueCommentIds.length === 0) return false;
+      const [task] = await tx.select({ createdByAgentId: issues.createdByAgentId, parentId: issues.parentId })
+        .from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      if (!task) return false;
+      const watchers = new Set<string>(task.createdByAgentId ? [task.createdByAgentId] : []);
+      if (task.parentId) {
+        const [parent] = await tx.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, task.parentId)));
+        if (parent?.assigneeAgentId) watchers.add(parent.assigneeAgentId);
+      }
+      watchers.delete(run.agentId);
+      if (watchers.size === 0) return false;
+      const comments = await tx.select({ authorType: issueComments.authorType, authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId, createdAt: issueComments.createdAt })
+        .from(issueComments).where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, uniqueCommentIds), isNull(issueComments.deletedAt)));
+      const startedAt = run.startedAt.getTime();
+      return comments.length === uniqueCommentIds.length && comments.every((comment) =>
+        // Older rows carry no author type; an agent author and no person is the same fact.
+        (comment.authorType === "agent" || comment.authorType === null) &&
+        comment.authorUserId === null && comment.authorAgentId !== null &&
+        watchers.has(comment.authorAgentId) && comment.createdAt.getTime() >= startedAt);
+    },
+
     async isCompletedDelegationMention({ companyId, issueId, finishingRunId, wakeAgentId, commentIds }) {
       if (
         run.companyId !== companyId || run.id !== finishingRunId ||
