@@ -1019,7 +1019,7 @@ export function heartbeatService(
     // Bound at call time: the heartbeat recovery module is created below.
     settleLostRunProcess: scope => recoverActiveExecutions(scope),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
-    scheduleRecoveryRetry: async (runId) => {
+    scheduleRecoveryRetry: async (runId, outcome) => {
       const [run] = await db
         .select()
         .from(heartbeatRuns)
@@ -1028,6 +1028,10 @@ export function heartbeatService(
       const agent = await getAgent(run.agentId);
       if (!agent || agent.companyId !== run.companyId) return null;
       const result = await scheduleBoundedRetryForRun(run, agent);
+      // The scheduler's own lane verdict, so the sweep reports exhaustion even
+      // when its lane (for example interrupted_preparation after cleanup)
+      // differs from the synchronous budget check below.
+      if (outcome && result.outcome === "retry_exhausted") outcome.retryExhausted = true;
       return result.outcome === "scheduled" ? result.run : null;
     },
     // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
