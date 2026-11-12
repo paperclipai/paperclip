@@ -140,7 +140,7 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   const image = plan.options.daytonaImage!;
   const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot: defaultDaytonaImageCacheRoot(),
     log: line => console.info(`[daytona-image] ${line}`) });
-  const { localContentId } = await assertControllerMatchesImage(artifacts, repositoryRoot);
+  const { localContentId } = await assertControllerMatchesImage(artifacts, plan.options.serverFrom ?? repositoryRoot);
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
   ensureDaytonaPlugin(timeline);
