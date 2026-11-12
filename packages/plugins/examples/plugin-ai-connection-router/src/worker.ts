@@ -7,7 +7,12 @@ interface Selection { companyId: string; connectionId: string; grantId: string; 
 const HEARTBEAT_TASK_KEY = "__heartbeat__";
 let context: PluginContext | null = null;
 
-const cooldownKey = (companyId: string, account: string): ScopeKey => ({ scopeKind: "company", scopeId: companyId, namespace: "cooldowns", stateKey: account });
+/**
+ * A learned cool-down belongs to the agent whose run reported the quota failure. The failure code is derived
+ * from run output, so it is not trusted to exclude a shared account for other agents: only the host's
+ * authenticated usage read (candidate usage) does that.
+ */
+const cooldownKey = (agentId: string, account: string): ScopeKey => ({ scopeKind: "agent", scopeId: agentId, namespace: "cooldowns", stateKey: account });
 const selectionKey = (agentId: string, taskKey: string): ScopeKey => ({ scopeKind: "agent", scopeId: agentId, namespace: "selections", stateKey: taskKey });
 const text = (value: unknown) => (typeof value === "string" && value.length > 0 ? value : null);
 const isCooldown = (value: unknown): value is Cooldown => !!value && typeof value === "object" && typeof (value as Cooldown).until === "string" && typeof (value as Cooldown).strikes === "number";
@@ -20,7 +25,7 @@ async function readCooldowns(ctx: PluginContext | null, request: AiConnectionRou
   try {
     for (const candidate of request.candidates) {
       const account = accountKey(candidate.member.binding);
-      const value = await ctx.state.get(cooldownKey(request.companyId, account));
+      const value = await ctx.state.get(cooldownKey(request.agentId, account));
       if (isCooldown(value)) cooldowns.set(account, value);
     }
     return cooldowns;
@@ -56,7 +61,7 @@ async function onTerminalRun(event: PluginEvent, succeeded: boolean) {
   if (!ctx || !agentId || !runId) return;
   const found = await takeSelection(ctx, event, agentId, runId);
   if (!found) return;
-  const key = cooldownKey(event.companyId, accountKey(found.selection));
+  const key = cooldownKey(agentId, accountKey(found.selection));
   if (succeeded) await ctx.state.delete(key);
   else if (payload.errorCode === "provider_quota") {
     const previous = await ctx.state.get(key);

@@ -8,20 +8,30 @@ export const DEFAULT_RETRY_MS = 15 * 60_000;
 export const BASE_COOLDOWN_MS = 60 * 60_000;
 export const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
 
-/** A learned cool-down for one account (connection plus grant). */
+/** A learned cool-down for one account (connection plus grant), kept per agent. */
 export interface Cooldown { until: string; strikes: number; lastRunId?: string }
 
 export function accountKey(binding: { connectionId: string; grantId: string }): string {
   return `${binding.connectionId}:${binding.grantId}`;
 }
 
-/** Account-wide limits (null scope) and limits scoped to the member's model count; other models and features do not. */
+const words = (value: string) => value.split(/[^a-z0-9]+/).filter(Boolean);
+
+/**
+ * Account-wide limits (null scope) and limits scoped to the member's model count; other models and features do not.
+ * A scope token is `model:<id>`, another `key:value` (a group or surface, never a model), or a bare limit ID.
+ * A bare ID counts when the model name contains it, or when its last `_` segment is a whole word of the model name:
+ * the host names legacy per-model windows that way (for example `seven_day_sonnet` for a Sonnet model).
+ */
 export function limitApplies(scope: string | null, model: string): boolean {
   if (scope === null) return true;
   const target = model.toLowerCase();
+  const modelWords = new Set(words(target));
   return scope.split("·").map(token => token.trim().toLowerCase()).some((token) => {
-    const id = token.startsWith("model:") ? token.slice("model:".length) : token.includes(":") ? "" : token;
-    return id.length > 0 && target.includes(id);
+    if (token.startsWith("model:")) return token.length > "model:".length && target.includes(token.slice("model:".length));
+    if (!token || token.includes(":")) return false;
+    const family = token.slice(token.lastIndexOf("_") + 1);
+    return target.includes(token) || (token.includes("_") && /^[a-z][a-z0-9]*$/.test(family) && modelWords.has(family));
   });
 }
 
@@ -67,21 +77,20 @@ export function effectiveModel(candidate: Candidate): string {
   return typeof model === "string" && model.trim().length > 0 ? model : candidate.member.profile.model;
 }
 
-function exhausted(skipped: Record<string, string>, readyTimes: Array<number | null>, now: number): AiConnectionRouterResult {
-  const known = readyTimes.filter((at): at is number => at !== null && at > now);
-  return { kind: "exhausted", retryAt: new Date(known.length ? Math.min(...known) : now + DEFAULT_RETRY_MS).toISOString(), skipped };
+function exhausted(skipped: Record<string, string>, readyTimes: number[], now: number): AiConnectionRouterResult {
+  return { kind: "exhausted", retryAt: new Date(readyTimes.length ? Math.min(...readyTimes) : now + DEFAULT_RETRY_MS).toISOString(), skipped };
 }
 
 /**
  * Chooses among the members the host already authorized and offered.
- * `cooldowns` maps an account key to its learned cool-down; pass an empty map when state is unreadable.
+ * `cooldowns` maps an account key to the requesting agent's learned cool-down; pass an empty map when state is unreadable.
  */
 export function routeAiConnection(request: AiConnectionRouterRequest, cooldowns: ReadonlyMap<string, Cooldown>): AiConnectionRouterResult {
   const now = Date.parse(request.now);
   const offered = new Map(request.candidates.map(candidate => [candidate.member.id, candidate]));
   const threshold = request.pool.mode === "usage_aware" ? request.pool.thresholdPercent : null;
   const skipped: Record<string, string> = {};
-  const readyTimes: Array<number | null> = [];
+  const readyTimes: number[] = [];
 
   const evaluate = (candidate: Candidate, applyThreshold: boolean): Assessment | null => {
     const usage = assessUsage(candidate.usage, effectiveModel(candidate), applyThreshold ? threshold : null);
@@ -90,12 +99,13 @@ export function routeAiConnection(request: AiConnectionRouterRequest, cooldowns:
     const cooling = Number.isFinite(coolingUntil) && coolingUntil > now;
     const id = candidate.member.id;
     if (usage.hard) skipped[id] = "At a provider usage limit";
-    else if (cooling) skipped[id] = `Cooling down after a provider quota failure until ${new Date(coolingUntil).toISOString()}`;
+    else if (cooling) skipped[id] = `Cooling down after this agent's provider quota failure until ${new Date(coolingUntil).toISOString()}`;
     else if (usage.above) skipped[id] = `Usage at or above ${threshold}%`;
     else return usage;
-    // Ready when every blocking condition has cleared; unknown when any of them has no known end.
+    // Ready when every blocking condition has cleared. A condition with no known future end is retried after
+    // 15 minutes, but a later known cool-down on the same member still holds.
     const ends = [...(usage.hard || usage.above ? [usage.readyAt] : []), ...(cooling ? [coolingUntil] : [])];
-    readyTimes.push(ends.includes(null) ? null : Math.max(...(ends as number[])));
+    readyTimes.push(Math.max(...ends.map(end => (end !== null && end > now ? end : now + DEFAULT_RETRY_MS))));
     return null;
   };
 

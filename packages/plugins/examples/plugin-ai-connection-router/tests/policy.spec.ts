@@ -93,6 +93,38 @@ describe("routeAiConnection", () => {
     expect(unknownReset).toMatchObject({ kind: "exhausted", retryAt: at(DEFAULT_RETRY_MS / 60_000) });
   });
 
+  it("retries a member with no known reset after 15 minutes even when another member has a later known reset", () => {
+    const mixed = routeAiConnection(request([candidate("member-a", [limit(100)]), candidate("member-b")], { memberOrder: ids.slice(0, 2) }), new Map([cooling("member-b", 7 * 24 * 60)]));
+    expect(mixed).toMatchObject({ kind: "exhausted", retryAt: at(DEFAULT_RETRY_MS / 60_000) });
+    const expired = routeAiConnection(request([candidate("member-a", [limit(100, { resetsAt: at(-5) })]), candidate("member-b")], { memberOrder: ids.slice(0, 2) }), new Map([cooling("member-b", 60)]));
+    expect(expired).toMatchObject({ kind: "exhausted", retryAt: at(DEFAULT_RETRY_MS / 60_000) });
+  });
+
+  it("keeps a later known cool-down on the same member whose usage reset is unknown", () => {
+    const result = routeAiConnection(request([candidate("member-a", [limit(100)])], { memberOrder: ["member-a"] }), new Map([cooling("member-a", 120)]));
+    expect(result).toMatchObject({ kind: "exhausted", retryAt: at(120) });
+    const pin = routeAiConnection(request([candidate("member-a", [limit(100)])], { memberOrder: ["member-a"], pinnedMemberId: "member-a" }), new Map([cooling("member-a", 120)]));
+    expect(pin).toMatchObject({ kind: "exhausted", retryAt: at(120) });
+  });
+
+  // Shaped as the host's usage read emits legacy per-model windows: the limit ID is the scope.
+  const legacy = (id: string, usedPercent: number) => limit(usedPercent, { id, label: id, scope: id, windowDurationSeconds: 604_800, resetsAt: at(60), unit: "percent" });
+  it.each([
+    { name: "a Sonnet weekly hard limit skips a Sonnet member", scope: "seven_day_sonnet", model: "claude-sonnet-5", used: 100, pinned: false, expected: { kind: "selected", memberId: "member-b", skipped: { "member-a": "At a provider usage limit" } } },
+    { name: "an Opus weekly hard limit skips an Opus member", scope: "seven_day_opus", model: "claude-opus-5", used: 100, pinned: false, expected: { kind: "selected", memberId: "member-b", skipped: { "member-a": "At a provider usage limit" } } },
+    { name: "a Sonnet weekly threshold skips a Sonnet member", scope: "seven_day_sonnet", model: "claude-sonnet-5", used: 95, pinned: false, expected: { kind: "selected", memberId: "member-b", skipped: { "member-a": "Usage at or above 90%" } } },
+    { name: "an Opus weekly hard limit does not skip a Sonnet member", scope: "seven_day_opus", model: "claude-sonnet-5", used: 100, pinned: false, expected: { kind: "selected", memberId: "member-a" } },
+    { name: "a Sonnet weekly hard limit does not skip an Opus member", scope: "seven_day_sonnet", model: "claude-opus-5", used: 100, pinned: false, expected: { kind: "selected", memberId: "member-a" } },
+    { name: "a pin waits at a Sonnet weekly hard limit", scope: "seven_day_sonnet", model: "claude-sonnet-5", used: 100, pinned: true, expected: { kind: "exhausted", retryAt: at(60), skipped: { "member-a": "At a provider usage limit" } } },
+    { name: "a pin waits at an Opus weekly hard limit", scope: "seven_day_opus", model: "claude-opus-5", used: 100, pinned: true, expected: { kind: "exhausted", retryAt: at(60), skipped: { "member-a": "At a provider usage limit" } } },
+    { name: "a pin is kept above a Sonnet weekly threshold", scope: "seven_day_sonnet", model: "claude-sonnet-5", used: 95, pinned: true, expected: { kind: "selected", memberId: "member-a" } },
+    { name: "a pin is kept at another model's weekly hard limit", scope: "seven_day_opus", model: "claude-sonnet-5", used: 100, pinned: true, expected: { kind: "selected", memberId: "member-a" } },
+  ])("legacy model windows: $name", ({ scope, model, used, pinned, expected }) => {
+    const candidates = [candidate("member-a", [limit(10, { resetsAt: at(300) }), legacy(scope, used)], model), candidate("member-b", [limit(10)], model)];
+    const result = routeAiConnection(request(candidates, { memberOrder: ids.slice(0, 2), ...(pinned ? { pinnedMemberId: "member-a" } : {}) }), new Map());
+    expect(result).toEqual(expected);
+  });
+
   it.each([
     { name: "keeps a pin above the threshold", limits: [limit(95)], cooldown: false, expected: { kind: "selected", memberId: "member-a" } },
     { name: "keeps a pin with unknown usage", limits: undefined, cooldown: false, expected: { kind: "selected", memberId: "member-a" } },
@@ -153,5 +185,11 @@ describe("cool-downs", () => {
     expect(limitApplies("model:sonnet · surface:code", "claude-sonnet-5")).toBe(true);
     expect(limitApplies("spark", "gpt-5.3-codex-spark")).toBe(true);
     expect(limitApplies("code_review", "gpt-5.6")).toBe(false);
+    expect(limitApplies("seven_day_sonnet", "claude-sonnet-5")).toBe(true);
+    expect(limitApplies("seven_day_opus", "claude-opus-5-5")).toBe(true);
+    expect(limitApplies("seven_day_opus", "claude-sonnet-5")).toBe(false);
+    expect(limitApplies("seven_day_oauth_apps", "claude-sonnet-5")).toBe(false);
+    expect(limitApplies("weekly_scoped.3", "claude-sonnet-5")).toBe(false);
+    expect(limitApplies("group:sonnet", "claude-sonnet-5")).toBe(false);
   });
 });

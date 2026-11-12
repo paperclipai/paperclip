@@ -14,6 +14,8 @@ import { createPluginEventBus } from "../services/plugin-event-bus.js";
 import { setPluginEventBus } from "../services/activity-log.js";
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { probeAiConnectionUsage } from "../services/ai-connection-usage.js";
+import { routeAiConnection } from "../../../packages/plugins/examples/plugin-ai-connection-router/src/policy.js";
 import manifest from "../../../packages/plugins/examples/plugin-ai-connection-router/src/manifest.js";
 import plugin from "../../../packages/plugins/examples/plugin-ai-connection-router/src/worker.js";
 
@@ -69,6 +71,23 @@ describe("reference AI connection router plugin", () => {
     expect(pluginManifestV1Schema.parse(manifest).capabilities).toEqual(["ai.connections.route", "events.subscribe", "plugin.state.read", "plugin.state.write"]);
   });
 
+  it.each([
+    { window: "seven_day_sonnet", model: "claude-sonnet-5", skipped: true },
+    { window: "seven_day_opus", model: "claude-opus-5", skipped: true },
+    { window: "seven_day_opus", model: "claude-sonnet-5", skipped: false },
+  ])("applies the host's legacy $window window to a $model member (fake usage response)", async ({ window, model, skipped }) => {
+    const body = { five_hour: { utilization: 10, resets_at: "2026-01-01T05:00:00Z" }, [window]: { utilization: 100, resets_at: "2026-01-02T00:00:00Z" } };
+    const request = (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+    const observed = await probeAiConnectionUsage({ provider: "anthropic", method: "subscription" } as never, "fixture-token", { request });
+    expect(observed.limits.find(entry => entry.id === window)?.scope).toBe(window);
+    const binding = { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId: "c-1", grantId: "g-1" };
+    const member = { id: "m-1", binding, profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model } };
+    const candidate = { member, runtimeConfig: {}, notes: [], usage: { ...observed, connectionId: "c-1", grantId: "g-1" } } as AiConnectionRouterRequest["candidates"][number];
+    const routed = (pinnedMemberId?: string) => routeAiConnection({ companyId, agentId: "a-1", taskKey: "t-1", lastMemberId: null, cursorVersion: 0, memberOrder: ["m-1"], now: "2026-01-01T00:00:00.000Z",
+      pool: { id: "p-1", companyId, pluginKey: manifest.id, revision: 1, name: "Pool", enabled: true, mode: "usage_aware", thresholdPercent: 90, members: [member] }, candidates: [candidate], ...(pinnedMemberId ? { pinnedMemberId } : {}) } as AiConnectionRouterRequest, new Map());
+    for (const result of [routed(), routed("m-1")]) expect(result.kind).toBe(skipped ? "exhausted" : "selected");
+  });
+
   it("fails new tasks over after a learned provider_quota cool-down and keeps the pinned task waiting on its account", async () => {
     const pool = await service().save(manifest.id, { companyId, config: { name: "Reference pool", enabled: true, mode: "round_robin", thresholdPercent: 90, members } }, "alice");
     const [agent] = await db.insert(agents).values({ companyId, name: "Reference router agent", adapterType: "claude_local", adapterConfig: { cwd: isolatedHome.home, engine: "cli" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false } } }).returning();
@@ -82,7 +101,7 @@ describe("reference AI connection router plugin", () => {
       expect(execute).toHaveBeenCalledTimes(1);
       const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, issue!.id)));
       expect(pin?.selection.memberId).toBe(members[0]!.id);
-      const cooldownKey = { scopeKind: "company" as const, scopeId: companyId, namespace: "cooldowns", stateKey: `${members[0]!.binding.connectionId}:${members[0]!.binding.grantId}` };
+      const cooldownKey = { scopeKind: "agent" as const, scopeId: agent!.id, namespace: "cooldowns", stateKey: `${members[0]!.binding.connectionId}:${members[0]!.binding.grantId}` };
       await expect.poll(() => harness.getState(cooldownKey), { timeout: 5_000 }).toMatchObject({ strikes: 1, lastRunId: run!.id });
 
       // Round robin alone would alternate; the cool-down sends both new tasks to the second account.

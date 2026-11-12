@@ -88,11 +88,16 @@ record the selected member/profile and override notes in the local run log and
 recovery context. These records stay in the instance database.
 
 Self-hosted instances can use the open-source reference router in
-`packages/plugins/examples/plugin-ai-connection-router`. It implements round
-robin, the `usage_aware` threshold, account-wide and same-model hard limits, pin
-waits and learned `provider_quota` cool-downs. It declares only
-`ai.connections.route`, `events.subscribe`, `plugin.state.read` and
-`plugin.state.write`. Its README lists the policy and its limits.
+`packages/plugins/examples/plugin-ai-connection-router`. It is an explicitly
+minimal foundation, not a complete pooling feature. It implements round robin,
+the `usage_aware` threshold, account-wide and same-model hard limits, pin waits
+and per-agent `provider_quota` cool-downs (a run failure never excludes a shared
+account for other agents; only the host's usage read does). Pinned and
+in-progress tasks still wait on their original account; only new tasks fail
+over. It has no live-instance proof, no measured balancing and no passive usage
+parsing. It declares only `ai.connections.route`, `events.subscribe`,
+`plugin.state.read` and `plugin.state.write`. Its README lists the policy and
+what it deliberately leaves out.
 
 Tests: `cd server && pnpm exec vitest run src/__tests__/ai-connection-router.test.ts`
 plus the existing AI connection, retry accounting, run-dispatch and UI suites.

@@ -17,7 +17,7 @@ const request = (taskKey: string, extra: Partial<AiConnectionRouterRequest> = {}
   pool: { id: "pool", companyId, pluginKey: manifest.id, revision: 1, name: "Pool", enabled: true, mode: "round_robin", thresholdPercent: 90, members },
   candidates: members.map(member => ({ member, runtimeConfig: {}, notes: [] })), ...extra,
 });
-const cooldownKey = { scopeKind: "company" as const, scopeId: companyId, namespace: "cooldowns", stateKey: "conn-member-a:grant-member-a" };
+const cooldownKey = { scopeKind: "agent" as const, scopeId: "agent-1", namespace: "cooldowns", stateKey: "conn-member-a:grant-member-a" };
 
 async function setup() {
   const harness = createTestHarness({ manifest });
@@ -44,6 +44,17 @@ describe("reference router worker", () => {
     await route(request("issue-1", { now: hour(2), pinnedMemberId: "member-a" }));
     await run("agent.run.finished", "run-2", {}, hour(2.5));
     expect(harness.getState(cooldownKey)).toBeUndefined();
+  });
+
+  it("keeps a learned cool-down to the reporting agent: another agent's pin and new tasks on the shared account are not excluded", async () => {
+    const { harness, route, run } = await setup();
+    await route(request("issue-1"));
+    await run("agent.run.failed", "run-1");
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1 });
+    expect(harness.getState({ ...cooldownKey, scopeKind: "company", scopeId: companyId })).toBeUndefined();
+    expect(await route(request("issue-9", { agentId: "agent-2", pinnedMemberId: "member-a" }))).toEqual({ kind: "selected", memberId: "member-a" });
+    expect(await route(request("issue-10", { agentId: "agent-2" }))).toEqual({ kind: "selected", memberId: "member-a" });
+    expect(await route(request("issue-1", { pinnedMemberId: "member-a" }))).toMatchObject({ kind: "exhausted", retryAt: hour(1) });
   });
 
   it("adds one strike per failed run; a redelivered event never consumes a later run's selection", async () => {
