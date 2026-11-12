@@ -20,17 +20,24 @@ import {
  * time marks a painted frame. The hook sends nothing itself and costs one map
  * entry while mounted.
  */
-export function usePageContentReady(ready: boolean, paintedAt?: number | null): void {
+export function usePageContentReady(
+  ready: boolean,
+  paintedAt?: number | null,
+  { enabled = true }: { enabled?: boolean } = {},
+): void {
   const gateRef = useRef<number | null>(null);
 
+  // `enabled: false` leaves the page on the generic rule, for a surface that
+  // has no content signal in its current state.
   useLayoutEffect(() => {
+    if (!enabled) return;
     const id = registerPageContentGate("content");
     gateRef.current = id;
     return () => {
       unregisterPageContentGate(id);
       gateRef.current = null;
     };
-  }, []);
+  }, [enabled]);
 
   useLayoutEffect(() => {
     const id = gateRef.current;
@@ -55,7 +62,7 @@ export function usePageContentReady(ready: boolean, paintedAt?: number | null): 
       cancelAnimationFrame(first);
       cancelAnimationFrame(second);
     };
-  }, [ready, paintedAt]);
+  }, [ready, paintedAt, enabled]);
 }
 
 /**

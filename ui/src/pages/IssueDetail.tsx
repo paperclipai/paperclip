@@ -3529,9 +3529,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     beginIssueDetailNavigation();
   }, [issueId]);
   // The task page is loaded when its conversation content has painted: the
-  // same point as the `issue-detail:navigate→content-paint` measure.
+  // same point as the `issue-detail:navigate→content-paint` measure. An agent
+  // chat with no saved task never records that mark, so it uses the generic rule.
   const contentPaintedAt = useIssueDetailContentPaintedAt();
-  usePageContentReady(contentPaintedAt !== null, contentPaintedAt);
+  usePageContentReady(contentPaintedAt !== null, contentPaintedAt, { enabled: Boolean(issueId) });
 
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;

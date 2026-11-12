@@ -70,6 +70,20 @@ describe("resolveBrowserTracingConfig", () => {
     expect(warn.mock.calls[0]![0]).not.toContain(ingestKey);
   });
 
+  it.each([
+    ["0.3", 1 / 3],
+    ["0.75", 1],
+    ["0.1", 0.1],
+    ["0.25", 0.25],
+  ])("rounds sample rate %s to an exact 1-in-N rate so Honeycomb weights stay correct", (raw, expected) => {
+    expect(resolveBrowserTracingConfig({
+      ...cloud,
+      PAPERCLIP_BROWSER_TRACES_ENDPOINT: "https://api.honeycomb.io",
+      PAPERCLIP_BROWSER_TRACES_INGEST_KEY: ingestKey,
+      PAPERCLIP_BROWSER_TRACES_SAMPLE_RATE: raw,
+    })?.sampleRate).toBeCloseTo(expected, 12);
+  });
+
   it("treats a zero sample rate as off", () => {
     expect(resolveBrowserTracingConfig({
       ...cloud,

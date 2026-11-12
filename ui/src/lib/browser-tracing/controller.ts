@@ -15,7 +15,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { BrowserTracingConfig } from "@paperclipai/shared";
 import { whenPageSettles } from "@/lib/when-page-settles";
 import { readPageContentGates } from "./page-content-gates";
-import { createPageLoadRecorder, type PageLoadRecorder } from "./page-load-recorder";
+import { createPageLoadRecorder, PAGE_LOAD_TIMEOUT_MS, type PageLoadRecorder } from "./page-load-recorder";
 
 export type RouterNavigationType = "PUSH" | "POP" | "REPLACE";
 
@@ -43,7 +43,16 @@ export interface BrowserTracingControllerOptions {
   random?: () => number;
   /** Overridable for tests; defaults to waiting until the page settles. */
   scheduleSdkLoad?: (start: () => void) => () => void;
+  /** Load the SDK by this time even if the page never settles. */
+  sdkLoadDeadlineMs?: number;
 }
+
+/**
+ * Load the SDK no later than this, measured from activation. A page whose
+ * requests hang never settles; its hard load then ends as `timeout` at 30 s
+ * after navigation start, and this deadline still exports it.
+ */
+export const SDK_LOAD_DEADLINE_MS = PAGE_LOAD_TIMEOUT_MS + 5_000;
 
 let sessionSampled: boolean | null = null;
 
@@ -142,7 +151,13 @@ export function startBrowserTracingController(
   let sdk: TracingSdkHandle | null = null;
   const loadSdk = options.loadSdk ?? (() => import("./sdk"));
   const schedule = options.scheduleSdkLoad ?? ((start: () => void) => whenPageSettles(options.queryClient, start));
-  const cancelScheduledLoad = schedule(() => {
+  let loadStarted = false;
+  let cancelSettled: () => void = () => {};
+  const startLoad = () => {
+    if (loadStarted || stopped) return;
+    loadStarted = true;
+    cancelSettled();
+    window.clearTimeout(deadline);
     void loadSdk()
       .then((module) => {
         if (stopped) return;
@@ -151,7 +166,15 @@ export function startBrowserTracingController(
       .catch(() => {
         // Tracing is optional; a failed chunk load must not affect the page.
       });
-  });
+  };
+  const deadline = window.setTimeout(startLoad, options.sdkLoadDeadlineMs ?? SDK_LOAD_DEADLINE_MS);
+  const cancelSchedule = schedule(startLoad);
+  if (loadStarted) cancelSchedule();
+  else cancelSettled = cancelSchedule;
+  const cancelScheduledLoad = () => {
+    cancelSettled();
+    window.clearTimeout(deadline);
+  };
 
   return {
     onLocationCommitted(pathname, navigationType, routeTemplate) {

@@ -89,7 +89,9 @@ export function resolveBrowserTracingConfig(
       return null;
     }
     if (parsed === 0) return null;
-    sampleRate = parsed;
+    // Honeycomb weights events by an integer `SampleRate` (1 in N). Sample at
+    // exactly 1/N so weighted counts stay correct: 0.3 becomes 1/3.
+    sampleRate = 1 / Math.max(1, Math.round(1 / parsed));
   }
 
   return {

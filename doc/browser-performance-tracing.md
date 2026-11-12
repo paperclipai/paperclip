@@ -38,7 +38,7 @@ Set these on the hosted server process:
 | --- | --- | --- | --- |
 | `PAPERCLIP_BROWSER_TRACES_ENDPOINT` | yes | — | OTLP/HTTP base URL, for example `https://api.honeycomb.io` (US) or `https://api.eu1.honeycomb.io` (EU). `/v1/traces` is appended unless the path already ends with it. Must be `https` (plain `http` only for a loopback host). |
 | `PAPERCLIP_BROWSER_TRACES_INGEST_KEY` | for Honeycomb | — | A Honeycomb **ingest** key (prefix `hcaik_`). Sent as `x-honeycomb-team`. Required when the endpoint is a Honeycomb host; optional for a collector you run. Any other key format is refused. |
-| `PAPERCLIP_BROWSER_TRACES_SAMPLE_RATE` | no | `1` | Fraction of page sessions traced, `0`–`1`. `0` turns tracing off. |
+| `PAPERCLIP_BROWSER_TRACES_SAMPLE_RATE` | no | `1` | Fraction of page sessions traced, `0`–`1`, rounded to an exact 1 in N (`0.3` becomes 1/3; `0.75` becomes 1). `0` turns tracing off. |
 | `PAPERCLIP_BROWSER_TRACES_SERVICE_NAME` | no | `paperclip-web` | `service.name`; in Honeycomb this is the dataset name. |
 | `PAPERCLIP_BROWSER_TRACES_ENVIRONMENT` | no | `SENTRY_ENVIRONMENT` | `deployment.environment.name`, for example `staging`. |
 
@@ -73,7 +73,9 @@ change the initial JavaScript grew by about 6.5 KB raw / 2.5 KB gzip (0.2%). The
 OpenTelemetry SDK, exporter, fetch instrumentation, and `web-vitals` are a
 separate chunk (about 94 KB raw / 30 KB gzip) fetched only when tracing is on
 and the session is sampled, and only after the page settles (painted, no query
-fetching, browser idle; `ui/src/lib/when-page-settles.ts`).
+fetching, browser idle; `ui/src/lib/when-page-settles.ts`). If the page never
+settles (for example a request hangs), the chunk loads 35 seconds after tracing
+starts anyway, so a hard load that ended as `timeout` is still exported.
 
 Because the SDK loads after the first page settles, API requests made during
 the hard load have no fetch spans. The hard load's `page.load` span is still
@@ -121,6 +123,8 @@ Pages with an explicit content signal:
 | --- | --- | --- |
 | Task (issue) page | `/:companyPrefix/issues/:issueId` | The conversation content has painted: the same point as the `issue-detail:navigate→content-paint` User Timing measure. |
 | All-tasks list (plain task list) | `/:companyPrefix/issues` | The first page of task rows has rendered (or the list shows its error state). The combined inbox and coordinator task views use the idle signal. |
+
+An agent chat with no saved task has no content signal and uses the idle rule.
 
 To add one, call `usePageContentReady(ready)` in the page component. Use it
 only when the idle rule is inaccurate for that page.
