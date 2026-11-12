@@ -20,6 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { securityOverrideAcceptor, skillRelativeToRepositoryPath } from "./skill-security-overrides.js";
 import { skillFileBytes, snapshotFile, assertSkillSnapshotPath, skillSnapshotHash, MAX_SKILL_SNAPSHOT_BYTES, MAX_SKILL_SNAPSHOT_FILES } from "./skill-snapshot.js";
 import { fileURLToPath } from "node:url";
 import { and, asc, desc, eq, inArray, isNull, isNotNull, lt, ne, or, sql } from "drizzle-orm";
@@ -30,6 +31,7 @@ import {
   authUsers,
   companies,
   companySkillComments,
+  companySkillSources,
   companySkillStars,
   companySkillTestInputs,
   companySkillTestRunTemplates,
@@ -3595,6 +3597,18 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     });
   }
 
+  /** The approval saved on a skill's GitHub source, applied to the installed files the way the source scan applies it. */
+  async function savedSecurityOverrideAcceptor(skill: CompanySkill) {
+    const sourceId = asString(skill.metadata?.skillSourceId);
+    const entrypoint = asString(skill.metadata?.skillSourcePath);
+    if (!sourceId || !entrypoint || !skill.sourceRef) return undefined;
+    const [source] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources)
+      .where(and(eq(companySkillSources.companyId, skill.companyId), eq(companySkillSources.id, sourceId)));
+    const toRepositoryPath = skillRelativeToRepositoryPath(path.posix.dirname(entrypoint));
+    return securityOverrideAcceptor([source?.securityOverride], skill.sourceRef,
+      filePath => filePath === "SKILL.md" ? entrypoint : toRepositoryPath(filePath));
+  }
+
   async function auditSkillContents(skill: CompanySkill): Promise<CompanySkillAuditResult> {
     const companyId = skill.companyId;
     if (skill.currentVersionId && (skill.sourceType !== "local_path" || skill.metadata?.skillSourceId || skill.metadata?.sourceKind === "paperclip_bundled")) {
@@ -3609,7 +3623,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           sourceLocator,
           fileInventory: version.repositorySnapshotId || version.packageSnapshotId
             ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
-        });
+        }, true, await savedSecurityOverrideAcceptor(skill));
       });
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
