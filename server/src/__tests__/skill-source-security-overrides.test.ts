@@ -210,6 +210,31 @@ Do useful work.
     expect(flagged.every(finding => finding.severity === 'warning')).toBe(true);
   });
 
+  it('keeps an unchanged installed file accepted after trust is renewed at a later commit', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Renewed', issuePrefix: `R${companyId.slice(0, 6)}` });
+    let files: Record<string, string> = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': hook, 'README.md': 'First.' };
+    let commit = first;
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, commit), authorizeSecurityOverride: async () => {} };
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
+    }, context);
+    const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')?.skillId;
+    // Only a file outside the skill changes, so the installed package and its sourceRef stay on the first commit.
+    files = { ...files, 'README.md': 'Second.' }; commit = second;
+    const { revision } = await service.detail(companyId, created.source.id);
+    await service.refresh(companyId, created.source.id, context, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: { commitSha: second, reason: 'Reviewed the new commit by hand.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] } });
+    const skills = companySkillService(db);
+    expect((await skills.getById(companyId, skillId!))?.sourceRef).toBe(first);
+    const audit = await skills.auditSkill(companyId, skillId!);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
+    expect(audit?.verdict).not.toBe('fail');
+  });
+
   it('keeps approved files viewable in the saved source', async () => {
     const { companyId, service, context } = await setup(false);
     const preview = await service.preview(companyId, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: first,

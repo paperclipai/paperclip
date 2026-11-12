@@ -3608,7 +3608,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   async function savedSecurityOverrideAcceptor(skill: CompanySkill, installedRoot: string) {
     const sourceId = asString(skill.metadata?.skillSourceId);
     const entrypoint = asString(skill.metadata?.skillSourcePath);
-    if (!sourceId || !entrypoint || !skill.sourceRef) return undefined;
+    if (!sourceId || !entrypoint) return undefined;
     const [source] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources)
       .where(and(eq(companySkillSources.companyId, skill.companyId), eq(companySkillSources.id, sourceId)));
     // A repository package installs the original files under REPOSITORY_CONTENT_DIR at their repository paths;
@@ -3621,7 +3621,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       ? (filePath: string) => filePath.startsWith(repositoryPrefix) ? filePath.slice(repositoryPrefix.length)
         : filePath === "agents/openai.yaml" ? policyCopy : `${repositoryPrefix}${filePath}`
       : (filePath: string) => filePath === "SKILL.md" ? entrypoint : fromSkillDirectory(filePath);
-    const accept = securityOverrideAcceptor([source?.securityOverride], skill.sourceRef, toRepositoryPath);
+    const grant = source?.securityOverride;
+    if (!grant) return undefined;
+    // Installed bytes that equal the approved bytes at the same path are accepted whatever commit they
+    // were published from: renewing trust at a new commit can leave an unchanged package on its older sourceRef.
+    const accept = securityOverrideAcceptor([grant], grant.commitSha, toRepositoryPath);
     if (!accept || skill.metadata?.packageMode !== "repository") return accept;
     // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only
     // when the installed original itself matches the approval.
