@@ -97,8 +97,8 @@ async function authorizeTask(tx: Db, actor: AuthorizationActor, companyId: strin
   if (options.validateRecipient !== false) {
     try {
       await assertAssignableAgent(tx, companyId, toAgentId, { kind: "work" });
-      await assertAssigneeCanAccessTaskProject(tx, { companyId, projectId, assigneeAgentId: toAgentId,
-        workspaceSelection: issue?.workspaceSelection });
+      // Admit against the task's complete workspace binding, as the transfer does.
+      await assertAssigneeCanAccessTaskProject(tx, { ...issue, companyId, projectId, assigneeAgentId: toAgentId });
     } catch (error) {
       if (options.invalidRecipientAsUnprocessable && error instanceof HttpError && (error.status === 404 || error.status === 409)) {
         throw unprocessable(error.message, error.details);

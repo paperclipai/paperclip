@@ -250,6 +250,34 @@ describeEmbeddedPostgres("private project assignment admission", { concurrent: f
     expect(moved.body.projectId).toBe(fixture.privateProject.id);
   }, 30_000);
 
+  it("admits external-provider agents whose runs never open the project's workspace files", async () => {
+    const fixture = await seedFixture();
+    const assignAs = async (provider: string) => {
+      await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider } })
+        .where(eq(agents.id, fixture.outsiderAgent.id));
+      return request(fixture.app).post(`/api/companies/${fixture.companyId}/issues`).send({
+        title: `Work via ${provider}`, status: "todo", projectId: fixture.privateProject.id, assigneeAgentId: fixture.outsiderAgent.id,
+      });
+    };
+    // Run setup skips project workspace access for these placements, so admission does too.
+    const { heartbeatRunIsControllerOnly } = await import("../services/heartbeat/external-provider.js");
+    for (const provider of ["muse", "openai_dot", "grok_bot"]) {
+      expect(heartbeatRunIsControllerOnly({ run: { runtimeMode: null, runnerProfileJson: null },
+        agent: { adapterType: "paperclip_runner", adapterConfig: { provider } } })).toBe(true);
+      const response = await assignAs(provider);
+      expect(response.status, `${provider}: ${JSON.stringify(response.body)}`).toBe(201);
+      expect(response.body.assigneeAgentId).toBe(fixture.outsiderAgent.id);
+    }
+    expect(wakeups.queueIssueAssignmentWakeup).toHaveBeenCalledTimes(3);
+
+    // A runner provider that works in the task's files is still refused.
+    wakeups.queueIssueAssignmentWakeup.mockClear();
+    const before = (await db.select().from(issues)).length;
+    expectAssignmentRejected(await assignAs("codex"), fixture);
+    expect(await db.select().from(issues)).toHaveLength(before);
+    expect(wakeups.queueIssueAssignmentWakeup).not.toHaveBeenCalled();
+  }, 30_000);
+
   it("rejects reassignment when a bound execution workspace belongs to a private project", async () => {
     const fixture = await seedFixture();
     // The task project supplies no files itself, but its retained workspace does.
