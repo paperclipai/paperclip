@@ -1772,6 +1772,22 @@ in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
 recovery deadline), any identity or authority refusal, any other recovery
 failure, and a protocol integrity fault still stop it.
 
+A failed close can leave its `runner.suspend` (or `runner.shutdown`) pending in
+the saved journal of a Runner it kept alive. The controller sends one command at
+a time, so neither that command nor any command queued after it reached the
+Runner. A reattachment that adopts the live Runner withdraws those terminal
+commands before it sends anything. It keeps every other pending command, such
+as a tool result that arrived after the close, and renumbers it so the Runner's
+command sequence stays contiguous. The adopted Runner continues without exiting.
+
+At reconnect, a Runner also sends the events it collected while it was
+disconnected. The controller commits a connection's frames in order, so a
+recovery command's answer can wait behind that backlog. A recovery barrier does
+not time out while the Runner's answer to it, or to a command ahead of it, is
+queued and the controller committed a frame in the last 30 s. The time spent
+past the deadline is credited to the admission clock, so later barriers that
+share the deadline keep their time.
+
 A remote native run can lose its original runner or sandbox before reattachment.
 This happens after a server restart, and for a same-run retry after a turn ends
 without a semantic result. The reattachment then fails with
