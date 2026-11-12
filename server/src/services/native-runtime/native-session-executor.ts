@@ -14813,38 +14813,83 @@ const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
   `tail -c ${REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES} -- "$log" > "$log.trim" && cat -- "$log.trim" > "$log"; rm -f -- "$log.trim"; fi; done`;
 
 /**
- * Two runnerd processes must never share one durable state directory. A runner
+ * Two runnerd processes must never share one durable state directory. A Runner
  * from an interrupted attempt (for example, launched by the previous server
  * just before an upgrade) can still hold that state and the ingress port, and
- * each new launch overwrites the identity marker that pointed at it. Stop any
- * live runnerd whose arguments name this exact state directory before the new
- * one starts, together with its whole process lineage (providers and tools run
- * in their own process groups). A normal launch finds none and pays one grep
- * over /proc. When a holder cannot be stopped, the launch fails before it
- * writes a marker, with a named reason in the process stderr log.
+ * each launch overwrites the identity marker that pointed at it, so no later
+ * reattachment can adopt it and every new Runner fails to bind the port.
+ *
+ * A launch therefore stops a `paperclip-runnerd` that is still serving this
+ * exact `--state-dir`. A launch only happens after the server chose not to
+ * adopt a Runner: a same-run reattachment proves the marker's Runner gone
+ * first, and a transient reattachment failure never reaches a launch.
+ *
+ * The stop runs in node ($1 the runnerd binary, $2 the state directory, then
+ * candidate PIDs):
+ * - It re-checks each candidate: argv[0] is `paperclip-runnerd`, it is not a
+ *   `reap-lineage` command, and `--state-dir` is followed by this directory.
+ * - It records processes by PID and start time: the Runner, its descendants,
+ *   and members of a process group or session that a recorded process leads
+ *   while that leader is alive (provider tools start their own sessions). It
+ *   signals a PID only while its start time still matches, so a reused PID is
+ *   never signalled, and it never signals a whole process group.
+ * - It sends TERM and waits up to 5 s, then KILL with a 2 s wait. A survivor
+ *   fails the launch with `runner_stale_state_holder_alive`.
+ * - It runs `<binary> reap-lineage` for the stopped Runner, which stops the
+ *   tools its journal recorded that have left the process tree. Anything but
+ *   a verified reap (or a Runner that kept no journal) fails the launch with
+ *   `runner_stale_lineage_unproven`.
+ *
+ * A failure exits before the identity marker is written, so the existing
+ * marker is kept, and the reason goes to the process stderr log when that path
+ * is a plain file. A normal launch finds no runnerd on its state directory:
+ * its cost is one grep over /proc plus reading argv[0] of the few processes
+ * that name the directory (this launch's own subshell), and node does not
+ * start.
+ *
+ * The script is embedded in a double-quoted shell word, so it must not contain
+ * a double quote, dollar sign, backquote, or backslash.
  */
-const REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT =
-  `const fs=require('fs'),root=Number(process.argv[1]);` +
-  `const stat=p=>{try{const s=fs.readFileSync('/proc/'+p+'/stat','utf8'),r=s.slice(s.lastIndexOf(')')+2).split(' ');return{state:r[0],ppid:Number(r[1])}}catch{return null}};` +
-  `const kids=new Map();for(const d of fs.readdirSync('/proc')){if(String(Number(d))!==d)continue;const s=stat(d);if(s){const k=kids.get(s.ppid)||[];k.push(Number(d));kids.set(s.ppid,k)}}` +
-  `const all=[root];for(let i=0;i<all.length;i+=1)for(const c of kids.get(all[i])||[])if(!all.includes(c))all.push(c);` +
-  `const alive=p=>{const s=stat(p);return s!==null&&s.state!=='Z'};` +
-  `const send=sig=>{for(const p of all)for(const t of[-p,p]){try{process.kill(t,sig)}catch{}}};` +
-  `const pause=new Int32Array(new SharedArrayBuffer(4));const wait=ms=>{const end=Date.now()+ms;while(Date.now()<end&&all.some(alive))Atomics.wait(pause,0,0,100)};` +
-  `send('SIGTERM');wait(5000);if(all.some(alive)){send('SIGKILL');wait(5000)}process.exit(all.some(alive)?1:0)`;
+export const REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT = [
+  "const fs=require('fs'),cp=require('child_process');",
+  "const binary=process.argv[1],stateDir=process.argv[2],candidates=process.argv.slice(3).map(Number);",
+  "const self=[process.pid,process.ppid];",
+  "const stat=p=>{try{const s=fs.readFileSync('/proc/'+p+'/stat','utf8'),r=s.slice(s.lastIndexOf(')')+2).split(' ');",
+  "return{state:r[0],ppid:Number(r[1]),pgrp:Number(r[2]),sid:Number(r[3]),start:r[19]}}catch{return null}};",
+  "const table=()=>{const t=new Map();for(const d of fs.readdirSync('/proc')){if(String(Number(d))!==d)continue;const s=stat(d);if(s)t.set(Number(d),s)}return t};",
+  "const holds=p=>{let a;try{a=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0))}catch{return false};",
+  "return a[0].split('/').pop()==='paperclip-runnerd'&&a[1]!=='reap-lineage'&&a.some((v,i)=>v==='--state-dir'&&a[i+1]===stateDir)};",
+  "const members=new Map(),roots=[];",
+  "const live=(t,p)=>{const s=t.get(p);return s!==undefined&&members.get(p)===s.start&&s.state!=='Z'&&!self.includes(p)};",
+  "const expand=t=>{for(let grew=true;grew;){grew=false;for(const[p,s]of t){if(members.has(p)||self.includes(p))continue;",
+  "if(live(t,s.ppid)||(s.pgrp!==p&&live(t,s.pgrp)&&t.get(s.pgrp).pgrp===s.pgrp)||(s.sid!==p&&live(t,s.sid)&&t.get(s.sid).sid===s.sid)){members.set(p,s.start);grew=true}}}};",
+  "const left=t=>[...members.keys()].filter(p=>live(t,p));",
+  "const t0=table();for(const p of candidates){const s=t0.get(p);if(s&&s.state!=='Z'&&!self.includes(p)&&holds(p)){roots.push(p);members.set(p,s.start)}}",
+  "if(roots.length===0)process.exit(0);",
+  "const pause=new Int32Array(new SharedArrayBuffer(4));",
+  "const stop=(sig,ms)=>{const sent=new Set(),end=Date.now()+ms;for(;;){const t=table();expand(t);const rest=left(t);if(rest.length===0)return true;if(Date.now()>=end)return false;",
+  "for(const p of rest){const k=p+':'+members.get(p);if(!sent.has(k)){sent.add(k);try{process.kill(p,sig)}catch{}}}Atomics.wait(pause,0,0,100)}};",
+  "if(!stop('SIGTERM',5000)&&!stop('SIGKILL',2000)){console.error('runner_stale_state_holder_alive: runner '+roots.join(',')+' still holds this state folder; alive: '+left(table()).join(','));process.exit(1)}",
+  "for(const p of roots){let out='';try{out=cp.execFileSync(binary,['reap-lineage','--state-dir',stateDir,'--runner-pid',String(p),'--grace-ms','1000','--deadline-ms','5000'],",
+  "{encoding:'utf8',timeout:7000,killSignal:'SIGKILL',stdio:['ignore','pipe','ignore']})}catch(e){out=String(e.stdout||'')}",
+  "let r=null;try{r=JSON.parse(out.trim().split(String.fromCharCode(10)).pop())}catch{}",
+  "if(!r||(r.verified!==true&&r.reason!=='journal_unavailable')){console.error('runner_stale_lineage_unproven: runner '+p+': '+(r?r.reason:'no reap report'));process.exit(1)}}",
+  "process.exit(0)",
+].join("");
 
 const REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT =
   'state_dir=""; previous_arg=""; for arg in "$@"; do if test "$previous_arg" = "--state-dir"; then state_dir=$arg; fi; previous_arg=$arg; done; ' +
-  'if test -n "$state_dir" && test -r /proc/self/cmdline; then ' +
+  'if test -n "$state_dir" && test -r /proc/self/cmdline; then stale_pids=""; ' +
   'for stale_cmdline in $(grep -l -s -z -F -x -- "$state_dir" /proc/[0-9]*/cmdline 2>/dev/null || true); do ' +
   'stale_pid=${stale_cmdline#/proc/}; stale_pid=${stale_pid%/cmdline}; ' +
-  'case "$stale_pid" in ""|*[!0-9]*) continue ;; esac; test "$stale_pid" != "$$" || continue; ' +
-  'stale_binary=$(head -z -n 1 "$stale_cmdline" 2>/dev/null | tr -d "\\000") || continue; ' +
-  'test "${stale_binary##*/}" = "paperclip-runnerd" || continue; ' +
-  'grep -q -s -z -F -x -- "--state-dir" "$stale_cmdline" || continue; ' +
-  `node -e "${REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT}" "$stale_pid" || { ` +
-  `printf "%s\\n" "runner_stale_state_holder_alive: runner $stale_pid still holds this state folder" >> "$diagnostics_directory/${REMOTE_RUNNER_PROCESS_STDERR_FILE}"; exit 75; }; ` +
-  'done; fi; ';
+  'case "$stale_pid" in ""|*[!0-9]*|"$$") continue ;; esac; ' +
+  // This shell's own subshells and the grep name the directory too; only a runnerd goes on to node.
+  'stale_binary=$( { tr "\\000" "\\n" < "$stale_cmdline" | head -n 1; } 2>/dev/null ) || continue; ' +
+  'test "${stale_binary##*/}" = "paperclip-runnerd" || continue; stale_pids="$stale_pids $stale_pid"; done; ' +
+  // The same path rules as the stderr log below: never write through a symlink or into a non-file.
+  `if test -n "$stale_pids"; then fence_log="$diagnostics_directory/${REMOTE_RUNNER_PROCESS_STDERR_FILE}"; ` +
+  'if test -L "$fence_log" || { test -e "$fence_log" && test ! -f "$fence_log"; }; then fence_log=/dev/null; fi; ' +
+  `node -e "${REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT}" "$1" "$state_dir" $stale_pids 2>>"$fence_log" || exit 75; fi; fi; `;
 
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
   'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; ' +
