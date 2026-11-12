@@ -28,8 +28,8 @@ export function McpAppViewContent({ detail, status, errorMessage, callTool, disp
     <div
       data-testid="mcp-app-view"
       className={cn(
-        "mt-1 min-w-0 max-w-full overflow-hidden",
-        detail?.resource.prefersBorder !== false && "rounded-md border border-border bg-card",
+        "min-w-0 max-w-full overflow-hidden",
+        detail?.resource.prefersBorder !== false && "rounded-lg border border-border bg-card p-3",
       )}
     >
       {status === "loading" || !detail ? (

@@ -11,7 +11,7 @@ export function mcpAppToolDisplayName(toolName: string): string {
 function McpAppRunView({ issueId, view }: { issueId: string; view: McpAppViewSummary }) {
   const displayName = mcpAppToolDisplayName(view.upstreamToolName);
   return (
-    <section data-testid="mcp-app-turn-view" aria-label={`${view.applicationName}: ${displayName}`} className="flex min-w-0 flex-col">
+    <section data-testid="mcp-app-turn-view" aria-label={`${view.applicationName}: ${displayName}`} className="flex min-w-0 flex-col gap-2">
       <div className="flex min-w-0 items-baseline gap-2 text-xs">
         <span className="text-muted-foreground">Widget from {view.applicationName}</span>
         <span className="truncate font-medium text-foreground">{displayName}</span>
@@ -36,7 +36,7 @@ function RunViews({ runId }: { runId: string }) {
   const { issueId, views } = useMcpAppViewsForRun(runId);
   if (!issueId || views.length === 0) return null;
   return (
-    <div className="flex min-w-0 flex-col gap-3 pb-3 pt-1" data-testid="mcp-app-turn-views">
+    <div className="flex min-w-0 flex-col gap-6 py-4" data-testid="mcp-app-turn-views">
       {views.map((view) => <McpAppRunView key={view.id} issueId={issueId} view={view} />)}
     </div>
   );
