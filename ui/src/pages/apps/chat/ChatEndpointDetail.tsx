@@ -532,7 +532,8 @@ function Settings({
       }),
   });
   // Each of these replaces the whole list, so only one may run at a time.
-  const resourcesBusy = saveResources.isPending || refreshChannels.isPending || removeChannel.isPending;
+  const [defaultsSaves, setDefaultsSaves] = useState(0);
+  const resourcesBusy = saveResources.isPending || refreshChannels.isPending || removeChannel.isPending || defaultsSaves > 0;
   const updateEndpoint = useMutation({
     mutationFn: chatEndpointsApi.update.bind(null, endpointId),
     onSuccess: (next) =>
@@ -631,9 +632,15 @@ function Settings({
                   companyId={endpoint.companyId}
                   value={resource.executionDefaults}
                   resource
+                  disabled={resourcesBusy}
                   onSave={async (executionDefaults) => {
-                    const next = await chatEndpointsApi.updateResources(endpointId, [{ id: resource.id, executionDefaults }]);
-                    queryClient.setQueryData(queryKeys.chatEndpoints.resources(endpointId), next);
+                    setDefaultsSaves((count) => count + 1);
+                    try {
+                      const next = await chatEndpointsApi.updateResources(endpointId, [{ id: resource.id, executionDefaults }]);
+                      queryClient.setQueryData(queryKeys.chatEndpoints.resources(endpointId), next);
+                    } finally {
+                      setDefaultsSaves((count) => count - 1);
+                    }
                   }}
                 /></div>
               </details>

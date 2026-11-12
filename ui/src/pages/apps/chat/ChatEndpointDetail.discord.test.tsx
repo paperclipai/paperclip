@@ -116,6 +116,9 @@ describe("Discord channel refresh", () => {
     await vi.waitFor(() => expect(refreshButton()!.disabled).toBe(true));
     expect(toggle().disabled).toBe(true);
     expect(removeButton().disabled).toBe(true);
+    const defaultsControls = [...container.querySelectorAll<HTMLSelectElement | HTMLButtonElement>("details select, details button[type=submit]")];
+    expect(defaultsControls.length).toBeGreaterThan(0);
+    expect(defaultsControls.every((control) => control.disabled)).toBe(true);
     await act(async () => finishRefresh([lab, gone]));
     await vi.waitFor(() => expect(toggle().disabled).toBe(false));
   });
