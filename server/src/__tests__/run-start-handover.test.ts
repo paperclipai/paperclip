@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, controllerInstances, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, controllerInstances, controllerLeaseDb, createDb, heartbeatRuns } from "@paperclipai/db";
 import { DATABASE_WORK_CHANNEL, enableDatabaseWorkNotifications, receiveDatabaseWorkNotification,
   subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -167,7 +167,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
 
     // The replacement dies, and the old server's only connection is busy past the wait.
     // A drizzle query runs only once awaited: start it now and let it take the connection.
-    const busy = old.db.execute(sql`select pg_sleep(1.5)`).then(() => undefined);
+    const busy = controllerLeaseDb(old.db).execute(sql`select pg_sleep(1.5)`).then(() => undefined);
     await new Promise(resolve => setTimeout(resolve, 50));
     await next.handover.stop();
     expect(await marker(next)).toMatchObject({ live: null });
@@ -189,7 +189,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
     expect(old.handover.isActive()).toBe(true);
 
     // The old server's only connection stays busy well past the lease: no read can answer.
-    const busy = old.db.execute(sql`select pg_sleep(${(timing.ttlMs + 3_000) / 1000})`).then(() => undefined);
+    const busy = controllerLeaseDb(old.db).execute(sql`select pg_sleep(${(timing.ttlMs + 3_000) / 1000})`).then(() => undefined);
     await new Promise(resolve => setTimeout(resolve, 50));
     const resumedAt = await vi.waitFor(() => {
       expect(old.resumed).toHaveBeenCalledTimes(1);
@@ -235,25 +235,32 @@ suite("run start hand-over between an old and a new server during a deploy overl
     expect(await dispatch(next, run)).toBe(true);
   });
 
-  it("a busy shared pool on the replacement neither lapses its marker nor holds up its release", async () => {
-    const old = await bootServer("old");
+  it("with both servers' shared pools blocked past the TTL, the marker is written, renewed and released on time", async () => {
+    const old = await bootServer("old", { maxConnections: 1 });
     await old.handover.begin();
     const next = await bootServer("new", { maxConnections: 1 });
-    await next.handover.begin();
-    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
+    // Every shared-pool connection on both servers is busy for longer than the whole hand-over below.
+    const blockMs = timing.ttlMs * 4;
+    const busy = Promise.all([old.db, next.db].map(server =>
+      server.execute(sql`select pg_sleep(${blockMs / 1000})`).then(() => undefined)));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const blockedUntil = Date.now() + blockMs - 100;
 
-    // The replacement's shared pool stays busy for longer than the lease.
-    const busy = next.db.execute(sql`select pg_sleep(${(timing.ttlMs * 3) / 1000})`).then(() => undefined);
+    await next.handover.begin();
+    expect(await marker(next)).toMatchObject({ live: true });
+    await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 1_000 });
     await new Promise(resolve => setTimeout(resolve, timing.ttlMs * 1.5));
     expect(await marker(next)).toMatchObject({ live: true });
+    expect(old.handover.isActive()).toBe(true);
     expect(old.resumed).not.toHaveBeenCalled();
 
     const started = Date.now();
     await next.handover.release();
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(await marker(next)).toMatchObject({ live: null });
-    // The release's notification is delivered with its commit, not behind the busy pool.
     await vi.waitFor(() => expect(old.resumed).toHaveBeenCalledTimes(1), { timeout: 1_000 });
+    // All of the above happened while both shared pools were still blocked.
+    expect(Date.now()).toBeLessThan(blockedUntil);
     await busy;
   });
 

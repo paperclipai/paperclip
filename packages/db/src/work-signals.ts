@@ -92,6 +92,18 @@ export function enableDatabaseWorkNotifications(owner: object): void {
   if (!scope) throw new Error("Database work notifications require createDb");
   scope.notify = true;
 }
+/**
+ * A commit-bound hint to other server processes, sent on the transaction's own connection. Unlike
+ * signalDatabaseWork it registers no local intent, so a failed transaction leaves nothing to reconcile
+ * on another pool. For writers whose correctness never depends on this hint (best-effort wakes).
+ */
+export async function notifyDatabaseWorkOnCommit(connection: object, topic: string): Promise<void> {
+  const context = contexts.get(connection);
+  if (!context?.scope.notify) return;
+  if (!context.transaction) throw new Error("Database work must be registered inside a transaction");
+  await (connection as Connection).execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${notification(context.scope, topic)})`);
+}
+
 /** A post-commit invalidation hint, for already-persisted live UI state. */
 export async function publishDatabaseWorkHint(owner: object, topic: string): Promise<void> {
   const scope = contexts.get(owner)?.scope;

@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { databaseWorkScopeKey, databaseWorkPending, installDatabaseWorkSignals, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { databaseWorkScopeKey, databaseWorkPending, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -34,6 +34,20 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(events).toEqual(["intent", "settled"]);
       expect(databaseWorkPending(db, "nested")).toBe(false);
       expect(await db.execute(sql`select * from work_signal_test where id = 'nested'`)).toHaveLength(1);
+    } finally { unsubscribe(); }
+  });
+
+  it("sends an untracked commit-bound hint that leaves nothing to reconcile", async () => {
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "untracked", event => events.push(event));
+    try {
+      await expect(db.transaction(async tx => {
+        await notifyDatabaseWorkOnCommit(tx, "untracked");
+        throw new Error("abort");
+      })).rejects.toThrow("abort");
+      await db.transaction(async tx => { await notifyDatabaseWorkOnCommit(tx, "untracked"); });
+      expect(databaseWorkPending(db, "untracked")).toBe(false);
+      expect(events).toEqual([]);
     } finally { unsubscribe(); }
   });
 

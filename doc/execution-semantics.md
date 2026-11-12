@@ -2484,22 +2484,22 @@ is handed over, never paused.
   - One read before a dispatch pass when the last read is more than 2 seconds
     old. The pass waits at most 1 second for that read.
 
-  The read is a single flight. A database statement timeout cancels it, so a
-  slow read never piles further reads onto the shared pool. Marker writes use
-  the dedicated one-connection controller-lease pool with a 1 second statement
-  timeout. That pool is shared only with legacy controller-lease renewals, and
-  never with native lease renewals:
-  - A marker write waits behind at most one legacy renewal batch (bounded by
-    10 seconds). That fits inside the 15 seconds between a marker renewal and
-    the marker's expiry.
-  - A marker write delays a legacy renewal by at most 1 second. A legacy lease
-    lasts 60 seconds and is renewed every 10 seconds.
+  Every statement of the hand-over runs on the dedicated one-connection
+  controller-lease pool, in a small transaction with a 1 second statement
+  timeout. That covers the reads, the marker writes, and both notifications.
+  None of it touches the shared pool or registers tracked database work, so a
+  busy shared pool on either server cannot lapse the marker, delay a release,
+  or stop a yield or a resume. The controller-lease pool is shared only with
+  legacy controller-lease renewals, and never with native lease renewals:
+  - A hand-over statement waits behind at most one legacy renewal batch
+    (bounded by 10 seconds). That fits inside the 15 seconds between a marker
+    renewal and the marker's expiry.
+  - A hand-over statement delays a legacy renewal by at most 1 second. A
+    legacy lease lasts 60 seconds and is renewed every 10 seconds.
+  - At most one read, one write, and one hint are in flight at a time.
 
   The `run-start-handover` notification is part of the marker write's own
-  transaction, so it is delivered when that transaction commits. Every step of
-  the serialized write path runs on that one connection under the statement
-  timeout. A busy shared pool can therefore neither lapse the marker nor delay
-  a release.
+  transaction, so it is delivered when that transaction commits.
 
   If marker renewals fail for longer than the lease, the old server starts runs
   again once. The first renewal that succeeds afterwards announces the marker,

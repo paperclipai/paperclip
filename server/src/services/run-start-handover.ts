@@ -1,6 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
 import { controllerLeaseDb, type Db } from "@paperclipai/db";
-import { publishDatabaseWorkHint, signalDatabaseWork } from "@paperclipai/db/work-signals";
+import { notifyDatabaseWorkOnCommit } from "@paperclipai/db/work-signals";
 import { logger } from "../middleware/logger.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "./controller-process-identity.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -25,16 +25,18 @@ import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "./task-admi
  * `dispatching_at is not null and dispatch_lease_expires_at > now()
  *  and stopped_at is null and fenced_at is null`.
  *
- * Database use: marker writes run on the dedicated one-connection controller
- * lease pool (shared only with legacy controller-lease renewals, never with
- * native lease renewals or the shared pool), with a 1 s statement timeout. A
- * write waits at most one legacy renewal batch (10 s statement timeout), which
- * is inside the 15 s between a renewal and the lease's expiry; it delays a
- * legacy renewal (60 s lease, renewed every 10 s) by at most 1 s. Reads use the
- * shared pool. At most one read and one write are in flight, each bounded by
- * a statement timeout. An unanswered read never keeps this server yielding: a
- * dispatch that cannot get an answer within a second admits, and a yield always
- * ends when the replacement's last seen lease runs out on this server's clock.
+ * Database use: every statement of this module (marker writes, reads, and the
+ * commit-bound notifications) runs in a small transaction on the dedicated
+ * one-connection controller-lease pool with a 1 s statement timeout. It never
+ * touches the shared pool and never registers tracked database work, so the
+ * worker coordinator has nothing of it to reconcile there. That pool is shared
+ * only with legacy controller-lease renewals: a statement here waits at most one
+ * legacy batch (10 s statement timeout), inside the 15 s between a renewal and
+ * the lease's expiry, and delays a legacy renewal (60 s lease, renewed every
+ * 10 s) by at most 1 s. At most one read, one write and one hint are in flight.
+ * An unanswered read never keeps this server yielding: a dispatch that cannot
+ * get an answer within a second admits, and a yield always ends when the
+ * replacement's last seen lease runs out on this server's clock.
  */
 export const RUN_START_HANDOVER_RENEW_MS = 5_000;
 export const RUN_START_HANDOVER_TTL_MS = 20_000;
@@ -54,7 +56,7 @@ const DEFAULT_TIMING = {
   staleAwaitMs: 2_000,
   /** A dispatch waits at most this long for that read; the read itself is cancelled by the database. */
   readWaitMs: 1_000,
-  readStatementTimeoutMs: 2_000,
+  readStatementTimeoutMs: 1_000,
   /** Short, so a marker write can delay a legacy lease renewal on the shared lease connection by at most this. */
   writeStatementTimeoutMs: 1_000,
   /** Skipped starts are announced to the replacement at most this often. */
@@ -117,10 +119,13 @@ export function createRunStartHandover(input: {
    * With `announce`, the marker-change notification is part of the same transaction on the same connection: it is
    * delivered on commit, and nothing in the write path waits on another pool.
    */
-  function bounded<T>(statement: SQL, timeoutMs: number, pool: Db = db, announce = false): Promise<T[]> {
-    return pool.transaction(async tx => {
+  function bounded<T>(statement: SQL, timeoutMs: number, announce = false): Promise<T[]> {
+    // Every statement of this module runs here: never on the shared pool, whose stalls must not move run starts.
+    return controllerLeaseDb(db).transaction(async tx => {
       await tx.execute(sql`select set_config('statement_timeout', ${String(timeoutMs)}, true)`);
-      if (announce) await signalDatabaseWork(tx, DELIVERY_QUEUES.runStartHandover);
+      // Commit-bound and untracked: a failed write leaves no uncertain transaction for the coordinator to
+      // reconcile on the shared pool before the next renewal.
+      if (announce) await notifyDatabaseWorkOnCommit(tx, DELIVERY_QUEUES.runStartHandover);
       return await tx.execute(statement) as unknown as T[];
     });
   }
@@ -144,13 +149,13 @@ export function createRunStartHandover(input: {
         where older.epoch < controller_instances.epoch and older.boot_id <> ${bootId}
           and older.stopped_at is null and older.fenced_at is null
           and older.lease_expires_at > now() - ${interval(t.olderBootWindowMs)}) as "olderMayServe"`, t.writeStatementTimeoutMs,
-      controllerLeaseDb(db), announce);
+      announce);
     return row ?? null;
   }
 
   async function clearLease() {
     await bounded(sql`update controller_instances set dispatch_lease_expires_at = null
-      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs, controllerLeaseDb(db), true);
+      where boot_id = ${bootId} and dispatch_lease_expires_at is not null`, t.writeStatementTimeoutMs, true);
     // Only a clear that succeeded ends the marker; a failed one is retried by the next release or renewal.
     leaseHeld = false;
     markerMayBeLive = false;
@@ -250,7 +255,10 @@ export function createRunStartHandover(input: {
     // queued-run redrive still covers a lost hint).
     if (hinting || (!force && now - lastSkipHintAt < t.skipHintMinMs)) return;
     lastSkipHintAt = now;
-    hinting = publishDatabaseWorkHint(db, DELIVERY_QUEUES.queuedRunDispatch)
+    hinting = controllerLeaseDb(db).transaction(async tx => {
+      await tx.execute(sql`select set_config('statement_timeout', ${String(t.writeStatementTimeoutMs)}, true)`);
+      await notifyDatabaseWorkOnCommit(tx, DELIVERY_QUEUES.queuedRunDispatch);
+    })
       .catch(error => logger.warn({ err: error }, "queued run dispatch hint for the newer server failed"))
       .finally(() => { hinting = null; });
   }
