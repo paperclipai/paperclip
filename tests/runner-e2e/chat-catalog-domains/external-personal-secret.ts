@@ -194,6 +194,22 @@ export interface PersonalSecretWorkerEvidence {
   calls: Awaited<ReturnType<typeof secretTestEndpoint>>["calls"];
   events: PersonalSecretWorkerEvent[];
 }
+export function jsonObjectsIn(text: string): Record<string, unknown>[] {
+  const objects: Record<string, unknown>[] = [];
+  let start = -1, depth = 0, inString = false, escaped = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (start < 0) { if (char === "{") { start = index; depth = 1; inString = false; escaped = false; } continue; }
+    if (inString) { if (escaped) escaped = false; else if (char === "\\") escaped = true; else if (char === '"') inString = false; continue; }
+    if (char === '"') inString = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) {
+      try { const parsed = JSON.parse(text.slice(start, index + 1)); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) objects.push(parsed); } catch { index = start; }
+      start = -1;
+    }
+  }
+  return objects;
+}
 export function personalSecretWorkerReceipt(run: PersonalSecretWorkerRun | undefined, evidence: PersonalSecretWorkerEvidence | undefined,
   expected: { companyId: string; agentId: string; taskId: string; userId: string }) {
   const task = evidence?.task;
@@ -214,10 +230,8 @@ export function personalSecretWorkerReceipt(run: PersonalSecretWorkerRun | undef
     if (prp?.runId !== run.id || prp.eventType !== event.eventType || tool?.name !== "bash" || tool.status !== "completed"
       || tool.exitCode !== 0 || tool.outputTruncated !== false || typeof tool.output !== "string"
       || !Number.isFinite(observed) || observed < requested || observed > finished) return false;
-    try {
-      const output = JSON.parse(tool.output) as { ok?: boolean; status?: number; check?: string; receiptId?: string } | null;
-      return output?.ok === true && output.status === 200 && output.check === "publishing endpoint" && output.receiptId === call.receiptId;
-    } catch { return false; }
+    const receipts = jsonObjectsIn(tool.output).filter(output => "receiptId" in output) as Array<{ ok?: unknown; status?: unknown; check?: unknown; receiptId?: unknown }>;
+    return receipts.length === 1 && receipts[0]!.ok === true && receipts[0]!.status === 200 && receipts[0]!.check === "publishing endpoint" && receipts[0]!.receiptId === call.receiptId;
   });
   if (!matching.length) return;
   return { receiptId: call.receiptId!, runId: run.id, agentId: run.agentId, event: matching[0]! };
@@ -475,7 +489,7 @@ export const personalSecretExternalCases = [
         if (!o.state.initialQuestionId) return;
         return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
       },
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v19",
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v20",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,

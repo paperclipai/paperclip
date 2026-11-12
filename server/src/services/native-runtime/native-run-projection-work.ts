@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, not, sql } from "drizzle-orm";
+import { and, asc, eq, gt, not, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -6,21 +6,40 @@ import type { NativeRunProjectionScope } from "../native-run-projection-notifica
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-work.js";
 import { pendingNativeRunProjectionCondition, projectCommittedRun } from "./native-run-projection.js";
+import { endSupersededNativeFinalizationRuns, NATIVE_FINALIZATION_SUPERSEDED } from "./native-run-finalizer.js";
+import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
+import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
+import { preserveSupersededWorkspaceExport, supersededWorkspaceExportUnpreservedCondition } from "./native-superseded-workspace-export.js";
 
 type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
 
 
 
-export function nativeRunProjectionWork(db: Db, project = projectCommittedRun) {
+/**
+ * A run an earlier release left running after retiring its finalizer as
+ * superseded. It gets the terminal status the retirement now writes itself.
+ */
+function supersededRunStillRunningCondition() {
+  return and(eq(nativeRunFinalizations.phase, "terminal_failure"),
+    eq(nativeRunFinalizations.failureCode, NATIVE_FINALIZATION_SUPERSEDED),
+    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "running"),
+    nativeRunnerOwnershipNotHeldCondition());
+}
+
+export function nativeRunProjectionWork(db: Db, project = projectCommittedRun,
+  endSuperseded: (db: Db, runIds: readonly string[]) => Promise<string[]> = endSupersededNativeFinalizationRuns,
+  preserveExport: (db: Db, runId: string) => Promise<{ recheckAt: number | null }> =
+    (db, runId) => preserveSupersededWorkspaceExport(db, runId, preserveNativeFailedWorkspace)) {
   function candidates(scope?: NativeRunProjectionScope, after?: string) {
     return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: nativeRunFinalizations.issueId })
       .from(nativeRunFinalizations)
       .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
         eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
       .innerJoin(issues, and(eq(issues.id, nativeRunFinalizations.issueId), eq(issues.companyId, nativeRunFinalizations.companyId)))
-      .where(and(eq(nativeRunFinalizations.phase, "committed"),
+      .where(and(or(and(eq(nativeRunFinalizations.phase, "committed"),
         pendingNativeRunProjectionCondition(db),
-        not(pendingNativeStatusEffectsCondition(db)),
+        not(pendingNativeStatusEffectsCondition(db))), supersededRunStillRunningCondition(),
+        supersededWorkspaceExportUnpreservedCondition()),
         scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
         scope?.issueId ? eq(nativeRunFinalizations.issueId, scope.issueId) : undefined,
         scope?.runId ? eq(heartbeatRuns.id, scope.runId) : undefined,
@@ -43,6 +62,27 @@ export function nativeRunProjectionWork(db: Db, project = projectCommittedRun) {
     const scope = { companyId: entry.companyId, issueId: entry.issueId, runId: entry.id };
     const [pending] = await candidates(scope);
     if (!pending) return null;
+    const [superseded] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+        eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
+      .where(and(eq(nativeRunFinalizations.runId, entry.id), eq(nativeRunFinalizations.companyId, entry.companyId),
+        supersededRunStillRunningCondition()));
+    if (superseded) {
+      await endSuperseded(db, [entry.id]);
+      return (await candidates(scope)).length ? { ...entry, dueAt: Date.now() + 30_000 } : null;
+    }
+    const [unsavedExport] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+        eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
+      .where(and(eq(nativeRunFinalizations.runId, entry.id), eq(nativeRunFinalizations.companyId, entry.companyId),
+        supersededWorkspaceExportUnpreservedCondition()));
+    if (unsavedExport) {
+      // An ended superseded run still holds its workspace with unsaved files.
+      // Record the files for automatic recovery; a refusal rests until the
+      // next start or signal, except while its sandbox stop is still arriving.
+      const { recheckAt } = await preserveExport(db, entry.id);
+      return recheckAt === null ? null : { ...entry, dueAt: recheckAt };
+    }
     const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
       status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt, nativePhase: heartbeatRuns.nativePhase,
       runtimeMode: heartbeatRuns.runtimeMode, nativeIssueId: heartbeatRuns.nativeIssueId,

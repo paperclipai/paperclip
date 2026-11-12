@@ -338,7 +338,7 @@ it("keeps a confirmation dependent on actual worker delivery",()=>{
 });
 
 it("declares the prospective personal acknowledgment calibration without changing its bounds", () => {
-  expect(personalSecretExternalCases[0]).toMatchObject({ oracleVersion: "paperclip.chat-catalog.personal-secret.v19",
+  expect(personalSecretExternalCases[0]).toMatchObject({ oracleVersion: "paperclip.chat-catalog.personal-secret.v20",
     expectedRunCount: 3, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 660000 });
 });
 // Full cohort 3: the recorded guidance linked My secrets and excluded chat; a variant that also asks

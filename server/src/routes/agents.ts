@@ -165,8 +165,9 @@ import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingC
 import { adapterSettingsService } from "../services/adapter-settings.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
+import { AGENT_TERMINATED_STOP_REASON } from "../services/governance-pause-stop.js";
 import {
   persistReprojectedWorkspaceDiffs,
   projectCodexWorkspaceDiffsFromTrace,
@@ -4172,6 +4173,7 @@ export function agentRoutes(
     const issuesSvc = issueService(db);
     const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
@@ -4221,13 +4223,24 @@ export function agentRoutes(
     const query = agentMineInboxQuerySchema.parse(req.query);
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       touchedByUserId: query.userId,
       inboxArchivedByUserId: query.userId,
       status: query.status,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
+    const decisions = await access.decideReads(req.actor, rows.map((issue) => ({
+      type: "issue" as const,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    })));
 
-    res.json(rows);
+    res.json(rows.filter((_, index) => decisions[index]?.allowed));
   });
 
   router.get("/agents/:id/identity", async (req, res) => {
@@ -6053,7 +6066,7 @@ export function agentRoutes(
     const invalidOrgChainDescendantIds = listInvalidOrgChainDescendantIds(id, companyAgentRows);
     const cancellation = await heartbeat.cancelInvocationsForAgents(
       [id, ...invalidOrgChainDescendantIds],
-      "Cancelled because the agent was terminated or became invalid-org-chain under a terminated manager",
+      AGENT_TERMINATED_STOP_REASON,
     );
 
     await logActivity(db, {
@@ -7159,6 +7172,17 @@ export function agentRoutes(
     });
     res.set("Cache-Control", "no-cache, no-store");
     res.json(traces);
+  });
+
+  // Operator read of the assigned-work invariant: how many open assigned tasks
+  // have nothing running, nothing pending and no one else's move. Read-only;
+  // the sweep repairs violations by itself. Expect 0 violations after a deploy.
+  router.get("/companies/:companyId/assigned-work-invariant", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    // Only tasks this caller may read count, so private tasks stay private.
+    res.json(await heartbeat.reportAssignedWorkInvariant(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) }));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {

@@ -20,9 +20,8 @@ function storage() {
     id: "s3", putObject: async () => { throw new Error("Expected conditional publication"); },
     async putObjectConditional(input) {
       if (objects.has(input.objectKey)) throw new Error("Precondition failed");
-      const chunks: Buffer[] = [];
-      for await (const chunk of input.body) chunks.push(Buffer.from(chunk));
-      objects.set(input.objectKey, Buffer.concat(chunks)); return { etag: '"fixture-etag"' };
+      if (!Buffer.isBuffer(input.body)) throw new Error("Expected a replayable Buffer body");
+      objects.set(input.objectKey, Buffer.from(input.body)); return { etag: '"fixture-etag"' };
     },
     async getObject(input) {
       const bytes = objects.get(input.objectKey);
@@ -78,11 +77,11 @@ it("retries an asset the storage throttled instead of failing the publication", 
   const put = provider.putObjectConditional!.bind(provider);
   let refusals = 3;
   provider.putObjectConditional = async input => {
-    if (refusals > 0) { refusals--; for await (const _chunk of input.body) { /* drain as a real client would */ } throw slowDown(); }
+    if (refusals > 0) { refusals--; throw slowDown(); }
     return put(input);
   };
   const waits: number[] = [];
-  await retainedUiAssets(provider, { sleep: async ms => { waits.push(ms); } }).publish(root);
+  await retainedUiAssets(provider, { sleep: async ms => { waits.push(ms); }, concurrency: 1 }).publish(root);
   expect(waits).toEqual([500, 1_000, 2_000]);
   expect(objects.get("ui-assets/v1/chunk-a.js")?.toString()).toBe("alpha");
   expect(objects.get("ui-assets/v1/chunk-b.js")?.toString()).toBe("beta");
@@ -141,4 +140,58 @@ it("retries an existing asset whose saved bytes storage could not serve, without
   // A deadline on the asset is an outage too; a read that says the object is gone is not.
   expect(isTransientStorageError(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }))).toBe(true);
   expect(isTransientStorageError(Object.assign(new Error("Object missing"), { status: 404 }))).toBe(false);
+});
+
+// Staging, 2026-11-11: a busy workspace took 85 s to bind its listener. Its
+// restart re-published several hundred already-published assets one at a time
+// (a refused conditional write, then a verifying read, per asset), and each
+// refused stream upload logged "An error was encountered in a non-retryable
+// streaming request." Publication now sends replayable Buffer bodies and keeps
+// a bounded number of assets in flight.
+it("re-publishes an already-published build with bounded parallel, replayable writes", async () => {
+  const root = await directory(), { provider } = storage();
+  for (let index = 0; index < 40; index++) await fs.writeFile(path.join(root, `chunk-${index}.js`), `export const n = ${index};`);
+  await retainedUiAssets(provider).publish(root);
+  const put = provider.putObjectConditional!.bind(provider), get = provider.getObject.bind(provider);
+  let inFlight = 0, peak = 0, streamBodies = 0;
+  const latency = async <T,>(work: () => Promise<T>) => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    try { await new Promise(resolve => setTimeout(resolve, 5)); return await work(); } finally { inFlight--; }
+  };
+  provider.putObjectConditional = input => { if (!Buffer.isBuffer(input.body)) streamBodies++; return latency(() => put(input)); };
+  provider.getObject = input => latency(() => get(input));
+  await retainedUiAssets(provider).publish(root);
+  expect(streamBodies).toBe(0);
+  expect(peak).toBeGreaterThan(1);
+  expect(peak).toBeLessThanOrEqual(8);
+});
+
+it("refuses a colliding build even when another asset's storage outage fails first", async () => {
+  const root = await directory(), { provider, objects } = storage();
+  await fs.writeFile(path.join(root, "chunk-a.js"), "alpha");
+  await fs.writeFile(path.join(root, "chunk-b.js"), "beta");
+  objects.set("ui-assets/v1/chunk-b.js", Buffer.from("different bytes"));
+  const put = provider.putObjectConditional!.bind(provider), get = provider.getObject.bind(provider);
+  provider.putObjectConditional = async input => {
+    if (input.objectKey.endsWith("chunk-a.js")) throw Object.assign(new Error("Please reduce your request rate."), { name: "SlowDown", $metadata: { httpStatusCode: 503 } });
+    return put(input);
+  };
+  // The collision is found only after the outage on chunk-a has exhausted its retries.
+  provider.getObject = async input => {
+    if (input.objectKey.endsWith("chunk-b.js")) await new Promise(resolve => setTimeout(resolve, 100));
+    return get(input);
+  };
+  const retained = retainedUiAssets(provider, { sleep: async () => {}, concurrency: 2 });
+  await expect(publishRetainedUiAssetsAtStartup(retained, root, () => {})).rejects.toThrow("collides");
+});
+
+it("stops starting new assets after one collides, and still refuses the build", async () => {
+  const root = await directory(), { provider, objects } = storage();
+  for (let index = 0; index < 30; index++) await fs.writeFile(path.join(root, `chunk-${String(index).padStart(2, "0")}.js`), `v${index}`);
+  objects.set("ui-assets/v1/chunk-00.js", Buffer.from("different bytes"));
+  let writes = 0;
+  const put = provider.putObjectConditional!.bind(provider);
+  provider.putObjectConditional = input => { writes++; return put(input); };
+  await expect(retainedUiAssets(provider, { concurrency: 2 }).publish(root)).rejects.toThrow("collides");
+  expect(writes).toBeLessThan(30);
 });
