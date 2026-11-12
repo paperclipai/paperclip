@@ -1433,11 +1433,25 @@ export async function claimNativeRestartRecoveries(input: {
       // old run's writes revoked and a new workspace root.
       // The same holds when the previous controller's host was never recorded
       // or cannot be proven from here: confirming its stop is optional.
+      // The run's own server boot is proven stopped or fenced (controller
+      // instance record): its lease is no sign of life, however long it was
+      // granted. The claim lease is 20 minutes for a local controller.
+      const ownerControllerStopped = evaluatedTakeover.allowed
+        && ["controller_stopped", "controller_fenced"].includes(evaluatedTakeover.reason);
+      const leaseLapsedAt = row.coordinator.leaseExpiresAt === null ? null
+        : row.coordinator.leaseExpiresAt <= now ? row.coordinator.leaseExpiresAt.getTime() : null;
       const unverifiableLapsedController = !takeover.allowed && !nonExecutionOwner
-        && (row.coordinator.leaseExpiresAt === null || row.coordinator.leaseExpiresAt <= now)
+        && (row.coordinator.leaseExpiresAt === null || leaseLapsedAt !== null || ownerControllerStopped)
         && (namespaceAttentionNeeded || ["controller_host_unrecorded", "controller_host_unprovable"].includes(takeover.reason));
+      let unverifiedWaitEndsAt: number | null = null;
       if (unverifiableLapsedController) {
-        const waitingSince = namespaceWaitStartedAt(row.coordinator.recoveryHistory, takeover.reason);
+        // The bounded wait starts when the run's controller went away (its lease
+        // lapsed), not when a later server first looked: a successor that boots
+        // minutes later, or re-records the wait, must not restart the clock.
+        const observedSince = namespaceWaitStartedAt(row.coordinator.recoveryHistory, takeover.reason);
+        const starts = [observedSince, leaseLapsedAt].filter((at): at is number => at !== null);
+        const waitingSince = starts.length ? Math.min(...starts) : null;
+        unverifiedWaitEndsAt = (waitingSince ?? now.getTime()) + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS;
         if (waitingSince !== null && now.getTime() - waitingSince >= NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS) {
           await endNamespaceUnverifiedRun(tx as unknown as Db, row, now, takeover.reason, historyEntry({
             now, restartKind: input.restartKind, controller, generation: row.coordinator.controllerGeneration,
@@ -1502,7 +1516,8 @@ export async function claimNativeRestartRecoveries(input: {
             : ["controller_lease_held", "controller_lease_grace"].includes(takeover.reason)
               ? { retryAt: new Date(now.getTime() + CONTROLLER_LEASE_RENEW_MS) }
             // The bounded wait for an unverifiable controller is checked again when it ends.
-            : unverifiableLapsedController ? { retryAt: new Date(now.getTime() + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS) } : {}),
+            : unverifiableLapsedController ? { retryAt: new Date(Math.max(now.getTime() + 1_000,
+              unverifiedWaitEndsAt ?? now.getTime() + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS)) } : {}),
         } as const;
       }
 
