@@ -461,6 +461,35 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(report).toMatchObject({ checked: 1, openTasks: 1, truncated: false, violationCountIsLowerBound: false, violationCount: 1 });
   }, 60_000);
 
+  it("a running run whose owner is proven gone is settled first, then the task gets its continuation within the bound", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    const otherBoot = randomUUID();
+    const run = await f.run(issueId, { status: "running", errorCode: null, finishedAt: null, controllerBootId: otherBoot,
+      controllerProcess: { bootId: otherBoot, pid: 4242, hostHash: "host-b", processStartedAt: new Date(Date.now() - HOUR).toISOString() },
+      controllerLeaseExpiresAt: new Date(Date.now() - 60_000) });
+    const queue = wakeQueue();
+    // Heartbeat's lost-process settle path ends the run, as it does in production.
+    const settle = vi.fn(async ({ runId }: { runId: string }) => {
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    });
+    let clock = new Date();
+    const started = clock.getTime();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, settleLostRunProcess: settle,
+      proveOwner: async () => ({ verdict: "gone", reason: "controller_stopped" }), now: () => clock });
+    const deadlines: number[] = [];
+    const pass = () => sweep.checkIssue({ companyId: f.companyId, issueId, onDeferredDeadline: at => deadlines.push(at) });
+    // Pass 1: the owner is proven gone outside any lock; the run goes to the settle path, no claim is tried.
+    expect(await pass()).toMatchObject({ outcome: "settled_lost_run", verdict: { reason: "run_owner_gone", runId: run.id } });
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(queue.calls).toHaveLength(0);
+    // Pass 2 at its deadline: the run has ended and the task is repaired.
+    clock = new Date(deadlines.at(-1)! + 1_000);
+    expect(await pass()).toMatchObject({ outcome: "repaired" });
+    expect(queue.calls).toHaveLength(1);
+    expect(clock.getTime() - started).toBeLessThan(5 * 60_000);
+  }, 60_000);
+
   it("stops scheduling a task once it leaves eligibility", async () => {
     const f = await seedCompany();
     const done = await f.issue();
