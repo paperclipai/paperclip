@@ -216,6 +216,76 @@ describeEmbeddedPostgres("isolated task directory compaction after task closure"
     expect(next!).toBeLessThanOrEqual(now().getTime() + TASK_DIRECTORY_RETRY_MS + 60_000);
   });
 
+  // Counts directory reads inside the task directory while `run` executes.
+  async function readsInside(cwd: string, run: () => Promise<unknown>) {
+    const spy = vi.spyOn(fs, "readdir");
+    try {
+      await run();
+      return spy.mock.calls.filter(([target]) => {
+        const resolved = path.resolve(String(target));
+        return resolved === cwd || resolved.startsWith(`${cwd}${path.sep}`);
+      }).length;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it.each(["runtime service", "open task"] as const)("does not scan a busy task directory (%s)", async (consumer) => {
+    const f = await fixture();
+    if (consumer === "runtime service") {
+      await db.insert(workspaceRuntimeServices).values({ id: randomUUID(), companyId: f.companyId, scopeType: "execution_workspace",
+        serviceName: "web", status: "running", lifecycle: "shared", provider: "local_process", executionWorkspaceId: f.workspaceId,
+        cwd: f.repo });
+    } else {
+      await db.insert(issues).values({ companyId: f.companyId, title: "Other task on the same directory", status: "in_progress",
+        executionWorkspaceId: f.workspaceId });
+    }
+    await f.close("done");
+    const service = f.service();
+    let result: unknown;
+    expect(await readsInside(f.cwd, async () => { result = await service.sweepTerminalWorkspaces(); })).toBe(0);
+    expect(result).toMatchObject({ compacted: 0, compactionFailed: 0, compactionSkipped: 0 });
+    await expectRegenerableKept(f);
+  });
+
+  it.each([
+    { reason: "too_many_directories", limits: { maxDirectories: 40, maxCheckouts: 32 } },
+    { reason: "too_many_checkouts", limits: { maxDirectories: 200_000, maxCheckouts: 1 } },
+  ] as const)("keeps a whole task directory that exceeds the scan limit ($reason), records why, and does not rescan it", async ({ reason, limits }) => {
+    const f = await fixture();
+    if (reason === "too_many_directories") {
+      // The checkouts are found within the limit; the protected-entry walk of
+      // the ignored dependencies is not.
+      await Promise.all(Array.from({ length: 60 }, (_, index) =>
+        fs.mkdir(path.join(f.repo, "node_modules", `dep${index}`, "lib"), { recursive: true })));
+    } else {
+      const second = path.join(f.cwd, "second");
+      await fs.mkdir(path.join(second, "dist"), { recursive: true });
+      git(second, "init", "-q");
+      await fs.writeFile(path.join(second, ".gitignore"), "dist/\n");
+      git(second, "add", ".");
+      git(second, "commit", "-q", "-m", "second");
+      await fs.writeFile(path.join(second, "dist", "out.js"), "built\n");
+    }
+    await f.close("done");
+    const service = f.service({ workspaceCompactionScanLimits: limits });
+    expect(await service.sweepTerminalWorkspaces()).toMatchObject({ compacted: 0, compactionFailed: 0, compactionSkipped: 1 });
+    // Nothing is removed on a partial scan.
+    await expectRegenerableKept(f);
+    await expectSourceKept(f);
+    if (reason === "too_many_checkouts") expect(await exists(path.join(f.cwd, "second", "dist", "out.js"))).toBe(true);
+    expect(await f.removedActivity()).toEqual([]);
+    const skipped = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.workspaceId),
+      eq(activityLog.action, "execution_workspace.compaction_skipped")));
+    expect(skipped.map(entry => entry.details)).toEqual([
+      expect.objectContaining({ sourceIssueId: f.issueId, reason, limit: reason === "too_many_checkouts" ? 1 : 40 })]);
+    expect(await f.row()).toMatchObject({ status: "active", closedAt: null, cwd: f.cwd });
+    // The next sweep in the same terminal cycle does not scan it again.
+    let again: unknown;
+    expect(await readsInside(f.cwd, async () => { again = await service.sweepTerminalWorkspaces(); })).toBe(0);
+    expect(again).toMatchObject({ compacted: 0, compactionSkipped: 0 });
+  });
+
   it("reports a failed compaction, keeps the files, and retries on the next sweep", async () => {
     const f = await fixture();
     await fs.rm(path.join(f.repo, ".git"), { recursive: true, force: true });

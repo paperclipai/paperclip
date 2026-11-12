@@ -46,6 +46,8 @@ import {
   TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
 } from "./terminal-workspace-retry.js";
 import {
+  CompactionScanLimitExceeded,
+  type CompactionScanLimits,
   deleteWorkspaceCompactionTrash,
   findRegenerableWorkspaceDirs,
   findTaskDirectoryRegenerableDirs,
@@ -376,6 +378,8 @@ export type ExecutionWorkspaceServiceOptions = {
   // Test hook. Runs after compaction moves directories out of the worktree and
   // before it re-checks the guard under the lifecycle lock.
   afterWorkspaceCompactionMove?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
+  // Test hook. Overrides the limits of one compaction scan.
+  workspaceCompactionScanLimits?: CompactionScanLimits;
   inspectGitCloseReadiness?: typeof inspectGitCloseReadiness;
 };
 
@@ -2492,7 +2496,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   async function compactTerminalWorkspace(
     workspace: ExecutionWorkspaceRow,
     signal?: AbortSignal,
-  ): Promise<"compacted" | "nothing_to_compact" | "not_compactable" | "busy"> {
+  ): Promise<"compacted" | "nothing_to_compact" | "not_compactable" | "busy" | "scan_limit_exceeded"> {
     const worktreePath = workspace.providerRef ?? workspace.cwd;
     // An isolated task directory holds the task's files and any checkouts cloned
     // into it. Each checkout inside it is compacted by its own `.gitignore`.
@@ -2523,14 +2527,42 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       return "not_compactable";
     }
 
-    const relativePaths = taskDirectory
-      ? await findTaskDirectoryRegenerableDirs(worktreePath, { signal })
-      : await findRegenerableWorkspaceDirs(worktreePath, { signal });
     // A task directory may be shared by other issues and hold other workspaces,
     // leases, or runtime services. It uses the same consumer check as task
     // directory retention, in addition to the compaction guard.
     const guardPasses = async (tx: DbTransaction) => await terminalWorkspaceCompactionGuardPasses(tx, workspace)
       && (!taskDirectory || await isGitWorkspaceExpirationEligible(tx, workspace, now(), undefined, { closedSiblingsAllowed: true }));
+    // The guard runs first, so a busy workspace costs no directory scan and no
+    // Git read. It runs again under the lifecycle lock before anything moves.
+    if (!(await db.transaction(async (tx) => await guardPasses(tx)))) return "busy";
+
+    let relativePaths: string[];
+    try {
+      const scanOptions = { signal, limits: opts.workspaceCompactionScanLimits };
+      relativePaths = taskDirectory
+        ? await findTaskDirectoryRegenerableDirs(worktreePath, scanOptions)
+        : await findRegenerableWorkspaceDirs(worktreePath, scanOptions);
+    } catch (error) {
+      if (!(error instanceof CompactionScanLimitExceeded)) throw error;
+      // The scan stopped part way, so nothing is removed: the whole workspace
+      // stays. The skip is logged and recorded, and the sweep does not scan
+      // this workspace again in the same terminal cycle.
+      logger.warn(
+        { event: "execution_workspace.compaction_skipped", executionWorkspaceId: workspace.id,
+          sourceIssueId: workspace.sourceIssueId, reason: error.reason, limit: error.limit },
+        "terminal workspace compaction skipped: the workspace exceeds the scan limit; all files are kept",
+      );
+      await logActivity(db, {
+        companyId: workspace.companyId,
+        actorType: "system",
+        actorId: "workspace_terminality_reaper",
+        action: "execution_workspace.compaction_skipped",
+        entityType: "execution_workspace",
+        entityId: workspace.id,
+        details: { sourceIssueId: workspace.sourceIssueId, reason: error.reason, limit: error.limit },
+      });
+      return "scan_limit_exceeded";
+    }
     if (relativePaths.length === 0) return "nothing_to_compact";
 
     const snapshotGeneration = readExecutionWorkspaceLifecycleGeneration(
@@ -3548,6 +3580,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           clearedStaleReopenPending: 0,
           compacted: 0,
           compactionFailed: 0,
+          compactionSkipped: 0,
         };
       }
       const previousCursor = terminalSweepCursor;
@@ -3648,6 +3681,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         clearedStaleReopenPending: 0,
         compacted: 0,
         compactionFailed: 0,
+        compactionSkipped: 0,
       };
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
       const backOffTerminalWorkspace = async (snapshot: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
@@ -3849,6 +3883,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           try {
             const outcome = await compactTerminalWorkspace(workspace, signal);
             if (outcome === "compacted") result.compacted += 1;
+            if (outcome === "scan_limit_exceeded") result.compactionSkipped += 1;
             if (outcome !== "busy") {
               if (compactedTerminalAt.size >= 4096) compactedTerminalAt.delete(compactedTerminalAt.keys().next().value!);
               compactedTerminalAt.set(workspace.id, latestTerminalAt);

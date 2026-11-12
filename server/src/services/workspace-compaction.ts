@@ -37,6 +37,40 @@ export const WORKSPACE_COMPACTION_TRASH_DIR = ".paperclip-compaction-trash";
 
 const MAX_WALK_DEPTH = 12;
 
+// Bounds one compaction scan. Agents control what a workspace holds, so the scan
+// reads at most this many directories and, in a task directory, compacts at most
+// this many checkouts. A scan that would exceed a limit stops and the caller
+// keeps the whole workspace: a directory is never removed on a partial scan.
+export const DEFAULT_COMPACTION_SCAN_LIMITS = Object.freeze({ maxDirectories: 200_000, maxCheckouts: 32 });
+
+export type CompactionScanLimits = { maxDirectories: number; maxCheckouts: number };
+
+export type CompactionScanLimitReason = "too_many_directories" | "too_many_checkouts";
+
+export class CompactionScanLimitExceeded extends Error {
+  constructor(readonly reason: CompactionScanLimitReason, readonly limit: number) {
+    super(`workspace compaction scan stopped: ${reason} (limit ${limit})`);
+    this.name = "CompactionScanLimitExceeded";
+  }
+}
+
+type ScanOptions = { signal?: AbortSignal; limits?: CompactionScanLimits; budget?: ScanBudget };
+
+class ScanBudget {
+  private directories = 0;
+  constructor(readonly limits: CompactionScanLimits) {}
+  readDirectory() {
+    this.directories += 1;
+    if (this.directories > this.limits.maxDirectories) {
+      throw new CompactionScanLimitExceeded("too_many_directories", this.limits.maxDirectories);
+    }
+  }
+}
+
+function scanBudget(options: ScanOptions) {
+  return options.budget ?? new ScanBudget(options.limits ?? DEFAULT_COMPACTION_SCAN_LIMITS);
+}
+
 // Each Git read has a deadline and stops when the sweep is aborted, so a stalled
 // Git process cannot hold the reaper.
 const GIT_READ_TIMEOUT_MS = 60_000;
@@ -131,10 +165,11 @@ function hasGitEntry(entries: { name: string }[]) {
 // Paperclip instance data. The outer repository's index and ignore rules say
 // nothing about either, so such a directory is never removed. Symlinks are not
 // followed. A directory that cannot be read counts as protected.
-async function containsProtectedEntry(directory: string, signal?: AbortSignal) {
+async function containsProtectedEntry(directory: string, budget: ScanBudget, signal?: AbortSignal) {
   const pending = [directory];
   while (pending.length > 0) {
     signal?.throwIfAborted();
+    budget.readDirectory();
     const current = pending.pop()!;
     let entries;
     try {
@@ -155,15 +190,18 @@ async function containsProtectedEntry(directory: string, signal?: AbortSignal) {
 // regenerable name that does not qualify (for example a tracked `build/`) is
 // searched in turn, so eligible directories inside it are still found. The
 // search stops at a nested checkout: this worktree's rules do not apply there.
+// Throws CompactionScanLimitExceeded when the scan exceeds its limits.
 export async function findRegenerableWorkspaceDirs(
   worktreePath: string,
-  options: { signal?: AbortSignal } = {},
+  options: ScanOptions = {},
 ): Promise<string[]> {
   const removable: string[] = [];
+  const budget = scanBudget(options);
 
   async function collect(relativeDir: string, depth: number, candidates: string[]) {
     options.signal?.throwIfAborted();
     if (depth > MAX_WALK_DEPTH) return;
+    budget.readDirectory();
     const entries = await fs.readdir(path.join(worktreePath, relativeDir), { withFileTypes: true })
       .catch(() => []);
     if (relativeDir && hasGitEntry(entries)) return;
@@ -189,7 +227,7 @@ export async function findRegenerableWorkspaceDirs(
     const ignored = new Set(await filterRemovableCandidates(worktreePath, candidates, options.signal));
     const protectedCandidates = new Set<string>();
     for (const candidate of ignored) {
-      if (await containsProtectedEntry(path.join(worktreePath, candidate), options.signal)) protectedCandidates.add(candidate);
+      if (await containsProtectedEntry(path.join(worktreePath, candidate), budget, options.signal)) protectedCandidates.add(candidate);
     }
     removable.push(...candidates.filter((candidate) => ignored.has(candidate) && !protectedCandidates.has(candidate)));
     // A protected candidate is kept whole and not searched further.
@@ -205,14 +243,18 @@ export async function findRegenerableWorkspaceDirs(
 // outside every checkout are never candidates.
 const MAX_TASK_DIRECTORY_CHECKOUT_DEPTH = 4;
 
-async function findGitCheckouts(root: string, signal?: AbortSignal) {
+async function findGitCheckouts(root: string, budget: ScanBudget, signal?: AbortSignal) {
   const checkouts: string[] = [];
   async function visit(relativeDir: string, depth: number) {
     signal?.throwIfAborted();
+    budget.readDirectory();
     const absoluteDir = relativeDir ? path.join(root, relativeDir) : root;
     const entries = await fs.readdir(absoluteDir, { withFileTypes: true }).catch(() => []);
     if (entries.some((entry) => entry.name === ".git" && (entry.isDirectory() || entry.isFile()))) {
       checkouts.push(relativeDir);
+      if (checkouts.length > budget.limits.maxCheckouts) {
+        throw new CompactionScanLimitExceeded("too_many_checkouts", budget.limits.maxCheckouts);
+      }
     }
     if (depth >= MAX_TASK_DIRECTORY_CHECKOUT_DEPTH) return;
     for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
@@ -227,15 +269,18 @@ async function findGitCheckouts(root: string, signal?: AbortSignal) {
 }
 
 // Lists the regenerable directories of every Git checkout inside an isolated
-// task directory, as paths relative to the task directory.
+// task directory, as paths relative to the task directory. One limit budget
+// covers the whole task directory. Throws CompactionScanLimitExceeded when the
+// scan exceeds it; the checkouts are counted before any Git read.
 export async function findTaskDirectoryRegenerableDirs(
   taskDirectory: string,
-  options: { signal?: AbortSignal } = {},
+  options: ScanOptions = {},
 ): Promise<string[]> {
   const removable: string[] = [];
-  for (const checkout of await findGitCheckouts(taskDirectory, options.signal)) {
+  const budget = scanBudget(options);
+  for (const checkout of await findGitCheckouts(taskDirectory, budget, options.signal)) {
     const checkoutPath = checkout ? path.join(taskDirectory, checkout) : taskDirectory;
-    for (const relativePath of await findRegenerableWorkspaceDirs(checkoutPath, options)) {
+    for (const relativePath of await findRegenerableWorkspaceDirs(checkoutPath, { signal: options.signal, budget })) {
       removable.push(checkout ? path.posix.join(checkout, relativePath) : relativePath);
     }
   }
