@@ -530,6 +530,7 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
     if (await taskHasUnadmittedChatInput(tx as unknown as Db, { companyId: wake.companyId, issueId,
       agentId: wake.agentId, failedRunId: intent.sourceRunId })) return false;
     const { chatActionId: _replaced, ...continuation } = intent;
+    await notifyDeferredExecutionWork(tx, { companyId: wake.companyId, requestId: wake.id });
     const [converted] = await tx.update(agentWakeupRequests).set({ updatedAt: new Date(),
       payload: { ...wake.payload, taskRetry: continuation, refusedChatRetry: { chatActionId: chat.id,
         code: typeof chat.result?.code === "string" ? chat.result.code : null } } })
@@ -538,7 +539,6 @@ async function continueRefusedTaskChatRetry(db: Db, wake: typeof agentWakeupRequ
         sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' = ${chat.id}`))
       .returning({ id: agentWakeupRequests.id });
     if (!converted) return false;
-    await notifyDeferredExecutionWork(tx, { companyId: wake.companyId, requestId: wake.id });
     await persistActivity(tx as unknown as Db, { companyId: wake.companyId, actorType: "system", actorId: "task-retry",
       action: "issue.retry_continued_from_saved_work", entityType: "issue", entityId: issueId, runId: intent.sourceRunId,
       details: { requestId: wake.id, sourceRunId: intent.sourceRunId, refusedChatActionId: chat.id } });
@@ -633,7 +633,10 @@ export async function reconcileTaskChatRetryReceipts(db: Db, scope: { companyId?
       ...(receipt?.runId ? { status: "coalesced", runId: receipt.runId, finishedAt: new Date() }
         : failed ? { status: "failed", finishedAt: new Date() } : {}),
       updatedAt: new Date(),
-    }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      intent.queuedChatRequestId
+        ? sql`${agentWakeupRequests.payload}#>>'{taskRetry,queuedChatRequestId}' = ${intent.queuedChatRequestId}`
+        : sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' = ${intent.chatActionId!}`));
     if (receipt?.runId || failed) await db.transaction(async tx => {
       await notifyStrandedAgentStatus(tx, { companyId: wake.companyId, agentId: wake.agentId });
       await notifyExternalConversationSettlement(tx, { companyId: wake.companyId,

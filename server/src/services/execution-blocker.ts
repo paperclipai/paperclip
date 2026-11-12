@@ -411,7 +411,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   // hold to protect its files. Offer the same Retry that admission accepts, so
   // an infrastructure failure (such as a restart) is not left to a new message.
   // An intentional Stop keeps "send a new message" as its only continuation.
-  const recoveredFailure = Boolean(restoreHold && run?.status === "failed" && !workspaceRepairRequired &&
+  const recoveredFailure = Boolean(restoreHold && (run?.status === "failed" || run?.status === "timed_out") && !workspaceRepairRequired &&
     workspaceRecovery?.status === "recovered");
   const canRetry = Boolean((!restoreHold || recoveredFailure) && run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));

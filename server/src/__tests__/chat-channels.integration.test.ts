@@ -65404,7 +65404,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             status: "running", startedAt: new Date() });
           f.wakeup.mockImplementation(heartbeatService(db).wakeup);
         }
-        if (process.env.EXPLORE_NOSTOP) await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+        await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
         await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
         const diagnostic = mode === "other_setup" ? "A different preparation failure" : "The workspace still has an unfinished writer or save operation.";
         await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, nativePhase: null,
@@ -65940,6 +65940,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         nextAction: "Saved work recovered. Retry continues from it.",
         workspaceRecovery: { status: "recovered", message: "Saved work recovered. Retry continues from it." } });
       expect(JSON.stringify(blocker)).not.toContain("Send a message");
+      await db.update(heartbeatRuns).set({ status: "timed_out" }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ canRetry: true,
+        nextAction: "Saved work recovered. Retry continues from it.",
+        workspaceRecovery: { message: "Saved work recovered. Retry continues from it." } });
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
 
       const identityLock = `chat-identity:${companyId}:${f.action.principalId}`;
       const holdLock = async (lock: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>) => {
@@ -65995,6 +66000,39 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(activity[0].details).toMatchObject({ requestId: request.requestId, refusedChatActionId: request.chatActionId });
     } finally { await f.service.shutdown(); }
   }, 90_000);
+
+  it("keeps a refused GitHub task Retry continued when reconciliation read it before the refusal settled", async () => {
+    const f = await currentGitHubTaskRetryFixture(false);
+    try {
+      const companyId = f.fixture.companyId, issueId = f.issue.id;
+      const request = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+        observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry });
+      const [chat] = await db.update(chatActions).set({ status: "failed",
+        result: { code: "failed_chat_retry_not_authorized", attemptCount: 8 } })
+        .where(eq(chatActions.id, request.chatActionId!)).returning();
+      let release = () => {}, locked = () => {};
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { locked = resolve; });
+      const settling = db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+        locked(); await held;
+        await taskRetryModule.settleRefusedTaskChatRetry(tx as unknown as Db, chat);
+      });
+      await ready;
+      const reconciling = reconcileTaskChatRetryReceipts(db, { companyId, settleOnly: true });
+      onTestFinished(() => release());
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`);
+        expect(waiting.length).toBeGreaterThan(0);
+      }, { timeout: 10_000, interval: 50 });
+      release();
+      await Promise.all([settling, reconciling]);
+      const [wake] = await readAgentWakeupRequestsById(request.requestId!);
+      expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(taskRetryModule.readTaskRetryIntent(wake.payload)?.chatActionId).toBeUndefined();
+    } finally { await f.service.shutdown(); }
+  }, 60_000);
 
   it.each(["legacy_receipt", "concurrent_clicks", "lost_dispatch_reply", "restart", "retry_failed_successor", "http", "handoff_rollback", "board_permission_wait", "peer_conversation", "backlog_51", "consumed_backlog_52"] as const)(
     "preserves one current GitHub Retry across %s", async mode => {
