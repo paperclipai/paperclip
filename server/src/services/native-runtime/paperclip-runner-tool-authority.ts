@@ -76,7 +76,7 @@ import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
-import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
+import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RUNNER_API_CAPTURE_EVICTION_PASSES, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
 import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1566,7 +1566,7 @@ export class PaperclipRunnerToolAuthority {
           }
           const companyBytes = await runnerApiCaptureUsageBytes(tx as unknown as Db, this.binding.companyId);
           const overBy = companyBytes + RUNNER_API_RESPONSE_MAX_BYTES - runnerApiCompanyCaptureMaxBytes();
-          if (Number.isSafeInteger(companyBytes) && companyBytes >= 0 && overBy > 0 && attempt === 0) {
+          if (Number.isSafeInteger(companyBytes) && companyBytes >= 0 && overBy > 0 && attempt < RUNNER_API_CAPTURE_EVICTION_PASSES) {
             const marked = await markRunnerApiCaptureEvictions(tx as unknown as Db, this.binding.companyId, overBy);
             if (marked.releasedBytes >= overBy) return this.#insertApiCaptureReservation(tx as unknown as Db, resultJson, used);
             return undefined;

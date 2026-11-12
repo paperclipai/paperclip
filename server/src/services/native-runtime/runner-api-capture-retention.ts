@@ -8,6 +8,7 @@ import { RUNNER_API_RESPONSE_DEADLINE_MS } from "./runner-api-response-limits.js
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 export const CAPTURE_EVICTION_MIN_AGE_MS = 60 * 60_000;
+export const RUNNER_API_CAPTURE_EVICTION_PASSES = 2;
 export const RUNNER_API_CAPTURE_RETENTION_ACTOR = "api-response-retention";
 const EVICTION_PAGE_SIZE = 200;
 const PENDING_DELETE_BATCH_SIZE = 50;

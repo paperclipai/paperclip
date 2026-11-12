@@ -1094,7 +1094,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
       operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
     } });
-    const spy = vi.spyOn(server.storage, "deleteObject").mockRejectedValueOnce(new Error("storage unavailable"));
+    const spy = vi.spyOn(server.storage, "deleteObject").mockRejectedValue(new Error("storage unavailable"));
     try {
       expect(await call()).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
     } finally { spy.mockRestore(); }
@@ -1235,6 +1235,40 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(await server.db.select().from(activityLog).where(and(eq(activityLog.companyId, fixture.companyId), eq(activityLog.action, "asset.evicted")))).toEqual([
       expect.objectContaining({ actorType: "system", entityType: "asset", entityId: recent.id, runId: finishedRunId }),
     ]);
+  });
+
+  it("runs another eviction pass when a concurrent capture takes the freed space", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const expired = async (name: string, ageMs: number) => (await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/${name}`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES,
+      sha256: name, createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - ageMs) }).returning())[0];
+    const older = await expired("older", 3 * 3_600_000);
+    const newer = await expired("newer", 2 * 3_600_000);
+    const otherRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: otherRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const deleteObject = server.storage.deleteObject.bind(server.storage);
+    let stolen = false;
+    const spy = vi.spyOn(server.storage, "deleteObject").mockImplementation(async (companyId, key, options) => {
+      if (!stolen) {
+        stolen = true;
+        await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: otherRunId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES });
+      }
+      return deleteObject(companyId, key, options);
+    });
+    let result: any;
+    try {
+      result = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+      } });
+    } finally { spy.mockRestore(); }
+    expect(stolen).toBe(true);
+    expect(result).toMatchObject({ ok: true });
+    const remaining = (await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).map(row => row.id);
+    expect(remaining).not.toContain(older.id);
+    expect(remaining).not.toContain(newer.id);
   });
 
   it("releases stale reservations left by interrupted captures of finished runs", async () => {
