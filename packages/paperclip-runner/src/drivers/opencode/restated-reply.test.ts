@@ -44,6 +44,53 @@ describe("restatesEarlierReply", () => {
     ).toBe(false);
   });
 
+  const reportBefore = "The full launch report is ready at https://example.com/reports/launch and covers the signup funnel, the pricing page and the onboarding emails for review.";
+  const reportAfter = "The launch report is ready and covers the signup funnel, the pricing page and the onboarding emails, so you can review it.";
+
+  it("keeps an earlier bare URL the later message drops", () => {
+    expect(restatesEarlierReply(reportBefore, reportAfter)).toBe(false);
+  });
+
+  it("treats a later message that keeps the bare URL as a restatement", () => {
+    expect(restatesEarlierReply(reportBefore, `${reportAfter} Link: https://example.com/reports/launch.`)).toBe(true);
+  });
+
+  it("keeps an earlier autolink the later message drops", () => {
+    expect(
+      restatesEarlierReply(reportBefore.replace("https://example.com/reports/launch", "<https://example.com/reports/launch>"), reportAfter),
+    ).toBe(false);
+  });
+
+  it("keeps an earlier reference-style link the later message drops", () => {
+    expect(
+      restatesEarlierReply(
+        "The full launch [report][launch] is ready and covers the signup funnel, the pricing page and the onboarding emails for review.\n\n[launch]: /COM/issues/COM-7#document-report",
+        reportAfter,
+      ),
+    ).toBe(false);
+  });
+
+  const codeAnswer = (code: string) =>
+    `Run this script to check the export before you send it to the team:\n\n\`\`\`python\n${code}\n\`\`\`\n\nIt prints the row count and exits.`;
+
+  it("keeps an earlier code block whose string contents differ only in spacing", () => {
+    expect(restatesEarlierReply(codeAnswer('print("a  b")'), codeAnswer('print("a b")'))).toBe(false);
+  });
+
+  it("keeps an earlier code block whose indentation differs", () => {
+    expect(
+      restatesEarlierReply(
+        codeAnswer("for row in rows:\n    if row:\n        print(row)"),
+        codeAnswer("for row in rows:\n    if row:\n    print(row)"),
+      ),
+    ).toBe(false);
+  });
+
+  it("treats a later message with the same code block as a restatement", () => {
+    const code = "for row in rows:\n    print(row)";
+    expect(restatesEarlierReply(codeAnswer(code), codeAnswer(code).replace("Run this script", "Use this script"))).toBe(true);
+  });
+
   it("keeps earlier prose that says something different", () => {
     expect(
       restatesEarlierReply(
