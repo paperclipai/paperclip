@@ -43,11 +43,11 @@ export function keepPolling(workload: Pick<HostedWorkload, "poll">, pollMs = POL
 }
 
 export async function finalizeHosted(input: { api: Parameters<typeof cleanupHosted>[0]["api"]; keep: boolean; label: string; dir: string; state: HostedState | null;
-  record: (kind: string, data: Record<string, unknown>) => void }): Promise<{ errors: string[] } | null> {
+  record: (kind: string, data: Record<string, unknown>) => void; terminatePollMs?: number }): Promise<{ errors: string[] } | null> {
   if (input.keep) return null;
   const state = input.state ?? await loadState(input.dir);
   if (!state) return null;
-  return await cleanupHosted({ api: input.api, label: input.label, companyId: state.companyId, state, record: input.record })
+  return await cleanupHosted({ api: input.api, label: input.label, companyId: state.companyId, state, record: input.record, terminatePollMs: input.terminatePollMs })
     .catch(error => ({ errors: [String(error)] }));
 }
 
