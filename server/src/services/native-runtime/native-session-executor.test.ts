@@ -14765,6 +14765,32 @@ describe("native session bounded recovery", () => {
     });
   });
 
+  it("settles an oversized durable command with size-specific advice", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const failure = new Error("Durable PRP command journal bound exceeded: command_payload_too_large.");
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates), execution, runnerInstanceId: "runner",
+      })).rejects.toBe(failure);
+      expect(updates.some(entry => entry.table === nativeRunFinalizations
+        && entry.values.phase === "terminal_failure"
+        && entry.values.failureCode === "native_command_payload_too_large"
+        && entry.values.nextAttemptAt === null)).toBe(true);
+      expect(state.upsertRecoveryAction).toHaveBeenCalledWith(expect.objectContaining({
+        cause: "native_command_payload_too_large",
+        wakePolicy: null,
+        nextAction: expect.stringContaining("durable journal size bound"),
+      }));
+    } finally {
+      service.mockRestore();
+    }
+  });
+
   it.each(["full", "truncated"])("redacts %s identity from native failure writes, logs, and rethrown errors", async (mode) => {
     const privateKeyPem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const keyBody = privateKeyPem.split("\n")[1];
@@ -21975,6 +22001,23 @@ it("records a runner process exit that closed the provider event stream as runne
   expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("notification_transport_failed", false,
     "Notification transport failed closed: tool said native_runner_process_exited: oops"))).toBe("native_provider_terminal_failed");
 });
+it("settles an oversized durable command as a named terminal without rebuilding it", () => {
+  const code = nativeSessionFailureSourceCode(new Error(
+    "Durable PRP command journal bound exceeded: command_payload_too_large.",
+  ));
+  expect(code).toBe("native_command_payload_too_large");
+  expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
+    phase: "terminal_failure", failureCode: code, nextAttemptAt: null,
+  });
+  const journalFull = nativeSessionFailureSourceCode(new Error(
+    "Durable PRP command journal bound exceeded: command_journal_full.",
+  ));
+  expect(journalFull).toBe("native_session_interrupted");
+  expect(nativeSessionFailureDisposition(1, new Date(), journalFull)).toMatchObject({
+    phase: "retryable_failure",
+  });
+});
+
 it("keeps an ACPX missing runtime package failure actionable and stops automatic retries", () => {
   const failure = new Error('PRP command session.open failed: {"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=runtime_package_missing)"},"status":"failed"}');
   const code = nativeSessionFailureSourceCode(failure);
