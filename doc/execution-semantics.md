@@ -1771,7 +1771,7 @@ turn is never replayed. Activity records the request
 as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
 recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
 server requested gets no second automatic attempt. A system wake (for example a
-monitor or an automatic assignment) continues this way only with a positive
+monitor) continues this way only with a positive
 record that no turn was ever issued: the refused reattachment proved the Runner
 process gone, and the run's controller journal, which records each turn command
 before it is sent, holds no turn command and no turn event
@@ -1779,11 +1779,15 @@ before it is sent, holds no turn command and no turn event
 must also have no turn or tool event, and the Retry runs under the run's
 responsible user. Missing events alone never qualify, because a turn can reach
 the provider before its events are stored. An automatic retry of owed work (a
-system wake whose run has `retryOfRunId`, such as `transient_failure_retry`)
-also continues under the run's responsible user once the refusal proved its
-Runner process gone, because losing the Runner to a restart is not the task's
-failure. Other system wakes, and in-flight provider turns without that proof,
-do not continue automatically. For these failed runs, a
+system wake whose run has `retryOfRunId`, such as `transient_failure_retry`, a
+system assignment such as a routine's dispatch (`issue_assigned`), or a comment
+or external chat message wake whose message is still on the task and was not
+written by a run) also continues under the run's responsible user once the
+refusal proved its Runner process gone, because losing the Runner to a restart
+is not the task's failure. A linked person's external chat message continues
+under that person once the message is still on the task. Monitors and other
+system wakes, and in-flight provider turns without that proof, do not continue
+automatically. Each chain of runs gets at most one such automatic Retry. For these failed runs, a
 recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
 continuation.
