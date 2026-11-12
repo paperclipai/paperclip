@@ -7485,7 +7485,7 @@ export function createToolGatewayService(
     gatewayId?: string | null;
     gatewayPublicId?: string | null;
     bearerToken: string;
-    protocolMethod: McpGatewayProtocolMethod;
+    protocolMethod: McpGatewayProtocolMethod | null;
     callerHeaders?: Record<string, string | string[] | undefined>;
   }): Promise<ToolGatewaySession> {
     const clientMetadata = safeClientMetadata(input.callerHeaders);
@@ -7690,11 +7690,13 @@ export function createToolGatewayService(
       agentId ??= row.token.createdByAgentId;
       responsibleUserId = row.token.responsibleUserId;
     }
-    const now = new Date();
-    await db
-      .update(toolMcpGatewayTokens)
-      .set({ lastUsedAt: now, updatedAt: now })
-      .where(eq(toolMcpGatewayTokens.id, row.token.id));
+    if (input.protocolMethod) {
+      const now = new Date();
+      await db
+        .update(toolMcpGatewayTokens)
+        .set({ lastUsedAt: now, updatedAt: now })
+        .where(eq(toolMcpGatewayTokens.id, row.token.id));
+    }
     const session: ToolGatewaySession = {
       id: `gateway:${row.gateway.id}`,
       token: "",
@@ -7720,6 +7722,7 @@ export function createToolGatewayService(
         row.token.expiresAt ??
         new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
     };
+    if (!input.protocolMethod) return session;
     await assertNamedGatewayProtocolLimit(
       session,
       input.protocolMethod,
@@ -9540,6 +9543,21 @@ export function createToolGatewayService(
         gatewayPublicId: input.gatewayPublicId ?? null,
         bearerToken: input.bearerToken,
         protocolMethod: "initialize",
+        callerHeaders: input.callerHeaders,
+      });
+    },
+
+    async verifyNamedGatewayProtocolNotification(input: {
+      gatewayId?: string | null;
+      gatewayPublicId?: string | null;
+      bearerToken: string;
+      callerHeaders?: Record<string, string | string[] | undefined>;
+    }): Promise<void> {
+      await namedGatewaySessionFromBearer({
+        gatewayId: input.gatewayId ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? null,
+        bearerToken: input.bearerToken,
+        protocolMethod: null,
         callerHeaders: input.callerHeaders,
       });
     },

@@ -2,6 +2,7 @@ import pino from "pino";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Logger } from "pino";
 import { pinoHttp } from "pino-http";
+import type { Response } from "express";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import {
   isPrivateWebhookHttpRequest,
@@ -16,6 +17,7 @@ import {
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
+import { redactSensitiveText } from "../redaction.js";
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -24,16 +26,14 @@ const sharedOpts = {
 };
 
 const isProduction = process.env.NODE_ENV === "production";
+export const basePinoOptions = {
+  level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || (isProduction ? "info" : "debug"),
+  redact: [...HTTP_LOG_REDACT_PATHS],
+};
 export const logger = isProduction
-  ? pino({
-      level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info",
-      redact: [...HTTP_LOG_REDACT_PATHS],
-    })
+  ? pino(basePinoOptions)
   : pino(
-      {
-        level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug",
-        redact: [...HTTP_LOG_REDACT_PATHS],
-      },
+      basePinoOptions,
       pino.transport({
         target: "pino-pretty",
         options: {
@@ -198,6 +198,9 @@ export function createHttpLogger(baseLogger: Logger) {
         : value;
     },
     customProps(req, res) {
+      const props: Record<string, unknown> = {};
+      const method = (res as Response).locals?.mcpMethod;
+      if (typeof method === "string") props.mcpMethod = redactSensitiveText(method);
       if (res.statusCode >= 400) {
         const ctx = (res as any).__errorContext;
         if (/^\/mcp\/(?:oauth|paperclip)(?:\/|$)/.test(requestClassificationUrl(req) ?? "")) {
@@ -207,6 +210,7 @@ export function createHttpLogger(baseLogger: Logger) {
           // Omit, rather than recursively redact, the entire provider payload.
           // This applies equally before/after parsing and with/without context.
           return {
+            ...props,
             reqBody: "[REDACTED]",
             ...(ctx || (res as any).err
               ? { errorContext: { name: "Error" } }
@@ -219,6 +223,7 @@ export function createHttpLogger(baseLogger: Logger) {
             requestClassificationUrl(req),
           );
           return {
+            ...props,
             // Provider SDK and validation errors sometimes echo the supplied
             // credential in their prose. Keep only a non-sensitive type marker
             // for setup routes; the status, route, and redacted body remain.
@@ -229,7 +234,6 @@ export function createHttpLogger(baseLogger: Logger) {
             reqParams: redactSensitive(ctx.reqParams),
           };
         }
-        const props: Record<string, unknown> = {};
         const { body, params } = req as any;
         if (body && typeof body === "object" && Object.keys(body).length > 0) {
           props.reqBody = redactSensitive(body);
@@ -246,7 +250,7 @@ export function createHttpLogger(baseLogger: Logger) {
         }
         return props;
       }
-      return {};
+      return props;
     },
   });
 }
