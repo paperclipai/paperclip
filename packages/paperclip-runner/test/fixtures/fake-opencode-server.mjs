@@ -800,6 +800,17 @@ const server = createServer(async (request, response) => {
         const answerBeforeFinishThenReference = String(
           parsedPrompt.message ?? "",
         ).includes("answer-before-finish-then-reference");
+        // Recorded chat-eval shape: the model wrote its whole answer, called
+        // the completion tool, then wrote the same answer again in other words.
+        const answerBeforeFinishThenRestatement = String(
+          parsedPrompt.message ?? "",
+        ).includes("answer-before-finish-then-restatement");
+        const answerBeforeFinishText = answerBeforeFinishThenRestatement
+          ? "I can't set this from chat — changing an agent's monthly budget is a board-only action (agent credentials get 403). There are also two matching agents, so pick the intended one in the web app and set its monthly limit to $50 on the budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets). Tell me which Morgan you meant and I'll track the right one."
+          : "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.";
+        const answerAfterFinishText = answerBeforeFinishThenRestatement
+          ? "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets)."
+          : "Answered above: two inbox items need your attention.";
         const finalAfterToolCommentary = String(
           parsedPrompt.message ?? "",
         ).includes("final-after-tool-commentary");
@@ -1001,7 +1012,7 @@ const server = createServer(async (request, response) => {
               },
             },
           });
-        } else if (answerBeforeFinishThenReference) {
+        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement) {
           emit({
             type: "message.part.updated",
             id: "event-answer-before-finish",
@@ -1011,7 +1022,7 @@ const server = createServer(async (request, response) => {
                 id: "part-answer-before-finish",
                 messageID: "message-assistant",
                 type: "text",
-                text: "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.",
+                text: answerBeforeFinishText,
                 time: { start: 1, end: 2 },
               },
             },
@@ -1052,7 +1063,7 @@ const server = createServer(async (request, response) => {
                 id: "part-reference",
                 messageID: "message-reference",
                 type: "text",
-                text: "Answered above: two inbox items need your attention.",
+                text: answerAfterFinishText,
                 time: { start: 3, end: 4 },
               },
             },
