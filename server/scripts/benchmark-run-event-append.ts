@@ -40,12 +40,13 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { PerformanceObserver, performance } from "node:perf_hooks";
+import { PerformanceObserver, performance, type PerformanceEntry } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import v8 from "node:v8";
 import { eq, sql as drizzleSql } from "drizzle-orm";
-import { agents, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issues,
+import { companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issues,
   startEmbeddedPostgresTestDatabase } from "../../packages/db/src/index.js";
+import { createAgentLifecycle } from "../src/services/agent-lifecycle.js";
 import * as currentEvents from "../src/services/heartbeat-run-events.js";
 import * as currentPort from "../src/services/native-runtime/paperclip-control-plane-port.js";
 import type { PrpEvent } from "../src/vendor/paperclip-runner/index.js";
@@ -72,18 +73,26 @@ const sent = { statements: 0, control: 0 };
   sent.statements += 1;
   if (/^\s*(begin|commit|rollback|savepoint|release)\b/i.test(text)) sent.control += 1;
 };
-const gc = { count: 0, ms: 0 };
-const gcObserver = new PerformanceObserver(list => {
-  for (const entry of list.getEntries()) { gc.count += 1; gc.ms += entry.duration; }
-});
+// Collections are attributed by their own start time, not by when the
+// observer delivers them: delivery is asynchronous and can lag the append.
+let collections: PerformanceEntry[] = [];
+const gcObserver = new PerformanceObserver(list => { collections.push(...list.getEntries()); });
 gcObserver.observe({ entryTypes: ["gc"] });
+function collectionsBetween(start: number, end: number) {
+  collections.push(...gcObserver.takeRecords());
+  const within = collections.filter(entry => entry.startTime >= start && entry.startTime <= end);
+  collections = collections.filter(entry => entry.startTime > end);
+  return { count: within.length, ms: within.reduce((sum, entry) => sum + entry.duration, 0) };
+}
 const allocated = () => (v8.getHeapStatistics() as { total_allocated_bytes?: number }).total_allocated_bytes;
 
 try {
   const [company] = await db.insert(companies).values({ name: "Append", issuePrefix: "APD" }).returning();
-  const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Native", adapterType: "codex_local", status: "running" }).returning();
+  const agent = { id: randomUUID() };
+  await createAgentLifecycle(db).requestHire(company!.id, { id: agent.id, name: "Native", role: "engineer", status: "idle",
+    adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} }, { runnerResolved: true });
   const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Streaming task", status: "in_progress",
-    assigneeAgentId: agent!.id }).returning();
+    assigneeAgentId: agent.id }).returning();
   const contractSha = "run-event-append-benchmark";
   const [contract] = await db.insert(completionContracts).values({ companyId: company!.id, issueId: issue!.id, revision: 1,
     schemaVersion: "paperclip.completion-contract.v1", policyVersion: "benchmark", risk: "standard",
@@ -95,7 +104,7 @@ try {
   async function seedHistory(runId: string, sourceInstanceId: string | null) {
     for (let start = 1; start <= HISTORY; start += 500) {
       await db.insert(heartbeatRunEvents).values(Array.from({ length: Math.min(500, HISTORY - start + 1) }, (_, index) => ({
-        companyId: company!.id, agentId: agent!.id, runId, seq: start + index, eventType: "item.delta",
+        companyId: company!.id, agentId: agent.id, runId, seq: start + index, eventType: "item.delta",
         ...(sourceInstanceId ? { sourceInstanceId, sourceSeq: start + index, sourceEventId: `${sourceInstanceId}:${start + index}` } : {}),
       })));
     }
@@ -104,11 +113,11 @@ try {
 
   async function nativeRun(implementation: Implementation) {
     const runId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: runId, companyId: company!.id, agentId: agent!.id, status: "running",
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: company!.id, agentId: agent.id, status: "running",
       runtimeMode: "native", nativeIssueId: issue!.id, issueId: issue!.id, nativeSessionId: sessionId, runnerInstanceId: runnerId,
       completionContractId: contract!.id, completionContractSha256: contractSha, contextSnapshot: { issueId: issue!.id } });
     await seedHistory(runId, runnerId);
-    const identity = { companyId: company!.id, issueId: issue!.id, runId, agentId: agent!.id, sessionId };
+    const identity = { companyId: company!.id, issueId: issue!.id, runId, agentId: agent.id, sessionId };
     const port = new implementation.port.PaperclipControlPlanePort(db, { ...identity, completionContractId: contract!.id,
       completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `control-${runId}` });
     await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId } as Parameters<typeof port.openRun>[0]);
@@ -138,11 +147,11 @@ try {
 
   async function ordinaryRun(implementation: Implementation) {
     const runId = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: runId, companyId: company!.id, agentId: agent!.id, status: "running" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: company!.id, agentId: agent.id, status: "running" });
     await seedHistory(runId, null);
     return { runId, append: async (count: number) => {
       for (let ordinal = 1; ordinal <= count; ordinal++) {
-        const receipt = await implementation.events.appendHeartbeatRunEvent(db, { companyId: company!.id, runId, agentId: agent!.id,
+        const receipt = await implementation.events.appendHeartbeatRunEvent(db, { companyId: company!.id, runId, agentId: agent.id,
           eventType: "adapter.output", stream: "stdout", level: "info", message: text, payload: { chunk: ordinal } });
         assert.equal(receipt.row.seq, HISTORY + ordinal);
       }
@@ -161,11 +170,13 @@ try {
     const events = streams.reduce((sum, stream) => sum + stream.events, 0);
     globalThis.gc?.();
     const before = { statements: sent.statements, control: sent.control, cpu: process.cpuUsage(), loop: performance.eventLoopUtilization(),
-      bytes: allocated(), gcCount: gc.count, gcMs: gc.ms, at: performance.now() };
+      bytes: allocated(), at: performance.now() };
     await Promise.all(streams.map(stream => stream.run.append(stream.events)));
-    const wallMs = performance.now() - before.at, cpu = process.cpuUsage(before.cpu);
+    const endedAt = performance.now(), wallMs = endedAt - before.at, cpu = process.cpuUsage(before.cpu);
     const loop = performance.eventLoopUtilization(before.loop), bytes = allocated();
     const statements = sent.statements - before.statements, control = sent.control - before.control;
+    // Every measurement stops here, before the stored rows are read back.
+    const gc = collectionsBetween(before.at, endedAt);
     for (const stream of streams) {
       const rows = await db.select({ seq: heartbeatRunEvents.seq }).from(heartbeatRunEvents)
         .where(eq(heartbeatRunEvents.runId, stream.run.runId)).orderBy(heartbeatRunEvents.seq);
@@ -176,7 +187,7 @@ try {
       wallMsPerEvent: wallMs / events, cpuMsPerEvent: (cpu.user + cpu.system) / 1000 / events,
       mainThreadBusyMsPerEvent: loop.active / events,
       allocatedKbPerEvent: bytes === undefined || before.bytes === undefined ? null : (bytes - before.bytes) / 1024 / events,
-      gcPausesPer1000Events: (gc.count - before.gcCount) * 1000 / events, gcMsPer1000Events: (gc.ms - before.gcMs) * 1000 / events };
+      gcPausesPer1000Events: gc.count * 1000 / events, gcMsPer1000Events: gc.ms * 1000 / events };
   }
 
   const names = Object.keys(scenarios) as Array<keyof typeof scenarios>;
