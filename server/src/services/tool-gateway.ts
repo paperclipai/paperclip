@@ -8149,6 +8149,10 @@ export function createToolGatewayService(
       const tool = (await connectedMcpToolsForConnection(invocation.companyId, invocation.connectionId))
         .find(candidate => candidate.name === invocation.toolName || candidate.upstreamToolName === invocation.toolName);
       if (!tool) throw new ToolGatewayHttpError(404, `Tool "${invocation.toolName}" is no longer connected`, "tool_not_found");
+      // A view's held call runs only while its tool is still callable from apps.
+      if (mcpAppViewCall && !mcpAppToolCallableFromApp((asRecord(tool.providerMetadata)?.ui ?? null) as McpAppToolUi | null)) {
+        throw new ToolGatewayHttpError(409, `Tool "${tool.upstreamToolName ?? tool.name}" is no longer available to this app`, "mcp_app_tool_not_callable");
+      }
       await prepareApprovedConnectionAuthorization(session, tool, signedPayload.approvalSnapshot);
       const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
       if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot)) {

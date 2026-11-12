@@ -251,6 +251,22 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(approvedInvocation).toMatchObject({ status: "succeeded", issueId: f.issue.id });
     await db.delete(toolPolicies).where(eq(toolPolicies.id, askFirst.id));
 
+    // A held view call whose tool loses app visibility before approval does not run.
+    const [askFirstAgain] = await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Ask first again", policyType: "require_approval", priority: 1, selectors: { issueId: f.issue.id } }).returning();
+    await http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
+      .send({ name: "RefreshMeetingCards", arguments: { meetingIds: ["m2"] } }).expect(200);
+    const [stillPending] = await db.select().from(toolActionRequests)
+      .where(and(eq(toolActionRequests.companyId, f.company.id), eq(toolActionRequests.status, "pending")));
+    if (stillPending.approvalId) await db.update(approvals).set({ status: "approved", decidedByUserId: actor.actorId, decidedAt: new Date() }).where(eq(approvals.id, stillPending.approvalId));
+    await db.update(toolCatalogEntries).set({ uiMeta: { resourceUri: VIEW_URI, visibility: ["model"] } })
+      .where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "RefreshMeetingCards")));
+    const beforeRevokedApproval = refreshCalls();
+    await f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: stillPending.id, actor: { userId: actor.actorId } }).catch(() => undefined);
+    expect(refreshCalls()).toBe(beforeRevokedApproval);
+    await db.update(toolCatalogEntries).set({ uiMeta: { resourceUri: VIEW_URI, visibility: ["app"] } })
+      .where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "RefreshMeetingCards")));
+    await db.delete(toolPolicies).where(eq(toolPolicies.id, askFirstAgain.id));
+
     // A model-only tool is never callable from a view.
     await http(f.app).post(`/issues/${f.issue.id}/mcp-app-views/${viewId}/tool-calls`)
       .send({ name: "DisplayCalendarEvents", arguments: {} }).expect(404);
