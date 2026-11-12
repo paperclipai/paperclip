@@ -61,6 +61,7 @@ import { conflict } from "../../errors.js";
 import { getStartupTraceContext } from "../../instrumentation.js";
 import { logger } from "../../middleware/logger.js";
 import { reserveLiveNativeFinalization } from "../native-runtime/live-native-finalization.js";
+import { reapRunDescendants } from "./run-descendant-reaper.js";
 import {
   buildNativeProviderEnvironment,
   executePaperclipNativeSession,
@@ -1348,6 +1349,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     }
     await nativeInstructionReservation?.release();
     await withAdapterExecutionPhase(executionPhaseContext, "instruction_cleanup", releaseInstructionCopy);
+    // The CLI's own process group is already handled. Stop anything the run's
+    // tools moved out of that group (setsid, nohup, double fork) so it cannot
+    // outlive the run. Local legacy runs only: the native runner keeps its
+    // own process lineage, and a remote target's PIDs are not on this host.
+    if (nativeRuntimeResolution.kind === "legacy" && (executionTarget?.kind ?? "local") === "local") {
+      await reapRunDescendants({ runId: run.id, reason: "run_finished" });
+    }
   }
   return { dispatched: true, adapterResult };
 }
