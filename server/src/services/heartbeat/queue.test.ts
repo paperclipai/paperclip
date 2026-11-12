@@ -62,6 +62,19 @@ describe("heartbeat queue module boundary", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
+  it("claims no queued run once run admission is closed, whatever path asks (draining or yielding server)", async () => {
+    // Release-swap wave: an old server started a delivered continuation 3 minutes after traffic
+    // had moved to its dispatching replacement, through executeRun of a queued run, which no gate covered.
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    deps.isRunAdmissionClosed = () => true;
+    const queue = createHeartbeatQueue(database.db, deps);
+    const queued = { id: "run-1", status: "queued" } as Parameters<typeof queue.claimQueuedRun>[0];
+    expect(await queue.claimQueuedRun(queued)).toBeNull();
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("honors the process-wide run admission gate in every heartbeat instance", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);

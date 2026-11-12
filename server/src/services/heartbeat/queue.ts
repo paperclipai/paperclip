@@ -876,6 +876,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     deferredCancellations?: Array<() => Promise<void>>,
   ) {
     if (run.status !== "queued") return run;
+    // Every start path ends here (dispatch passes, executeRun of a queued run,
+    // a delivered continuation). A server whose run admission is closed (it
+    // received SIGTERM and is draining) or that yields new starts to a
+    // replacement already dispatching leaves the run queued for that server:
+    // anything it started now would be cut off by its own exit.
+    const refreshing = refreshRunAdmission();
+    if (refreshing) await refreshing;
+    if (isRunAdmissionClosed()) return null;
     const interactionDelivery = await recheckQueuedRunInteractions(db, run);
     if (interactionDelivery.run.status !== "queued") return null;
     run = { ...run, contextSnapshot: interactionDelivery.run.contextSnapshot,
