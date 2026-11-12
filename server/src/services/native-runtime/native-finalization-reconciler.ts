@@ -45,6 +45,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import {
+  endSupersededNativeFinalizationRuns,
   finalizeNativeRun,
   recordNativeFinalizationFailure,
   repairCommittedNativeReviewResponse,
@@ -502,6 +503,11 @@ async function reconcileNativeFinalizationsPass(
       await dismissAutomaticCompletionReviews(db);
     }
   }
+  // Runs an earlier release left running after retiring their finalizer.
+  timing.phase("superseded_finalizations");
+  await endSupersededNativeFinalizationRuns(db, runIds).catch((err) => {
+    logger.warn({ err }, "Ending superseded native finalization runs failed; continuing native reconciliation");
+  });
   timing.phase("candidate_scan");
   const now = new Date();
   const unscoped = !(runIds && runIds.length > 0);

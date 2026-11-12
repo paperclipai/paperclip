@@ -36,7 +36,7 @@ describe("native finalization reconciliation timing", () => {
     timing.phase.mockClear();
     const db = { select: vi.fn(() => { throw new Error("candidate scan reached"); }) };
     await expect(reconcileNativeFinalizations(db as never, ["run"], { skipAutomaticCompletionReviews: true })).rejects.toThrow("candidate scan reached");
-    expect(timing.phase.mock.calls.map(([phase]) => phase)).toEqual(["legacy_workspace_exports", "obsolete_policy_reviews", "candidate_scan"]);
+    expect(timing.phase.mock.calls.map(([phase]) => phase)).toEqual(["legacy_workspace_exports", "obsolete_policy_reviews", "superseded_finalizations", "candidate_scan"]);
     timing.phase.mockClear(); timing.finish.mockClear();
   });
 
