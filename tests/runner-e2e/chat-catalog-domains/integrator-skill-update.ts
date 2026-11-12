@@ -99,13 +99,13 @@ function updateObservation(value: unknown): UpdateObservation | undefined { cons
 function namesRevision(reply: string, commit: string, version: string) {
   return reply.includes(commit.slice(0, 7)) || new RegExp(`(?<![\\d.])${version.replace(".", "\\.")}(?!\\d)`).test(reply);
 }
-export function previewNarrativeCorrect(reply: string) {
+export function previewNamesBothRevisions(reply: string) {
   return namesRevision(reply, accessibilityUpdatePins.oldCommit, "0.4") && namesRevision(reply, accessibilityUpdatePins.newCommit, "0.5");
 }
 export async function collectVisibleSkillReviewFallback(ctx: ChatCatalogContext, base: InternalObservation, issueId: string): Promise<VisibleSkillReview | undefined> {
   // A complete persisted review is already the ordinary user-facing answer.
   // Its deduplicated native bubble need not exist for the original path to pass.
-  if (previewNarrativeCorrect(base.reply)) return undefined;
+  if (previewNamesBothRevisions(base.reply)) return undefined;
   const run = acceptedSkillReviewRun(base, issueId);
   if (!run) return undefined;
   const humanCommentId = run.contextSnapshot!.commentId as string;
@@ -125,12 +125,12 @@ function previewCorrect(o: UpdateObservation) {
   return o.upstream.currentVersionId === before.currentVersionId && o.upstream.sourceRef === accessibilityUpdatePins.oldCommit && hash(o.upstream.markdown) === accessibilityUpdatePins.oldSha256
     && o.source.lastScanCommit === accessibilityUpdatePins.oldCommit && o.source.trackingRef === accessibilityUpdatePins.newCommit && o.source.automaticUpdates === false
     && o.updateStatus.supported && o.updateStatus.hasUpdate && o.updateStatus.currentRef === accessibilityUpdatePins.oldCommit && o.updateStatus.latestRef === accessibilityUpdatePins.newCommit
-    && previewNarrativeCorrect(reply);
+    && previewNamesBothRevisions(reply);
 }
 export function gradeIntegratorSkillUpdate(value: unknown) {
   const c = checks(); const o = updateObservation(value); c.add("real-tracked-source-and-saved-versions", !!o, "Requires actual public GitHub source tracking, installed snapshot versions and preserved editable fork."); if (!o) return c.result();
   const first = updateObservation(o.state.reviewCheckpoint); const before = o.state.upstream as CompanySkillDetail; const local = o.state.localFork as CompanySkillDetail;
-  c.add("review-diff-before-update", !!first && previewCorrect(first), "The canonical first answer presents substantive genuine 0.4→0.5 source changes and actual current revision while leaving the installed snapshot unchanged.");
+  c.add("review-diff-before-update", !!first && previewCorrect(first), "The first answer names the installed 0.4 revision and the pending 0.5 revision while saved state shows the installed snapshot unchanged. Whether it presents the diff, and any claim about completion, is left to human review of the saved reply.");
   c.add("explicit-normal-version-update-completed", o.upstream.id === before.id && o.upstream.currentVersionId !== before.currentVersionId && o.upstream.sourceRef === accessibilityUpdatePins.newCommit && hash(o.upstream.markdown) === accessibilityUpdatePins.newSha256
     && o.source.lastScanCommit === accessibilityUpdatePins.newCommit && o.upstreamVersions.some(version => version.id === before.currentVersionId && version.fileInventory.some(file => file.path === "SKILL.md" && hash(file.content) === accessibilityUpdatePins.oldSha256))
     && o.upstreamVersions.some(version => version.id === o.upstream.currentVersionId && version.fileInventory.some(file => file.path === "SKILL.md" && hash(file.content) === accessibilityUpdatePins.newSha256))
