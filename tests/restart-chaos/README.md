@@ -1555,6 +1555,11 @@ worked when the clicked task meets the same completion rule. The banner list fol
 `GET /api/companies/:id/assigned-work-invariant` at the end of the wave: `violationCount`, `violations` by reason,
 `agentsWithStalledSlots` and `openTasks`.
 
+The summary also lists every run that started after a task's DONE, under "Runs started after the task's DONE"
+(`extraTurns` in the JSON). The DONE time is the first bare `DONE-<nonce>` comment, or else the task's completion time.
+Each line gives the run's wake reason, source, trigger and requesting actor, taken from that task's saved wake
+evidence.
+
 **Grade.** The usual R1–R6, U1–U5 and T rules apply. A needed Retry still fails R3. The T-oracle checks the result,
 not the status:
 
@@ -1565,7 +1570,7 @@ not the status:
 | `rounds_once` | a round line appears twice (a tool ran again) |
 | `done_comment_posted` | no comment's whole body is `DONE-<nonce>`; a summary that quotes the marker does not count |
 | `done_comment_once` | that comment was posted more than once |
-| `completion_once` | more than one run posted a comment that mentions `DONE-<nonce>` (a duplicate completion), or the comments could not be read |
+| `completion_once` | more than one run completed the task (a duplicate completion), or the comments could not be read. A run completes the task when it posts the bare `DONE-<nonce>` comment, or a comment that mentions the marker at or after the first one. A progress or blocked comment that says it will post the marker later is not a completion |
 | `follow_up_posted` | a planned follow-up was never posted (the detail lists the post errors) |
 | `follow_up_served` | a follow-up was posted during a run and the ledger lacks its line |
 | `subtask_<k>_done`, `parent_read_subtask_<k>` | a subtask is missing, not done or its ledger fails, or the parent did not report its last hash |

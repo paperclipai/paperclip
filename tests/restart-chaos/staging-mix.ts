@@ -62,7 +62,7 @@ export interface StagingMixArtifacts {
   followUp: StagingMixRecord["followUp"] | null;
   followUpErrors: string[];
   retries: NonNullable<StagingMixRecord["retries"]>;
-  comments?: Array<{ body: string; runId: string | null }>;
+  comments?: Array<{ body: string; runId: string | null; createdAt?: number | null }>;
   commentsUnreadable?: boolean;
 }
 
@@ -373,6 +373,14 @@ export function stagingMixDescription(nonce: string, task: StagingMixTask, agent
 
 export const followUpRequestId = (issueId: string, nonce: string) => stableRequestId(`followup-${issueId}-${nonce}`);
 
+export function completionRunIds(comments: ReadonlyArray<{ body: string; runId: string | null; createdAt?: number | null }>, nonce: string): string[] {
+  const doneTimes = comments.filter(comment => isDoneComment(comment.body, nonce) && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
+  const doneAt = doneTimes.length ? Math.min(...doneTimes) : null;
+  const completions = comments.filter(comment => isDoneComment(comment.body, nonce)
+    || (doneAt !== null && typeof comment.createdAt === "number" && comment.createdAt >= doneAt && comment.body.includes(doneMarker(nonce))));
+  return [...new Set(completions.flatMap(comment => comment.runId ? [comment.runId] : []))];
+}
+
 export function isDoneComment(body: string, nonce: string): boolean {
   return body.trim().replace(/\.$/, "").replace(/^`+|`+$/g, "").trim() === doneMarker(nonce);
 }
@@ -412,7 +420,7 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
   const own = verifyLedger(nonce, task.rounds, ledger);
   const comments = artifacts.stagingMix?.comments ?? artifacts.agentComments.map(body => ({ body, runId: null }));
   const doneComments = comments.filter(comment => isDoneComment(comment.body, nonce)).length;
-  const completionRuns = [...new Set(comments.filter(comment => comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!))];
+  const completionRuns = completionRunIds(comments, nonce);
   const followUp = artifacts.stagingMix?.followUp ?? null;
   const children = (artifacts.children ?? []).filter(child => (child.title ?? "").includes(nonce));
   const checks: OracleResult["checks"] = [
@@ -573,8 +581,11 @@ export function bannerShownMs(banner: RetryBanner, now: number): number {
   return banner.shownMs + (banner.visibleSince === null ? 0 : now - banner.visibleSince);
 }
 
-export function collectStagingMixArtifacts(record: TaskRecord, rows: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown }> | null): StagingMixArtifacts {
+export function collectStagingMixArtifacts(record: TaskRecord,
+  rows: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown; createdAt?: unknown }> | null): StagingMixArtifacts {
+  const time = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
   return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [],
-    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""), runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null })) }
+    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""),
+      runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null, createdAt: time(row.createdAt) })) }
       : { commentsUnreadable: true }) };
 }

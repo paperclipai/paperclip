@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import { collectStagingMixArtifacts, doneMarker, expectedRoundHash, gradeStagingMix, planStagingMixWave, ROUND_SECONDS, type StagingMixTask } from "./staging-mix.js";
 import {
-  bannerSink, issueView, readAssignedWorkInvariant, retryAfterSettleStage, shouldClickRetryAfterSettle, stagingMixHeadline, summarizeStagingMix,
-  type RetryStageObserver,
+  bannerSink, extraTurnLine, firstDoneAt, issueView, readAssignedWorkInvariant, retryAfterSettleStage, runsAfterDone, shouldClickRetryAfterSettle,
+  stagingMixHeadline, summarizeStagingMix, type RetryStageObserver,
 } from "./staging-mix-retry.js";
 import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 
@@ -158,9 +158,10 @@ describe("staging-mix Retry policy", () => {
 
 describe("staging-mix completion comments", () => {
   const nonce = "b3d70e77";
-  const base = (comments: Array<{ body: string; runId: string | null }>): OracleArtifacts => ({ issueStatus: "done", documents: { ledger: ledger(nonce, 4) },
+  const base = (comments: Array<{ body: string; runId: string | null; at?: string }>): OracleArtifacts => ({ issueStatus: "done", documents: { ledger: ledger(nonce, 4) },
     agentComments: comments.map(comment => comment.body), files: {}, commands: {}, workspacePath: null,
-    stagingMix: collectStagingMixArtifacts({} as TaskRecord, comments.map(comment => ({ body: comment.body, authorAgentId: "a", createdByRunId: comment.runId }))) });
+    stagingMix: collectStagingMixArtifacts({} as TaskRecord, comments.map(comment => ({ body: comment.body, authorAgentId: "a", createdByRunId: comment.runId,
+      ...(comment.at ? { createdAt: comment.at } : {}) }))) });
   const check = (artifacts: OracleArtifacts, name: string) => gradeStagingMix(nonce, task(), artifacts).checks.find(entry => entry.name === name)!;
 
   it("counts only the DONE comment itself, not a closing summary that quotes it", () => {
@@ -182,13 +183,57 @@ describe("staging-mix completion comments", () => {
     expect(check(unread, "done_comment_posted").ok).toBe(true);
   });
 
+  it("does not count a blocked run's promise to post DONE later as a completion (w-20261112T223803-s7101 t001)", () => {
+    const comments = [
+      { body: "Prepared Parent ledger log for this response.", runId: "37724b59-4e6a", at: "2026-11-12T23:12:54.696Z" },
+      { body: doneMarker(nonce), runId: "37724b59-4e6a", at: "2026-11-12T23:12:44.587Z" },
+      { body: "Blocked report accepted. Summary of progress so far:\n\n- Completed all 4 parent rounds.\n\nParent now waits on both subtasks to finish. "
+        + `When they complete, I'll read each subtask's ledger hash, save this task's \`ledger\` document, post \`${doneMarker(nonce)}\`, and mark the task done.`,
+        runId: "fcc55827-ab78", at: "2026-11-12T22:56:04.145Z" },
+    ];
+    expect(check(base(comments), "completion_once")).toMatchObject({ ok: true, detail: "runs=1" });
+    expect(check(base(comments), "done_comment_once")).toMatchObject({ ok: true, detail: "comments=1" });
+    expect(check(base(comments), "done_comment_posted").ok).toBe(true);
+  });
+
   it("flags a completion summary repeated by a different run as a duplicate completion", () => {
     const comments = [
-      { body: `CHA-1 complete. Posted exactly one comment ${doneMarker(nonce)} and marked the task done.`, runId: "413ddcf2-ffce" },
-      { body: `CHA-1 complete. Posted \`${doneMarker(nonce)}\`.`, runId: "13de31be-fb13" },
-      { body: doneMarker(nonce), runId: "13de31be-fb13" },
+      { body: `CHA-1 complete. Posted exactly one comment ${doneMarker(nonce)} and marked the task done.`, runId: "413ddcf2-ffce", at: "2026-11-12T18:10:00.000Z" },
+      { body: `CHA-1 complete. Posted \`${doneMarker(nonce)}\`.`, runId: "13de31be-fb13", at: "2026-11-12T18:05:01.000Z" },
+      { body: doneMarker(nonce), runId: "13de31be-fb13", at: "2026-11-12T18:05:00.000Z" },
     ];
     expect(check(base(comments), "done_comment_once").ok).toBe(true);
     expect(check(base(comments), "completion_once")).toMatchObject({ ok: false, detail: "duplicate completion: runs 413ddcf2, 13de31be each reported completion" });
+    expect(check(base([...comments.slice(1), { body: doneMarker(nonce), runId: "run-z", at: "2026-11-12T18:20:00.000Z" }]), "completion_once").ok).toBe(false);
+  });
+});
+
+describe("staging-mix runs after DONE", () => {
+  const evidence = {
+    runs: [{ runId: "6b825e48-aaaa", createdAt: 1_000, invocationSource: "assignment", triggerDetail: null, wakeupRequestId: "w1" },
+      { runId: "37724b59-bbbb", createdAt: 5_000, invocationSource: "automation", triggerDetail: null, wakeupRequestId: "w2" },
+      { runId: "91f0c3d2-cccc", createdAt: 9_000, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w3" },
+      { runId: "aa11bb22-dddd", createdAt: 9_500, invocationSource: "on_demand", triggerDetail: "manual", wakeupRequestId: null }],
+    wakes: [{ id: "w1", reason: "issue_assigned", source: "assignment", triggerDetail: null, requestedByActorType: "user", requestedByActorId: "u1" },
+      { id: "w2", reason: "issue_children_completed", source: "automation", triggerDetail: null, requestedByActorType: "system", requestedByActorId: null },
+      { id: "w3", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: "sweep" }],
+  };
+
+  it("lists each run that started after the task's DONE with its wake reason and actor", () => {
+    const turns = runsAfterDone("t001", evidence, 8_000);
+    expect(turns.map(turn => [turn.runId, turn.wakeReason, turn.actorType, turn.actorId])).toEqual([
+      ["91f0c3d2-cccc", "issue_recovery_action_restored", "system", "sweep"], ["aa11bb22-dddd", null, null, null]]);
+    expect(extraTurnLine(turns[0]!)).toBe(`- t001: run 91f0c3d2 started ${new Date(9_000).toISOString()} after DONE; wake issue_recovery_action_restored (automation/system) by system sweep`);
+    expect(extraTurnLine(turns[1]!)).toBe(`- t001: run aa11bb22 started ${new Date(9_500).toISOString()} after DONE; wake unknown (on_demand/manual) by unknown`);
+    expect(runsAfterDone("t001", evidence, null)).toEqual([]);
+    expect(runsAfterDone("t001", null, 1)).toEqual([]);
+  });
+
+  it("anchors DONE on the first DONE comment, else on the issue's completion time", () => {
+    const comments = [{ body: "will post DONE-b3d70e77 later", authorAgentId: "a", createdAt: "2026-11-12T22:56:04.145Z" },
+      { body: "DONE-b3d70e77", authorAgentId: "a", createdAt: "2026-11-12T23:12:44.587Z" }, { body: "DONE-b3d70e77", authorAgentId: null, createdAt: "2026-11-12T20:00:00.000Z" }];
+    expect(firstDoneAt(comments, "b3d70e77", "2026-11-12T23:13:05.527Z")).toBe(Date.parse("2026-11-12T23:12:44.587Z"));
+    expect(firstDoneAt(comments.slice(0, 1), "b3d70e77", "2026-11-12T23:13:05.527Z")).toBe(Date.parse("2026-11-12T23:13:05.527Z"));
+    expect(firstDoneAt(null, "b3d70e77", null)).toBeNull();
   });
 });

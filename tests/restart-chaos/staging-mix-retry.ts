@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ChaosApi } from "./api.js";
-import { bannerShownMs, DUPLICATE_CHECKS, noteRetryBanner } from "./staging-mix.js";
+import { bannerShownMs, DUPLICATE_CHECKS, isDoneComment, noteRetryBanner } from "./staging-mix.js";
 import type { InterruptionSample, OracleResult, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 
 type Json = Record<string, any>;
@@ -170,6 +170,48 @@ export function stagingMixHeadline(result: StagingMixResult): string[] {
   ];
 }
 
+export interface ExtraTurn {
+  taskId: string;
+  runId: string | null;
+  createdAt: number | null;
+  invocationSource: string | null;
+  wakeReason: string | null;
+  wakeSource: string | null;
+  triggerDetail: string | null;
+  actorType: string | null;
+  actorId: string | null;
+}
+
+interface WakeEvidenceFile {
+  runs?: Array<{ runId: string | null; createdAt: number | null; invocationSource: string | null; triggerDetail: string | null; wakeupRequestId: string | null }>;
+  wakes?: Array<{ id: string | null; reason: string | null; source: string | null; triggerDetail: string | null; requestedByActorType: string | null; requestedByActorId: string | null }>;
+}
+
+export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null, doneAt: number | null): ExtraTurn[] {
+  if (!evidence || doneAt === null) return [];
+  const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
+  return (evidence.runs ?? []).filter(run => run.createdAt !== null && run.createdAt > doneAt).map(run => {
+    const wake = run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined;
+    return { taskId, runId: run.runId, createdAt: run.createdAt, invocationSource: run.invocationSource, wakeReason: wake?.reason ?? null,
+      wakeSource: wake?.source ?? null, triggerDetail: wake?.triggerDetail ?? run.triggerDetail, actorType: wake?.requestedByActorType ?? null,
+      actorId: wake?.requestedByActorId ?? null };
+  });
+}
+
+export function firstDoneAt(comments: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdAt?: unknown }> | null, nonce: string, completedAt: unknown): number | null {
+  const times = (comments ?? []).filter(comment => comment.authorAgentId && isDoneComment(String(comment.body ?? ""), nonce))
+    .map(comment => Date.parse(String(comment.createdAt))).filter(Number.isFinite);
+  if (times.length) return Math.min(...times);
+  const completed = typeof completedAt === "string" ? Date.parse(completedAt) : NaN;
+  return Number.isFinite(completed) ? completed : null;
+}
+
+export function extraTurnLine(turn: ExtraTurn): string {
+  return `- ${turn.taskId}: run ${turn.runId?.slice(0, 8) ?? "?"} started ${turn.createdAt === null ? "?" : new Date(turn.createdAt).toISOString()} after DONE; `
+    + `wake ${turn.wakeReason ?? "unknown"} (${turn.wakeSource ?? turn.invocationSource ?? "?"}${turn.triggerDetail ? `/${turn.triggerDetail}` : ""}) `
+    + `by ${turn.actorType ?? "unknown"}${turn.actorId ? ` ${turn.actorId}` : ""}`;
+}
+
 export async function readAssignedWorkInvariant(api: Pick<ChaosApi, "get">, companyId: string): Promise<StagingMixResult["invariant"]> {
   try {
     const report = await api.get<Json>(`/api/companies/${companyId}/assigned-work-invariant`, 30_000);
@@ -185,8 +227,13 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
   tasks: ReadonlyArray<{ plan: TaskPlan; record: TaskRecord }>; timeline: ReadonlyArray<{ kind: string; [key: string]: unknown }> }): Promise<StagingMixResult> {
   const extraClicks = new Set(input.timeline.filter(entry => entry.kind === "release_swap_retry_clicked" && typeof entry.issueId === "string").map(entry => String(entry.issueId)));
   const tasks: ResultTask[] = [];
+  const extraTurns: ExtraTurn[] = [];
   for (const task of input.tasks) {
     const issue = task.record.issueId ? await input.api.get<Json>(`/api/issues/${task.record.issueId}`, 10_000).catch(() => null) : null;
+    const comments = task.record.issueId ? await input.api.get<Json[]>(`/api/issues/${task.record.issueId}/comments`, 10_000).catch(() => null) : null;
+    const evidence = await readFile(path.join(input.waveDir, "wake-evidence", `${task.plan.taskId}.json`), "utf8")
+      .then(text => JSON.parse(text) as WakeEvidenceFile).catch(() => null);
+    extraTurns.push(...runsAfterDone(task.plan.taskId, evidence, firstDoneAt(comments, task.plan.nonce, issue?.completedAt)));
     const grade = await readFile(path.join(input.waveDir, `${task.plan.taskId}.grade.json`), "utf8")
       .then(text => JSON.parse(text) as { grade?: { T?: OracleResult } }).catch(() => null);
     tasks.push({ taskId: task.plan.taskId, issueId: task.record.issueId, record: task.record, finalStatus: issue?.status ?? task.record.finalStatus,
@@ -194,13 +241,14 @@ export async function writeStagingMixResults(input: { waveDir: string; api: Pick
   }
   const result = summarizeStagingMix(tasks, extraClicks, await readAssignedWorkInvariant(input.api, input.companyId));
   await writeFile(path.join(input.waveDir, "staging-mix-results.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.staging-mix/v1",
-    headline: stagingMixHeadline(result), ...result }, null, 2)}\n`, { mode: 0o600 });
+    headline: stagingMixHeadline(result), ...result, extraTurns }, null, 2)}\n`, { mode: 0o600 });
   const invariant = result.invariant.violationCount === null ? `unreadable${result.invariant.error ? ` (${result.invariant.error})` : ""}`
     : `${result.invariant.violationCount} violations, ${result.invariant.agentsWithStalledSlots} agents with stalled slots, ${result.invariant.openTasks} open tasks`;
   await writeFile(path.join(input.waveDir, "staging-mix-summary.md"), [...stagingMixHeadline(result), `Assigned-work invariant: ${invariant}`, "",
     ...result.duplicatedSideEffects.map(entry => `- ${entry.taskId}: duplicated ${entry.checks.join(", ")}`),
     ...result.evidenceIncomplete.map(entry => `- ${entry.taskId}: evidence incomplete for ${entry.checks.join(", ")}`),
     ...result.bannerShown.map(entry => `- ${entry.taskId}: Retry banner from ${entry.firstShownAt} for ${Math.round(entry.shownMs / 1000)} s`
-      + `${entry.errorCode ? ` (${entry.errorCode})` : ""}${entry.completedAnyway ? ", completed without a click" : ""}`), ""].join("\n"), { mode: 0o600 });
+      + `${entry.errorCode ? ` (${entry.errorCode})` : ""}${entry.completedAnyway ? ", completed without a click" : ""}`),
+    ...(extraTurns.length ? ["", `Runs started after the task's DONE: ${extraTurns.length}`, ...extraTurns.map(extraTurnLine)] : []), ""].join("\n"), { mode: 0o600 });
   return result;
 }
