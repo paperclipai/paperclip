@@ -9,12 +9,14 @@ import { parseK15DeployShape, parseK15HoldSeconds } from "./redeploy.js";
 import { validateRecoveryStep } from "./recovery-step-faults.js";
 import { parseLongTurnMinutes } from "./long-turn.js";
 import { isRewakeWorkload } from "./rewake.js";
+import { applyStagingMix, STAGING_MIX_ARG_OPTIONS } from "./staging-mix.js";
 import { workloadDefinitions } from "./workloads.js";
 import { parseClassROptions } from "./class-r.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
+import { expandReleaseSwapArgs } from "./release-swap-schedule.js";
 import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, TOOL_COMPLETED_WORKLOADS, UNINTERRUPTED_PROVIDER_MESSAGES, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { SESSION_FAULT_KINDS, SESSION_FAULT_WORKLOADS, isSessionFault, type SessionFaultKind } from "./session-faults.js";
@@ -92,7 +94,7 @@ function integer(raw: string | undefined, name: string, fallback: number, min: n
 
 export function parseCommand(argv: readonly string[], now = Date.now()): ParsedCommand {
   // Tolerate a forwarded literal `--` (for example from a package runner).
-  const args = argv[0] === "--" ? argv.slice(1) : [...argv];
+  const { args, releaseSwap } = expandReleaseSwapArgs(argv[0] === "--" ? argv.slice(1) : [...argv]);
   const { values } = parseArgs({
     args,
     strict: true,
@@ -153,6 +155,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "cr1-hold-seconds": { type: "string" },
       "cr2-hold-seconds": { type: "string" },
       "cr3-stall-seconds": { type: "string" },
+      ...STAGING_MIX_ARG_OPTIONS,
     },
   });
   const keep = values.keep === true;
@@ -160,6 +163,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
     for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "ephemeral-server", "runner-bind-fault", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes", "cr1-hold-seconds", "cr2-hold-seconds", "cr3-stall-seconds", "sandbox-watch-seconds"] as const) {
+      if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
+    }
+    for (const key of Object.keys(STAGING_MIX_ARG_OPTIONS) as Array<keyof typeof STAGING_MIX_ARG_OPTIONS>) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -213,7 +219,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q4) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => !(volumeFree && workloadDefinitions[id].usesRepository) && id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4" && id !== "H2"
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => !(volumeFree && workloadDefinitions[id].usesRepository) && id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4" && id !== "H2" && id !== "SM"
       && !takesJourneyTriggers(id) && !isRewakeWorkload(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault) && !isSessionFault(fault) && fault !== "K0"),
@@ -415,7 +421,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["storage-trigger"] !== undefined) options.storageTrigger = parseStorageTrigger(values["storage-trigger"], options);
   if (values["native-trigger"] !== undefined) options.nativeTrigger = parseNativeTrigger(values["native-trigger"], options);
   if (values["native-trigger-outage"] !== undefined) options.nativeTrigger = { ...options.nativeTrigger!, outageMs: parseNativeTriggerOutage(values["native-trigger-outage"], options) };
-  return { mode: "wave", options, keep };
+  if (releaseSwap) options.releaseSwap = releaseSwap;
+  return { mode: "wave", options: applyStagingMix(options, values), keep };
 }
 
 export function publicGitHubUrl(remote: string): string {

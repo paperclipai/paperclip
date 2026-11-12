@@ -7,43 +7,13 @@ import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
 import { isRepeatedRestartFault, planRestartSteps, type RestartStep } from "./repeated-restarts.js";
 import { k15HoldMs } from "./redeploy.js";
+import { planReleaseSwaps } from "./release-swap-schedule.js";
 import { CR5_FIRE_WINDOW_MS, classRHoldMs, isClassRFault } from "./class-r.js";
-import { K4_MIN_HOLD_MS, type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
+import { type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
+import { createRng, k4HoldRange } from "./plan-primitives.js";
 
-/** mulberry32: small, fast and fully determined by its 32-bit seed. */
-export function createRng(seed: number) {
-  let state = seed >>> 0;
-  const next = () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-  return {
-    next,
-    int(min: number, max: number) { return min + Math.floor(next() * (max - min + 1)); },
-    hex(length: number) { let out = ""; while (out.length < length) out += Math.floor(next() * 16).toString(16); return out; },
-    shuffle<T>(values: readonly T[]): T[] {
-      const copy = [...values];
-      for (let index = copy.length - 1; index > 0; index -= 1) {
-        const swap = Math.floor(next() * (index + 1));
-        [copy[index], copy[swap]] = [copy[swap]!, copy[index]!];
-      }
-      return copy;
-    },
-  };
-}
-
-export const K4_HOLD_RANGE_MS: readonly [number, number] = [K4_MIN_HOLD_MS, 300_000];
-
-/** The seeded K4 hold range; `--k4-hold-max-seconds` raises its upper end
- * (up to the 600 s controller-outage cap) to reach the 7-minute reconnect
- * grace and longer outages. The default range is unchanged. */
-export function k4HoldRange(maxMs?: number): readonly [number, number] {
-  return maxMs === undefined ? K4_HOLD_RANGE_MS : [K4_HOLD_RANGE_MS[0], Math.max(K4_HOLD_RANGE_MS[0], maxMs)];
-}
+export { createRng, K4_HOLD_RANGE_MS, k4HoldRange } from "./plan-primitives.js";
 
 export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly [number, number]> = {
   comment: [0, 5_000],
@@ -163,7 +133,8 @@ export function planWave(waveId: string, options: WaveOptions, createdAt = new D
     createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options)
       // `--long-turn-minutes` is part of each task's plan, so a replay keeps it.
       .map(task => options.longTurnMinutes ? { ...task, longTurnMinutes: options.longTurnMinutes } : task),
-    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
+    ...(options.stormMinutes ? { storm: options.releaseSwap ? planReleaseSwaps(options.releaseSwap)
+      : planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
 }
 
 /** K13: the gap between one storm fault settling and the next one firing. */

@@ -2183,7 +2183,9 @@ admin can change it in instance settings.
 capabilities a release supports, for the control plane to read at a release
 commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
 (`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
-entries only while that list includes `pluginEnvironments`.
+entries only while that list includes `pluginEnvironments`. When sending a plugin
+environment, include `runnerLifecycleMode` only if the target release also lists
+`pluginEnvironmentRunnerLifecycleMode`.
 
 
 ### Experimental native remote workspace storage
@@ -3542,6 +3544,21 @@ the direct/prepared transport and three-controller continuation fixtures.
 An upgrade readiness report contains preliminary native evidence, not permission
 to remove a deployment volume. Keep the checkpoint pool bounded and measure all
 pools when qualifying database cost; the current size of two is a default.
+
+Cloud repeats the upgrade readiness probe, so the probe does not read or decrypt
+a checkpoint header that has not changed. The statement that reads each run also
+reads its header's row revision (`xmin`, `ctid`, `updated_at` and stored size)
+and returns the encrypted material only for a revision the process has not
+inspected. The memo in `native-runner-checkpoint.ts` keeps four identifiers per
+header, is bounded in entries and bytes, and forgets a header that the latest
+probe did not inspect. It loads the secrets key again for each answer it reuses, as a direct read
+does for each header, and refuses the answer when the key is missing or changed. It
+never remembers a header that failed to decrypt. Measure a probe with
+`pnpm --filter @paperclipai/server exec tsx scripts/benchmark-upgrade-readiness.ts --baseline-ref=<pre-fix-commit>`.
+The harness runs both revisions over the same PostgreSQL rows, reports bytes
+from the database, decryptions, CPU and sampled allocation per probe, and fails
+unless both give the same answer after a header changes, stops decrypting or is
+deleted.
 
 Committed native Agent Chat turns recover their unanswered final reply through
 the existing response presentation worker. Recovery verifies the accepted result

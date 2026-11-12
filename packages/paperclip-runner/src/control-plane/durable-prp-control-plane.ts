@@ -2098,6 +2098,8 @@ export class DurablePrpControlPlane {
    * in-flight and failed dispatches remain. */
   #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
+  #queuedCommandResults = new Map<string, { count: number; queuedAt: number }>();
+  #inboundFrameSettledAt = 0;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -2675,6 +2677,27 @@ export class DurablePrpControlPlane {
    * source for a later run.attach. Repeating the same write is idempotent;
    * changing an established seed fails closed.
    */
+  queuedCommandResultProgressAt(commandId: string): number | null {
+    const queued = this.#queuedCommandResults.get(commandId);
+    return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
+  }
+
+  withdrawUndeliveredTerminalCommands(): string[] {
+    if (this.#store.state.warmTransition) return [];
+    const commands = this.#store.state.commands;
+    const firstPending = commands.findIndex((command) => command.status === "pending");
+    if (firstPending < 0) return [];
+    const suffix = commands.slice(firstPending);
+    const kept = suffix.filter((command) => !this.#isTerminalLifecycleCommand(command));
+    if (kept.length === suffix.length) return [];
+    const withdrawn = suffix.filter((command) => this.#isTerminalLifecycleCommand(command));
+    for (const command of withdrawn) delete this.#store.state.commandDeliveryCounts[command.commandId];
+    kept.forEach((command, index) => { command.controllerSeq = firstPending + index + 1; });
+    commands.splice(firstPending, suffix.length, ...kept);
+    this.#store.save();
+    return withdrawn.map((command) => command.type);
+  }
+
   persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
@@ -2950,14 +2973,18 @@ export class DurablePrpControlPlane {
       }
     }
     const controllerSeq = this.#store.state.commands.length + 1;
+    const sequenceId = `command_prp_${controllerSeq.toString().padStart(8, "0")}`;
+    let generatedId = sequenceId;
+    for (let reuse = 1; this.#store.state.commands.some((candidate) => candidate.commandId === generatedId); reuse += 1) {
+      generatedId = `${sequenceId}_${reuse}`;
+    }
     const command: DurableRecoveryCoreCommand = {
       schema: type === "external_provider.operation" || type === "runner.attachment.download"
         ? "paperclip.prp.command.v3"
         : type.startsWith("session.goal.")
           ? "paperclip.prp.command.v2"
           : "paperclip.prp.command.v1",
-      commandId:
-        commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
+      commandId: commandId ?? generatedId,
       controllerSeq,
       type,
       issuedAt: new Date().toISOString(),
@@ -3091,11 +3118,25 @@ export class DurablePrpControlPlane {
           undecryptedFrames += 1;
           frame = { raw: value };
         }
+        const answeredCommandId = "decrypted" in frame && frame.decrypted.kind === "command_result"
+          ? (frame.decrypted.payload as Record<string, unknown> | undefined)?.commandId : undefined;
+        const queuedResult = typeof answeredCommandId === "string" ? answeredCommandId : null;
+        if (queuedResult !== null) {
+          const queued = this.#queuedCommandResults.get(queuedResult);
+          this.#queuedCommandResults.set(queuedResult, { count: (queued?.count ?? 0) + 1, queuedAt: queued?.queuedAt ?? Date.now() });
+        }
         processing = processing
           .then(() => "raw" in frame
             ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
             : this.#handleDecryptedFrame(connection, frame.decrypted))
-          .catch(() => connection.close());
+          .catch(() => connection.close())
+          .finally(() => {
+            this.#inboundFrameSettledAt = Date.now();
+            if (queuedResult === null) return;
+            const queued = this.#queuedCommandResults.get(queuedResult);
+            if (queued !== undefined && queued.count > 1) queued.count -= 1;
+            else this.#queuedCommandResults.delete(queuedResult);
+          });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
