@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 
 /**
  * Finds and stops processes that a local agent run left behind.
@@ -63,6 +64,8 @@ export interface RunLineageEntry extends RunProcessIdentity {
 export interface RunLineageSnapshot {
   version: 1;
   runId: string;
+  /** Linux boot id. PIDs and start times repeat after a reboot. */
+  bootId: string | null;
   entries: RunLineageEntry[];
 }
 
@@ -136,13 +139,7 @@ interface ProcStat {
   startTime: string;
 }
 
-function readStat(procRoot: string, pid: number): ProcStat | null {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(`${procRoot}/${pid}/stat`, "utf8");
-  } catch {
-    return null;
-  }
+function parseStat(raw: string): ProcStat | null {
   // The command name (field 2) can contain spaces and parentheses.
   const commandEnd = raw.lastIndexOf(")");
   if (commandEnd < 0) return null;
@@ -164,6 +161,32 @@ function readStat(procRoot: string, pid: number): ProcStat | null {
     return null;
   }
   return { ppid, pgid, sid, state, startTime };
+}
+
+function readStat(procRoot: string, pid: number): ProcStat | null {
+  try {
+    return parseStat(fs.readFileSync(`${procRoot}/${pid}/stat`, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function readStatAsync(procRoot: string, pid: number): Promise<ProcStat | null> {
+  try {
+    return parseStat(await fsp.readFile(`${procRoot}/${pid}/stat`, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** The Linux boot id, or null when it cannot be read. */
+export function readBootId(opts: Pick<RunDescendantScanOptions, "procRoot"> = {}) {
+  try {
+    const id = fs.readFileSync(`${opts.procRoot ?? "/proc"}/sys/kernel/random/boot_id`, "utf8").trim();
+    return id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 function isGoneState(state: string) {
@@ -200,6 +223,10 @@ function hasRunMarker(procRoot: string, pid: number, needle: Buffer) {
   } catch {
     return false;
   }
+  return environHasNeedle(environ, needle);
+}
+
+function environHasNeedle(environ: Buffer, needle: Buffer) {
   if (environ.length === 0) return false;
   // Entries are NUL-terminated; prefix a NUL so the first entry matches too.
   const haystack = Buffer.concat([Buffer.from([0]), environ, Buffer.from([0])]);
@@ -243,6 +270,54 @@ export function readRunProcessTable(opts: Pick<RunDescendantScanOptions, "procRo
   return table;
 }
 
+// Bounded batch size for the asynchronous scan: each batch's file reads run
+// on the libuv thread pool and the main thread only parses the results.
+const ASYNC_SCAN_BATCH = 64;
+
+/**
+ * Reads every live process of the current user without blocking the event
+ * loop on procfs: directory listing, ownership and stat reads are
+ * asynchronous and done in bounded batches.
+ */
+export async function readRunProcessTableAsync(
+  opts: Pick<RunDescendantScanOptions, "procRoot"> = {},
+): Promise<RunProcessTable> {
+  const procRoot = opts.procRoot ?? "/proc";
+  const entries = new Map<number, ProcEntry>();
+  let nowTicks = Number.MAX_SAFE_INTEGER;
+  try {
+    const seconds = Number.parseFloat((await fsp.readFile(`${procRoot}/uptime`, "utf8")).split(/\s+/)[0] ?? "");
+    if (Number.isFinite(seconds) && seconds >= 0) nowTicks = Math.ceil(seconds * USER_HZ);
+  } catch {
+    // Keep the open-ended bound.
+  }
+  const table = { entries, nowTicks, procRoot };
+  if (!isSupported()) return table;
+  const uid = process.getuid!();
+  let names: string[];
+  try {
+    names = await fsp.readdir(procRoot);
+  } catch {
+    return table;
+  }
+  const pids = names.filter((name) => /^\d+$/.test(name)).map((name) => Number.parseInt(name, 10)).filter((pid) => pid > 1);
+  for (let index = 0; index < pids.length; index += ASYNC_SCAN_BATCH) {
+    await Promise.all(
+      pids.slice(index, index + ASYNC_SCAN_BATCH).map(async (pid) => {
+        try {
+          if ((await fsp.stat(`${procRoot}/${pid}`)).uid !== uid) return;
+        } catch {
+          return;
+        }
+        const stat = await readStatAsync(procRoot, pid);
+        if (!stat || isGoneState(stat.state)) return;
+        entries.set(pid, { pid, startTime: stat.startTime, ppid: stat.ppid, pgid: stat.pgid, sid: stat.sid });
+      }),
+    );
+  }
+  return table;
+}
+
 /**
  * The set of processes recorded for one run. Call {@link sample} while the
  * run is live so that processes are recorded before they can lose the
@@ -273,10 +348,16 @@ export class RunProcessLineage {
     }
   }
 
-  static fromSnapshot(snapshot: unknown): RunProcessLineage | null {
+  /**
+   * Restores a saved lineage. Returns null for a malformed snapshot or one
+   * saved during another boot: PIDs and start times repeat after a reboot.
+   */
+  static fromSnapshot(snapshot: unknown, opts: Pick<RunDescendantScanOptions, "procRoot"> = {}): RunProcessLineage | null {
     if (!snapshot || typeof snapshot !== "object") return null;
     const raw = snapshot as Partial<RunLineageSnapshot>;
     if (raw.version !== 1 || typeof raw.runId !== "string" || !Array.isArray(raw.entries)) return null;
+    const bootId = readBootId(opts);
+    if (!bootId || raw.bootId !== bootId) return null;
     return new RunProcessLineage(
       raw.runId,
       raw.entries.filter(
@@ -287,7 +368,12 @@ export class RunProcessLineage {
   }
 
   toSnapshot(): RunLineageSnapshot {
-    return { version: 1, runId: this.runId, entries: [...this.recorded.values()].map((entry) => ({ ...entry })) };
+    return {
+      version: 1,
+      runId: this.runId,
+      bootId: readBootId(),
+      entries: [...this.recorded.values()].map((entry) => ({ ...entry })),
+    };
   }
 
   /** True when the recorded set changed since the last call. */
@@ -331,6 +417,40 @@ export class RunProcessLineage {
       this.markerCache.set(key, marked);
     }
     return marked;
+  }
+
+  /**
+   * Reads the environment of processes in `table` not seen before, without
+   * blocking the event loop, so that {@link sample} needs no further reads.
+   */
+  async loadMarkers(table: RunProcessTable) {
+    if (!isSupported()) return;
+    const pending = [...table.entries.values()].filter((entry) => {
+      const key = identityKey(entry);
+      return !this.markerCache.has(key) && !this.recorded.has(key);
+    });
+    for (let index = 0; index < pending.length; index += ASYNC_SCAN_BATCH) {
+      await Promise.all(
+        pending.slice(index, index + ASYNC_SCAN_BATCH).map(async (entry) => {
+          let environ: Buffer;
+          try {
+            environ = await fsp.readFile(`${table.procRoot}/${entry.pid}/environ`);
+          } catch {
+            environ = Buffer.alloc(0);
+          }
+          // The PID could have been reused while the environment was read.
+          const after = await readStatAsync(table.procRoot, entry.pid);
+          if (!after || after.startTime !== entry.startTime) return;
+          this.markerCache.set(identityKey(entry), environHasNeedle(environ, this.needle));
+        }),
+      );
+    }
+  }
+
+  /** {@link sample} with the environment reads done asynchronously first. */
+  async sampleAsync(table: RunProcessTable, opts: RunDescendantScanOptions = {}) {
+    await this.loadMarkers(table);
+    return this.sample(table, opts);
   }
 
   /**
@@ -522,7 +642,7 @@ export async function terminateRunMarkedProcesses(
   const procRoot = opts.procRoot ?? "/proc";
   if (!isSupported() || !isValidRunId(runId)) return { found: [], forceKilled: [], survivors: [] };
   const lineage = opts.lineage ?? new RunProcessLineage(runId);
-  const scan = () => lineage.sample(readRunProcessTable({ procRoot }), opts);
+  const scan = async () => lineage.sampleAsync(await readRunProcessTableAsync({ procRoot }), opts);
 
   const graceMs = Math.max(0, opts.graceMs ?? 5_000);
   const pollMs = Math.max(10, opts.pollMs ?? 100);
@@ -530,7 +650,7 @@ export async function terminateRunMarkedProcesses(
   const found = new Map<string, RunProcessIdentity>();
   const deadline = Date.now() + graceMs;
 
-  let current = scan();
+  let current = await scan();
   if (current.length === 0) return { found: [], forceKilled: [], survivors: [] };
   while (current.length > 0) {
     for (const identity of current) {
@@ -541,7 +661,7 @@ export async function terminateRunMarkedProcesses(
     }
     if (Date.now() >= deadline) break;
     await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())));
-    current = scan();
+    current = await scan();
   }
 
   // Kill what is left, scanning again so that a child started just before
@@ -560,7 +680,7 @@ export async function terminateRunMarkedProcesses(
       break;
     }
     await delay(Math.min(pollMs, 50));
-    current = scan();
+    current = await scan();
   }
   return { found: [...found.values()], forceKilled: [...forceKilled.values()], survivors };
 }

@@ -945,7 +945,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                 // is live, so teardown still finds a descendant that later
                 // clears its environment or is reparented.
                 if ((executionTarget?.kind ?? "local") === "local") {
-                  trackRunDescendants({ runId: run.id, rootPid: meta.pid });
+                  void trackRunDescendants({ runId: run.id, rootPid: meta.pid });
                 }
               },
               authToken: authToken ?? undefined,

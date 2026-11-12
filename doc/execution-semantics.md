@@ -1865,7 +1865,9 @@ it and descendants inherit it), when the run's recorded lineage contains it,
 when its parent belongs to the run, or when it is in a session or process group
 that a run process led. While the run is live a shared sampler (every 250 ms)
 records the run's processes by PID and start time, from the spawned CLI down,
-and saves them under the instance root (`run-lineage/<run id>.json`). A
+and saves them under the instance root (`run-lineage/<run id>.json`, with the
+Linux boot id; a file from another boot is ignored). Sampling reads procfs and
+writes the file asynchronously, and a sample never overlaps the previous one. A
 recorded process stays owned after it clears its environment (`env -i`), execs
 or is reparented. When a local legacy run settles (success, failure, timeout or
 in-process cancel), when it is cancelled without a live executor (for example

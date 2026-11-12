@@ -4,10 +4,13 @@ import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   findRunMarkedProcesses,
+  readBootId,
   readRunProcessTable,
+  readRunProcessTableAsync,
   RUN_ID_ENV_MARKER,
   RunProcessLineage,
   signalRunProcessIdentity,
@@ -290,6 +293,52 @@ linuxOnly("run descendant teardown", () => {
 
     expect(result.found.map((entry) => entry.pid)).toEqual([childPid]);
     expect(await waitFor(() => !isAlive(childPid), 2_000)).toBe(true);
+  });
+
+  it("rejects a saved lineage from another boot", () => {
+    const runId = newRunId();
+    const lineage = new RunProcessLineage(runId, [{ pid: 4_000_001, startTime: "1000", leader: true }]);
+    const snapshot = lineage.toSnapshot();
+    expect(snapshot.bootId).toBe(readBootId());
+    expect(RunProcessLineage.fromSnapshot(snapshot)?.toSnapshot().entries).toEqual(snapshot.entries);
+    expect(RunProcessLineage.fromSnapshot({ ...snapshot, bootId: "another-boot" })).toBeNull();
+    expect(RunProcessLineage.fromSnapshot({ ...snapshot, bootId: undefined })).toBeNull();
+  });
+
+  it("scans asynchronously so other work keeps running during a large scan", async () => {
+    const procRoot = await fs.mkdtemp(path.join(os.tmpdir(), "run-descendants-proc-"));
+    try {
+      await fs.writeFile(path.join(procRoot, "uptime"), "50.00 0.00\n");
+      const count = 1_500;
+      for (let index = 0; index < count; index += 100) {
+        await Promise.all(
+          Array.from({ length: 100 }, (_, offset) => 4_100_000 + index + offset).map((pid) =>
+            writeFixtureProcess(procRoot, { pid, ppid: 1, pgid: pid, sid: pid, startTime: 1_000 }),
+          ),
+        );
+      }
+      let ticks = 0;
+      const timer = setInterval(() => {
+        ticks += 1;
+      }, 1);
+      const histogram = monitorEventLoopDelay({ resolution: 1 });
+      histogram.enable();
+      try {
+        const table = await readRunProcessTableAsync({ procRoot });
+        const lineage = new RunProcessLineage(newRunId());
+        expect(table.entries.size).toBe(count);
+        expect(await lineage.sampleAsync(table)).toEqual([]);
+      } finally {
+        histogram.disable();
+        clearInterval(timer);
+      }
+      // Timers ran while the scan was in progress, and no single step held
+      // the event loop for long.
+      expect(ticks).toBeGreaterThan(0);
+      expect(histogram.max / 1e6).toBeLessThan(250);
+    } finally {
+      await fs.rm(procRoot, { recursive: true, force: true });
+    }
   });
 
   it("stops an environment-cleared child of a live run process without prior sampling", async () => {
