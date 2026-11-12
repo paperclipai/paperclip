@@ -2679,7 +2679,8 @@ export async function commitNativeStatusDecision(input: {
   for (const publication of publications) publishActivity(publication);
   for (const terminalRun of terminalRunsToEmit)
     await emitAgentTaskRun(input.db, terminalRun);
+  // Telemetry must not hold run finalization; the send never throws.
   if (completedTask && !committed.replayed)
-    await emitAgentTaskCompleted(input.db, completedTask);
+    void emitAgentTaskCompleted(input.db, completedTask);
   return committed;
 }
