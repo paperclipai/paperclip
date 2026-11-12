@@ -20,8 +20,10 @@ const CASE_READ_OPERATION = "GET /api/cases/{id}";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // The first page of the case record section (the default), which carries the case's status and completion.
 // Fields-only pages and byte-limited pages may omit them, so they do not count as reading the case.
-const CASE_FIRST_PAGES: ReadonlyArray<Record<string, unknown>> = [undefined, "case"].flatMap(section => [undefined, 0].map(offsetBytes => ({
-  ...(section ? { section } : {}), ...(offsetBytes !== undefined ? { offsetBytes } : {}) })));
+// An explicit limit equal to the default page size (8 KiB, also the maximum) reads the same page.
+const CASE_FIRST_PAGES: ReadonlyArray<Record<string, unknown>> = [undefined, "case"].flatMap(section => [undefined, 0].flatMap(offsetBytes =>
+  [undefined, 8 * 1024].map(limitBytes => ({ ...(section ? { section } : {}), ...(offsetBytes !== undefined ? { offsetBytes } : {}),
+    ...(limitBytes !== undefined ? { limitBytes } : {}) }))));
 const caseReadTool = (name: unknown) => typeof name === "string" && /^(?:[A-Za-z0-9_-]*__)?(?:paperclip_)?read_case$/.test(name);
 
 export interface ApiRead {
