@@ -557,6 +557,12 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona
   --daytona-warm --daytona-cpu 2 --adapters opencode,codex,claude --release-swap-short --concurrency 12 --tasks 200 --seed 7110
 ```
 
+With `--workload staging-mix`, the swaps become the mix's fault slots (`--mix-fault-spacing-minutes` and `--mix-minutes`
+come from the swap count and spacing), so the staging-mix tasks, follow-ups and hands-off results run under the swap
+driver's probes and grading. Probe agents finish their verification while the first tasks run; the first swap waits for them.
+`--server-from <dir>` also runs on Daytona: every server comes from that checkout while the sandboxes keep
+`--daytona-image`'s Runner and provider pack, as a deploy newer or older than its sandbox image does.
+
 `--release-swap` runs the full default (6 swaps, 40 minutes apart). `--release-swap-short` runs 3 swaps 12 minutes
 apart with the full 510 s overlap, so two servers run for most of each cycle. Either takes the `--release-swap-*`
 options below, which override the preset. Workload sizing (turn length, concurrency) comes from the workload flags.

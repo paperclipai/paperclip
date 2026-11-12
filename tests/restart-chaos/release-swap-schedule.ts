@@ -21,7 +21,9 @@ const FLAGS = {
   "release-swap-drain-minutes": { key: "drainMs", unit: 60_000, min: 1, max: 240 },
 } as const;
 
-const REPLACED = ["storm-minutes", "faults", "k15-overlap-seconds", "k15-hold-seconds", "replay", "crash-point", "matrix", "upgrade-from"];
+const MIX_PLANNED = ["mix-fault-spacing-minutes", "mix-minutes"];
+
+const REPLACED = ["storm-minutes","faults", "k15-overlap-seconds", "k15-hold-seconds", "replay", "crash-point", "matrix", "upgrade-from"];
 
 function flagName(arg: string): string | null {
   return arg.startsWith("--") ? arg.slice(2).split("=")[0]! : null;
@@ -73,8 +75,16 @@ export function expandReleaseSwapArgs(input: readonly string[]): { args: string[
   }
   const envIndex = rest.findIndex(arg => arg === "--env" || arg.startsWith("--env="));
   const env = envIndex < 0 ? "local" : rest[envIndex]!.includes("=") ? rest[envIndex]!.split("=")[1] : rest[envIndex + 1];
-  const added = ["--storm-minutes", String(Math.min(240, Math.ceil((options.swaps * options.spacingMs) / 60_000))), "--faults", "K15",
-    "--k15-overlap-seconds", String(Math.round(options.overlapMs / 1000))];
+  const mix = given.has("workload");
+  if (mix) {
+    const planned = MIX_PLANNED.find(name => given.has(name));
+    if (planned) throw new Error(`--release-swap plans the staging-mix swap slots; do not combine it with --${planned}`);
+  }
+  const spacingMinutes = Math.ceil(options.spacingMs / 60_000);
+  const clock = mix
+    ? ["--mix-fault-spacing-minutes", String(spacingMinutes), "--mix-minutes", String(options.swaps * spacingMinutes + 1)]
+    : ["--storm-minutes", String(Math.min(240, Math.ceil((options.swaps * options.spacingMs) / 60_000)))];
+  const added = [...clock, "--faults", "K15", "--k15-overlap-seconds", String(Math.round(options.overlapMs / 1000))];
   if (env === "daytona") {
     if (!given.has("k15-fresh-home")) added.push("--k15-fresh-home");
     if (!given.has("ephemeral-server")) added.push("--ephemeral-server");
