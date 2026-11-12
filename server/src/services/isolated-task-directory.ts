@@ -4,20 +4,22 @@ import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { parseObject } from "../adapters/utils.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
-/** A repository-free sandbox task needs isolation, but has no Git base. */
+/** A repository-free task needs isolation, but has no Git base. */
 export function shouldUseIsolatedTaskDirectory(input: {
   trustPreset: string;
   environmentDriver: string | null;
   mode: string;
   hasProjectWorkspace: boolean;
   projectWorkspaceId: string | null;
+  hasSelectedExecutionWorkspace?: boolean;
   workspaceStrategies: unknown[];
 }): boolean {
-  return input.trustPreset === "low_trust_review"
-    && input.environmentDriver === "sandbox"
+  return ((input.trustPreset === "low_trust_review" && input.environmentDriver === "sandbox")
+    || (input.trustPreset === "standard" && (input.environmentDriver === "local" || input.environmentDriver === null)))
     && input.mode === "isolated_workspace"
     && !input.hasProjectWorkspace
     && !input.projectWorkspaceId
+    && !input.hasSelectedExecutionWorkspace
     // Never discard an explicit repository/branch requirement or setup hook.
     && input.workspaceStrategies.every((value) => Object.keys(parseObject(value)).length === 0);
 }
