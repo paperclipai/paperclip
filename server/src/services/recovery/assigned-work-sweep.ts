@@ -31,6 +31,8 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import {
   continuationActivityMessage,
   continuationAllowance,
+  CONTINUATION_PENDING_MESSAGE,
+  CONTINUATION_REFUSED_MESSAGE,
   evaluateAssignedWork,
   CONTINUATION_HISTORY_MS,
   STALE_BLOCK_MS,
@@ -197,7 +199,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       db.selectDistinct({ issueId: caseHandoffs.issueId }).from(caseHandoffs).where(and(eq(caseHandoffs.companyId, companyId),
         inArray(caseHandoffs.issueId, ids), eq(caseHandoffs.destinationKind, "agent"),
         inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]))),
-      db.select({ taskKey: agentTaskSessions.taskKey, agentId: agentTaskSessions.agentId, goalStatus: agentTaskSessions.goalStatus })
+      db.select({ taskKey: agentTaskSessions.taskKey, agentId: agentTaskSessions.agentId, goalStatus: agentTaskSessions.goalStatus,
+        goalDesiredState: agentTaskSessions.goalDesiredState })
         .from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, companyId), inArray(agentTaskSessions.taskKey, ids),
           sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)),
       // A pending question counts as the person's move until the person
@@ -307,7 +310,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         pendingWakes: (wakeCounts.get(issue.id) ?? 0) + (chatWakeIds.has(issue.id) ? 1 : 0),
         nativeRecoveryPending: nativeIds.has(issue.id),
         pendingHandoff: handoffIds.has(issue.id),
-        sessionGoal: goal ? (goal.goalStatus === "paused" ? "paused" : "active") : null,
+        // Only a goal that is running and still wanted running starts turns by
+        // itself; a paused, blocked or stopped goal waits for its person.
+        sessionGoal: goal ? (goal.goalStatus === "active" && goal.goalDesiredState !== "paused" ? "active" : "paused") : null,
         interruption: interruption ? { responsibility: interruption.responsibility, state: interruption.state,
           userAction: interruption.userAction, nextRetryAt: interruption.nextRetryAt, canRetry: interruption.canRetry } : null,
         pendingInteractions: interactionCounts.get(issue.id) ?? 0,
@@ -456,6 +461,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       return null;
     });
     // A refused continuation stays a violation; the claim spaces the next try.
+    await settleContinuationActivity(claimed, verdict.reason, Boolean(run));
     return { verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
   }
 
@@ -467,7 +473,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    * claim, so one violation produces one continuation.
    */
   async function claimContinuation(issue: IssueRow, reason: ViolationReason, at: Date):
-    Promise<{ kind: "claimed"; nextCheckAt: Date } | { kind: "capped" | "spaced"; retryAt: Date } | { kind: "changed" }> {
+    Promise<{ kind: "claimed"; nextCheckAt: Date; activityId: string; publications: ActivityPublication[] }
+      | { kind: "capped" | "spaced"; retryAt: Date } | { kind: "changed" }> {
     const publications: ActivityPublication[] = [];
     const outcome = await db.transaction(async tx => {
       const [current] = await tx.select(issueColumns).from(issues)
@@ -503,18 +510,34 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         previousStatus = recorded === "in_progress" || recorded === "todo" ? recorded : "todo";
         await issueService(tx as unknown as Db).update(issue.id, { status: previousStatus }, tx);
       }
-      await logActivity(tx as unknown as Db, {
+      const activity = await logActivity(tx as unknown as Db, {
         companyId: issue.companyId, actorType: "system", actorId: "system", agentId: issue.assigneeAgentId, runId: null,
         action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: issue.id,
-        details: { identifier: issue.identifier, message: continuationActivityMessage(reason), violation: reason,
+        details: { identifier: issue.identifier, message: CONTINUATION_PENDING_MESSAGE, outcome: "pending", violation: reason,
           ...(previousStatus ? { status: previousStatus, previousStatus: "blocked" } : {}),
           attempt: recent.length + 1 },
       }, publications);
       const next = continuationAllowance([at, ...recent.map(row => row.createdAt)], at);
-      return { kind: "claimed" as const, nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
+      return { kind: "claimed" as const, activityId: activity.id, publications,
+        nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
     });
-    for (const publication of publications) publishActivity(publication);
     return outcome;
+  }
+
+  /** The claim's activity entry says what happened only once the wake was
+   * admitted or refused; it is published then, never before. A refused
+   * continuation stays a violation and is tried again under the same cap. */
+  async function settleContinuationActivity(claimed: { activityId: string; publications: ActivityPublication[] },
+    reason: ViolationReason, admitted: boolean) {
+    const update = admitted
+      ? { outcome: "queued", message: continuationActivityMessage(reason) }
+      : { outcome: "not_started", message: CONTINUATION_REFUSED_MESSAGE };
+    await db.update(activityLog).set({ details: sql`coalesce(${activityLog.details}, '{}'::jsonb) || ${JSON.stringify(update)}::jsonb` })
+      .where(eq(activityLog.id, claimed.activityId));
+    for (const publication of claimed.publications) {
+      const details = json(publication.payload.details);
+      publishActivity({ ...publication, payload: { ...publication.payload, details: { ...details, ...update } } });
+    }
   }
 
   /** Read-only: classify every open assigned task of a company. */

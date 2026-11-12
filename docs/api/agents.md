@@ -137,6 +137,24 @@ POST /api/agents/{agentId}/heartbeat/invoke
 
 Manually triggers a heartbeat for the agent.
 
+## Assigned-Work Invariant Report
+
+```
+GET /api/companies/{companyId}/assigned-work-invariant
+```
+
+Board only. Read-only. Classifies every open task assigned to an agent (`todo`, `in_progress`, `blocked`): it has a live run, a pending intent that will start one, a named wait that is someone else's move, or it is a violation. Paperclip continues violations automatically; after a deploy, `violationCount` should return to 0.
+
+The response contains:
+
+- `checked`: the number of tasks read, newest-updated first. At most 2,000; `truncated` is `true` when there were more.
+- `ok`: counts by clause, for example `live_run`, `pending:queued_wake`, `waiting:question`.
+- `violations` and `violationCount`: counts by reason (`no_pending_path`, `retry_offered`, `recovery_block`, `unknown_block`, `run_owner_gone`).
+- `heldByRecoveryOwner`: violations that are blocked under an active recovery hold, which the hold's owner continues.
+- `staleBlocked`: tasks blocked by recovery more than 7 days ago. They are reported, not continued.
+- `settling`: tasks whose last run ended moments ago and are checked again shortly.
+- `sample`: up to 20 violations with the task identifier, status and reason.
+
 ## Org Chart
 
 ```

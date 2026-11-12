@@ -287,17 +287,22 @@ export function continuationAllowance(recent: Date[], now: Date = new Date()):
   return { allowed: true };
 }
 
-/** Plain-language activity text for a continuation. No codes, no ids. */
+/** Activity text while a continuation is being admitted, and when admission refused it. */
+export const CONTINUATION_PENDING_MESSAGE = "Starting this task again automatically after an interruption.";
+export const CONTINUATION_REFUSED_MESSAGE =
+  "Paperclip tried to continue this task automatically, but it could not start yet. It will try again shortly.";
+
+/** Plain-language activity text for an admitted continuation. No codes, no ids. */
 export function continuationActivityMessage(reason: ViolationReason): string {
   switch (reason) {
     case "run_owner_gone":
-      return "Continued automatically: the server running this task stopped, so Paperclip started it again.";
+      return "Continued automatically: the server running this task stopped, so Paperclip queued it again.";
     case "recovery_block":
     case "unknown_block":
-      return "Continued automatically after an interruption. Nothing needed from you, so Paperclip picked the task back up.";
+      return "Continued automatically after an interruption. Nothing needed you, so Paperclip queued the task again.";
     case "retry_offered":
-      return "Continued automatically after an interruption, so you don't need to press Retry.";
+      return "Continued automatically after an interruption. Paperclip queued the task again, so you don't need to press Retry.";
     default:
-      return "Continued automatically after an interruption. Nothing was running or scheduled for this task.";
+      return "Continued automatically after an interruption. Nothing was running or scheduled, so Paperclip queued the task again.";
   }
 }

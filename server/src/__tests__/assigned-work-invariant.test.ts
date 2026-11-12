@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql as sqlTag } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  activityLog, agents, agentWakeupRequests, approvals, companies, createDb, heartbeatRuns, issueApprovals,
+  activityLog, agents, agentTaskSessions, agentWakeupRequests, approvals, companies, createDb, heartbeatRuns, issueApprovals,
   issueRecoveryActions, issueRelations, issues, issueThreadInteractions, nativeRunFinalizations,
 } from "@paperclipai/db";
 import { recoveryService } from "../services/recovery/service.js";
@@ -280,6 +280,82 @@ describePostgres("assigned-work invariant sweep", () => {
     const suspects = await sweep.listSuspects({ companyId: f.companyId }, null, 100);
     expect(suspects.map(row => row.id)).not.toEqual(expect.arrayContaining([approvalTask]));
     for (const id of [approvalTask, questionTask, dependent, declared]) expect(suspects.map(row => row.id)).not.toContain(id);
+  }, 60_000);
+
+  it("a refused or later-declined continuation stays a violation, says so, and is tried again under the cap", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    await f.run(issueId);
+    let admit = false;
+    const enqueueWakeup = vi.fn(async (agentId: string, opts?: { payload?: Record<string, unknown> | null; reason?: string | null }) => {
+      if (!admit) return null;
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId, source: "automation",
+        triggerDetail: "system", reason: opts?.reason ?? null, payload: opts?.payload ?? null, status: "queued" }).returning();
+      return { id: wake.id } as never;
+    });
+    let clock = new Date();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup, now: () => clock });
+    const deadlines: number[] = [];
+    // Admission refuses: the entry says nothing started, and a re-check is due.
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId, onDeferredDeadline: at => deadlines.push(at) }))
+      .toMatchObject({ outcome: "enqueue_refused" });
+    const activity = async () => db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
+      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
+    expect((await activity())[0].details).toMatchObject({ outcome: "not_started", message: expect.stringContaining("could not start") });
+    expect(deadlines).toHaveLength(1);
+    // Too soon: spaced, not repaired and not reported as fine.
+    clock = new Date(clock.getTime() + 60_000);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "deferred_rate_limit", verdict: { kind: "violation" } });
+    // After the spacing it is admitted; the queue later declines the claim
+    // (for example behind the old run's pending cleanup) and the wake is skipped.
+    admit = true;
+    clock = new Date(clock.getTime() + 2 * 60_000);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "repaired" });
+    expect((await activity()).map(row => row.details?.outcome).sort()).toEqual(["not_started", "queued"]);
+    await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.companyId, f.companyId));
+    clock = new Date(clock.getTime() + 5 * 60_000);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "repaired" });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(3);
+  }, 60_000);
+
+  it("stops scheduling a task once it leaves eligibility", async () => {
+    const f = await seedCompany();
+    const done = await f.issue();
+    await f.run(done);
+    for (let index = 0; index < CONTINUATION_CAP; index++) {
+      await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: ASSIGNED_WORK_CONTINUED_ACTION,
+        entityType: "issue", entityId: done, details: {}, createdAt: new Date(Date.now() - (index + 1) * 8 * 60_000) });
+    }
+    const queue = wakeQueue();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup });
+    const deadlines: number[] = [];
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: done, onDeferredDeadline: at => deadlines.push(at) }))
+      .toMatchObject({ outcome: "deferred_cap" });
+    expect(deadlines).toHaveLength(1);
+    for (const change of [{ status: "done" }, { status: "cancelled" }, { assigneeAgentId: null, assigneeUserId: "person-1" }] as const) {
+      await db.update(issues).set({ status: "in_progress", assigneeAgentId: f.agentId, assigneeUserId: null, ...change }).where(eq(issues.id, done));
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId: done, onDeferredDeadline: at => deadlines.push(at) })).toBeNull();
+      expect((await sweep.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id)).not.toContain(done);
+    }
+    expect(deadlines).toHaveLength(1);
+    expect(queue.calls).toHaveLength(0);
+  }, 60_000);
+
+  it("treats a stopped or blocked session goal as the person's move and only a running goal as pending", async () => {
+    const f = await seedCompany();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: wakeQueue().enqueueWakeup });
+    const cases = [
+      { goalStatus: "active", goalDesiredState: "active", expected: { clause: "pending_intent", intent: "session_goal" } },
+      { goalStatus: "blocked", goalDesiredState: "paused", expected: { clause: "waiting", reason: "user_stop" } },
+      { goalStatus: "active", goalDesiredState: "paused", expected: { clause: "waiting", reason: "user_stop" } },
+    ];
+    for (const entry of cases) {
+      const issueId = await f.issue();
+      await f.run(issueId);
+      await db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: f.agentId, adapterType: "codex_local", taskKey: issueId,
+        goalStatus: entry.goalStatus, goalDesiredState: entry.goalDesiredState } as never);
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "ok", verdict: entry.expected });
+    }
   }, 60_000);
 
   it("leaves a task whose run ended seconds ago, and asks to look again after the grace", async () => {
