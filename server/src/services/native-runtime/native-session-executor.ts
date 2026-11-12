@@ -706,6 +706,7 @@ type WarmNativeSession = {
   providerLeaseId?: string;
   /** A successor's retirement of this owner failed; it stays registered for its own sandbox. */
   retirementUnproven?: boolean;
+  retirementDeferred?: boolean;
   observabilityCompatibilityKey?: string;
   runId: string;
   issueId: string;
@@ -830,13 +831,28 @@ async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
     throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId,
       new Error("warm Runner stop unconfirmed (injected test fault)"));
   }
-  try { await closeWarmNativeSession(entry, reason, options); }
-  catch (error) {
-    if (error instanceof AgentDirectoryOperationBusyError) throw new AgentDirectoryPreparationDeferral(error);
-    entry.retirementUnproven = true;
-    throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
+  const directoryWaitDeadline = Date.now() + warmRetirementDirectoryWait.timeoutMs;
+  for (;;) {
+    try {
+      await closeWarmNativeSession(entry, reason, options);
+      entry.retirementDeferred = false;
+      return;
+    } catch (error) {
+      if (error instanceof AgentDirectoryOperationBusyError) {
+        if (Date.now() + warmRetirementDirectoryWait.pollMs <= directoryWaitDeadline) {
+          await new Promise(resolve => setTimeout(resolve, warmRetirementDirectoryWait.pollMs));
+          continue;
+        }
+        entry.retirementDeferred = true;
+        throw new AgentDirectoryPreparationDeferral(error);
+      }
+      entry.retirementUnproven = true;
+      throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
+    }
   }
 }
+
+export const warmRetirementDirectoryWait = { timeoutMs: 60_000, pollMs: 1_000 };
 
 /**
  * An owner whose retirement stayed unproven lives only in its own sandbox,
@@ -940,6 +956,10 @@ export async function claimWarmNativeInstructionCopy(input: {
       forgetWarmNativeSession(scope, entry);
     } finally { entry.busy = false; }
   };
+  if (entry.retirementDeferred) {
+    await retire(entry.closeOnReleaseReason ?? "warm instruction retirement resumed after the agent directory was busy");
+    return null;
+  }
   try {
     const preparationChanged = input.forceRetirement === true || entry.observabilityCompatibilityKey !== input.observabilityCompatibilityKey || entry.githubAccess?.ready === false || entry.instructionWorkingCopy.preparationKey !== input.preparationKey;
     // The prior capability may close over an expired remote lease. Rebind
