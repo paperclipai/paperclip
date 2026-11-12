@@ -243,6 +243,10 @@ import {
   workProductService,
 } from "../services/index.js";
 import {
+  findDiagnosticSmokeCheckoutBlock,
+  recordDiagnosticSmokeCheckoutRejection,
+} from "../services/diagnostic-smoke-capability.js";
+import {
   runnerGoalService,
   RunnerGoalActionError,
   RunnerGoalConflictError,
@@ -17413,6 +17417,38 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
+
+      if (req.actor.type === "agent" && checkoutRunId && req.actor.agentId) {
+        const smokeWarning = await findDiagnosticSmokeCheckoutBlock(db, {
+          companyId: issue.companyId,
+          runId: checkoutRunId,
+          agentId: req.actor.agentId,
+        });
+        if (smokeWarning) {
+          const actor = getActorInfo(req);
+          try {
+            await recordDiagnosticSmokeCheckoutRejection(db, {
+              companyId: issue.companyId,
+              runId: checkoutRunId,
+              agentId: req.actor.agentId,
+              issueId: issue.id,
+              actorId: actor.actorId,
+              agentApiKeyId: actor.agentApiKeyId,
+              warning: smokeWarning,
+            });
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id, runId: checkoutRunId },
+              "failed to record unassigned smoke checkout rejection",
+            );
+          }
+          await denyIssueWrite(req, res, issue, "unassigned_smoke_checkout_rejected", {
+            capability: "diagnostics_only",
+            durableReport: "heartbeat_run_event",
+          });
+          return;
+        }
+      }
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.

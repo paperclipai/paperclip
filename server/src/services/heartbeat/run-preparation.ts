@@ -10,6 +10,7 @@ import { ASSIGNED_MCP_SERVER_NAME } from "../mcp-tool-names.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
 import { boundRunIssueIdSql } from "../run-task-binding.js";
+import { annotateDiagnosticSmokeSnapshot } from "../diagnostic-smoke-capability-policy.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { restConnectorFor } from "../connectors/rest-registry.js";
 import { explicitOperatorRunIdentity } from "../run-identity.js";
@@ -1724,6 +1725,7 @@ export function enrichWakeContextSnapshot(input: {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
+  annotateDiagnosticSmokeSnapshot(contextSnapshot);
 
   return {
     contextSnapshot,
@@ -1936,6 +1938,7 @@ export function mergeCoalescedContextSnapshot(
   ) {
     clearInteractionContinuationWakeContext(merged);
   }
+  annotateDiagnosticSmokeSnapshot(merged);
   return merged;
 }
 
@@ -2344,11 +2347,15 @@ export async function buildPaperclipWakePayload(input: {
           )
           .then((rows) => rows[0] ?? null)
       : null);
+  const diagnosticsOnlyCapability = readNonEmptyString(
+    input.contextSnapshot.diagnosticsOnlyCapability,
+  );
   if (
     commentIds.length === 0 &&
     Object.keys(executionStage).length === 0 &&
     !issueSummary &&
-    !agentMessageText
+    !agentMessageText &&
+    !diagnosticsOnlyCapability
   )
     return null;
 
@@ -2852,6 +2859,7 @@ export async function buildPaperclipWakePayload(input: {
     },
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
+    diagnosticsOnlyCapability,
   };
   return issueId
     ? createRunSecretRedactionRegistry(input.db).redactForIssue(
