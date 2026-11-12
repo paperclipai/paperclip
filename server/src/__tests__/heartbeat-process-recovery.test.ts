@@ -15477,6 +15477,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .toMatchObject({ phase: "completed", label: "Completed" });
   });
 
+  it.each([
+    ["before", "done", "completion_claim_policy_accepted"],
+    ["after", "in_progress", "native_child_completion_pending"],
+  ] as const)("treats a child result saved %s the parent run started as read when the run finishes the task", async (
+    savedRelativeToStart, expectedStatus, expectedReason,
+  ) => {
+    const fixture = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
+    const { companyId, agentId, issueId, runId } = fixture;
+    const childId = randomUUID();
+    const contractId = randomUUID();
+    const runnerInstanceId = randomUUID();
+    const runStartedAt = new Date(Date.now() - 60_000);
+    const childResultSavedAt = new Date(runStartedAt.getTime() + (savedRelativeToStart === "before" ? -30_000 : 30_000));
+    await db.insert(issues).values({ id: childId, companyId, parentId: issueId, title: "Child ledger", status: "done",
+      priority: "medium", responsibleUserId: "responsible-user" });
+    const [childResult] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_execution_deferred",
+      requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${randomUUID()}`,
+      status: "deferred_issue_execution", createdAt: childResultSavedAt, updatedAt: childResultSavedAt,
+      payload: { issueId, _paperclipWakeContext: {
+        issueId, wakeReason: "issue_children_completed", source: "native_status_decision",
+        nativeChildCompletionDecisionId: randomUUID(), completedChildIssueId: childId, childIssueIds: [childId],
+        childIssueSummaries: [{ id: childId, status: "done", summary: "Ledger saved." }],
+      } },
+    }).returning();
+    await db.insert(completionContracts).values({
+      id: contractId, companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1",
+      policyVersion: "phase6-v4", risk: "low", completionAuthority: "agent_claim_policy",
+      incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "1", objective: "Merge the child ledgers.", criteria: [{ id: "objective", requirement: "Merge the child ledgers." }] },
+      canonicalSha256: `child-result-contract-${runId}`, createdByActorType: "system", createdByActorId: "test",
+    });
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "native", nativeIssueId: issueId, nativeSessionId: runId, completionContractId: contractId,
+      completionContractSha256: `child-result-contract-${runId}`, runnerInstanceId,
+      startedAt: runStartedAt, finishedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(issueComments).values({ companyId, issueId, authorType: "agent", authorAgentId: agentId,
+      createdByRunId: runId, body: "Both children are done; merged their ledgers. Task complete." });
+    await new PaperclipControlPlanePort(db, {
+      companyId, issueId, runId, agentId, sessionId: runId, completionContractId: contractId,
+      completionContractSha256: `child-result-contract-${runId}`, sourceInstanceId: runnerInstanceId,
+      controlPlaneSourceInstanceId: `child-result-control-${runId}`,
+    }).completeRun({
+      result: {
+        schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
+        summary: "Both children are done; merged their ledgers. Task complete.",
+        completionClaim: { contractRevision: "1", objectiveSatisfied: true,
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+        evidence: [], verification: [], attentionRequests: [], artifacts: [],
+      },
+      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded",
+        turnTerminalState: "completed", reportedWorkDisposition: "done" },
+    });
+
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toEqual([
+      expect.objectContaining({ reasonCode: expectedReason, toStatus: expectedStatus, applicationState: "applied" }),
+    ]);
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)))
+      .toEqual([expect.objectContaining({ status: expectedStatus })]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, childResult!.id)))
+      .toEqual([expect.objectContaining({ status: "deferred_issue_execution", runId: null })]);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("delays a no-progress native continuation until the rewake cooldown instead of dropping it", async () => {
     const fixture = await seedNativePassiveBoardResponse("same_agent", { assignmentWake: true });
     const finishedAt = new Date(Date.now() - 30_000);
