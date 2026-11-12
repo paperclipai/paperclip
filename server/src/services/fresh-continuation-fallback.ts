@@ -305,6 +305,19 @@ export async function readFreshContinuationReadiness(db: Db, run: Pick<typeof he
   return { mode: "fresh_isolated_workspace" as const, retryIntentId: recordId, sourceRunId, retainedSourceIds: [] as string[] };
 }
 
+/**
+ * True when a wake continues a cut-off run in a new isolated workspace. The
+ * fallback cleared the task's workspace binding on purpose, and the run
+ * prepares a new workspace itself, so admission must not refuse the wake for
+ * lacking that binding (it would refuse it forever).
+ */
+export async function isFreshIsolatedContinuationWake(db: Db, input: { companyId: string; issueId: string;
+  contextSnapshot: Record<string, unknown> | null | undefined }) {
+  if (typeof object(input.contextSnapshot).freshContinuationIsolation !== "string") return false;
+  return (await readFreshContinuationReadiness(db, { id: "", companyId: input.companyId,
+    contextSnapshot: input.contextSnapshot ?? {} }, input.issueId)) !== null;
+}
+
 export async function ensureFreshContinuation(db: Db, input: Input): Promise<FreshContinuationResult> {
   return db.transaction(tx => continueFreshInTransaction(tx as unknown as Db, input));
 }
