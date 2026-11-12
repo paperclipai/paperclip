@@ -16,7 +16,7 @@ import { notifyDeferredWakesForIssue } from "./deferred-execution-notifications.
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { issueService } from "./issues.js";
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
-import { currentControllerProcessStamp } from "./controller-process-identity.js";
+import { proveRunProcessGone } from "./run-process-owner.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
@@ -67,6 +67,8 @@ export const FRESH_CONTINUATION_CHECK_KEY = "freshContinuationCheck" as const;
 export const FRESH_CONTINUATIONS_PER_HOUR = 6;
 export const FRESH_CONTINUATION_WINDOW_MS = 60 * 60_000;
 const PERSON_RECHECK_MS = 60 * 60_000;
+/** Consecutive pending checks (about 12 minutes) before the fallback stops waiting. */
+export const FRESH_CONTINUATION_MAX_PENDING_CHECKS = 6;
 const EXACT_RECOVERY_RECHECK_MS = 2 * 60_000;
 
 /**
@@ -225,6 +227,30 @@ async function fenceSourceWorkspace(tx: Db, run: typeof heartbeatRuns.$inferSele
   }
 }
 
+/**
+ * The one distinction this module turns on: a real human gate versus system
+ * uncertainty.
+ *
+ * A human gate is a decision a person actually made or still owes: a pending
+ * approval or question (`personOwnedTaskWait`), a hold a user owns, or an
+ * operator decision recorded on the hold (an owner-gone attestation, an
+ * explicit continuation, a reconciliation). The fallback never retires or
+ * bypasses one.
+ *
+ * Everything else is system uncertainty, however it is labelled: a
+ * no-replay record (`automaticRecovery.replay: blocked`, "outcome unknown after
+ * an interruption"), a hold whose owner type is `board` because nobody else was
+ * assigned, or a controller whose process space cannot be verified. Owner type
+ * alone never proves that a person must act. For these the fallback starts a
+ * fresh run, never a replay: the interrupted turn is not re-sent, no tool call
+ * or write is re-executed, and any governed action goes through its approval
+ * gate again.
+ */
+export function isHumanGate(hold: Pick<typeof issueRecoveryActions.$inferSelect, "ownerUserId" | "evidence">): boolean {
+  return Boolean(hold.ownerUserId || hold.evidence.ownerGoneAttestation || hold.evidence.explicitUserContinuation
+    || hold.evidence.executionReconciliation);
+}
+
 const isRestoreHold = (hold: typeof issueRecoveryActions.$inferSelect) =>
   hold.evidence.workspaceRestoreFailure !== undefined || hold.evidence.workspaceRestoreRecovery !== undefined;
 const blocksExecution = (hold: typeof issueRecoveryActions.$inferSelect) =>
@@ -233,7 +259,7 @@ const blocksExecution = (hold: typeof issueRecoveryActions.$inferSelect) =>
 /** A reconciliation hold that blocks the task and that this decision settles. */
 function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelect) {
   if (!(EXECUTION_RECONCILIATION_CAUSES as readonly string[]).includes(hold.cause) || !blocksExecution(hold)) return false;
-  if (hold.evidence.executionReconciliation || hold.ownerUserId) return false;
+  if (isHumanGate(hold)) return false;
   // A restore hold is owned only once its saved-work recovery completed.
   return !isRestoreHold(hold) || readSystemRecovery(hold.evidence)?.state === "complete";
 }
@@ -246,17 +272,11 @@ function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelec
  * unsettled allocation); the continuation is isolated from it, never waits.
  */
 async function localWriterState(tx: Db, run: typeof heartbeatRuns.$inferSelect): Promise<"alive" | "ended" | "unproven"> {
-  const stamp = object(run.controllerProcess);
-  const otherHost = typeof stamp.hostHash === "string" && stamp.hostHash !== currentControllerProcessStamp().hostHash;
-  let processes: "none" | "gone" | "alive" | "unknown" = "none";
-  for (const pid of [run.processPid, run.processGroupId ? -run.processGroupId : null]) {
-    if (!pid) continue;
-    if (otherHost) { processes = "unknown"; break; }
-    try { process.kill(pid, 0); processes = "alive"; break; }
-    catch (error) { processes = (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown"; }
-  }
-  if (processes === "alive") return "alive";
-  if (processes === "unknown" || await hasPendingRunCleanup(tx, run.companyId, run.id)) return "unproven";
+  // The shared owner proof compares the recorded process identity (host, PID
+  // space, start time), so a recycled PID is never mistaken for the old writer.
+  const proof = await proveRunProcessGone(run, "fresh_continuation");
+  if (proof?.verdict === "alive") return "alive";
+  if (proof?.verdict === "unprovable" || await hasPendingRunCleanup(tx, run.companyId, run.id)) return "unproven";
   return "ended";
 }
 
@@ -312,7 +332,18 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // The holds this decision owns: reconciliation holds that still block the
   // task. Workspace restore/repair holds stay with workspace recovery, and
   // resolved history is never rewritten.
-  const owned = holds.filter(isOwnedReconciliationHold);
+  const ownedHolds = holds.filter(isOwnedReconciliationHold);
+
+  // Every wait is bounded: after this many consecutive pending checks the
+  // fallback stops waiting and continues in isolation (writes revoked, new root).
+  const pendingChecks = Math.max(0, ...holds.map(hold => {
+    const check = object(hold.evidence[FRESH_CONTINUATION_CHECK_KEY]);
+    return check.kind === "exact_recovery_pending" && typeof check.checks === "number" ? check.checks : 0;
+  }));
+  const waitBounded = pendingChecks >= FRESH_CONTINUATION_MAX_PENDING_CHECKS;
+  // Each recheck is at most ten minutes out, so the bound is reached in time too.
+  const pending = (reason: string, retryAt: Date): FreshContinuationResult | null => waitBounded ? null
+    : { kind: "exact_recovery_pending", reason, retryAt: new Date(Math.min(retryAt.getTime(), now.getTime() + 10 * 60_000)) };
 
   // (a) Something already follows this run: a newer run of the task, a linked
   // replacement, or an operator's continuation.
@@ -326,34 +357,38 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     || holds.some(hold => hold.evidence.executionReconciliation && ["pending", "delivered", "delegated"]
       .includes(String(hold.evidence.continuationDelivery)))) return { kind: "successor_exists" };
 
-  // Exact recovery that is still under way keeps its chance. Each of these is
-  // bounded by its own owner; the fallback is checked again afterwards.
-  if (adapterExecutionControls.has(run.id)) return { kind: "exact_recovery_pending", reason: "execution_settling",
-    retryAt: new Date(now.getTime() + EXACT_RECOVERY_RECHECK_MS) };
+  // Exact recovery that is still under way keeps its chance, for a bounded
+  // number of checks; each owner below also bounds itself.
+  const recheck = new Date(now.getTime() + EXACT_RECOVERY_RECHECK_MS);
+  const waits: Array<FreshContinuationResult | null> = [];
+  if (adapterExecutionControls.has(run.id)) waits.push(pending("execution_settling", recheck));
   if (coordinator?.leaseOwner || (coordinator?.resultId && coordinator.phase !== "committed")
     || (coordinator?.nextAttemptAt && coordinator.nextAttemptAt > now))
-    return { kind: "exact_recovery_pending", reason: "native_finalizer_active",
-      retryAt: coordinator?.nextAttemptAt && coordinator.nextAttemptAt > now ? coordinator.nextAttemptAt
-        : new Date(now.getTime() + EXACT_RECOVERY_RECHECK_MS) };
+    waits.push(pending("native_finalizer_active",
+      coordinator?.nextAttemptAt && coordinator.nextAttemptAt > now ? coordinator.nextAttemptAt : recheck));
   if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now)
-    return { kind: "exact_recovery_pending", reason: "controller_lease_live", retryAt: run.controllerLeaseExpiresAt };
+    waits.push(pending("controller_lease_live", run.controllerLeaseExpiresAt));
   // A preparation that never started provider work has its own bounded retry
   // lane (the ownership pass). It gets the first chance; the fallback follows.
   if (isInterruptedNativePreparationCandidate(run) && !holds.some(hold => hold.evidence[FRESH_CONTINUATION_CHECK_KEY]))
-    return { kind: "exact_recovery_pending", reason: "interrupted_preparation_lane",
-      retryAt: new Date(now.getTime() + EXACT_RECOVERY_RECHECK_MS) };
+    waits.push(pending("interrupted_preparation_lane", recheck));
   for (const hold of holds) {
     const recovery = readSystemRecovery(hold.evidence);
     if (recovery && EXACT_RECOVERY_STATES.includes(recovery.state))
-      return { kind: "exact_recovery_pending", reason: "saved_work_recovery_running",
-        retryAt: new Date(Math.max(now.getTime() + EXACT_RECOVERY_RECHECK_MS, recovery.nextAttemptAt ?? 0)) };
+      waits.push(pending("saved_work_recovery_running",
+        new Date(Math.max(recheck.getTime(), recovery.nextAttemptAt ?? 0))));
     if (!isOwnedReconciliationHold(hold) && isRestoreHold(hold) && blocksExecution(hold) && recovery?.state !== "complete")
-      return { kind: "exact_recovery_pending", reason: "workspace_recovery_owns_restore",
-        retryAt: new Date(now.getTime() + EXACT_RECOVERY_RECHECK_MS) };
+      waits.push(pending("workspace_recovery_owns_restore", recheck));
     const retainedCheck = object(hold.evidence.retainedSourceFallbackCheck);
     if (recovery?.state === "exhausted" && typeof retainedCheck.nextCheckAt === "number" && retainedCheck.nextCheckAt > now.getTime())
-      return { kind: "exact_recovery_pending", reason: "retained_source_fallback_pending", retryAt: new Date(retainedCheck.nextCheckAt) };
+      waits.push(pending("retained_source_fallback_pending", new Date(retainedCheck.nextCheckAt)));
   }
+  const firstWait = waits.find(wait => wait !== null);
+  if (firstWait) return firstWait;
+  // Past the bound, a hold that workspace recovery still owns is settled too:
+  // the continuation never uses that workspace (isolation below).
+  const owned = waitBounded ? holds.filter(hold => isOwnedReconciliationHold(hold)
+    || (isRestoreHold(hold) && blocksExecution(hold) && !isHumanGate(hold))) : ownedHolds;
 
   // (b) Causes that are the person's.
   if (isPersonOwnedFailureCode(run.errorCode)) return { kind: "person_owned", reason: run.errorCode! };
@@ -368,7 +403,10 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     return { kind: "person_owned", reason: "stopped_on_request" };
   // A task in review waits for its reviewer.
   if (issue.status === "in_review") return { kind: "person_owned", reason: "in_review" };
-  if (holds.some(hold => hold.ownerUserId || hold.evidence.ownerGoneAttestation || hold.evidence.explicitUserContinuation))
+  // A recorded operator reconciliation that already delivered a continuation
+  // was handled above (successor_exists); any other human gate stays.
+  if (holds.some(hold => blocksExecution(hold) && isHumanGate(hold) && !hold.evidence.executionReconciliation)
+    || holds.some(hold => hold.ownerUserId || hold.evidence.ownerGoneAttestation || hold.evidence.explicitUserContinuation))
     return { kind: "person_owned", reason: "operator_decision_recorded" };
   const taskWait = await personOwnedTaskWait(tx, { companyId, issue, run });
   if (taskWait) return { kind: "person_owned", reason: taskWait };
@@ -406,7 +444,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const [savedInput] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`)).limit(1);
-  const delivery: "recorded" | "caller_owns" | "saved_input" = input.delivery === "caller_owns" ? "caller_owns"
+  let delivery: "recorded" | "caller_owns" | "saved_input" = input.delivery === "caller_owns" ? "caller_owns"
     : savedInput ? "saved_input" : "recorded";
 
   // (d) Continue: fence the old workspace epoch, settle every hold of the run,
@@ -415,18 +453,23 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const writer = remoteSource ? null : await localWriterState(tx, run);
   // A local process still running on this host is executing: its own owner
   // (the reaper or a Stop) settles it first, then the fallback continues.
-  if (writer === "alive") return { kind: "exact_recovery_pending", reason: "previous_process_running",
+  if (writer === "alive" && !waitBounded) return { kind: "exact_recovery_pending", reason: "previous_process_running",
     retryAt: new Date(now.getTime() + EXACT_RECOVERY_RECHECK_MS) };
   const fenced = await fenceSourceWorkspace(tx, run);
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
-    : writer === "ended" ? "writer_ended" : "fresh_isolated_workspace";
+    : writer === "ended" && !waitBounded ? "writer_ended" : "fresh_isolated_workspace";
+  // With no task workspace binding to move, only a run that carries the
+  // isolation in its context can avoid the shared directory: the recorded
+  // continuation runs first, and saved input follows it.
+  if (isolation === "fresh_isolated_workspace" && !issue.executionWorkspaceId && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
   const note = freshContinuationNote({ runId: run.id, unverified,
     workspace: isolation === "writer_ended" ? "kept" : "restored_last_save" });
-  const decision: ExecutionReconciliation = { runId: run.id, providerStopped: true,
-    // Only a proven end is a stop; otherwise the old executor is isolated: its
-    // writes are revoked and it shares no workspace with the continuation.
+  const decision: ExecutionReconciliation & { providerStopProof: "writer_ended" | "isolated" } = { runId: run.id, providerStopped: true,
+    // Only a proven end is a stop. `isolated` means exactly: the old run's agent
+    // token is refused for writes, and the continuation runs in a new workspace
+    // root (a fenced remote epoch or a new local workspace). Nothing more.
     providerStopProof: isolation === "writer_ended" ? "writer_ended" : "isolated",
     actionOutcome: "mixed", outcomeEvidence: note,
     workspaceRepairEvidence: fenced
@@ -440,6 +483,12 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     stopProof: isolation === "writer_ended" ? "writer_ended" : fenced ? "unproven_epoch_abandoned" : "unproven_isolated",
     unverifiedActions: unverified, ...(fenced ? { workspace: fenced } : {}) };
   const reconciliation = { ...decision, actorId: FRESH_CONTINUATION_ACTOR, recordedAt: now.toISOString() };
+  // Who, what, why and when. A fresh run is not a replay: the interrupted turn
+  // is not re-sent, no tool call or write is re-executed, and any governed
+  // action the new run wants goes through its approval gate again.
+  const settlement = { schema: FRESH_CONTINUATION_SCHEMA, actorType: "system", actorId: FRESH_CONTINUATION_ACTOR,
+    decision: "continue_in_fresh_run", replay: "none", sourceRunId: run.id, failureCode: run.errorCode ?? null,
+    reason: "exact_resumption_unavailable", isolation, unverifiedActions: unverified, recordedAt: now.toISOString() };
   const ownerHold = owned.find(hold => issue.status === "blocked" && holdOwnsBlockedStatus(hold, issue, run)) ?? owned.at(-1);
 
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
@@ -456,12 +505,15 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     primaryId = ownerHold.id;
     for (const hold of owned) {
       const primary = hold.id === ownerHold.id;
-      const { automaticRecovery: _automatic, [FRESH_CONTINUATION_CHECK_KEY]: _check, ...evidence } = hold.evidence;
+      // The earlier no-replay decision stays on the hold as history, and the
+      // fallback is recorded beside it as its own attributed system decision.
+      const { automaticRecovery, [FRESH_CONTINUATION_CHECK_KEY]: _check, ...evidence } = hold.evidence;
       await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: hold.resolvedAt ?? now,
         updatedAt: now, ownerType: "system", ownerAgentId: null, ownerUserId: null, wakePolicy: null, monitorPolicy: null,
         returnOwnerAgentId: primary ? run.agentId : hold.returnOwnerAgentId, nextAction: USER_TEXT,
         resolutionNote: "continued_fresh_from_last_saved",
-        evidence: { ...evidence, executionReconciliation: reconciliation,
+        evidence: { ...evidence, executionReconciliation: reconciliation, freshContinuationSettlement: settlement,
+          ...(automaticRecovery !== undefined ? { automaticRecoveryHistory: automaticRecovery } : {}),
           ...(primary ? { freshContinuation, continuationDelivery }
             : { continuationDelivery: "invalidated", coalescedIntoRecoveryActionId: ownerHold.id }) },
       }).where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.id, hold.id)));
@@ -472,7 +524,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
       returnOwnerAgentId: run.agentId, cause: FRESH_CONTINUATION_CAUSE, fingerprint: `fresh-continuation:${run.id}`,
       nextAction: USER_TEXT, resolutionNote: "continued_fresh_from_last_saved", resolvedAt: now, attemptCount: 1,
       evidence: { runId: run.id, originalFailureCode: run.errorCode ?? null, executionReconciliation: reconciliation,
-        freshContinuation, continuationDelivery } }).returning({ id: issueRecoveryActions.id });
+        freshContinuationSettlement: settlement, freshContinuation, continuationDelivery } }).returning({ id: issueRecoveryActions.id });
     primaryId = created!.id;
   }
   // The replaced run loses its write authority: its agent may still be alive
@@ -485,6 +537,14 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     await tx.update(nativeRunFinalizations).set({ failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb)
       || ${JSON.stringify({ replacementDenied: "fresh_continuation" })}::jsonb` }).where(and(
       eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id)));
+  }
+  // The isolation is a property of the task's next run, whatever path starts
+  // it (a system continuation, saved input, a person's Retry, a sweep wake):
+  // the task no longer points at the directory the old writer may still use,
+  // so every next run prepares a new workspace. The old one is left in place.
+  if (isolation === "fresh_isolated_workspace" && issue.executionWorkspaceId) {
+    await tx.update(issues).set({ executionWorkspaceId: null, workspaceBindingRevision: sql`${issues.workspaceBindingRevision} + 1`,
+      updatedAt: now }).where(and(eq(issues.companyId, companyId), eq(issues.id, issue.id)));
   }
   if (issue.status === "blocked") {
     await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
@@ -509,7 +569,11 @@ export async function recordFreshContinuationCheck(db: Db, input: { companyId: s
   if (result.kind === "continued" || result.kind === "already_continued") return;
   const nextCheckAt = result.kind === "backoff" || result.kind === "exact_recovery_pending" ? result.retryAt.getTime()
     : result.kind === "person_owned" || result.kind === "dependency_wait" ? now.getTime() + PERSON_RECHECK_MS : null;
-  const marker = { kind: result.kind, reason: "reason" in result ? result.reason : null, checkedAt: now.getTime(), nextCheckAt };
+  const [row] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));
+  const prior = object(row?.evidence[FRESH_CONTINUATION_CHECK_KEY]);
+  const checks = prior.kind === result.kind && typeof prior.checks === "number" ? prior.checks + 1 : 1;
+  const marker = { kind: result.kind, reason: "reason" in result ? result.reason : null, checks, checkedAt: now.getTime(), nextCheckAt };
   await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence}
     || jsonb_build_object(${FRESH_CONTINUATION_CHECK_KEY}::text, ${JSON.stringify(marker)}::jsonb)` }).where(and(
     eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));
@@ -538,7 +602,7 @@ export function heldExecutionsAwaitingFreshContinuation(db: Db, now: Date, limit
 }
 
 /** Held reconciliation records of a task's latest unfinished run (joined to its task). */
-function heldExecutionWhere() {
+function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
   return and(
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
       sql`${issueRecoveryActions.evidence}->'executionReconciliation' is null`,
@@ -548,6 +612,8 @@ function heldExecutionWhere() {
         sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
         and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
           sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('complete', 'exhausted')`),
+        options.includeActive ? and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          eq(issueRecoveryActions.kind, "active_run_watchdog")) : undefined,
       ),
       sql`coalesce(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}', '') not in ('scheduled', 'running', 'awaiting_evidence')`,
       isNull(issueRecoveryActions.ownerUserId),
@@ -569,10 +635,13 @@ function heldExecutionWhere() {
 export async function nextFreshContinuationCheckAt(db: Db): Promise<number | null> {
   // The same records the held-run query and the disposition pass would select;
   // a deadline on a record nothing would act on never schedules a scan.
+  // That includes active holds that backed off: the disposition pass rechecks
+  // them when due, and nothing else would wake it then.
   const [held] = await db.select({ at: sql<string | null>`min((${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}')::bigint)` })
     .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
       eq(issues.companyId, issueRecoveryActions.companyId)))
-    .where(and(heldExecutionWhere(), sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`));
+    .where(and(heldExecutionWhere({ includeActive: true }),
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}' is not null`));
   return held?.at ? Number(held.at) : null;
 }
 

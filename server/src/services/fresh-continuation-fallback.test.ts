@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions,
+  activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions,
   issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -10,10 +10,10 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./ex
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
-  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt,
+  heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_MAX_PENDING_CHECKS,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
-import { currentControllerProcessStamp } from "./controller-process-identity.js";
+import { currentProcessSpaceHash } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
@@ -54,7 +54,7 @@ suite("fresh-continuation fallback", () => {
 
   afterEach(async () => {
     await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
-      issue_approvals, approvals, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
+      issue_approvals, approvals, issue_thread_interactions, activity_log, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
   });
 
   afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
@@ -296,7 +296,7 @@ suite("fresh-continuation fallback", () => {
   it("gives the continuation a new isolated workspace while the old local writer may be alive", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
     // Its controller ran on another host (the replaced server), so no probe from here can prove it gone.
-    await db.update(heartbeatRuns).set({ processPid: 4242, controllerProcess: { ...currentControllerProcessStamp(), hostHash: "replaced-server" } })
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
@@ -312,12 +312,44 @@ suite("fresh-continuation fallback", () => {
       sourceRunId: f.runId, retainedSourceIds: [] });
   }, 60_000);
 
-  it("lets a previous process still running on this host settle first", async () => {
+  // The recorded process identity (host, PID space, start time) of this process.
+  const liveIdentity = () => ({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+    processStartedAt: new Date(Date.now() - process.uptime() * 1_000) });
+
+  it("lets a previous process still running on this host settle first, for a bounded number of checks", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
-    await db.update(heartbeatRuns).set({ processPid: process.pid, controllerProcess: currentControllerProcessStamp() })
+    await db.update(heartbeatRuns).set(liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
+    const first = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
+    expect(first).toMatchObject({ kind: "exact_recovery_pending", reason: "previous_process_running" });
+    // Each pending check is counted on the hold; the wait never outlives the bound.
+    for (let check = 0; check < FRESH_CONTINUATION_MAX_PENDING_CHECKS; check++)
+      await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, first);
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(hold!.evidence.freshContinuationCheck).toMatchObject({ checks: FRESH_CONTINUATION_MAX_PENDING_CHECKS });
+    // Past the bound it stops waiting and continues in a new isolated workspace.
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
+  }, 60_000);
+
+  it("does not mistake a recycled PID for the old writer", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
+    // The PID is alive now, but it belongs to a process that started after the old one was recorded.
+    await db.update(heartbeatRuns).set({ ...liveIdentity(), processStartedAt: new Date("2020-01-01T00:00:00Z") })
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
-      .toMatchObject({ kind: "exact_recovery_pending", reason: "previous_process_running" });
+      .toMatchObject({ kind: "continued" });
+  }, 60_000);
+
+  it("bounds every exact-recovery wait, here a controller lease that never lapses", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost" });
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 365 * 86_400_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const waiting = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
+    expect(waiting).toMatchObject({ kind: "exact_recovery_pending", reason: "controller_lease_live" });
+    for (let check = 0; check < FRESH_CONTINUATION_MAX_PENDING_CHECKS; check++)
+      await recordFreshContinuationCheck(db, { companyId, actionId: f.actionId! }, waiting);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace" });
   }, 60_000);
 
   it("keeps the task workspace when the old local writer is proven gone", async () => {
@@ -401,6 +433,87 @@ suite("fresh-continuation fallback", () => {
     expect(FRESH_CONTINUATION_WINDOW_MS).toBe(SERVER_RESTART_RETRY_WINDOW_MS);
   });
 
+  // Governance gates are never retired or bypassed by the fallback.
+  it.each(["question_pending", "user_owned_hold", "operator_continuation_recorded", "owner_gone_attestation"] as const)(
+    "leaves a task behind a real governance gate (%s) for the person", async gate => {
+      const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation" });
+      if (gate === "question_pending") await db.insert(issueThreadInteractions).values({ companyId, issueId: f.issueId,
+        kind: "ask_user_questions", status: "pending", payload: { questions: [] } } as unknown as typeof issueThreadInteractions.$inferInsert);
+      if (gate === "user_owned_hold") await db.update(issueRecoveryActions).set({ ownerType: "user", ownerUserId: userId })
+        .where(eq(issueRecoveryActions.id, f.actionId!));
+      if (gate === "operator_continuation_recorded" || gate === "owner_gone_attestation") {
+        const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+        await db.update(issueRecoveryActions).set({ evidence: { ...hold!.evidence,
+          ...(gate === "owner_gone_attestation" ? { ownerGoneAttestation: { actorId: userId } } : { explicitUserContinuation: { actorId: userId } }) } })
+          .where(eq(issueRecoveryActions.id, f.actionId!));
+      }
+      const before = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!)))[0]!;
+      expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+        .toMatchObject({ kind: "person_owned" });
+      const after = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!)))[0]!;
+      expect(after.evidence).toEqual(before.evidence);
+      expect(after.status).toBe(before.status);
+      await deliver();
+      expect(await successors(f.runId)).toHaveLength(0);
+    }, 60_000);
+
+  // Interruption with an unknown outcome is not a governance gate: the task
+  // continues, but as a fresh run, never a replay, and with an audit trail.
+  it("continues an interrupted governed action as a fresh run, never a replay, and keeps the audit trail", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation",
+      error: "runner_remote_process_identity_unavailable", hold: "settled_blocked" });
+    const [inFlight] = await db.insert(toolInvocations).values({ companyId, agentId, issueId: f.issueId, runId: f.runId,
+      toolName: "github.merge_pull_request", riskLevel: "write", status: "executing", startedAt: new Date() } as typeof toolInvocations.$inferInsert)
+      .returning();
+    const original = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!)))[0]!.evidence.automaticRecovery;
+    await settleUnrecoverableExecutions(db);
+    const next = await expectOneFreshSuccessor(f);
+    // A fresh session: the interrupted turn is not re-sent.
+    expect(next.contextSnapshot).toMatchObject({ forceFreshSession: true });
+    expect(next.sessionIdBefore).toBeNull();
+    // The cut-off tool call is not re-executed: it stays as recorded and no new invocation exists.
+    const invocations = await db.select().from(toolInvocations).where(eq(toolInvocations.issueId, f.issueId));
+    expect(invocations).toEqual([expect.objectContaining({ id: inFlight!.id, runId: f.runId, status: "executing" })]);
+    // The earlier no-replay decision stays as history beside the attributed fallback decision.
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(hold!.evidence.automaticRecoveryHistory).toEqual(original);
+    expect(hold!.evidence.freshContinuationSettlement).toMatchObject({ actorType: "system", actorId: "fresh-continuation",
+      decision: "continue_in_fresh_run", replay: "none", reason: "exact_resumption_unavailable",
+      unverifiedActions: ["github.merge_pull_request"], recordedAt: expect.any(String) });
+    expect((hold!.evidence.executionReconciliation as Record<string, string>).outcomeEvidence).toContain("github.merge_pull_request");
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
+      eq(activityLog.action, "issue.continued_from_saved_work")))).toHaveLength(1);
+  }, 60_000);
+
+  // The isolation decision is a property of the task's next run, whatever path starts it.
+  it("moves the task off the old writer's workspace for every next run, saved input included", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Task workspace", cwd: "/tmp/old-writer" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 2 }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000),
+      contextSnapshot: { issueId: f.issueId, executionWorkspaceId: workspace!.id } }).where(eq(heartbeatRuns.id, f.runId));
+    // A person's saved message is waiting: it continues the task itself.
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: f.issueId } });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "saved_input" });
+    // No delivery path can reach the old directory: the task is no longer bound to it.
+    expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: null, workspaceBindingRevision: 3 });
+    const [kept] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+    expect(kept!.cwd).toBe("/tmp/old-writer");
+  }, 60_000);
+
+  it("records its own isolated continuation when saved input could not avoid a shared directory", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost" });
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: f.issueId } });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+  }, 60_000);
+
   it("backs off instead of blocking once a task used its hourly continuations", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "process_lost" });
     for (let index = 0; index < FRESH_CONTINUATIONS_PER_HOUR; index++) {
@@ -416,11 +529,19 @@ suite("fresh-continuation fallback", () => {
     expect(hold).toMatchObject({ status: "active" });
     expect(hold!.evidence.freshContinuationCheck).toMatchObject({ kind: "backoff", nextCheckAt: expect.any(Number) });
     expect(await continueHeldExecutions(db)).toMatchObject({ continued: 0 });
-    // Once the window has room, the next pass continues it.
+    // With no other event, the disposition worker is scheduled for exactly the
+    // moment the window has room again.
+    const retryAt = (hold!.evidence.freshContinuationCheck as { nextCheckAt: number }).nextCheckAt;
+    expect(retryAt).toBeGreaterThan(Date.now());
+    expect(await nextFreshContinuationCheckAt(db)).toBe(retryAt);
+    expect(await executionControlSchedule(db).disposition()).toBe(retryAt);
+    // The hour passes (the window's records age out and the check falls due);
+    // the scheduled pass alone continues the task.
     await db.execute(sql`update issue_recovery_actions set evidence = jsonb_set(evidence, '{freshContinuation,recordedAt}',
       to_jsonb((now() - interval '2 hours')::text)) where evidence ? 'freshContinuation'`);
-    await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} - 'freshContinuationCheck'` })
-      .where(eq(issueRecoveryActions.id, f.actionId!));
+    await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuationCheck,nextCheckAt}', to_jsonb(${Date.now() - 1_000}::bigint))` }).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await executionControlSchedule(db).disposition()).toBeLessThanOrEqual(Date.now() + 60_000);
     await settleUnrecoverableExecutions(db);
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
       .toMatchObject({ kind: "already_continued" });
