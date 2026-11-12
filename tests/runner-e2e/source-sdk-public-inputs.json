@@ -504,7 +504,7 @@
     "packages/shared/src/validators/sidebar-preferences.ts": "7d950abbd95fcdbf9f7e25191a349e29000a7a2d",
     "packages/shared/src/validators/skill-policy.test.ts": "b9d74af4d8aecfc08db9be8993231e0e10a45179",
     "packages/shared/src/validators/skill-policy.ts": "de586abc4826bd6f90e6e65da9ad203b84208e7a",
-    "packages/shared/src/validators/skill-source.ts": "1146c0180ff82130cfe893b8070692cc1accad0f",
+    "packages/shared/src/validators/skill-source.ts": "f560de18bcb22045f0ed53e8654d8361bff6a698",
     "packages/shared/src/validators/smoke-lab.ts": "9672d163b711124cdfd0d32d919ef0122301d557",
     "packages/shared/src/validators/status-card.test.ts": "26194a5d39ab8924a8676af85cc93fa8bf159245",
     "packages/shared/src/validators/status-card.ts": "9095a835a40b829a83089ddfbe4969db3119b3a4",
