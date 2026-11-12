@@ -29,10 +29,12 @@ function closedClaim(reply: string, selected?: string, other?: string) {
   });
 }
 /** The replies answering the closure-result question: their comments, runs, and whether those runs read the saved case. */
-export interface CloseResultTurn { questionCommentId: string; commentIds: string[]; runIds: string[]; readSavedCase: boolean }
-export function closeResultTurnGrounded(o: Pick<CloseObservation, "origin" | "renderedLinkEvidence" | "comments" | "leadId" | "runs">, turn: CloseResultTurn | undefined, row: Pick<CaseRecord, "id" | "identifier">) {
-  if (!turn || !turn.commentIds.length || !turn.readSavedCase) return false;
-  const replies = o.comments.filter(comment => turn.commentIds.includes(comment.id));
+export interface CloseResultTurn { questionCommentId: string; commentIds: string[]; runIds: string[]; readSavedCase: boolean;
+  /** The saved standing-chat replies of this turn (the observation's `comments` are the primary task's). */
+  replies: Array<{ id: string; authorAgentId?: string | null; createdByRunId?: string | null }> }
+export function closeResultTurnGrounded(o: Pick<CloseObservation, "origin" | "renderedLinkEvidence" | "leadId" | "runs">, turn: CloseResultTurn | undefined, row: Pick<CaseRecord, "id" | "identifier">) {
+  if (!turn || !turn.commentIds.length || !turn.readSavedCase || !Array.isArray(turn.replies)) return false;
+  const replies = turn.replies.filter(comment => turn.commentIds.includes(comment.id));
   return replies.length === turn.commentIds.length && replies.every(comment => comment.authorAgentId === o.leadId && turn.runIds.includes(String(comment.createdByRunId)))
     && turn.runIds.every(id => o.runs.some(run => run.id === id && run.agentId === o.leadId && run.status === "succeeded"))
     && (o.renderedLinkEvidence ?? []).some(link => {
@@ -52,6 +54,7 @@ async function closeResultTurn(ctx: ChatCatalogContext, question: string, row: C
   const events = (await Promise.all(runIds.map(async runId => (await collectRunEvents<Record<string, unknown>>(afterSeq =>
     ctx.input.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=1000`))).map(event => ({ ...event, runId: event.runId ?? runId }))))).flat();
   return { questionCommentId: comments[at]!.id, commentIds: replies.map(comment => comment.id), runIds,
+    replies: replies.map(comment => ({ id: comment.id, authorAgentId: comment.authorAgentId, createdByRunId: comment.createdByRunId })),
     readSavedCase: readRecord(events, [{ operationId: "GET /api/cases/{id}", pathParams: recordParams("id", row.id, row.identifier) }]) };
 }
 export function gradeIntegratorCaseClose(value: unknown) {
