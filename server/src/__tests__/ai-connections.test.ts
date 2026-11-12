@@ -369,6 +369,74 @@ describe("managed AI connections", () => {
     await expect(prepareManagedAiRuntime(db, runInput)).rejects.toThrow();
   });
 
+  // Go and similar tools leave read-only module caches (0555 directories,
+  // 0444 files) in the run home; a plain recursive removal stops with EACCES.
+  const writeReadOnlyModuleCache = async (root: string) => {
+    const module = path.join(root, "go", "pkg", "mod", "example.com", "module@v1.0.0");
+    await fs.mkdir(module, { recursive: true });
+    await writeFile(path.join(module, "go.mod"), "module example.com/module\n");
+    await fs.chmod(path.join(module, "go.mod"), 0o444);
+    for (let dir = module; dir !== root; dir = path.dirname(dir)) await fs.chmod(dir, 0o555);
+  };
+  const restoreOwnerAccess = async (target: string) => {
+    const info = await fs.lstat(target).catch(() => undefined);
+    if (!info?.isDirectory()) return;
+    await fs.chmod(target, 0o700);
+    for (const entry of await fs.readdir(target)) await restoreOwnerAccess(path.join(target, entry));
+  };
+
+  it("removes a finished run home that holds a read-only module cache without changing symlink targets", async () => {
+    const owner = "read-only-run-home";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "anthropic", method: "api_key", ownership: "personal", name: owner, apiKey: "fixture", agentIds: [], allAgents: true }, `fixture-${owner}`);
+    await service.setDefault(companyId, owner, account.grantId);
+    const outside = await mkdtemp(path.join(home, "read-only-outside-"));
+    await writeFile(path.join(outside, "kept"), "outside");
+    await fs.chmod(outside, 0o555);
+    const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: {} });
+    try {
+      await writeReadOnlyModuleCache(runtime.home!);
+      await fs.chmod(path.join(runtime.home!, "go"), 0o755);
+      await fs.symlink(outside, path.join(runtime.home!, "go", "outside-link"));
+      await fs.chmod(path.join(runtime.home!, "go"), 0o555);
+      await runtime.cleanup();
+      await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await stat(outside)).mode & 0o777).toBe(0o555);
+      expect(await readFile(path.join(outside, "kept"), "utf8")).toBe("outside");
+    } finally {
+      await restoreOwnerAccess(runtime.home!);
+      await runtime.cleanup().catch(() => {});
+      await fs.chmod(outside, 0o700);
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("still retains a run home with a read-only module cache when its credential save fails", async () => {
+    const owner = "read-only-retained-home";
+    const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const merge = vi.spyOn(codexAdapter, "decideCodexAuthMerge").mockRejectedValue(new Error("fixture credential save unavailable"));
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+    try {
+      await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth("11"));
+      await writeReadOnlyModuleCache(runtime.home!);
+      await expect(runtime.cleanup()).rejects.toThrow("fixture credential save unavailable");
+      expect(await readFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth("11"));
+      await expect(access(path.join(runtime.home!, "go", "pkg", "mod"))).resolves.toBeUndefined();
+      merge.mockRestore();
+      await reconcileRetainedAiCleanup({ companyId, accountKey: row.grant.id });
+      await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await service.credential(row)).toBe(auth("11"));
+    } finally {
+      merge.mockRestore();
+      await restoreOwnerAccess(runtime.home!);
+      await runtime.cleanup().catch(() => {});
+    }
+  });
+
   it("marks explicit AI selection rejections without changing their HTTP contract", async () => {
     const owner = "selection-blocker-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
