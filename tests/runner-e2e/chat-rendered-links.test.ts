@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { collectConversationLinks, conversationLinkBindings, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, type ConversationLinkInput } from "./chat-rendered-links.js";
+import { collectConversationLinks, conversationLinkBindings, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, waitForSavedTurnReplyRender, type ConversationLinkInput } from "./chat-rendered-links.js";
 
 const card = '<div data-thread-item-kind="project_created" data-thread-anchor="project-created:project"><article aria-label="Project created: Launch"><div><p>Project created</p><a href="/RUN/projects/project">Launch</a></div></article></div>';
 const thread = (content = card) => `<div data-testid="task-chat-thread"><div data-testid="task-chat-history-content"><div data-testid="task-chat-scroller"><div id="comment-human" data-thread-item-kind="human">Create a project called Launch for the new website.</div>${content}<div id="comment-reply" data-thread-item-kind="agent">Created the Launch project. No repositories are connected yet.</div></div></div></div>`;
@@ -122,5 +122,25 @@ describe("waits for the latest saved reply to render before reading links", () =
     delete (window as typeof window & { __paperclipConversationLinkDocument?: string }).__paperclipConversationLinkDocument;
     setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 300);
     expect(await waitForLatestConversationReplyRender(p, bindings, 5_000, 50)).toBe("rendered");
+  });
+});
+
+// Full cohort 3 (fast-responses, choose-primary, set-budget): the run was recorded finished 0.2-1.3s before its
+// reply comment was saved, so a link read right after the run finished saw no reply at all.
+describe("waits for a finished run's reply to be saved, then rendered, before its links are read", () => {
+  const page = () => ({ evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) }) as unknown as Parameters<typeof collectConversationLinks>[0];
+  it("waits for the reply saved after the run finished and for its render", async () => {
+    const saved = input().comments, before = saved.filter(row => row.id !== "reply");
+    document.querySelector('#comment-reply')!.remove();
+    let reads = 0; const comments = async () => (reads++ < 3 ? before : saved);
+    setTimeout(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'), 400);
+    expect(await waitForSavedTurnReplyRender(page(), { comments, leadId: "ceo", runIds: ["run"] }, 3_000, 50)).toBe("rendered");
+    expect(reads).toBeGreaterThan(3);
+  });
+  it("reports a run that saved no reply in time, without waiting past its bound", async () => {
+    const before = input().comments.filter(row => row.id !== "reply");
+    const started = Date.now();
+    expect(await waitForSavedTurnReplyRender(page(), { comments: async () => before, leadId: "ceo", runIds: ["run"] }, 300, 50)).toBe("unsaved");
+    expect(Date.now() - started).toBeLessThan(1_500);
   });
 });

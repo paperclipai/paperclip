@@ -137,6 +137,26 @@ export async function waitForLatestConversationReplyRender(page: Pick<Page, "eva
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
 }
+/** A finished run's reply comment can be saved shortly after the run itself is recorded as finished, and the open
+ * conversation renders it later still. Before acting on a turn's rendered links, wait (bounded) for each finished
+ * lead run's saved reply, then for the latest to render. "unsaved" means no run saved a reply in time. */
+export const TURN_REPLY_SAVE_WAIT_MS = 15_000;
+export async function waitForSavedTurnReplyRender(page: Pick<Page, "evaluate">, input: {
+  comments: () => Promise<Row[]>; leadId: string; runIds: readonly string[];
+}, timeoutMs = TURN_REPLY_SAVE_WAIT_MS, intervalMs = 250): Promise<ConversationReplyRender | "unsaved"> {
+  const deadlineAt = Date.now() + timeoutMs;
+  for (let attempt = 0, attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs)); ; attempt++) {
+    const rows = await input.comments();
+    const replies = rows.filter(row => row.authorAgentId === input.leadId && input.runIds.includes(String(row.createdByRunId)));
+    const saved = input.runIds.length > 0 && input.runIds.every(id => replies.some(row => row.createdByRunId === id));
+    if (saved || attempt + 1 >= attempts || Date.now() >= deadlineAt) {
+      if (!replies.length) return "unsaved";
+      return waitForLatestConversationReplyRender(page, { anchors: rows.map(row => String(row.id)), replies: replies.map(row => String(row.id)) },
+        Math.max(CONVERSATION_REPLY_RENDER_WAIT_MS, deadlineAt - Date.now()), intervalMs);
+    }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
 export async function collectConversationLinks(page: Page, input: ConversationLinkInput) {
   const bindings = conversationLinkBindings(input);
   await waitForLatestConversationReplyRender(page, bindings);
