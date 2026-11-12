@@ -65,9 +65,11 @@ it("binds a dedicated read_case to the case by id, and rejects other cases and f
   expect(readRecord(read(id), reads)).toBe(true);
   // Paid run 43143392360: the result turn read the case record page, `{ caseId, section: "case" }`.
   const page = (input: Record<string, unknown>) => savedCall(input, 200, "2", "run-1", { id }, "read_case", "GET /api/cases/{id}");
-  for (const input of [{ caseId: id, section: "case" }, { caseId: id, section: "fields", limitBytes: 4096 }, { caseId: id, offsetBytes: 0, limitBytes: 8192 }])
+  for (const input of [{ caseId: id, section: "case" }, { caseId: id, section: "case", offsetBytes: 0 }])
     expect(readRecord(page(input), reads), JSON.stringify(input)).toBe(true);
-  for (const input of [{ caseId: other, section: "case" }, { caseId: id, section: "document", documentKey: "review" }])
+  // Pages that may omit the case's status and completion do not count.
+  for (const input of [{ caseId: other, section: "case" }, { caseId: id, section: "document", documentKey: "review" },
+    { caseId: id, section: "fields" }, { caseId: id, section: "case", limitBytes: 4 }])
     expect(readRecord(page(input), reads), JSON.stringify(input)).toBe(false);
   expect(readRecord(read(id, 200, "mcp__paperclip__read_case"), reads)).toBe(true);
   expect(readRecord(read(other), reads)).toBe(false);
