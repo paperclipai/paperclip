@@ -121,6 +121,41 @@ describe("mcpAppDocument", () => {
     expect(doc.indexOf(MCP_APP_NAVIGATION_GUARD)).toBeLessThan(doc.indexOf("window.viewStarted"));
   });
 
+  it("routes links of any target and window.open through ui/open-link", () => {
+    const posted: unknown[] = [];
+    const parentWindow = { postMessage: (message: unknown) => posted.push(message) };
+    const anchors: Array<{ href: string; attrs: Record<string, string> }> = [
+      { href: "https://app.circleback.ai/meetings/m1", attrs: { href: "https://app.circleback.ai/meetings/m1", target: "_blank" } },
+      { href: "https://app.circleback.ai/meetings/m2", attrs: { href: "https://app.circleback.ai/meetings/m2" } },
+      { href: "about:srcdoc#top", attrs: { href: "#top" } },
+      { href: "javascript:alert(1)", attrs: { href: "javascript:alert(1)" } },
+    ];
+    let clickHandler: ((event: unknown) => void) | null = null;
+    const fakeWindow: Record<string, unknown> = { open: () => "real window" };
+    const fakeDocument = {
+      baseURI: "about:srcdoc",
+      addEventListener: (type: string, handler: (event: unknown) => void) => { if (type === "click") clickHandler = handler; },
+    };
+    new Function("window", "document", "parent", MCP_APP_NAVIGATION_GUARD)(fakeWindow, fakeDocument, parentWindow);
+    const prevented: boolean[] = [];
+    for (const anchor of anchors) {
+      let defaultPrevented = false;
+      clickHandler!({
+        defaultPrevented: false,
+        preventDefault: () => { defaultPrevented = true; },
+        target: { closest: () => ({ href: anchor.href, getAttribute: (name: string) => anchor.attrs[name] ?? null }) },
+      });
+      prevented.push(defaultPrevented);
+    }
+    expect((fakeWindow.open as (url: string) => unknown)("https://circleback.ai/meetings/m3")).toBeNull();
+    expect(prevented).toEqual([true, true, false, true]);
+    expect(posted.map((message) => (message as { params: { url: string } }).params.url)).toEqual([
+      "https://app.circleback.ai/meetings/m1",
+      "https://app.circleback.ai/meetings/m2",
+      "https://circleback.ai/meetings/m3",
+    ]);
+  });
+
   it("allows only http(s) external urls", () => {
     expect(safeExternalUrl("https://circleback.ai")).toBe("https://circleback.ai/");
     expect(safeExternalUrl("data:text/html,x")).toBeNull();

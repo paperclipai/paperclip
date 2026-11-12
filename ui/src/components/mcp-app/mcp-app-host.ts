@@ -214,14 +214,18 @@ export function mcpAppDocument(html: string, csp: McpAppResourceCsp): string {
 
 /**
  * Runs before the view's own scripts. The view's frame must never load another
- * document: that document would inherit the frame's message channel. A
- * cross-document navigation of the frame is cancelled (Navigation API, with a
- * link-click fallback) and http(s) destinations open in a new tab through the
- * host instead. Same-document navigations (pushState, hashes) still work.
+ * document: that document would inherit the frame's message channel. The
+ * sandbox allows no popups, so every way out goes through the host's
+ * `ui/open-link` (http and https only, opened in a new tab with noopener):
+ * - cross-document navigations of the frame are cancelled (Navigation API);
+ * - link clicks, whatever their target, are routed to the host;
+ * - `window.open` posts to the host and returns null.
+ * Same-document navigations (pushState, hashes) still work.
  */
 export const MCP_APP_NAVIGATION_GUARD = `(function(){
-var n=0;function open(u){if(/^https?:/i.test(u))parent.postMessage({jsonrpc:"2.0",id:"paperclip-link-"+(++n),method:"ui/open-link",params:{url:u}},"*");}
+var n=0;function open(u){try{u=String(new URL(String(u),document.baseURI))}catch(_){return;}if(/^https?:/i.test(u))parent.postMessage({jsonrpc:"2.0",id:"paperclip-link-"+(++n),method:"ui/open-link",params:{url:u}},"*");}
+window.open=function(u){if(u!=null&&u!=="")open(u);return null;};
 var nav=window.navigation;
 if(nav&&nav.addEventListener)nav.addEventListener("navigate",function(e){var d=e.destination;if(!d||d.sameDocument||e.downloadRequest||!e.cancelable)return;e.preventDefault();open(d.url);});
-document.addEventListener("click",function(e){var t=e.target,a=t&&t.closest?t.closest("a[href]"):null;if(!a||e.defaultPrevented)return;var g=(a.getAttribute("target")||"").toLowerCase();if(g&&g!=="_self"&&g!=="_parent"&&g!=="_top")return;if((a.getAttribute("href")||"").charAt(0)==="#")return;e.preventDefault();open(a.href);},true);
+document.addEventListener("click",function(e){var t=e.target,a=t&&t.closest?t.closest("a[href]"):null;if(!a||e.defaultPrevented)return;if((a.getAttribute("href")||"").charAt(0)==="#")return;e.preventDefault();open(a.href);},true);
 })();`;
