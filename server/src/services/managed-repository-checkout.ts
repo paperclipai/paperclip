@@ -1,4 +1,5 @@
 import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
+import { isGitMountBoundaryMessage } from "./git-mount-boundary-message.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -261,7 +262,8 @@ export async function ensureManagedRepositoriesIgnored(cwd: string, options: { p
   } catch (error) {
     const failure = error as { code?: unknown; signal?: unknown; stderr?: unknown };
     if (options.plainTaskDirectory && failure.code === 128 && failure.signal == null &&
-        failure.stderr === "fatal: not a git repository (or any of the parent directories): .git\n" &&
+        (failure.stderr === "fatal: not a git repository (or any of the parent directories): .git\n" ||
+          isGitMountBoundaryMessage(failure.stderr)) &&
         !process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !process.env.GIT_COMMON_DIR) return;
     throw error;
   }
