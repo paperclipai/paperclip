@@ -5786,19 +5786,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lifetime_fence_fixtures_avoid_automatically_assigned_linux_ports() {
+        let (candidates, _listeners) = reserve_provider_lifetime_fence();
+        if let Some((first, last)) = provider_lifetime_fixture_ephemeral_range() {
+            assert!(candidates.iter().all(|port| !(first..=last).contains(port)));
+        }
+    }
+
+    fn provider_lifetime_fixture_ephemeral_range() -> Option<(u16, u16)> {
+        #[cfg(target_os = "linux")]
+        {
+            let configured = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+                .expect("read Linux automatic port range for lifetime fence isolation");
+            let mut ports = configured.split_whitespace().map(|port| {
+                port.parse::<u16>()
+                    .expect("parse Linux automatic port range")
+            });
+            Some((ports.next().unwrap(), ports.next().unwrap()))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
     fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         // A fixture releases its original listeners before proving cleanup.
         // Never give those candidate ports to another parallel fixture in that
         // gap: its listeners would impersonate the original provider lifetime.
-        static NEXT_CANDIDATE_PORT: AtomicU32 = AtomicU32::new(49_152);
+        // Linux bind(0) listeners and outgoing connections in other tests can
+        // take a released candidate too. Keep this fixture outside that range.
+        let ephemeral_range = provider_lifetime_fixture_ephemeral_range();
+        static NEXT_CANDIDATE_PORT: AtomicU32 = AtomicU32::new(u16::MAX as u32);
         let mut listeners = Vec::new();
         loop {
-            let Ok(port) = u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, Ordering::Relaxed))
-            else {
+            let port = NEXT_CANDIDATE_PORT.fetch_sub(1, Ordering::Relaxed) as u16;
+            if port < 49_152 {
                 break;
-            };
+            }
+            if ephemeral_range.is_some_and(|(first, last)| (first..=last).contains(&port)) {
+                continue;
+            }
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
                 listeners.push(listener);
                 if listeners.len() == 3 {

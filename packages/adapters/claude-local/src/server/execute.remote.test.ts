@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -95,14 +95,23 @@ describe("claude remote execution", () => {
     }
   });
 
-  it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {
+  it.each([false, true])("prepares SSH assets without staging unused managed user skills (managed=%s)", async (managedAiConnection) => {
     vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
     vi.stubEnv("ANTHROPIC_MODEL", "host-only-model");
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-test-grant-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const alternateWorkspaceDir = path.join(rootDir, "workspace-other");
     const instructionsPath = path.join(rootDir, "instructions.md");
+    const source = path.join(rootDir, "source");
+    const configDir = path.join(rootDir, "provider");
+    await mkdir(source);
+    await mkdir(configDir);
+    const nestedAssets = path.join(rootDir, "assets");
+    await mkdir(nestedAssets);
+    await writeFile(path.join(nestedAssets, "guide.md"), "Linked SSH skill reference\n", "utf8");
+    await symlink(nestedAssets, path.join(source, "references"), "junction");
+    await writeFile(path.join(source, "SKILL.md"), "---\nname: remote-probe\ndescription: SSH skill\n---\nSSH skill contents\n", "utf8");
     const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
@@ -127,7 +136,11 @@ describe("claude remote execution", () => {
         engine: "cli",
         command: "claude",
         instructionsFilePath: instructionsPath,
+        managedAiConnection,
+        paperclipRuntimeSkills: [{ key: "company/remote-probe", runtimeName: "remote-probe", source }],
+        paperclipSkillSync: { desiredSkills: ["company/remote-probe"] },
         env: {
+          CLAUDE_CONFIG_DIR: configDir,
           QA_PROJECT_WORKSPACE_CWD: workspaceDir,
           RANDOM_WORKSPACE_CWD: workspaceDir,
           OTHER_ENV: workspaceDir,
@@ -174,6 +187,7 @@ describe("claude remote execution", () => {
       onLog: async () => {},
     });
 
+    expect(await stat(path.join(configDir, "skills")).then(() => true, () => false)).toBe(false);
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       localDir: workspaceDir,

@@ -124,6 +124,29 @@ before selection. These labels use existing authorized account metadata, never
 credentials or authentication paths.
 
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
+
+For managed Claude CLI runs on local and managed-home sandbox targets, Paperclip copies the agent's selected Paperclip skills
+into the isolated, per-run Claude configuration directory. Claude is launched
+with `--setting-sources user` unless a board operator has granted the agent trust
+for the selected exact local project workspace. That grant enables project
+settings, including project skills and hooks, for subsequent runs. Source changes
+revoke the grant. Existing skill destinations are not overwritten;
+skills containing symbolic links cannot be staged and cause the run to fail. The
+temporary configuration is removed with the managed connection runtime. SSH targets
+do not currently receive this managed configuration seed, so this staging does not
+make selected skills discoverable on SSH.
+
+The legacy ACP adapter materializes selected skills separately and supplies their
+paths in its prompt. For managed local runs with no grant, the bundled provider
+excludes project and local settings and receives Paperclip's required permissions directly;
+custom providers are rejected because their source isolation cannot be verified.
+A granted local run loads project and local ACP settings. User settings are loaded
+only when previously opted in with `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1`. The grant
+does not apply to remote execution, Runner, or separate worktrees. In particular,
+remote legacy ACP retains its existing project/local loading behavior; the absence
+of a grant does not disable it. Runner's isolated ACPX mode uses its own provider
+isolation. Verify the effective engine and runtime mode before assuming whether
+repository settings or hooks apply.
 The first successful personal connection sets a default only when none exists.
 The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
 
@@ -639,6 +662,12 @@ requires a fresh session. The metadata is removed before passing session params
 to an adapter. Temporary authentication-home paths do not change the configuration
 fingerprint. These checks do not relax current connection authorization.
 
+Trusted local managed Claude sessions also retain the exact approved workspace-source
+identity. CLI and legacy ACP start fresh when that identity changes, even if the
+agent was re-granted trust before its next turn. Existing trusted sessions without
+this identity start fresh once after upgrade; unchanged identified sources remain
+resumable. Untrusted CLI sessions keep their existing resume behavior.
+
 Quota polling has a 20-second response deadline. Once a managed OAuth refresh
 starts, it has its own 60-second request lifetime so the replacement token body
 can still be read and committed after the dashboard stops waiting. A successful
@@ -963,3 +992,17 @@ uses its existing conditional transition to `stored`; a rejected transition
 rolls back the credentials and connection binding. Already-bound sessions return
 the existing connection without repeating the callback. Local and device login
 services continue to own their final states.
+
+
+### Claude behavior versus workspace consent
+
+Profile import and session retention are Claude execution-configuration settings
+(PR #18150), reused per Legacy Claude member by Pools (PR #19481). They do not
+create a workspace trust grant. The workspace Configuration page owns the
+**Trust this workspace for Claude** panel: its grant binds an agent identity to
+the exact reviewed source. The selector therefore includes company agents
+independently of their current adapter, including agents configured with pools.
+Only an explicit checkbox selection followed by Save grants consent. The existing
+company, board-operator, source revision, supported execution-target, and exact
+workspace checks remain in force; a native Runner or Codex run gains no new
+permission from appearing in the selector.

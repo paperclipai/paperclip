@@ -133,3 +133,35 @@ GET /api/projects/{projectId}/workspaces
 PATCH /api/projects/{projectId}/workspaces/{workspaceId}
 DELETE /api/projects/{projectId}/workspaces/{workspaceId}
 ```
+
+### Claude Project Trust
+
+Board users choose which agents may load a workspace's Claude project settings
+(`.claude/settings.json`, skills, hooks). Both endpoints require a board actor;
+the update also requires workspace write access.
+
+```
+GET /api/projects/{projectId}/workspaces/{workspaceId}/claude-project-trust
+PUT /api/projects/{projectId}/workspaces/{workspaceId}/claude-project-trust
+{
+  "agentIds": ["<agent-id>"],
+  "expectedUpdatedAt": "2026-11-12T10:00:00.000Z",
+  "expectedSource": {
+    "sourceType": "local_path",
+    "cwd": "/path/to/workspace",
+    "repoUrl": null,
+    "repoRef": null,
+    "defaultRef": null,
+    "remoteProvider": null,
+    "remoteWorkspaceRef": null
+  }
+}
+```
+
+`GET` returns `{ "agentIds": [...] }`: the agents whose grant still matches the
+workspace's current source. `PUT` replaces the grant list with at most 100
+agents of the same company and returns the saved `agentIds`.
+`expectedUpdatedAt` and every `expectedSource` field must match the workspace as
+the caller last read it; otherwise the request fails with `409` and the caller
+must refresh the workspace. An agent outside the company returns `422`. Changing
+the workspace source later revokes all grants.

@@ -189,7 +189,7 @@ index 0214a50..73f0c16 100644
      async requestPermissionFromClient(params, toolName, signal, parentToolUseId, ownerSessionId = params.sessionId) {
          if (signal.aborted)
              throw new Error("Tool use aborted");
-@@ -5311,14 +5443,24 @@ export class ClaudeAcpAgent {
+@@ -5311,14 +5443,40 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -200,6 +200,22 @@ index 0214a50..73f0c16 100644
 +            // Subagent progress summaries (~30s) feed the task chat's subagent card.
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { agentProgressSummaries: true }),
              ...(settings && { settings }),
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "0" && { settingSources: process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === "1" ? ["user", "project", "local"] : ["project", "local"] }),
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "1" && {
++                settingSources: process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === "1" ? ["user"] : [],
++                settings: {
++                    ...(typeof settings === "object" && settings ? settings : {}),
++                    ...JSON.parse(process.env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS || "{}"),
++                },
++            }),
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_MANAGED === "1" && {
++                settings: {
++                    ...(typeof settings === "object" && settings ? settings : {}),
++                    ...(process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "1" ? JSON.parse(process.env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS || "{}") : {}),
++                    apiKeyHelper: "",
++                    env: { ...(typeof settings === "object" && settings ? settings.env : {}), ...JSON.parse(process.env.PAPERCLIP_MANAGED_AUTH_SECRET || "") },
++                },
++            }),
              env,
              // Override certain fields that must be controlled by ACP
              cwd: params.cwd,
@@ -236,10 +252,12 @@ diff --git a/dist/settings.js b/dist/settings.js
 index fff1f03..2d98307 100644
 --- a/dist/settings.js
 +++ b/dist/settings.js
-@@ -88,6 +88,12 @@ export class SettingsManager {
+@@ -88,6 +88,13 @@ export class SettingsManager {
      async loadAllSettings() {
          try {
-             const resolved = await resolveSettings({ cwd: this.cwd });
+-            const resolved = await resolveSettings({ cwd: this.cwd });
++            const isolateLegacyProject = process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "1";
++            const resolved = await resolveSettings({ cwd: this.cwd, ...(isolateLegacyProject && { settingSources: process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === "1" ? ["user"] : [] }) });
 +            const userPath = resolved.sources.find((entry) => entry.source === "user")?.path;
 +            for (const entry of resolved.sources) {
 +                if (userPath && entry.source === "project" && entry.path === userPath) {

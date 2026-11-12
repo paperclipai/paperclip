@@ -5394,6 +5394,34 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/projects/{id}/workspaces/{workspaceId}/claude-project-trust",
+  tags: ["projects"],
+  summary: "Read Claude project settings trust for current company agents",
+  request: { params: z.object({ id: z.string(), workspaceId: z.string() }) },
+  responses: { 200: r.ok(z.object({ agentIds: z.array(z.string().uuid()) })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/workspaces/{workspaceId}/claude-project-trust",
+  tags: ["projects"],
+  summary: "Replace Claude project settings trust",
+  description: "Board workspace writers only. Grants bind to the current source; stale workspace saves return 409.",
+  request: {
+    params: z.object({ id: z.string(), workspaceId: z.string() }),
+    body: jsonBody(z.object({
+      agentIds: z.array(z.string().uuid()).max(100), expectedUpdatedAt: z.string().datetime(),
+      expectedSource: z.object({ sourceType: z.string(), cwd: z.string().nullable(), repoUrl: z.string().nullable(),
+        repoRef: z.string().nullable(), defaultRef: z.string().nullable(), remoteProvider: z.string().nullable(),
+        remoteWorkspaceRef: z.string().nullable() }).strict(),
+    }).strict()),
+  },
+  responses: { 200: r.ok(z.object({ agentIds: z.array(z.string().uuid()) })), 400: r.badRequest,
+    401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
 // ─── Routines ────────────────────────────────────────────────────────────────
 
 registry.registerPath({
