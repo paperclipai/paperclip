@@ -597,7 +597,6 @@ export function GitHubAccessEditor({
   const boardAccess = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const links = useQuery({
     queryKey: ["github-linked-members", endpointId],
