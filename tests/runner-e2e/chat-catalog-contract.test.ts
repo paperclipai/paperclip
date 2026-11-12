@@ -35,7 +35,8 @@ describe("catalog oracle contract", () => {
     // instance-operations.instance-settings retargeted from the removed Agent Chat toggle (always on since #19360) to the Cases experiment.
     // execution-environments.choose-capable-target: the second computer is a saved SSH target advertised for Claude Code but never tested.
     // questions-and-approvals.necessary-question: the answer may shape the saved deliverable as well as the brief.
-    expect(chatCatalogInventoryDigest).toBe("9a619ae82ff1aaa6a63b723b57c791adfe37e6ab438acc45431fef75c8611dcd");
+    // tasks.assignment-conflict: the query names the Website task, since "this task" in a chat can mean the chat.
+    expect(chatCatalogInventoryDigest).toBe("9686d865ec65ae3c05652b7ce586286f9e7a5f79950b2dc0a3ec0f4512addccc");
     for (const implementation of chatCatalogCases) expect(chatCatalogScenarios.some(row => row.id === implementation.scenarioId)).toBe(true);
   });
 });

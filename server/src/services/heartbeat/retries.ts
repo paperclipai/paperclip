@@ -32,7 +32,7 @@ import {
   serverRestartAttemptCount,
   serverRestartBudgetSpent,
 } from "../execution-recovery-attempt.js";
-import { isServerReplacementInterruption } from "../server-replacement-interruption.js";
+import { isReplacedPreparation, isServerReplacementInterruption } from "../server-replacement-interruption.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
@@ -189,7 +189,8 @@ export function evaluateQuotaFailoverEvidence(input: {
   return { allowed: true };
 }
 
-type LaneRun = Parameters<typeof executionFailureRetryCount>[0] & Partial<Parameters<typeof isServerReplacementInterruption>[0]>;
+type LaneRun = Parameters<typeof executionFailureRetryCount>[0] & Partial<Parameters<typeof isServerReplacementInterruption>[0]>
+  & { controllerProcess?: unknown };
 
 /**
  * A server restart or replacement ended this run, so its continuation uses the
@@ -198,14 +199,25 @@ type LaneRun = Parameters<typeof executionFailureRetryCount>[0] & Partial<Parame
  * still has failure budget. Once real failures spent that budget, the
  * preparation lane refuses, but a restart is still not a failure, so the run
  * continues in the server-restart lane.
+ *
+ * The exception applies only when the preparation lane really takes the run.
+ * scheduleBoundedRetryForRun passes its own verdict. Without one, only an
+ * interrupted run qualifies. A legacy run that the orphan reaper ended as
+ * `process_lost` while it was preparing carries the same bootstrap marker, but
+ * the preparation lane refuses it: it continues in this lane when its row names
+ * the replaced owner (isReplacedPreparation), and otherwise keeps the charged
+ * transient-failure lane.
  */
-export function usesServerRestartLane(run: LaneRun): boolean {
+export function usesServerRestartLane(run: LaneRun, preparationLaneTakesRun?: boolean): boolean {
   if (!run.status || !run.runtimeMode || !isServerReplacementInterruption({ runtimeMode: run.runtimeMode, status: run.status,
     errorCode: run.errorCode ?? null, resultJson: run.resultJson ?? null, controllerBootId: run.controllerBootId ?? null }))
     return false;
   const preparation = parseObject(run.resultJson?.executionRecovery);
-  const interruptedPreparation = preparation.kind === "bootstrap" && preparation.providerWorkStarted === false;
-  return !interruptedPreparation || executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+  const bootstrap = preparation.kind === "bootstrap" && preparation.providerWorkStarted === false;
+  if (!bootstrap || executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS) return true;
+  if (preparationLaneTakesRun ?? run.status === "interrupted") return false;
+  return isReplacedPreparation({ runtimeMode: run.runtimeMode, status: run.status, errorCode: run.errorCode ?? null,
+    resultJson: run.resultJson ?? null, controllerBootId: run.controllerBootId ?? null, controllerProcess: run.controllerProcess });
 }
 
 export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0]
@@ -571,7 +583,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // A run that a server restart or replacement ended did not fail: it
     // continues in the server-restart lane and never spends the failure budget.
     const retryReason = opts?.retryReason ??
-      (usesServerRestartLane(run) ? SERVER_RESTART_RETRY_REASON
+      (usesServerRestartLane(run, interruptedPreparation) ? SERVER_RESTART_RETRY_REASON
         : interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
@@ -1174,8 +1186,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
+          // A preparation that a shutdown or restart stopped before provider
+          // work continues in the uncharged interrupted_preparation lane while
+          // its failure budget is unspent, and in server_restart after that.
           const continuation = issueId && (retryReason === "transient_failure" || retryReason === SERVER_RESTART_RETRY_REASON
-            || isPreparationWaitRetryReason(retryReason)
+            || retryReason === INTERRUPTED_PREPARATION_RETRY_REASON || isPreparationWaitRetryReason(retryReason)
             || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON)
             ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,

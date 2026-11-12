@@ -48,7 +48,7 @@ import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } fr
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
-import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
+import { finishedLegacyControllerOwnerStamp, legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
 import { completedTurnCleanupHoldWhere, settleCompletedTurnCleanupHolds } from "../native-runtime/completed-turn-cleanup-hold-settlement.js";
 import {
@@ -1065,7 +1065,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   }, versionLock(heartbeatRuns)),
   {
     // A preparation a shutdown interrupted, held before its no-provider-work
-    // proof could exist. Its owner is the recorded controller process: the
+    // proof could exist, or one the orphan reaper ended as process_lost. Its
+    // owner is the recorded controller process: the
     // shared prover must prove it gone (a missing stamp, or one from another
     // host or PID space, is unprovable and stays held). The settle re-checks
     // the durable proof and replays the preparation exactly once.
@@ -1073,7 +1074,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
       heldInterruptedPreparationWhere(), row => {
-        const stamp = legacyControllerOwnerStamp(row);
+        // A preparation the orphan reaper ended has a revoked lease: its owner
+        // is still the recorded controller process.
+        const stamp = finishedLegacyControllerOwnerStamp(row);
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleHeldInterruptedPreparation,

@@ -10,6 +10,7 @@ import {
   agents,
   budgetPolicies,
   companies,
+  completionContracts,
   createDb,
   environmentLeases,
   environments,
@@ -19,7 +20,10 @@ import {
   issueComments,
   issues,
   nativeRunFinalizations,
+  nativeRunResults,
   sandboxCreationOperations,
+  statusDecisions,
+  workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -957,6 +961,41 @@ describe("report-only ownership reconciliation", () => {
       updatedAt: minutesAgo(30), monitorNextCheckAt: new Date(Date.now() + 60 * 60_000) });
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
+  });
+
+  it("treats a current committed response-wake wait as a next action until a user answers it", async () => {
+    const issueId = randomUUID(), runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID();
+    const assessmentId = randomUUID(), decisionId = randomUUID(), startedAt = minutesAgo(40);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Waiting for the board", status: "in_progress",
+      assigneeAgentId: agentId, updatedAt: minutesAgo(30) });
+    await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "test", objective: "Wait", criteria: [{ id: "objective", requirement: "Wait" }] },
+      canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, runtimeMode: "native", status: "succeeded",
+      nativeIssueId: issueId, nativeSessionId: runId, completionContractId: contractId, completionContractSha256: contractId,
+      contextSnapshot: { issueId }, startedAt, finishedAt: minutesAgo(35) });
+    await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId,
+      serverFingerprint: "test", schemaStatus: "accepted", resultJson: {}, canonicalSha256: resultId });
+    await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId, runId, contractId, resultId,
+      triggerKind: "turn_finished", triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: 1,
+      policyVersion: "test", assessmentJson: {}, inputDigest: assessmentId });
+    await db.insert(statusDecisions).values({ id: decisionId, companyId, issueId, runId, assessmentId, decisionVersion: 1,
+      policyVersion: "test", fromStatus: "in_progress", toStatus: "in_progress", reasonCode: "response_wake_waiting_for_input",
+      decisionJson: {}, decisionDigest: decisionId, applicationState: "applied", appliedAt: minutesAgo(35) });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "committed", resultId, assessmentId, decisionId });
+    await db.update(issues).set({ lastStatusDecisionId: decisionId, updatedAt: minutesAgo(30) }).where(eq(issues.id, issueId));
+    const visible = async () => (await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false }))
+      .violations.filter(violation => violation.rule === "I7_visible_next_action").map(violation => violation.recordId);
+
+    expect(await visible()).toEqual([]);
+    await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "board",
+      body: "Go ahead.", createdAt: minutesAgo(20) });
+    expect(await visible()).toEqual([issueId]);
+    await db.delete(issueComments).where(eq(issueComments.issueId, issueId));
+    await db.update(issues).set({ lastStatusDecisionId: null, updatedAt: minutesAgo(30) }).where(eq(issues.id, issueId));
+    expect(await visible()).toEqual([issueId]);
   });
 
   it("returns the end of the next-action grace window for an issue still inside it", async () => {

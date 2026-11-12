@@ -1221,7 +1221,7 @@ export class PaperclipRunnerToolAuthority {
       }
       // A new call that would be rejected before dispatch must not reserve a
       // pending receipt; that would make its callId report an unknown outcome.
-      assertRunnerApiDispatchable(operation, input, Object.keys(record(value)));
+      assertRunnerApiDispatchable(operation, input, record(value));
       if (Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
       receipts[key] = { digest, operationId: operation.operationId, state: "pending" };
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
