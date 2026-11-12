@@ -1,3 +1,8 @@
+import { currentControllerProcess } from "../../services/controller-process-identity.js";
+import { photonCoverageFingerprint } from "../../services/chat-channels/imessage-photon/idle-coverage.js";
+import { readIdleIncomingWakeProof } from "../../services/idle-incoming-wake.js";
+import type { VerifiedIdleCapabilities } from "../../services/idle-incoming-wake-capability.js";
+import { verifyCloudControlAssertion, CLOUD_CONTROL_AUDIENCE, CLOUD_CONTROL_JWS_TYPE, CLOUD_RUNTIME_IDENTITY_ISSUER } from "../../services/cloud-runtime-identity.js";
 import express from "express";
 import request from "supertest";
 import { createServer, type Server } from "node:http";
@@ -17,7 +22,7 @@ import { joinConnectionEventWakeEnrollment } from "../../services/connection-eve
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { Readable } from "node:stream";
 import type { StorageService } from "../../storage/types.js";
-import { createHash, createPublicKey, randomUUID, generateKeyPairSync, verify } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, generateKeyPairSync, sign, verify } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -783,6 +788,9 @@ describe("iMessage Photon channel control plane", () => {
       t = await setup(); await t.start(); await t.qualify();
       const localRuntime = t.service.runtime.get(t.endpoint.id);
       expect(localRuntime).not.toBeNull();
+      const [originalLease] = await db.select().from(chatEndpointLeases).where(and(
+        eq(chatEndpointLeases.endpointId, t.endpoint.id), eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")));
+      if (!originalLease) throw new Error("Normal existing local Runtime lease is absent");
       const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
       expect(before.status).toBe("active");
@@ -860,6 +868,39 @@ describe("iMessage Photon channel control plane", () => {
       expect(errors).toEqual([]);
       expect(await db.select().from(chatEndpointLeases).where(and(eq(chatEndpointLeases.endpointId, t.endpoint.id),
         eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")))).toEqual([]);
+      if (!recovered) throw new Error("Normal online handoff state is absent");
+      const ownerId = randomUUID(), generation = photonHash([ownerId, recovered.handoffId]);
+      const incomingWake = { version: 1, ownerId, generation, routes: ["photon-broker-events-v1"],
+        photonBroker: { version: 1, instanceId: pending.instanceId, generation, count: 1,
+          bindingsFingerprint: photonCoverageFingerprint([{ binding: recovered.binding, handoffId: recovered.handoffId,
+            subject: recovered.identity.subject, deliveredThrough: recovered.acceptedSequence }]) } };
+      // Controlled Cloud signing authority, verified by the normal production
+      // verifier; not a cast of parsed/unverified coverage or Cloud SDK readiness.
+      const pair = generateKeyPairSync("ed25519"), kid = randomUUID(), issued = Math.floor(Date.now() / 1000);
+      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+      const header = encode({ alg: "EdDSA", typ: CLOUD_CONTROL_JWS_TYPE, kid });
+      const payload = encode({ v: 1, iss: CLOUD_RUNTIME_IDENTITY_ISSUER, aud: CLOUD_CONTROL_AUDIENCE,
+        sub: pending.instanceId, action: "task-drain:read", requestId: randomUUID(), iat: issued, exp: issued + 60,
+        idleCapabilities: { incomingWake } });
+      const compactJws = `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`), pair.privateKey).toString("base64url")}`;
+      const verified = verifyCloudControlAssertion({ compactJws, expectedAction: "task-drain:read", env: {
+        PAPERCLIP_CLOUD_STACK_ID: pending.instanceId,
+        PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: JSON.stringify({ keys: [{ ...pair.publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "EdDSA" }] }),
+      } }).idleCapabilities;
+      if (!verified) throw new Error("Normal signed Cloud coverage verification produced no capability");
+      const allocations = vi.spyOn(photonOwnedClients, "createOwnedPhotonClient");
+      const closeCalls = vi.mocked(t.f.client.close).mock.calls.length;
+      const retainedBeforeProof = await state.read(PHOTON_EXTERNAL_STATE);
+      await expect(db.transaction(tx => readIdleIncomingWakeProof(tx, { capabilities: verified as VerifiedIdleCapabilities,
+        ownerId, receiverOwner: db })), "normal online handoff must certify incoming wake after its exact local close")
+        .resolves.toMatchObject({ endpointIds: [t.endpoint.id], connectionIds: [connection.id] });
+      expect(recovered.localResource?.id).toBe(recovered.localResourceId);
+      expect(recovered.localResource?.closed).toBe(true);
+      expect(recovered.localResource?.leaseDigest).toBe(photonHash(originalLease.token));
+      expect(recovered.localResource?.controller).toEqual(await currentControllerProcess());
+      expect(await state.read(PHOTON_EXTERNAL_STATE)).toEqual(retainedBeforeProof);
+      expect(allocations).not.toHaveBeenCalled();
+      expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls);
     } catch (error) { primary = { error }; }
     finally {
       const cleanup: unknown[] = [];

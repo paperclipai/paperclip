@@ -424,6 +424,15 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       const runtime = await options.runtimeFor(record.endpoint, { requireDiscordOwnership: true });
       const context = options.context(runtime), lease = options.ownership(id);
       if (!context || !lease || lease.context !== context || context.endpointRuntime !== runtime || lease.stopping) throw new Error("Photon normal local resource lease changed");
+      const config = await options.config(record);
+      const controller = await currentControllerProcess();
+      if (controller.hostHash === UNKNOWN_PROCESS_SPACE || !controller.processStartedAt)
+        throw conflict("Photon existing local resource requires its actual process birth and namespace");
+      if (options.currentRuntime(id) !== runtime || options.context(runtime) !== context || options.ownership(id) !== lease
+        || context.endpointRuntime !== runtime || lease.context !== context || lease.stopping
+        || runtime.companyId !== record.endpoint.companyId || runtime.endpointId !== id
+        || lease.companyId !== record.endpoint.companyId || lease.endpointId !== id || lease.leaseKey !== "photon_receiver_runtime")
+        throw conflict("Photon existing local resource ownership changed before handoff capture");
       const currentIdentity: PhotonExternalIdentity = { companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
         runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject: identity.subject };
       const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
@@ -431,7 +440,10 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       // persistence callbacks still see the exact current object/lease; removing
       // it first would turn cleanup debt into an obsolete-context no-op.
       const resourceId = resources.capture(runtime, async () => { await runtime.shutdown(); });
-      const input = { identity: currentIdentity, lease, config: await options.config(record), localResourceId: resourceId };
+      // This Runtime already exists. Capture its exact live process/lease before
+      // handoff, not before its original constructor and never after a crash.
+      const localResource: PhotonResourceDescriptor = { id: resourceId, controller, leaseDigest: photonHash(lease.token), closed: false };
+      const input = { identity: currentIdentity, lease, config, localResourceId: resourceId, localResource };
       const prepared = await owner.prepare(input);
       if (prepared.phase === "enrolling") await joinConnectionEventWakeEnrollment(db);
       await owner.reconcile(input);

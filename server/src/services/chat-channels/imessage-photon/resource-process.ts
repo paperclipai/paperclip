@@ -2,7 +2,8 @@ import { currentProcessSpaceHash, readControllerProcess, UNKNOWN_PROCESS_SPACE }
 import { proveOwnerGone, type ProcessProbe } from "../../owner-proof.js";
 import type { PhotonExternalState, PhotonResourceDescriptor } from "./external-contract.js";
 
-/** Only a descriptor saved before this allocation can prove its process lifetime.
+/** A descriptor must be reserved before allocation or captured from the exact
+ * still-owned live Runtime before handoff; never reconstructed after a crash.
  * Controller fencing, platform replacement and TTL never certify socket closure. */
 export async function photonResourceProcessEnded(state: PhotonExternalState, probe?: ProcessProbe): Promise<boolean> {
   const resource = state.localResource;
