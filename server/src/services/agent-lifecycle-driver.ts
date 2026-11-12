@@ -10,6 +10,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleDriver } from "../modules/agent-lifecycle/index.js";
 import { agentHarnessVerificationService } from "./agent-harness-verification.js";
 import { agentInstanceSecretService } from "./agent-instance-secrets.js";
+import { AGENT_LIFECYCLE_STOP_REASON, COMPANY_ARCHIVED_STOP_REASON } from "./governance-pause-stop.js";
 
 export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): LifecycleDriver {
   const { verify } = agentHarnessVerificationService(db, manager);
@@ -62,7 +63,7 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
           : [agent.id, ...listInvalidOrgChainDescendantIds(agent.id,
             await db.select().from(agents).where(eq(agents.companyId, agent.companyId)))];
         const reason = agent.lifecycleHolds?.includes("company_archived")
-          ? "Cancelled because the company was archived" : "Agent lifecycle stop requested";
+          ? COMPANY_ARCHIVED_STOP_REASON : AGENT_LIFECYCLE_STOP_REASON;
         // Record what this pause stopped the runs for, so a budget resume
         // continues only the work its own budget stopped, never a manual pause.
         if (agent.lifecycleState === "pausing") {

@@ -1139,8 +1139,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
+          // A preparation that a shutdown or restart stopped before provider
+          // work continues in the uncharged interrupted_preparation lane while
+          // its failure budget is unspent, and in server_restart after that.
           const continuation = issueId && (retryReason === "transient_failure" || retryReason === SERVER_RESTART_RETRY_REASON
-            || isPreparationWaitRetryReason(retryReason)
+            || retryReason === INTERRUPTED_PREPARATION_RETRY_REASON || isPreparationWaitRetryReason(retryReason)
             || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON)
             ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,

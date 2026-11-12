@@ -1720,6 +1720,11 @@ function invalidateActivityQueries(
           },
         });
       }
+      const visibleConversation = !!options?.pathname && action === "issue.updated"
+        && (() => {
+          const context = resolveVisibleIssueRouteContext(queryClient, options.pathname!, { isForegrounded: options.isForegrounded });
+          return !!context?.conversation && context.issueRefs.has(entityId);
+        })();
       for (const ref of issueRefs) {
         const invalidationOptions =
           selfCommentActivity ||
@@ -1729,8 +1734,8 @@ function invalidateActivityQueries(
             : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
-        if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        if (action === "issue.comment_added" || action === "issue.conversation_session_started" || visibleConversation) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...(visibleConversation ? undefined : invalidationOptions) });
         }
         if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
           // These cards are durable API objects, not streamed text. Refresh the

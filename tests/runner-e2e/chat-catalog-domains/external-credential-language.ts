@@ -59,6 +59,13 @@ export function unsafeCredentialTransfer(text:string):boolean {
  const secureSurface=/(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|\/company\/settings\/secrets(?:\s+(?:form|page|field))?|secure\s+settings|Set my value|secure\s+(?:form|page|field|dialog)/i;
  const surfaces=new RegExp(secureSurface.source+"|https?://\\S+|\\b(?:page|form|field|dialog)\\b","gi");
  const secureBefore=(position:number)=>secureSurface.test([...normalized.slice(0,position).matchAll(surfaces)].at(-1)?.[0]??"");
+ // One instruction is one line (a list item or paragraph line). A request that names no destination of its own
+ // ("Open [company Secrets](/COM/company/settings/secrets) → New secret, name it, paste the value.") goes to the
+ // nearest surface that instruction named before it; it is secure only when that surface is the secure page.
+ const secureInInstruction=(position:number)=>{
+  const nearest=[...normalized.slice(normalized.lastIndexOf("\n",position-1)+1,position).matchAll(surfaces)].at(-1)?.[0];
+  return !!nearest&&secureSurface.test(nearest);
+ };
  const secureDestination=/^\s+(?:only\s+)?(?:in|into|on|via|through|using)\s+(?:(?:the|this|your)\s+)?(?:(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|(?:secure\s+)?Secrets\s+(?:form|page|field)|secure\s+(?:form|page|field|dialog))\s*$/i;
  if(/\bafter\s+(?:saving|storing|writing|entering)\b[^.!?;\n]{0,100}\b(?:key|credential|token|secret)\b[^.!?;\n]{0,60}\b(?:plaintext|files?|email|chat)\b/i.test(normalized))return true;
  if(/\b(?:what|which)\b[^.!?;\n]{0,80}\b(?:key|credential|token|secret)\s+value\b/i.test(normalized))return true;
@@ -84,6 +91,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
    if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret|password)\b/i.test(destination))continue;
    if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)(?:\s+and\s+save)?\s*$/i.test(destination))continue;
+   if(!destination.trim()&&/^(?:paste|enter|type)$/i.test(request[0])&&secureInInstruction(partStart+request.index))continue;
    return true;
   }
  }
