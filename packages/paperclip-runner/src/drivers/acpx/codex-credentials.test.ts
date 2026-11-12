@@ -920,7 +920,7 @@ describe("managed Codex credentials", () => {
   it.runIf(process.platform !== "win32")(
     "isolates retries after a directory open never settles",
     async () => {
-      const fixture = await credentialFixture();
+      const [fixture] = await credentialFixturesWithAvailableQuorum(1);
       const actualFs =
         await vi.importActual<typeof import("node:fs/promises")>(
           "node:fs/promises",
@@ -956,7 +956,7 @@ describe("managed Codex credentials", () => {
         agentHomeDirectory: fixture.home,
         environment: { OPENAI_API_KEY: "launch-only-key" },
       });
-      await firstOpen;
+      await Promise.race([firstOpen, staging]);
       await vi.advanceTimersByTimeAsync(1_001);
       const lease = await staging;
       expect(directoryOpenAttempts).toBe(1);
