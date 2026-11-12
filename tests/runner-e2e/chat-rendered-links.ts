@@ -20,6 +20,22 @@ export function markdownLinkTargets(text: string): string[] {
     ...[...text.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!),
   ];
 }
+export function mislabeledIssueLinks(text: string, identifierFor: (pathId: string) => string | undefined = () => undefined): string[] {
+  const identifier = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+  return [...text.matchAll(/\[((?:[^\[\]]|\[[^\]]*\])*)\]\(\s*<?([^)\s>]+)>?[^)]*\)?/g)].flatMap(match => {
+    const label = match[1]!, target = match[2]!;
+    let pathname: string;
+    try { pathname = decodeURIComponent(new URL(target, "http://paperclip.invalid").pathname); } catch { return []; }
+    const parts = pathname.split("/").filter(Boolean); const index = parts.indexOf("issues"); const pathId = index >= 0 ? parts[index + 1] : undefined;
+    if (!pathId) return [];
+    const opened = (identifier.test(pathId) ? pathId : identifierFor(pathId))?.toUpperCase();
+    if (!opened) return [];
+    const prefix = opened.split("-")[0]!;
+    const named = [...label.matchAll(/(?<![\w-])([A-Za-z][A-Za-z0-9]*-\d+)(?![\w-])/g)].map(token => token[1]!.toUpperCase())
+      .filter(token => token.split("-")[0] === prefix);
+    return named.length > 0 && !named.includes(opened) ? [match[0]] : [];
+  });
+}
 /** A link target that still holds a template placeholder such as <prefix> or {companyId}; it opens no real page. */
 export function unresolvedLinkTarget(href: string): boolean {
   let decoded = href;
