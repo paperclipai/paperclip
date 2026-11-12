@@ -55,7 +55,13 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import {
+  detectClaudeLoginRequired,
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+  isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
+} from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -431,6 +437,41 @@ export function mapClaudeAcpAuthErrorCode(
   };
 }
 
+const ACPX_TURN_FAILED_ERROR_CODE = "acpx_turn_failed";
+
+export function mapClaudeAcpLimitErrorCode(
+  result: AdapterExecutionResult,
+  now = new Date(),
+): AdapterExecutionResult {
+  if (result.errorCode !== ACPX_TURN_FAILED_ERROR_CODE) return result;
+  const priorResultJson = parseObject(result.resultJson);
+  if (priorResultJson.terminalSessionFailure) return result;
+  const surface = { errorMessage: result.errorMessage ?? null };
+  const providerQuota = isClaudeProviderQuotaError(surface);
+  const transientUpstream = !providerQuota && isClaudeTransientUpstreamError(surface);
+  if (!providerQuota && !transientUpstream) return result;
+  const retryNotBefore = extractClaudeRetryNotBefore(surface, now);
+  const iso = retryNotBefore ? retryNotBefore.toISOString() : null;
+  const errorFamily = providerQuota ? "provider_quota" as const : "transient_upstream" as const;
+  return {
+    ...result,
+    errorCode: providerQuota ? "provider_quota" : "claude_transient_upstream",
+    errorFamily,
+    ...(iso ? { retryNotBefore: iso } : {}),
+    resultJson: {
+      ...priorResultJson,
+      errorFamily,
+      ...(iso
+        ? {
+            retryNotBefore: iso,
+            transientRetryNotBefore: iso,
+            ...(providerQuota ? { providerQuotaRetryNotBefore: iso } : {}),
+          }
+        : {}),
+    },
+  };
+}
+
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
   let executor: ClaudeAcpExecutor | null = null;
   return async (ctx) => {
@@ -448,7 +489,7 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       ...ctx,
       config: buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env),
     });
-    return mapClaudeAcpAuthErrorCode(result);
+    return mapClaudeAcpLimitErrorCode(mapClaudeAcpAuthErrorCode(result));
   };
 }
 
