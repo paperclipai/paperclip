@@ -10222,20 +10222,28 @@ export function createToolGatewayService(
         .where(and(eq(toolConnections.id, input.view.connectionId), eq(toolConnections.companyId, input.companyId)))
         .limit(1);
       if (!connection) throw new ToolGatewayHttpError(404, "MCP connection not found", "connection_not_found");
+      // The document is read with the viewer's own access to the connection
+      // (the organization grant or the viewer's personal grant), never with the
+      // run's credential: no run on the session, the viewer as responsible user.
       const session: ToolGatewaySession = {
         id: "mcp-app-view",
         token: "mcp-app-view",
         companyId: input.companyId,
         agentId: input.view.agentId,
-        runId: input.view.runId,
+        runId: null,
         issueId: input.view.issueId,
         projectId: null,
         actorType: "user",
         actorId: input.userId,
-        responsibleUserId: input.view.responsibleUserId ?? input.userId,
+        responsibleUserId: input.userId,
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
       };
+      try {
+        await resolveConnectionGrant(session, connection, false);
+      } catch {
+        throw new ToolGatewayHttpError(404, "View not found", "mcp_app_view_not_accessible");
+      }
       const result = await callAssignedConnectionProtocol({
         session,
         connection,

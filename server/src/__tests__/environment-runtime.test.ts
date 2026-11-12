@@ -1126,6 +1126,33 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     },
   );
 
+  it("settles a plugin stop whose provider reports the sandbox gone (boxd, Daytona not found) through the cleanup sweep", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const lease = seeded.reusableLease;
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", metadata: { ...lease.metadata, reuseLease: false } })
+      .where(eq(environmentLeases.id, lease.id));
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+    let gone = false;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentStopLease") throw new Error(`unexpected ${method}`);
+      if (!gone) throw new Error("provider unavailable");
+      return { providerLeaseId: lease.providerLeaseId, state: "destroyed" };
+    });
+    const runtime = () => environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentReleaseLease", "environmentDestroyLease", "environmentStopLease"] }),
+    } as unknown as PluginWorkerManager });
+    await runtime().releaseRunLeases(seeded.runId, "failed", undefined, "stop_and_retain");
+    expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "pending_cleanup" });
+    gone = true;
+    await heartbeatService(db, { environmentRuntime: runtime() }).sweepPendingCleanupLeases({ backoffMs: 0 });
+    const settled = (await environmentService(db).getLeaseById(lease.id))!;
+    expect(settled).toMatchObject({ status: "released", cleanupStatus: "success", failureReason: "workspace_source_unavailable",
+      metadata: { remoteExecutionTermination: { state: "destroyed", providerLeaseId: lease.providerLeaseId } } });
+    expect(settled.metadata).not.toHaveProperty("sandboxStopAndRetainReceipt");
+    expect(call.mock.calls.every(entry => entry[1] === "environmentStopLease")).toBe(true);
+  });
+
   it("renews the stop-only cleanup claim while the provider stop is still running", async () => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     const lease = seeded.reusableLease;
@@ -1897,6 +1924,27 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(true);
     expect(release).not.toHaveBeenCalled();
     expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("settles a built-in stop whose provider reports the sandbox gone, without claiming retained files", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox", config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const acquired = await runtime.acquireRunLease({ companyId, environment, issueId: null,
+      heartbeatRunId: runId, persistedExecutionWorkspace: null });
+    const provider = sandboxProviderRuntime.requireSandboxProvider("fake"), originalStop = provider.stopLease!;
+    const destroy = vi.spyOn(provider, "destroyLease");
+    try {
+      provider.stopLease = vi.fn(async () => ({ providerLeaseId: acquired.lease.providerLeaseId!, state: "destroyed" })) as never;
+      await runtime.releaseRunLeases(runId, "released", undefined, "stop_and_retain", true);
+      const settled = (await environmentService(db).getLeaseById(acquired.lease.id))!;
+      expect(settled).toMatchObject({ status: "released", cleanupStatus: "success", failureReason: "workspace_source_unavailable",
+        metadata: { remoteExecutionTermination: { state: "destroyed", providerLeaseId: acquired.lease.providerLeaseId } } });
+      expect(settled.metadata).not.toHaveProperty("sandboxStopAndRetainReceipt");
+      expect(settled.metadata).not.toHaveProperty("sandboxStopAndRetain");
+      expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(true);
+      expect(destroy).not.toHaveBeenCalled();
+    } finally { provider.stopLease = originalStop; }
   });
 
   it.each(["stop_failed", "wrong_receipt", "missing_capability", "changed_binding"])(

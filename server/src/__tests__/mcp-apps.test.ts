@@ -4,7 +4,7 @@ import http from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants, toolCatalogEntries, toolConnections, toolMcpAppViews, toolPolicies,
+  agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, principalPermissionGrants, toolCatalogEntries, toolConnections, toolMcpAppViews, toolPolicies,
 } from "@paperclipai/db";
 import { MCP_APP_MIME_TYPE, MCP_APPS_EXTENSION_ID } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -58,7 +58,7 @@ const support = await getEmbeddedPostgresTestSupport();
   }, 30000);
   afterAll(async () => { await temp?.cleanup(); });
 
-  async function fixture(options: { requireSession?: boolean } = {}) {
+  async function fixture(options: { requireSession?: boolean; personal?: boolean } = {}) {
     const origin = "https://circleback.ai";
     const endpoint = `${origin}/api/mcp`;
     const accessToken = `circleback-fixture-${randomUUID()}`;
@@ -131,7 +131,7 @@ const support = await getEmbeddedPostgresTestSupport();
       return new Response(null, { status: 404 });
     });
     const service = toolAccessService(db, { remoteHttpRequest: request, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] });
-    const connected = await service.connectGalleryApp(company.id, { galleryKey: "circleback", connectionMethodKey: "mcp-oauth" }, actor);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "circleback", connectionMethodKey: "mcp-oauth", ...(options.personal ? { grantKind: "user" as const } : {}) }, actor);
     const start = await service.startOAuth(company.id, connected.connectionId, { redirectUri, actor });
     const authorization = new URL(start.authorizationUrl);
     expect(start.registrationSource).toBe("dcr");
@@ -314,5 +314,25 @@ const support = await getEmbeddedPostgresTestSupport();
     await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(200);
     held.release();
     await expect(otherCall).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("reads a view's document only with the viewer's own access to the connection", async () => {
+    // A personal connection of the user who connected it.
+    const f = await fixture({ personal: true });
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, f.connectionId));
+    expect(grant).toMatchObject({ kind: "user", subjectUserId: actor.actorId });
+    const listed = await f.gateway.listToolsForSession(f.session.token);
+    const display = listed.find(tool => tool.upstreamToolName === "DisplayMeetings")!;
+    await f.gateway.executeTool({ sessionToken: f.session.token, tool: display.name, parameters: { meetingIds: ["m1"] }, idempotencyKey: randomUUID() });
+    const viewId = (await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200)).body[0].id as string;
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(200);
+
+    // A teammate who can read the task sees that the view exists, but cannot
+    // read its document through someone else's personal connection.
+    await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: "circleback-teammate", status: "active", membershipRole: "member" });
+    f.setActor("teammate");
+    await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views`).expect(200);
+    const denied = await http(f.app).get(`/issues/${f.issue.id}/mcp-app-views/${viewId}`).expect(404);
+    expect(denied.body).toMatchObject({ error: "View not found" });
   });
 });

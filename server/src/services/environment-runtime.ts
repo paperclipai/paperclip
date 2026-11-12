@@ -27,7 +27,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { historicalProviderCredentials } from "./historical-provider-credentials.js";
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
+import { acceptedStopOnlyReceipt, hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_ALLOCATION_HOLDER_STATUSES, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -2447,7 +2447,7 @@ function createSandboxEnvironmentDriver(
         const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, input.lease.id)).limit(1);
         const [otherOwner] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
           ne(environmentLeases.id, input.lease.id), eq(environmentLeases.provider, input.lease.provider!),
-          eq(environmentLeases.providerLeaseId, input.lease.providerLeaseId!), inArray(environmentLeases.status, ["active", "retained", "pending_cleanup"]),
+          eq(environmentLeases.providerLeaseId, input.lease.providerLeaseId!), inArray(environmentLeases.status, [...SANDBOX_ALLOCATION_HOLDER_STATUSES]),
         )).limit(1);
         if (!current || current.status !== "pending_cleanup" || current.companyId !== input.lease.companyId
           || current.metadata?.pendingCleanupAttemptId !== input.lease.metadata?.pendingCleanupAttemptId
@@ -2521,7 +2521,7 @@ function createSandboxEnvironmentDriver(
             config: workerConfig, providerLeaseId: input.lease.providerLeaseId,
             leaseMetadata: input.lease.metadata ?? {}, cancelActiveWork: true, resourceDisposition: "stop_and_retain",
           }, Math.min(resolvePluginSandboxRpcTimeoutMs(workerConfig) ?? 60_000, 60_000)));
-          if (remoteTerminationReceipt(input.lease, receipt)?.state !== "stopped") {
+          if (!acceptedStopOnlyReceipt(input.lease, receipt)) {
             throw new Error("Workspace export recovery did not confirm the retained sandbox stopped.");
           }
           return receipt;
@@ -2574,7 +2574,7 @@ function createSandboxEnvironmentDriver(
         }
         await assertExportResumeOwnership();
         const receipt = await provider.stopLease({ config: cleanupConfig, providerLeaseId: input.lease.providerLeaseId });
-        if (remoteTerminationReceipt(input.lease, receipt)?.state !== "stopped") {
+        if (!acceptedStopOnlyReceipt(input.lease, receipt)) {
           throw new Error("Built-in sandbox stop did not confirm the exact retained allocation.");
         }
         return receipt;
