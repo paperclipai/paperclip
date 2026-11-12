@@ -6,7 +6,7 @@ import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "./na
 import { isSafeNativeChatProgressEventType } from "./safe-native-chat-progress.js";
 import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
-import { and, asc, eq, getTableColumns, or, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
@@ -44,7 +44,18 @@ export interface AppendHeartbeatRunEventInput {
    * with, an unrelated transaction that holds one of those rows FOR UPDATE.
    */
   runUpdate?: HeartbeatRunEventRunUpdate;
+  /**
+   * Checks that the writer may still write to the run. It runs inside the
+   * append's transaction, before the first statement and again before the
+   * commit; when it throws, the event and its sequence roll back. A writer
+   * passes its check here instead of wrapping the append in a transaction of
+   * its own, which would add a SAVEPOINT round trip to every event.
+   */
+  assertWritable?: () => void;
 }
+
+type NativeSourceEventInput = AppendHeartbeatRunEventInput & Required<Pick<AppendHeartbeatRunEventInput, "nativeSource">>;
+type RunEventWakes = { recovery: boolean; reassessment: boolean; progress: boolean; response: boolean; retention: boolean };
 
 export type HeartbeatRunEventRunUpdate = Partial<Pick<typeof heartbeatRuns.$inferInsert,
   "legacyProcessSettlement" | "processPid" | "processGroupId" | "processHostHash" | "processStartedAt">>;
@@ -101,175 +112,264 @@ export async function appendHeartbeatRunEvent(
   const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
   // Deduplicated receipts return without allocating, so they cannot carry run changes.
   if (input.runUpdate && (input.nativeSource || input.retryExhaustion)) throw new Error("heartbeat_run_event_run_update_unsupported");
-  if (!input.runUpdate && !input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery && !projectsRetention) {
-    const allocated = db.$with("allocated_run_event", {}).as(sql`
-      update ${heartbeatRuns}
-      set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
-          updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
-      where ${heartbeatRuns.id} = ${input.runId}
-        and ${heartbeatRuns.companyId} = ${input.companyId}
-        and ${heartbeatRuns.agentId} = ${input.agentId}
-      returning company_id, id as run_id, agent_id, next_event_seq - 1 as seq
-    `);
-    const appended = db.$with("appended_run_event", getTableColumns(heartbeatRunEvents)).as(sql`
-      insert into ${heartbeatRunEvents}
+  const wakes = { recovery: projectsRecovery, reassessment: projectsReassessment, progress: projectsProgress,
+    response: projectsResponse, retention: projectsRetention };
+  if (!input.runUpdate && !input.nativeSource && !input.retryExhaustion && !input.assertWritable && !Object.values(wakes).some(Boolean)) {
+    const [appended] = await db.execute<Record<string, unknown>>(sql`
+      with allocated_run_event as (
+        update heartbeat_runs
+        set next_event_seq = next_event_seq + 1,
+            updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
+        where id = ${input.runId} and company_id = ${input.companyId} and agent_id = ${input.agentId}
+        returning company_id, id as run_id, agent_id, next_event_seq - 1 as seq
+      )
+      insert into heartbeat_run_events
         (company_id, run_id, agent_id, seq, event_type, stream, level, color, message, payload)
       select company_id, run_id, agent_id, seq,
         ${input.eventType}, ${input.stream ?? null}, ${input.level ?? null},
         ${input.color ?? null}, ${input.message ?? null},
         ${sql.param(input.payload ?? null, heartbeatRunEvents.payload)}
-      from ${allocated}
+      from allocated_run_event
       returning *
     `);
-    const [row] = await db.with(allocated, appended).select().from(appended);
-    if (!row) throw new Error("heartbeat_run_event_binding_mismatch");
-    return { row, disposition: "committed", highestContiguousSourceSeq: 0 };
+    if (!appended) throw new Error("heartbeat_run_event_binding_mismatch");
+    return { row: decodeRunEventRow(appended), disposition: "committed", highestContiguousSourceSeq: 0 };
   }
   return db.transaction(async (tx) => {
-    const run = await tx
-      .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-        // Only progress needs the task binding. Other native/recovery events
-        // must not read a potentially large context snapshot to append a log.
-        ...(projectsProgress || projectsResponse || projectsReassessment ? { runtimeMode: heartbeatRuns.runtimeMode } : {}),
-        ...(projectsProgress ? { issueId: boundRunIssueIdSql() } : {}) })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, input.runId))
-      // Appenders, Stop, recovery and deletion still serialize on this row.
-      // The append never changes key columns, so it must not block foreign
-      // key checks (FOR KEY SHARE) of child rows, such as controller
-      // checkpoints, that are written for the same run while events stream.
-      .for("no key update")
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
-      throw new Error("heartbeat_run_event_binding_mismatch");
-    }
-
-    if (projectsRecovery) await notifyLiveRunRecovery(tx, input);
-
-    if (input.retryExhaustion && !input.nativeSource) {
-      // The run lock also serializes concurrent recovery checks across server
-      // instances. Reusing the receipt must not allocate a sequence or publish
-      // another live event on each scheduler tick.
-      const existing = await tx
-        .select()
-        .from(heartbeatRunEvents)
-        .where(and(
-          eq(heartbeatRunEvents.companyId, input.companyId),
-          eq(heartbeatRunEvents.runId, input.runId),
-          eq(heartbeatRunEvents.agentId, input.agentId),
-          eq(heartbeatRunEvents.eventType, "lifecycle"),
-          sql`${heartbeatRunEvents.message} like ${`${RETRY_EXHAUSTION_MESSAGE_PREFIX}%`}`,
-          sql`${heartbeatRunEvents.payload} @> ${JSON.stringify(input.retryExhaustion)}::jsonb`,
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
-        return {
-          row: existing,
-          disposition: "duplicate" as const,
-          highestContiguousSourceSeq: 0,
-        };
-      }
-    }
-
-    const sourceHash = input.nativeSource
-      ? nativeSha256(input.nativeSource.canonicalPayload)
-      : null;
-    if (input.nativeSource) {
-      const existing = await tx
-        .select()
-        .from(heartbeatRunEvents)
-        .where(and(
-          eq(heartbeatRunEvents.runId, input.runId),
-          or(
-            eq(heartbeatRunEvents.sourceEventId, input.nativeSource.sourceEventId),
-            and(
-              eq(heartbeatRunEvents.sourceInstanceId, input.nativeSource.sourceInstanceId),
-              eq(heartbeatRunEvents.sourceSeq, input.nativeSource.sourceSeq),
-            ),
-          ),
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
-        if (existing.sourcePayloadSha256 !== sourceHash) {
-          throw new HeartbeatRunEventConflictError();
-        }
-        return {
-          row: existing,
-          disposition: "duplicate" as const,
-          highestContiguousSourceSeq: await contiguousCursor(
-            tx as unknown as Db,
-            input.runId,
-            input.nativeSource.sourceInstanceId,
-          ),
-        };
-      }
-    }
-
-    if (projectsReassessment && run.runtimeMode === "native") {
-      await notifyNativeStatusReassessment(tx, { companyId: run.companyId, runId: input.runId });
-    }
-    if (projectsProgress && run.runtimeMode === "native" && run.issueId) {
-      await notifyChatNativeProgress(tx, { companyId: run.companyId, issueId: run.issueId });
-    }
-    if (projectsResponse && run.runtimeMode === "native") {
-      await notifyNativeResponsePresentation(tx, { companyId: run.companyId, runId: input.runId });
-    }
-    if (projectsRetention) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "failed_run" });
-    const seq = await allocateHeartbeatRunEventSeq(
-      tx as unknown as Db,
-      input.runId,
-      input.runUpdate,
-    );
-    const [row] = await tx.insert(heartbeatRunEvents).values({
-      companyId: input.companyId,
-      runId: input.runId,
-      agentId: input.agentId,
-      seq,
-      eventType: input.eventType,
-      stream: input.stream ?? null,
-      level: input.level ?? null,
-      color: input.color ?? null,
-      message: input.message ?? null,
-      payload: input.payload ?? null,
-      sourceInstanceId: input.nativeSource?.sourceInstanceId ?? null,
-      sourceEventId: input.nativeSource?.sourceEventId ?? null,
-      sourceSeq: input.nativeSource?.sourceSeq ?? null,
-      sourcePayloadSha256: sourceHash,
-      protocolSchemaVersion: input.nativeSource?.protocolSchemaVersion ?? null,
-    }).returning();
-    if (!row) throw new Error("heartbeat_run_event_not_persisted");
-    return {
-      row,
-      disposition: "committed" as const,
-      highestContiguousSourceSeq: input.nativeSource
-        ? await contiguousCursor(
-            tx as unknown as Db,
-            input.runId,
-            input.nativeSource.sourceInstanceId,
-          )
-        : 0,
-    };
+    input.assertWritable?.();
+    const receipt = input.nativeSource
+      ? await appendNativeSourceEvent(tx as unknown as Db, input as NativeSourceEventInput, wakes)
+      : await appendLockedEvent(tx as unknown as Db, input, wakes);
+    input.assertWritable?.();
+    return receipt;
   });
 }
 
-async function contiguousCursor(db: Db, runId: string, sourceInstanceId: string): Promise<number> {
-  const scope = and(
-    eq(heartbeatRunEvents.runId, runId),
-    eq(heartbeatRunEvents.sourceInstanceId, sourceInstanceId),
-    sql`${heartbeatRunEvents.sourceSeq} >= 1`,
-  );
+const runEventColumns = Object.entries(getTableColumns(heartbeatRunEvents));
+
+/**
+ * Decodes a `returning *` row the way a Drizzle select of the table does. The
+ * statements of an event stream are fixed SQL text: building the same
+ * statement through the query builder for every event costs more CPU and
+ * garbage than running it.
+ */
+function decodeRunEventRow(raw: Record<string, unknown>): typeof heartbeatRunEvents.$inferSelect {
+  const row: Record<string, unknown> = {};
+  for (const [key, column] of runEventColumns) {
+    const value = raw[column.name];
+    row[key] = value === null || value === undefined ? null : column.mapFromDriverValue(value);
+  }
+  return row as typeof heartbeatRunEvents.$inferSelect;
+}
+
+/**
+ * A native source event: one lock read, then one statement that finds a
+ * replayed event or reserves the sequence and inserts, and reads how much of
+ * the source is retained. The lock must stay a statement of its own. A
+ * statement that waits for the run lock keeps the snapshot it took before
+ * waiting, so it would not see an event the lock holder had just committed.
+ */
+async function appendNativeSourceEvent(
+  tx: Db,
+  input: NativeSourceEventInput,
+  wakes: RunEventWakes,
+): Promise<AppendHeartbeatRunEventResult> {
+  const source = input.nativeSource;
+  // Appenders, Stop, recovery and deletion still serialize on this row.
+  // The append never changes key columns, so it must not block foreign
+  // key checks (FOR KEY SHARE) of child rows, such as controller
+  // checkpoints, that are written for the same run while events stream.
+  // Only progress needs the task binding. Other native/recovery events
+  // must not read a potentially large context snapshot to append a log.
+  const [run] = await tx.execute<{ company_id: string; agent_id: string; runtime_mode?: string | null; issue_id?: string | null }>(
+    sql`select "company_id", "agent_id"${wakes.progress || wakes.response || wakes.reassessment ? sql`, "runtime_mode"` : sql.empty()}${
+      wakes.progress ? sql`, ${boundRunIssueIdSql()} as "issue_id"` : sql.empty()
+    } from "heartbeat_runs" where "id" = ${input.runId} for no key update`);
+  if (!run || run.company_id !== input.companyId || run.agent_id !== input.agentId) {
+    throw new Error("heartbeat_run_event_binding_mismatch");
+  }
+  if (wakes.recovery) await notifyLiveRunRecovery(tx, input);
+
+  const sourceHash = nativeSha256(source.canonicalPayload);
+  const replayed = sql`run_id = ${input.runId} and (source_event_id = ${source.sourceEventId}
+    or (source_instance_id = ${source.sourceInstanceId} and source_seq = ${source.sourceSeq}))`;
+  const native = run.runtime_mode === "native";
+  const reassessment = wakes.reassessment && native, progress = wakes.progress && native && run.issue_id;
+  const response = wakes.response && native;
+  if (reassessment || progress || response || wakes.retention) {
+    // A wake is registered before the write it announces, and a replayed
+    // event registers none. So these events look for their replay first.
+    const [existing] = await tx.execute<Record<string, unknown>>(sql`select * from heartbeat_run_events where ${replayed} limit 1`);
+    if (existing) {
+      const row = decodeRunEventRow(existing);
+      if (row.sourcePayloadSha256 !== sourceHash) throw new HeartbeatRunEventConflictError();
+      return { row, disposition: "duplicate", highestContiguousSourceSeq: await contiguousCursor(tx, input.runId,
+        source.sourceInstanceId, await retainedSourceRange(tx, input.runId, source.sourceInstanceId)) };
+    }
+    if (reassessment) await notifyNativeStatusReassessment(tx, { companyId: run.company_id, runId: input.runId });
+    if (progress) await notifyChatNativeProgress(tx, { companyId: run.company_id, issueId: progress });
+    if (response) await notifyNativeResponsePresentation(tx, { companyId: run.company_id, runId: input.runId });
+    if (wakes.retention) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "failed_run" });
+  }
+
+  // `existing` and `retained` read the snapshot from before this statement's
+  // own insert. A replayed event reserves no sequence and inserts nothing.
+  const [result] = await tx.execute<Record<string, unknown>>(sql`
+    with existing as (
+      select * from heartbeat_run_events where ${replayed} limit 1
+    ), allocated as (
+      update heartbeat_runs
+      set next_event_seq = next_event_seq + 1,
+          updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
+      where id = ${input.runId} and not exists (select 1 from existing)
+      returning next_event_seq - 1 as seq
+    ), appended as (
+      insert into heartbeat_run_events
+        (company_id, run_id, agent_id, seq, event_type, stream, level, color, message, payload,
+          source_instance_id, source_event_id, source_seq, source_payload_sha256, protocol_schema_version)
+      select ${input.companyId}::uuid, ${input.runId}::uuid, ${input.agentId}::uuid, seq,
+        ${input.eventType}::text, ${input.stream ?? null}::text, ${input.level ?? null}::text,
+        ${input.color ?? null}::text, ${input.message ?? null}::text,
+        ${sql.param(input.payload ?? null, heartbeatRunEvents.payload)}::jsonb,
+        ${source.sourceInstanceId}::text, ${source.sourceEventId}::text, ${source.sourceSeq}::bigint,
+        ${sourceHash}::text, ${source.protocolSchemaVersion}::integer
+      from allocated
+      returning *
+    ), retained as (
+      select count(*) as retained_count, max(source_seq) as retained_max
+      from heartbeat_run_events
+      where run_id = ${input.runId} and source_instance_id = ${source.sourceInstanceId} and source_seq >= 1
+    )
+    select true as appended, event.*, retained.* from appended event cross join retained
+    union all
+    select false as appended, event.*, retained.* from existing event cross join retained
+  `);
+  if (!result) throw new Error("heartbeat_run_event_not_persisted");
+  const row = decodeRunEventRow(result);
+  const appended = result.appended === true;
+  if (!appended && row.sourcePayloadSha256 !== sourceHash) throw new HeartbeatRunEventConflictError();
+  const counted = appended && source.sourceSeq >= 1;
+  return {
+    row,
+    disposition: appended ? "committed" : "duplicate",
+    highestContiguousSourceSeq: await contiguousCursor(tx, input.runId, source.sourceInstanceId, {
+      count: Number(result.retained_count) + (counted ? 1 : 0),
+      max: Math.max(Number(result.retained_max ?? 0), counted ? source.sourceSeq : 0),
+    }),
+  };
+}
+
+/** Every other event that needs the run lock: receipts, run changes and wakes. */
+async function appendLockedEvent(
+  tx: Db,
+  input: AppendHeartbeatRunEventInput,
+  wakes: RunEventWakes,
+): Promise<AppendHeartbeatRunEventResult> {
+  const run = await tx
+    .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      // Only progress needs the task binding. Other native/recovery events
+      // must not read a potentially large context snapshot to append a log.
+      ...(wakes.progress || wakes.response || wakes.reassessment ? { runtimeMode: heartbeatRuns.runtimeMode } : {}),
+      ...(wakes.progress ? { issueId: boundRunIssueIdSql() } : {}) })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.runId))
+    // Appenders, Stop, recovery and deletion still serialize on this row.
+    // The append never changes key columns, so it must not block foreign
+    // key checks (FOR KEY SHARE) of child rows, such as controller
+    // checkpoints, that are written for the same run while events stream.
+    .for("no key update")
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
+    throw new Error("heartbeat_run_event_binding_mismatch");
+  }
+
+  if (wakes.recovery) await notifyLiveRunRecovery(tx, input);
+
+  if (input.retryExhaustion) {
+    // The run lock also serializes concurrent recovery checks across server
+    // instances. Reusing the receipt must not allocate a sequence or publish
+    // another live event on each scheduler tick.
+    const existing = await tx
+      .select()
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.companyId, input.companyId),
+        eq(heartbeatRunEvents.runId, input.runId),
+        eq(heartbeatRunEvents.agentId, input.agentId),
+        eq(heartbeatRunEvents.eventType, "lifecycle"),
+        sql`${heartbeatRunEvents.message} like ${`${RETRY_EXHAUSTION_MESSAGE_PREFIX}%`}`,
+        sql`${heartbeatRunEvents.payload} @> ${JSON.stringify(input.retryExhaustion)}::jsonb`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) {
+      return {
+        row: existing,
+        disposition: "duplicate" as const,
+        highestContiguousSourceSeq: 0,
+      };
+    }
+  }
+
+  if (wakes.reassessment && run.runtimeMode === "native") {
+    await notifyNativeStatusReassessment(tx, { companyId: run.companyId, runId: input.runId });
+  }
+  if (wakes.progress && run.runtimeMode === "native" && run.issueId) {
+    await notifyChatNativeProgress(tx, { companyId: run.companyId, issueId: run.issueId });
+  }
+  if (wakes.response && run.runtimeMode === "native") {
+    await notifyNativeResponsePresentation(tx, { companyId: run.companyId, runId: input.runId });
+  }
+  if (wakes.retention) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "failed_run" });
+  const seq = await allocateHeartbeatRunEventSeq(tx, input.runId, input.runUpdate);
+  const [row] = await tx.insert(heartbeatRunEvents).values({
+    companyId: input.companyId,
+    runId: input.runId,
+    agentId: input.agentId,
+    seq,
+    eventType: input.eventType,
+    stream: input.stream ?? null,
+    level: input.level ?? null,
+    color: input.color ?? null,
+    message: input.message ?? null,
+    payload: input.payload ?? null,
+  }).returning();
+  if (!row) throw new Error("heartbeat_run_event_not_persisted");
+  return { row, disposition: "committed" as const, highestContiguousSourceSeq: 0 };
+}
+
+const sourceEvents = (runId: string, sourceInstanceId: string) => and(
+  eq(heartbeatRunEvents.runId, runId),
+  eq(heartbeatRunEvents.sourceInstanceId, sourceInstanceId),
+  sql`${heartbeatRunEvents.sourceSeq} >= 1`,
+);
+
+/** How many events of one source a run retains, and the highest source sequence among them. */
+async function retainedSourceRange(db: Db, runId: string, sourceInstanceId: string) {
   const [range] = await db
     .select({
       count: sql<number>`count(*)`.mapWith(Number),
       max: sql<number | null>`max(${heartbeatRunEvents.sourceSeq})`.mapWith(Number),
     })
     .from(heartbeatRunEvents)
-    .where(scope);
-  if (!range || !range.count) return 0;
+    .where(sourceEvents(runId, sourceInstanceId));
+  return { count: range?.count ?? 0, max: range?.max ?? 0 };
+}
+
+/**
+ * The highest source sequence retained without a gap before it. A stream that
+ * arrives in order needs no read: its count equals its highest sequence.
+ */
+async function contiguousCursor(
+  db: Db,
+  runId: string,
+  sourceInstanceId: string,
+  range: { count: number; max: number },
+): Promise<number> {
+  if (!range.count) return 0;
   if (range.max === range.count) return range.count;
+  const scope = sourceEvents(runId, sourceInstanceId);
   const [first] = await db
     .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
     .from(heartbeatRunEvents)

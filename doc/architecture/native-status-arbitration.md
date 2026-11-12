@@ -191,6 +191,14 @@ progress or new input. The "Waiting for a reply" execution label shows only
 while the parked decision is still the issue's latest decision and the issue
 is `in_progress`.
 
+A completion claim stays `in_progress` as `native_child_completion_pending`
+while an undelivered child-completion wake for the same issue and agent is
+queued, claimed or deferred. Only a child result saved after the finishing run
+started counts as undelivered. A result saved before that run started was
+already visible to it, so the claim completes the task and the deferred wake
+is cancelled at release instead of starting another turn. A run with no
+recorded start keeps every such wake pending.
+
 ## Transactional decision commit
 
 `commitNativeStatusDecision()` applies the decision against authoritative issue

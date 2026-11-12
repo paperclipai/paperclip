@@ -33,6 +33,7 @@ import {
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectUnauthenticatedBootstrapCheckpoint,
   inspectUnclaimedBootstrapCheckpoint,
   inspectUnclaimedBootstrapState,
   inspectStagedRunAttachment,
@@ -164,6 +165,62 @@ it("recognizes a complete unclaimed bootstrap through cold checkpoint restoratio
     await core.flushCheckpoint();
     expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity)).toBeNull();
   } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("proves a launched bootstrap never authenticated after its credentials were issued", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-unauthenticated-bootstrap-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  try {
+    const template = { provider: { provider: "codex", command: "fixture" }, authorizedTools: {} };
+    core.persistRunAttachTemplate(template);
+    core.queueCommand("run.prepare", template);
+    core.queueCommand("session.open", { reuse: "same_session" });
+    core.issueBootstrapTicket(60_000);
+    core.issueBootstrapTicket(60_000);
+    await core.flushCheckpoint();
+    expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity)).toBeNull();
+    expect(inspectUnauthenticatedBootstrapCheckpoint(checkpoint.records, identity)).toBe(true);
+    expect(inspectUnauthenticatedBootstrapCheckpoint(checkpoint.records, { ...identity, runId: "foreign" })).toBe(false);
+    for (const mutate of [
+      (header: { state: Record<string, unknown> }) => { header.state.connectionCount = 1; },
+      (header: { state: Record<string, unknown> }) => { header.state.lastLeaseId = "lease"; },
+      (header: { state: Record<string, unknown> }) => {
+        const tickets = header.state.tickets as Record<string, Record<string, unknown>>;
+        for (const ticket of Object.values(tickets)) ticket.usedAt = "2026-01-01T00:00:00.000Z";
+      },
+    ]) {
+      const changed = new Map(checkpoint.records), header = JSON.parse(changed.get("header")!);
+      mutate(header); changed.set("header", JSON.stringify(header));
+      expect(inspectUnauthenticatedBootstrapCheckpoint(changed, identity)).toBe(false);
+    }
+    core.queueCommand("turn.start", { prompt: "queued but never delivered" });
+    await core.flushCheckpoint();
+    expect(inspectUnauthenticatedBootstrapCheckpoint(checkpoint.records, identity)).toBe(true);
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("hands the ticket refresh to the process owner for the first launch only", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  const refreshBootstrapTicket = vi.fn(async () => "fresh-ticket");
+  const handle = spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-refresh-test", identity, ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+    refreshBootstrapTicket,
+    processLauncher: spec => {
+      launches.push(spec);
+      return { child: { pid: 42, exitCode: null, kill: () => true },
+        completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }), isExitConfirmed: () => true };
+    },
+  });
+  expect(launches[0]?.refreshBootstrapTicket).toBe(refreshBootstrapTicket);
+  expect(launches[0]?.environment.PAPERCLIP_RUNNER_BOOTSTRAP_TICKET).toBe("bootstrap-ticket");
+  handle.restart!("replacement-ticket");
+  expect(launches[1]?.refreshBootstrapTicket).toBeUndefined();
+  expect(launches[1]?.environment.PAPERCLIP_RUNNER_BOOTSTRAP_TICKET).toBe("replacement-ticket");
 });
 
 it("retains ever-issued bootstrap history after credential pruning and cold restore", async () => {

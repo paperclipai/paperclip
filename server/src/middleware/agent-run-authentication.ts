@@ -13,7 +13,8 @@ export function loadAgentRunAuthentication(db: Db, input: {
     resultJson: sql<Record<string, unknown>>`jsonb_build_object(
       'executionCancellation', jsonb_build_object(
         'state', ${heartbeatRuns.resultJson}->'executionCancellation'->'state'
-      )
+      ),
+      'freshContinuationSupersededAt', ${heartbeatRuns.resultJson}->'freshContinuationSupersededAt'
     )`,
     contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
       'conversationMode', ${heartbeatRuns.contextSnapshot}->'conversationMode'

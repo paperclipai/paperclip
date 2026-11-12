@@ -14,7 +14,7 @@ import type { Db } from "@paperclipai/db";
 import { companySecrets, toolAccessAuditEvents, toolCatalogEntries, toolConnectionAppSnapshots, toolConnectionAppSyncs, toolConnections } from "@paperclipai/db";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../../../errors.js";
 import { logActivity } from "../../activity-log.js";
-import { initializeMcpHttpSession, getMcpHttpSession, readMcpHttpResponse, mcpHttpRequestHeaders } from "../../mcp-http.js";
+import { initializeMcpHttpSession, getMcpHttpSession, isModernMcpProtocolVersion, readMcpHttpResponse, mcpHttpRequestInit } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
 import { writeConnectionCredential } from "../../connection-credentials.js";
 
@@ -109,14 +109,16 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
     const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
     const credentialKey = await composioCredentialKey(await getConnectionRow(connectionId), actor);
     const send = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), { ...init, signal: AbortSignal.timeout(30_000) });
-    let sessionHeaders = connection.config.mcpSessionRequired === true
-      ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:app-setup:${actor.actorId}`, requestId: "paperclip-app-setup" }) : headers;
+    let sessionHeaders = isModernMcpProtocolVersion(connection.config.mcpProtocolVersion)
+      ? { ...headers, "MCP-Protocol-Version": connection.config.mcpProtocolVersion }
+      : connection.config.mcpSessionRequired === true
+        ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:app-setup:${actor.actorId}`, requestId: "paperclip-app-setup" }) : headers;
     async function manage(toolkits: { name: string; action: "list" | "add" | "rename" | "remove"; account_id?: string; alias?: string }[], tolerateToolkitErrors = false) {
       const checkedAt = new Date();
       const id = `paperclip-app-setup-${randomUUID()}`;
-      const request = () => send({ method: "POST", headers: mcpHttpRequestHeaders(sessionHeaders), body: JSON.stringify({
-        jsonrpc: "2.0", id, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: { toolkits } },
-      }) });
+      const request = () => send(mcpHttpRequestInit(sessionHeaders, {
+        id, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: { toolkits } },
+      }));
       const markFailed = async () => {
         const names = toolkits.filter(tool => tool.action === "list").map(tool => tool.name);
         if (names.length) await db.update(toolConnectionAppSnapshots).set({ errorAt: checkedAt }).where(and(
@@ -315,11 +317,13 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
       } });
     }
     const send = (init: RequestInit) => requestRemoteHttpEndpoint(endpoint, { ...init, signal: AbortSignal.timeout(30_000) });
-    let sessionHeaders = connection.config.mcpSessionRequired === true ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:inventory:${actor.actorId}`, requestId: "paperclip-account-inventory" }) : headers;
+    let sessionHeaders = isModernMcpProtocolVersion(connection.config.mcpProtocolVersion)
+      ? { ...headers, "MCP-Protocol-Version": connection.config.mcpProtocolVersion }
+      : connection.config.mcpSessionRequired === true ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:inventory:${actor.actorId}`, requestId: "paperclip-account-inventory" }) : headers;
     return discoverExecutorApps({ toolNames: tools.map(tool => tool.name), managementUrl: typeof connection.config.managementUrl === "string" ? connection.config.managementUrl : null,
       call: async (name, args) => {
         const id = `paperclip-account-inventory-${randomUUID()}`;
-        const request = () => send({ method: "POST", headers: mcpHttpRequestHeaders(sessionHeaders), body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) });
+        const request = () => send(mcpHttpRequestInit(sessionHeaders, { id, method: "tools/call", params: { name, arguments: args } }));
         let response = await request();
         if (response.status === 400 || response.status === 404) {
           await response.body?.cancel(); sessionHeaders = await initializeMcpHttpSession({ send, headers, requestId: id }); response = await request();

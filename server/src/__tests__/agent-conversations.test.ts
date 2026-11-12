@@ -987,6 +987,19 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("tells chat to name records the way the person sees them instead of raw IDs, internal codes, tool names or server paths", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("give the specific reason returned by the platform, in plain words");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Write replies for the person, not for the API.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not write raw IDs (UUIDs or their short forms for runs, revisions, handoffs, interactions, routines, triggers, attachments, workspaces, incidents, users or agents), internal codes (status, error, cause or reason codes such as native_session_retry_exhausted or board_access_required), field or setting keys, tool names, internal process names or server file paths in a reply, even in parentheses or inline code.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The only exceptions are link targets, values inside a command the person must run, and an ID the person explicitly asks for.");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("Write replies for the person, not for the API.");
+  });
+  it("tells chat to name a document revision by its number and to link a run it discusses, while keeping raw IDs out of prose", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Name a document revision by its number as Paperclip shows it, such as revision 4, including the revision a restore or edit created.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("When you discuss a run, such as a failed or retried run, link it, such as [the failed run](/<prefix>/agents/<agentId>/runs/<runId>), instead of describing it without a link.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not write raw IDs (UUIDs or their short forms for runs, revisions,");
+  });
   it("tells chat to record a person's decline with resolve-from-comment whoever created the card, and keeps withdraw for its own obsolete card", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("A person's explicit decline in chat (for example \"do not publish it\") answers a pending confirmation with reject, whoever created the card");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Withdraw is only for your own card that later evidence made obsolete; it never records the person's decision");
@@ -997,6 +1010,12 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("A comment or a promise to hold the work does not stop it");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("blockedByIssueIds with PATCH /api/issues/{id}");
+  });
+  it("tells chat to brief or delegate only the requested change and keep every other setting", () => {
+    const line = "When you relay or delegate a change, state only what the person asked to change, and keep every other setting, such as a time zone, owner or schedule detail, as it is.";
+    expect(AGENT_CHAT_DIRECTIVE).toContain(line);
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain(line);
   });
   it("tells chat to link the profile of an agent it acted on without turning the link into a wake mention", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("link its profile at /<prefix>/agents/<urlKey or id>");

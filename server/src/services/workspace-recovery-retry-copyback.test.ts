@@ -296,7 +296,7 @@ describe("automatic retained workspace recovery", () => {
     const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
     expect(blocker).toMatchObject({ runId: second.runId, cause: "native_continuation_requires_reconciliation", canRetry: true,
-      nextAction: "Saved work recovered. Retry or send a message to continue." });
+      nextAction: "Saved work recovered. Retry continues from it." });
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true, observedRunId: second.runId });
     return { ...f, ...second, service: secondService, issue };
   }

@@ -8,7 +8,8 @@ import { sendChatMessage } from "../chat-flow.js";
 import { pollUntil } from "../api.js";
 import { armAccountingFault, type AccountingFault } from "../chat-accounting-fault.js";
 import { collectRunEvents } from "../run-observations.js";
-import { apiReadDigests, recordParams } from "./api-read-receipts.js";
+import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "../../../packages/shared/src/constants.js";
+import { apiReadDigests, callApiInputDigest, recordParams } from "./api-read-receipts.js";
 import { checks, entity, hasLink, project, task, sameTask, type Entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, identityWorker, observeIdentity, openStandingChat, probeAgentPermission } from "./identity-support.js";
 
@@ -94,7 +95,33 @@ export interface SavedAccountingTarget { companyId?: string; task?: Pick<Entity,
   /** Run-record reads the reading run itself cites in its saved result, as `GET /api/heartbeat-runs/<runId>`. */
   citedRunReads?: readonly string[];
   /** Run records this reading run saved with `saveResponse`, read back from the product's saved asset. */
-  savedRunRecords?: readonly SavedRunRecord[] }
+  savedRunRecords?: readonly SavedRunRecord[];
+  runListPosition?: RunListPosition }
+export interface RunListPosition { agentId: string; companyAhead: number; agentAhead: number }
+const RUN_LIST_OPERATION = "GET /api/companies/{companyId}/heartbeat-runs";
+const runListCache = new Map<string, ReadonlySet<string>>();
+export function runListDigests(companyId: string, position: RunListPosition): ReadonlySet<string> {
+  const key = JSON.stringify([companyId, position]);
+  const cached = runListCache.get(key); if (cached) return cached;
+  const queries: Array<Record<string, unknown> | undefined> = [];
+  for (const [filter, ahead] of [[{}, position.companyAhead], [{ agentId: position.agentId }, position.agentAhead]] as const) {
+    if (ahead < HEARTBEAT_RUN_LIST_DEFAULT_LIMIT) queries.push(filter);
+    for (let limit = ahead + 1; limit <= HEARTBEAT_RUN_LIST_MAX_LIMIT; limit++) queries.push({ ...filter, limit }, { ...filter, limit: String(limit) });
+  }
+  if (position.companyAhead < HEARTBEAT_RUN_LIST_DEFAULT_LIMIT) queries.push(undefined);
+  const digests = new Set<string>();
+  for (const pathParams of [{ companyId }, {}, undefined]) for (const query of queries)
+    digests.add(callApiInputDigest({ operationId: RUN_LIST_OPERATION, ...(pathParams ? { pathParams } : {}), ...(query ? { query } : {}) }));
+  runListCache.set(key, digests);
+  return digests;
+}
+export function runListPosition(runs: ReadonlyArray<{ id: string; agentId: string }>, originalRunId: string, readingRun: object): RunListPosition | undefined {
+  const createdAt = (run: object) => Date.parse(String((run as { createdAt?: unknown }).createdAt));
+  const original = runs.find(run => run.id === originalRunId), created = original ? createdAt(original) : NaN, readAt = Date.parse(String((readingRun as { finishedAt?: unknown }).finishedAt));
+  if (!original || !Number.isFinite(created) || !Number.isFinite(readAt)) return;
+  const ahead = runs.filter(run => run.id !== original.id && createdAt(run) >= created && createdAt(run) <= readAt);
+  return { agentId: original.agentId, companyAhead: ahead.length, agentAhead: ahead.filter(run => run.agentId === original.agentId).length };
+}
 /** A `call_api` read saved with `saveResponse` becomes a company asset that the product logs as
  * `asset.created` by the reading run. Its saved content names the record actually read. */
 export interface SavedRunRecord { runId: string; assetId: string; recordId: string; companyId: string }
@@ -112,8 +139,10 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   // unlisted digest. A response the run saved is bound by its content instead: the saved run record is the original run.
   const originalRunSaved = !!originalRunId && (target.savedRunRecords ?? []).some(saved => saved.runId === runId
     && saved.recordId === originalRunId && (!companyId || saved.companyId === companyId));
+  const listDigests = companyId && target.runListPosition ? runListDigests(companyId, target.runListPosition) : new Set<string>();
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
+      || call.operationId === RUN_LIST_OPERATION && listDigests.has(call.digest)
       || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
 }
 /** Run records the given run saved through `call_api` `saveResponse`, from the product's own activity and asset. */
@@ -190,7 +219,7 @@ export function gradeAccounting(value: unknown) {
     const savedRunRecords = Array.isArray(o.state.savedRunRecords) ? o.state.savedRunRecords as SavedRunRecord[] : [];
     c.add("unresolved-record-read-from-saved-accounting", !!calls && o.runs.some(run => run.agentId === o.leadId && run.status === "succeeded"
       && readSavedAccounting(calls, run.id, { companyId: o.companyId, task: o.state.preflightTask as Entity | undefined, originalRunId: String(o.state.originalRunId ?? ""),
-        citedRunReads: citedRunReads(run), savedRunRecords })),
+        citedRunReads: citedRunReads(run), savedRunRecords, runListPosition: runListPosition(o.runs, String(o.state.originalRunId ?? ""), run) })),
       "A chat run read the unresolved record's saved accounting through a product cost projection instead of inferring or inventing its cost.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {
     c.add("real-human-saved-cost-retry", quality?.runs.some(row => row.runId === before?.id && row.reason === "retryable") === true && o.state.agentRetryStatus === 403
@@ -293,7 +322,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     }
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The requested reporting week is ${weekFrom} through ${weekTo} (UTC). Launch contains imported synthetic metered-API receipt tasks ${morganReceiptTask.identifier} (Morgan) and ${rileyReceiptTask.identifier} (Riley), plus actual completed native run ${state.originalRunId} with unresolved saved usage. Imported fixture receipts are not live provider/campaign billing. Other-project and earlier-week charges must be excluded; native subscription usage/fees are separate.` });
     return { ...state, riley, morganReceiptTask, rileyReceiptTask, weekFrom, weekTo, importedReceiptIds: receipts, receiptOrigin: "public-imported-synthetic-fixture" };
-  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v4", sourceFiles: [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"], expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v5", sourceFiles: [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"], expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
     try {
