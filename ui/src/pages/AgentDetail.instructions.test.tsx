@@ -15,6 +15,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   instructionsFile: vi.fn(),
   updateInstructionsBundle: vi.fn(),
   saveInstructionsFile: vi.fn(),
+  renameInstructionsFile: vi.fn(),
   deleteInstructionsFile: vi.fn(),
   instructionHistory: vi.fn(),
   instructionCandidates: vi.fn(),
@@ -249,6 +250,9 @@ describe("PromptsTab instruction editor", () => {
       virtual: false,
       content: data.content,
     }));
+    mockAgentsApi.renameInstructionsFile.mockImplementation(async (_agentId, data) => ({
+      ...makeSummary(data.renameTo, data.renameTo), content: data.content, contentHash: "b".repeat(64),
+    }));
     mockAgentsApi.deleteInstructionsFile.mockResolvedValue({});
   });
 
@@ -373,31 +377,32 @@ describe("PromptsTab instruction editor", () => {
     expect(button.closest('[aria-label="This file is required"]')).not.toBeNull();
   });
 
-  it("saves a renamed root before updating its reference and removing the old path", async () => {
+  it("renames the root through one source-hash guarded server operation", async () => {
     const summary = makeSummary("AGENTS.md", "AGENTS.md");
-    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original") });
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original", { contentHash: "a".repeat(64) }) });
     await waitFor(() => expect(container.querySelector('[data-testid="instructions-raw-source"]')?.textContent).toBe("Original"));
     await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Rename AGENTS.md"]')!.click());
     await act(() => setNativeValue(container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!, "ROOT"));
     await waitFor(() => expect(saveAction).toEqual(expect.any(Function)));
     await act(async () => { saveAction?.(); });
-    await waitFor(() => expect(mockAgentsApi.deleteInstructionsFile).toHaveBeenCalled());
-    expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalledWith("agent-1", { path: "ROOT.md", content: "Original", baseHash: null }, "company-1");
-    expect(mockAgentsApi.updateInstructionsBundle).toHaveBeenCalledWith("agent-1", { entryFile: "ROOT.md" }, "company-1");
-    expect(mockAgentsApi.saveInstructionsFile.mock.invocationCallOrder[0]).toBeLessThan(mockAgentsApi.updateInstructionsBundle.mock.invocationCallOrder[0]!);
-    expect(mockAgentsApi.updateInstructionsBundle.mock.invocationCallOrder[0]).toBeLessThan(mockAgentsApi.deleteInstructionsFile.mock.invocationCallOrder[0]!);
+    await waitFor(() => expect(mockAgentsApi.renameInstructionsFile).toHaveBeenCalledWith("agent-1", {
+      path: "AGENTS.md", renameTo: "ROOT.md", content: "Original", baseHash: "a".repeat(64),
+    }, "company-1"));
+    expect(mockAgentsApi.saveInstructionsFile).not.toHaveBeenCalled();
+    expect(mockAgentsApi.updateInstructionsBundle).not.toHaveBeenCalled();
+    expect(mockAgentsApi.deleteInstructionsFile).not.toHaveBeenCalled();
   });
 
-  it("does not remove the original file when saving its renamed copy fails", async () => {
+  it("retains the draft when the server rejects a stale rename", async () => {
     const summary = makeSummary("AGENTS.md", "AGENTS.md");
-    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original") });
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original", { contentHash: "a".repeat(64) }) });
     await waitFor(() => expect(container.querySelector('[aria-label="Rename AGENTS.md"]')).not.toBeNull());
     await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Rename AGENTS.md"]')!.click());
     await act(() => setNativeValue(container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!, "ROOT"));
-    mockAgentsApi.saveInstructionsFile.mockRejectedValueOnce(new Error("Save failed"));
+    mockAgentsApi.renameInstructionsFile.mockRejectedValueOnce(new Error("File changed"));
     await waitFor(() => expect(saveAction).toEqual(expect.any(Function)));
     await act(async () => { saveAction?.(); });
-    await waitFor(() => expect(container.textContent).toContain("Save failed"));
+    await waitFor(() => expect(container.textContent).toContain("File changed"));
     expect(mockAgentsApi.deleteInstructionsFile).not.toHaveBeenCalled();
     expect(mockAgentsApi.updateInstructionsBundle).not.toHaveBeenCalled();
   });

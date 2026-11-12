@@ -89,6 +89,49 @@ describe("durable agent file authority", () => {
     root = resolveManagedInstructionsRoot({ id: agentId, companyId, name: "File owner", adapterConfig: {} });
   }
 
+  it("renames the active entry and edited content in the same committed file snapshot", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Original"), baseHash: null }, actor());
+    await store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Edited"), baseHash: fileHash(Buffer.from("Original")) }, actor());
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBe("ROOT.md");
+    await replaceFilesystem();
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toEqual(Buffer.from("Edited"));
+    expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toBeNull();
+  });
+
+  it("rejects a rename that waits behind a concurrent source edit", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Original"), baseHash: null }, actor());
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const writer = store().locked(companyId, agentId, actor(), true, async (_tx, _agent, folder) => {
+      enter();
+      await released;
+      await materializeInstructionBytes(folder, "AGENTS.md", Buffer.from("Concurrent edit"));
+    });
+    await entered;
+    const rename = store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Original"), baseHash: fileHash(Buffer.from("Original")) }, actor());
+    const rejected = expect(rename).rejects.toMatchObject({ status: 409 });
+    release();
+    await writer;
+    await rejected;
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBeUndefined();
+    expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toEqual(Buffer.from("Concurrent edit"));
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toBeNull();
+  });
+
+  it("preserves the active root and source when a rename cannot persist its content", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Original"), baseHash: null }, actor());
+    objects.rejectWrites = true;
+    await expect(store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Edited"), baseHash: fileHash(Buffer.from("Original")) }, actor())).rejects.toThrow("fixture object-store outage");
+    objects.rejectWrites = false;
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBeUndefined();
+    expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toEqual(Buffer.from("Original"));
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toBeNull();
+  });
+
   it("reads instruction compatibility from the committed head after deleting the entire home", async () => {
     await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Original"));
     await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root,

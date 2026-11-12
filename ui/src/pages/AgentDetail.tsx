@@ -390,8 +390,8 @@ export function AgentDetail() {
   const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
-  const [identitySaveVersion, setIdentitySaveVersion] = useState(0);
-  const onIdentitySaved = useCallback(() => setIdentitySaveVersion(value => value + 1), []);
+  const [configSaveVersion, setConfigSaveVersion] = useState(0);
+  const onConfigSaved = useCallback(() => setConfigSaveVersion(value => value + 1), []);
   const [pendingLeave, setPendingLeave] = useState<HTMLAnchorElement | null>(null);
   const leaveBypassRef = useRef(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
@@ -1090,7 +1090,7 @@ export function AgentDetail() {
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
           showSaveNotice={false}
-          onSaved={onIdentitySaved}
+          onSaved={onConfigSaved}
           onDirtyChange={setConfigDirty}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
@@ -1109,6 +1109,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaved={onConfigSaved}
             updatePermissions={updatePermissions}
             canConfigureProviderTrace={canUseProviderTrace}
             content="runtime"
@@ -1127,6 +1128,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaved={onConfigSaved}
             updatePermissions={updatePermissions}
             content="secrets"
           />
@@ -1157,6 +1159,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaved={onConfigSaved}
             updatePermissions={updatePermissions}
             content="permissions"
           />
@@ -1199,7 +1202,7 @@ export function AgentDetail() {
         />
       )}
 
-      {showConfigActionBar && <AgentConfigSaveBar key={`${agent.id}-${activeView}`} dirty={configDirty} saving={configSaving} savedVersion={identitySaveVersion}
+      {showConfigActionBar && <AgentConfigSaveBar key={`${agent.id}-${activeView}`} dirty={configDirty} saving={configSaving} savedVersion={configSaveVersion}
         onDiscard={() => cancelConfigActionRef.current?.()}
         onSave={() => { Promise.resolve(saveConfigActionRef.current?.()).catch(() => {}); }} />}
 
@@ -1619,6 +1622,7 @@ export function ConfigurationTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
+  onSaved,
   updatePermissions,
   hidePromptTemplate,
   hideInstructionsFile,
@@ -1631,6 +1635,7 @@ export function ConfigurationTab({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
+  onSaved?: () => void;
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
@@ -1676,6 +1681,7 @@ export function ConfigurationTab({
       setAwaitingRefreshAfterSave(true);
     },
     onSuccess: (updated, { target }) => {
+      if (lastAgentRef.current.id === target.id) onSaved?.();
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(target.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(target.companyId) });
@@ -1893,7 +1899,6 @@ export function PromptsTab({
   const fileNameInputRef = useRef<HTMLInputElement>(null);
   const [fileSaveInProgress, setFileSaveInProgress] = useState(false);
   const fileSaveLock = useRef(false);
-  const renamedCopyRef = useRef<{ source: string; target: string; content: string; hash?: string } | null>(null);
   const [copyVisible, setCopyVisible] = useState(false);
   const [copyNotice, setCopyNotice] = useState<"copied" | "error" | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -1985,7 +1990,7 @@ export function PromptsTab({
   const displayedFilePath = fileNameDraft ?? selectedOrEntryFile;
   const namingPrefix = displayedFilePath.replace(/\.md$/i, "");
   const renamedFilePath = fileNameDraft === null ? selectedOrEntryFile : markdownFileName(fileNameDraft.replace(/\.md$/i, ""));
-  const nameConflict = renamedFilePath !== selectedOrEntryFile && visibleFilePaths.some(path => path.toLowerCase() === renamedFilePath?.toLowerCase()) && renamedCopyRef.current?.target !== renamedFilePath;
+  const nameConflict = renamedFilePath !== selectedOrEntryFile && visibleFilePaths.some(path => path.toLowerCase() === renamedFilePath?.toLowerCase());
   const fileNameInvalid = !renamedFilePath || nameConflict;
   useEffect(() => {
     if (editingFileName) fileNameInputRef.current?.focus();
@@ -2271,43 +2276,20 @@ export function PromptsTab({
         } else if (fileDirty && renamedFilePath && renamedFilePath !== selectedOrEntryFile) {
           fileSaveLock.current = true;
           setFileSaveInProgress(true);
-          // Create the new path first. Never remove the original until its copy
-          // and (when applicable) the root-file configuration have been saved.
           const latest = await agentsApi.instructionsBundle(agent.id, companyId);
-          if (selectedFileExists) {
-            const source = await agentsApi.instructionsFile(agent.id, selectedOrEntryFile, companyId);
-            const expectedHash = draftBaseHashRef.current ?? selectedFileDetail?.contentHash;
-            if (expectedHash ? source.contentHash !== expectedHash : source.content !== currentContent) {
-              throw new Error("This file changed since you opened it. Refresh before renaming; your draft is retained.");
-            }
-          }
-          const previousCopy = renamedCopyRef.current;
-          const retryingCopy = previousCopy?.source === selectedOrEntryFile && previousCopy.target === renamedFilePath;
-          if (!retryingCopy && latest.files.some(file => file.path.toLowerCase() === renamedFilePath.toLowerCase())) {
-            throw new Error("A file with this name already exists.");
-          }
-          const copied = retryingCopy && previousCopy.content === displayValue
-            ? await agentsApi.instructionsFile(agent.id, renamedFilePath, companyId)
-            : await agentsApi.saveInstructionsFile(agent.id, {
-                path: renamedFilePath, content: displayValue, baseHash: retryingCopy ? previousCopy.hash ?? null : null,
-              }, companyId);
-          if (retryingCopy && previousCopy.content === displayValue && copied.content !== displayValue) {
-            throw new Error("The renamed copy changed. Your original file is still preserved; choose another name.");
-          }
-          renamedCopyRef.current = { source: selectedOrEntryFile, target: renamedFilePath, content: displayValue, hash: copied.contentHash };
-          if (selectedOrEntryFile === currentEntryFile) {
-            await agentsApi.updateInstructionsBundle(agent.id, { entryFile: renamedFilePath }, companyId);
-          }
-          if (selectedFileExists) {
-            await agentsApi.deleteInstructionsFile(agent.id, selectedOrEntryFile, companyId, selectedFileDetail?.contentHash);
-          }
+          const sourceHash = draftBaseHashRef.current ?? selectedFileDetail?.contentHash;
+          if (selectedFileExists && !sourceHash) throw new Error("Reload this file before renaming; your draft is retained.");
+          const copied = selectedFileExists
+            ? await agentsApi.renameInstructionsFile(agent.id, {
+                path: selectedOrEntryFile, renameTo: renamedFilePath, content: displayValue, baseHash: sourceHash!,
+              }, companyId)
+            : await agentsApi.saveInstructionsFile(agent.id, { path: renamedFilePath, content: displayValue, baseHash: null }, companyId);
           queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, renamedFilePath), copied);
           queryClient.setQueryData<AgentInstructionsBundle>(queryKeys.agents.instructionsBundle(agent.id), {
             ...latest,
             entryFile: selectedOrEntryFile === currentEntryFile ? renamedFilePath : latest.entryFile,
             files: [...latest.files.filter(file => file.path !== selectedOrEntryFile), copied],
           });
-          renamedCopyRef.current = null;
           setBundleDraft(null);
           setPendingFiles([]);
           setDraft(null);

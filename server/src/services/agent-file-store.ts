@@ -192,7 +192,7 @@ export async function isAgentFileSaveRecorded(tx: Tx, agent: Agent, relative: st
 export function agentFileStore(db: Db) {
   db = fileStorageDb(db);
   async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
-    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor) => Promise<T>, texts: string[] = []) {
+    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor, onRollback: (restore: () => Promise<void>) => void) => Promise<T>, texts: string[] = []) {
     return db.transaction(async tx => {
       if (write) await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
         operation: "configure", targetAgentId: agentId, lockAgentIds: texts.flatMap(extractAgentMentionIds), lock: "update" });
@@ -201,9 +201,15 @@ export function agentFileStore(db: Db) {
       const bound = write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
       const root = await adoptAgentFiles(tx, agent);
       if (write) await invalidateAgentFileProjection(root);
-      const result = await fn(tx, agent, root, bound);
-      if (write) await persistDurableAgentFiles(tx, agent, root);
-      return result;
+      let restore: (() => Promise<void>) | undefined;
+      try {
+        const result = await fn(tx, agent, root, bound, callback => { restore = callback; });
+        if (write) await persistDurableAgentFiles(tx, agent, root);
+        return result;
+      } catch (error) {
+        await restore?.();
+        throw error;
+      }
     });
   }
   async function audit(tx: Tx, agent: Agent, actor: AuthorizationActor, details: Record<string, unknown>) {
@@ -231,6 +237,40 @@ export function agentFileStore(db: Db) {
     },
     read: (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) =>
       locked(companyId, agentId, actor, false, (_tx, _agent, root) => readAgentFile(root, instructionPath(relative))),
+    rename: (input: { companyId: string; agentId: string; path: string; renameTo: string; bytes: Buffer; baseHash: string }, actor: AuthorizationActor) =>
+      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound, onRollback) => {
+        const source = agentFilePath(input.path);
+        const target = agentFilePath(input.renameTo);
+        if (source === target) throw unprocessable("Choose a different file name");
+        instructionBytes(input.bytes);
+        const previous = await inspectAgentFile(root, source);
+        if (!previous || previous.hash !== input.baseHash) {
+          throw conflict("This file changed since it was read. Reload before renaming.", { code: "AGENT_FILE_CONFLICT", path: source, currentHash: previous?.hash ?? null });
+        }
+        if (!previous.bytes) throw unprocessable("This file is too large to rename in the editor");
+        const snapshot = await scanAgentFiles(root);
+        if ([...snapshot.entries].some(name => name.toLowerCase() === target.toLowerCase())) throw conflict("A file with this name already exists");
+        const newEntries = target.split("/").map((_part, i, parts) => parts.slice(0, i + 1).join("/")).filter(name => !snapshot.entries.has(name)).length;
+        assertDirectorySize(snapshot.size - previous.size + input.bytes.length, snapshot.entries.size - 1 + newEntries);
+        await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: bound.type === "agent" ? bound.agentId : null,
+          operation: "mention", texts: [input.bytes.toString("utf8")] });
+        const sourcePath = await assertInstructionPathSafe(root, source);
+        const targetPath = await assertInstructionPathSafe(root, target);
+        onRollback(async () => {
+          await materializeInstructionBytes(root, source, previous.bytes!);
+          await fs.rm(targetPath, { force: true });
+          await invalidateAgentFileProjection(root);
+        });
+        await materializeInstructionBytes(root, target, input.bytes);
+        await fs.unlink(sourcePath);
+        if (deriveBundleState(agent).entryFile === source) {
+          await tx.update(agents).set({ adapterConfig: { ...agent.adapterConfig, instructionsBundleMode: "managed",
+            instructionsRootPath: root, instructionsEntryFile: target, instructionsFilePath: path.join(root, target) }, updatedAt: new Date() })
+            .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));
+        }
+        await audit(tx, agent, bound, { path: source, contentHash: null, renamedTo: target });
+        await audit(tx, agent, bound, { path: target, contentHash: fileHash(input.bytes), created: true, renamedFrom: source });
+      }, [input.bytes.toString("utf8")]),
     write: (input: { companyId: string; agentId: string; path: string; bytes: Buffer | null; baseHash: string | null }, actor: AuthorizationActor) =>
       locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
         const relative = agentFilePath(input.path);

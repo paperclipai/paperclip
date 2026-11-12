@@ -3957,7 +3957,7 @@ registry.registerPath({
   method: "put",
   path: "/api/agents/{id}/instructions-bundle/file",
   tags: ["agents"],
-  summary: "Upsert agent instructions file",
+  summary: "Save or rename a managed agent instructions file with a source hash guard",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(upsertAgentInstructionsFileSchema),

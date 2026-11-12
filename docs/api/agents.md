@@ -165,3 +165,13 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 ```
 
 View and roll back agent configuration changes.
+
+### Rename an instruction file
+
+Use `PUT /api/agents/{id}/instructions-bundle/file` with `path`, `renameTo`,
+`content`, and the source file's current `baseHash`. Renames require the same
+instruction configuration permission as file writes. The managed file store
+checks the source hash and destination under the agent write lock, then updates
+the file and the configured root path together. A stale source or occupied
+name returns `409`. External bundles must be migrated to managed storage before
+using this operation. A successful response contains the renamed file detail.
