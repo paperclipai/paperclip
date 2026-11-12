@@ -22,9 +22,8 @@ const purePackages = new Set([
 const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "path/win32",
   "url", "util", "util/types", "buffer", "events", "string_decoder", "crypto",
   "os", "timers", "timers/promises", "stream", "stream/promises", "stream/web", "async_hooks", "zlib"]);
-// Reviewed setup performs only temporary-home IO (including removal of those
-// homes on exit and termination signals) and Supertest socket setup, not reads
-// of arbitrary repository inputs. Pin contents, not just paths: any
+// Reviewed setup performs only temporary-home IO and Supertest socket setup,
+// not reads of arbitrary repository inputs. Pin contents, not just paths: any
 // edit disables this exception until its effects are reviewed again. Continue
 // following local imports even for these files; helper changes affect all tests.
 const reviewedSetup = new Map([
@@ -33,7 +32,7 @@ const reviewedSetup = new Map([
     external: ["supertest/lib/test.js"],
   }],
   ["server/src/__tests__/helpers/isolated-test-home.ts", {
-    hash: "b637ea1ecaf54e528756692b0e95201cfee10e806f431c30711448e2e300dd32",
+    hash: "a294b9be3502b32ceca8b7364b033630bf75d9b39895a4deb6df72a5efc09d7c",
     external: [],
   }],
 ]);

@@ -13,9 +13,6 @@ import {
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 
-// A staged runtime owns disk-backed workspace snapshots until it restores or
-// calls cleanupWorkspaceSnapshot(). Not every engine path under test does
-// either, so release every staged runtime after each test (idempotent).
 const preparedRuntimes = vi.hoisted(() => [] as Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }>);
 
 // Wrap the staging seam + both sandbox bridges in call-recording spies that

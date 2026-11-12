@@ -133,9 +133,7 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
 
 // Wraps an embedded-postgres instance around `dataDir`. The caller decides
 // whether the directory still needs `initialise()` (a fresh cluster) or already
-// holds a copied cluster that only needs `start()`. `ownedDir` is the
-// temporary directory that holds `dataDir`; a signal shutdown removes it after
-// the cluster stopped, if the caller has not cleaned up by then.
+// holds a copied cluster that only needs `start()`.
 async function createEmbeddedPostgresTestInstanceAt(dataDir: string, ownedDir: string) {
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();

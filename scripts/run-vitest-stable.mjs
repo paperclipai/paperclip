@@ -410,10 +410,6 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
-// Each run owns a private root for its home, TMPDIR and collection files.
-// Remove it when the run ends, on pass or fail. Tests can leave read-only
-// directories behind, so make real directories writable first; entries that
-// are not directories, including symlinks, are never followed.
 function removeTestRoot(testRoot) {
   const makeWritable = (directory) => {
     chmodSync(directory, 0o700);
@@ -429,18 +425,18 @@ function removeTestRoot(testRoot) {
   }
 }
 
-// A stopping signal ends the active run and removes its root before the
-// wrapper exits with the same signal.
 let stopSignal = null;
-let activeRun = null;
+const activeRuns = new Set();
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.once(signal, () => {
     stopSignal = signal;
-    if (activeRun?.child) activeRun.child.kill(signal);
-    else {
-      if (activeRun) removeTestRoot(activeRun.testRoot);
-      process.kill(process.pid, signal);
+    const children = [...activeRuns].filter((run) => run.child);
+    if (children.length > 0) {
+      for (const run of children) run.child.kill(signal);
+      return;
     }
+    for (const run of activeRuns) removeTestRoot(run.testRoot);
+    process.kill(process.pid, signal);
   });
 }
 
@@ -492,16 +488,17 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
   if (stopSignal) throw new Error(`stopped by ${stopSignal}`);
   console.log(`\n[test:run] ${label}`);
   const isolated = isolatedTestEnv();
-  activeRun = { testRoot: isolated.testRoot, child: null };
+  const run = { testRoot: isolated.testRoot, child: null };
+  activeRuns.add(run);
   try {
-    await runVitestInRoot(isolated, args, label, testShard, exactFiles);
+    await runVitestInRoot(run, isolated, args, label, testShard, exactFiles);
   } finally {
-    activeRun = null;
-    removeTestRoot(isolated.testRoot);
+    activeRuns.delete(run);
+    removeTestRoot(run.testRoot);
   }
 }
 
-async function runVitestInRoot(isolated, args, label, testShard, exactFiles) {
+async function runVitestInRoot(run, isolated, args, label, testShard, exactFiles) {
   const { env } = isolated;
   if (testShard) {
     const file = path.resolve(repoRoot, chatSuite);
@@ -538,7 +535,7 @@ async function runVitestInRoot(isolated, args, label, testShard, exactFiles) {
       env: invocationEnv("vitest", env),
       stdio: "inherit",
     });
-    if (activeRun) activeRun.child = child;
+    run.child = child;
     child.once("error", reject);
     child.once("close", (code, signal) => {
       if (code === 0) resolve();

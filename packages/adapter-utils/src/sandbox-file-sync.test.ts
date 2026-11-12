@@ -12,10 +12,6 @@ import {
   type SandboxSyncOperation,
 } from "./sandbox-managed-runtime.js";
 
-// A prepared runtime owns disk-backed workspace snapshots until the caller
-// restores the workspace or calls cleanupWorkspaceSnapshot(). Some tests here
-// inspect only the staged side, so release every runtime after each test.
-// Cleanup is idempotent, so runtimes that already restored are unaffected.
 const preparedRuntimes: Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }> = [];
 function releaseAfterEach<Args extends unknown[], Prepared extends { cleanupWorkspaceSnapshot?(): Promise<void> }>(
   prepare: (...args: Args) => Promise<Prepared>,

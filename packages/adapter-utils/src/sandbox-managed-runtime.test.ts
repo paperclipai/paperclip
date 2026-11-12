@@ -46,10 +46,6 @@ import {
 } from "./acpx-engine/startup-timing.js";
 import type { RunProcessResult } from "./server-utils.js";
 
-// A prepared runtime owns disk-backed workspace snapshots until the caller
-// restores the workspace or calls cleanupWorkspaceSnapshot(). Many tests here
-// inspect only the staged side, so release every runtime after each test.
-// Cleanup is idempotent, so runtimes that already restored are unaffected.
 const preparedRuntimes: Array<Pick<PreparedSandboxManagedRuntime, "cleanupWorkspaceSnapshot">> = [];
 function releaseAfterEach<Args extends unknown[], Prepared extends Pick<PreparedSandboxManagedRuntime, "cleanupWorkspaceSnapshot">>(
   prepare: (...args: Args) => Promise<Prepared>,

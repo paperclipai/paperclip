@@ -45,8 +45,6 @@ async function shutdown(signal: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> 
   for (const result of tasks) {
     if (result.status === "rejected") console.error(result.reason);
   }
-  // Each owner is stopped, and its directory removed only after that stop
-  // succeeds. A failed stop retains the directory with its diagnostics.
   const drained = await Promise.allSettled([...owners].map(async (owner) => {
     await owner.stop();
     await owner.removeAfterStop?.();
@@ -93,10 +91,6 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   }
 }
 
-// `removeAfterStop` removes the owner's temporary directory when a signal
-// shuts the process down before its caller cleaned up, for example after a
-// hook timeout while startup was still pending. It runs only after the owner
-// stopped successfully.
 export function ownTestPostgres(
   instance: TestPostgresInstance,
   dataDir?: string,

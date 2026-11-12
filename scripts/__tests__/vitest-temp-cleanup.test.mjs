@@ -6,10 +6,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-// Vitest stops each forks-pool worker with SIGTERM, which skips `exit`
-// handlers. These checks run real suites under a private TMPDIR and require
-// that no test home or workspace snapshot directory outlives the run, including
-// when a file fails, times out or throws while it is imported.
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const vitest = path.join(root, "node_modules/vitest/vitest.mjs");
@@ -35,7 +31,6 @@ function runVitestWithPrivateTmpdir(t, { cwd, args, timeout, tmp: sharedTmp, env
   if (!sharedTmp) mkdirSync(tmp);
   const env = { ...process.env, ...extraEnv, TMPDIR: tmp, TMP: tmp, TEMP: tmp };
   delete env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL;
-  // The server setup creates a private Codex home only when none is supplied.
   delete env.CODEX_HOME;
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, [vitest, "run", ...args(scratch)], { cwd, env, encoding: "utf8", timeout });
@@ -70,9 +65,6 @@ test("server test setup removes its homes when files pass, fail, time out or fai
   assert.deepEqual(residue, [], output);
 });
 
-// A fake cluster through the constructor seam makes the ordering exact: the
-// setup hook times out while `start()` is still pending, so the worker is shut
-// down before the suite ever holds a handle to clean up.
 function runEmbeddedPostgresSuite(t, name, { startMs, stopFails }) {
   const helper = path.join(root, "packages/db/src/test-embedded-postgres.ts");
   const client = path.join(root, "packages/db/src/client.ts");
@@ -90,7 +82,6 @@ function runEmbeddedPostgresSuite(t, name, { startMs, stopFails }) {
         import fs from "node:fs";
         import path from "node:path";
         import { beforeAll, it, vi } from ${JSON.stringify(api)};
-        // No database server exists, so the client calls after startup are no-ops.
         vi.doMock(${JSON.stringify(client)}, () => ({
           applyPendingMigrations: async () => {},
           closeRegisteredClients: async () => {},

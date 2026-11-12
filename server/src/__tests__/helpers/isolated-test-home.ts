@@ -32,12 +32,6 @@ export function createIsolatedTestHome(prefix = "paperclip-vitest-home-") {
 
 const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
 
-/**
- * Run `cleanup` once when this worker ends. Vitest stops forks-pool workers
- * with SIGTERM (then SIGKILL), and a default signal exit skips `exit`
- * listeners, so termination signals clean up too. When no other listener
- * owns the signal, it is raised again so the worker still exits as before.
- */
 export function cleanupAtProcessEnd(cleanup: () => void) {
   let done = false;
   const runOnce = () => {
