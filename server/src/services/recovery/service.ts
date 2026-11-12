@@ -25,13 +25,14 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restriction.js";
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
+import { hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { pendingExternalConversationSettlement, settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { isIssueReviewPathRecoveryRun } from "./review-path-recovery.js";
 import { escalateExhaustedIssueReviewPathRecovery } from "./review-path-recovery-escalation.js";
-import { executionRetryAccounting } from "../execution-recovery-attempt.js";
+import { executionRetryAccounting, INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
 import { isExplicitContinuationRetryClaim } from "../explicit-continuation-retry-claim.js";
 import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
@@ -537,7 +538,9 @@ function didAutomaticRecoveryFail(
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
   return (
-    latestRetryReason === expectedRetryReason &&
+    (latestRetryReason === expectedRetryReason
+      || (expectedRetryReason === "issue_continuation_needed"
+        && latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)) &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -1075,7 +1078,7 @@ export function recoveryService(
     for (const row of rows) {
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
-      if (retryReason !== "issue_continuation_needed") break;
+      if (retryReason !== "issue_continuation_needed" && retryReason !== INTERRUPTED_PREPARATION_RETRY_REASON) break;
       if (
         !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
@@ -1265,6 +1268,7 @@ export function recoveryService(
       agentId: latestRun.agentId,
     };
     if (await hasCommittedNativePlanWait(db, binding)) return true;
+    if (issue.status === "in_progress" && await hasCommittedNativeResponseWakeWait(db, binding)) return true;
     const [receipt] = await db
       .select({
         run: heartbeatRuns,
@@ -1467,6 +1471,8 @@ export function recoveryService(
       (await listExternalReviewWaits(db, issue.companyId, [issue.id])).length > 0) return true;
     if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
       await hasCommittedNativePlanWait(db, { companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId: latestRun.agentId })) return true;
+    if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
+      await hasCommittedNativeResponseWakeWait(db, { companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId: latestRun.agentId })) return true;
     if (
       issue.status === "in_progress" &&
       latestRun?.status === "succeeded" &&

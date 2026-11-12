@@ -83,6 +83,8 @@ import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
@@ -446,6 +448,8 @@ import {
   NATIVE_PROVIDER_SESSION_CLOSED,
   NATIVE_PROVIDER_STARTUP_REJECTED,
   nativeRemoteStartupRejectionCode,
+  nativeRunnerExitedBeforeSessionOpen,
+  NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER,
   nativeRepeatedStartupFailureAction,
   nativePreviousStartupFailureSignature,
   nativeStartupFailureSignature,
@@ -860,6 +864,96 @@ describe("remote controller restart adoption", () => {
     expect(probes).toBe(2);
     expect(execute.mock.calls.every(([request]) => !request.args.join(" ").match(/nohup|mkdir|rm -|mv -|kill -"/))).toBe(true);
   });
+  const pluginStall = () => new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT,
+    message: 'RPC call "environmentExecute" timed out after 40000ms' });
+  it.each(["runner_state", "identity_marker", "process_verification"] as const)(
+    "reattaches the same runner through a plugin RPC stall during the %s read", async stage => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    const operation = stage === "identity_marker" ? "paperclip-runner-recovery-identity" : "paperclip-runner-recovery-check";
+    let stalls = 0;
+    execute.mockImplementation(async request => {
+      if ((stage === "runner_state" ? request.args[1].includes("base64") : request.args[2] === operation) && stalls < 2) {
+        stalls++;
+        await new Promise(resolveWait => setTimeout(resolveWait, 40_000));
+        throw pluginStall();
+      }
+      return original(request);
+    });
+    const outcome = verifyRemoteRunnerReattachment({
+      claim, target: target as never, identity, runId: "run", normalizedSessionId: "session",
+    }).catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(90_000);
+    const adopted = await outcome;
+    expect(adopted).not.toBeInstanceOf(Error);
+    expect((adopted as { pid: number }).pid).toBe(123);
+    expect(stalls).toBe(2);
+    expect(execute.mock.calls.every(([request]) => !request.args.join(" ").match(/nohup|mkdir|rm -|mv -|kill -"/))).toBe(true);
+  });
+  it("fails reattachment closed when the plugin stall outlasts its bound", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => {
+      if (request.args[2] !== "paperclip-runner-recovery-check") return original(request);
+      await new Promise(resolveWait => setTimeout(resolveWait, 40_000));
+      throw pluginStall();
+    });
+    let settled = false;
+    const outcome = verifyRemoteRunnerReattachment({
+      claim, target: target as never, identity, runId: "run", normalizedSessionId: "session",
+    }).catch(error => { settled = true; return error as Error; });
+    await vi.advanceTimersByTimeAsync(150_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(80_000);
+    expect(readRemoteRunnerRecoveryError(await outcome)).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+  });
+  it("keeps the 30-second bound for a transport failure that is not a plugin stall", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => {
+      if (request.args[2] !== "paperclip-runner-recovery-check") return original(request);
+      throw new Error("Sandbox with ID test-deleted-sandbox not found");
+    });
+    const startedAt = Date.now();
+    const outcome = verifyRemoteRunnerReattachment({
+      claim, target: target as never, identity, runId: "run", normalizedSessionId: "session",
+    }).catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(readRemoteRunnerRecoveryError(await outcome)).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+    expect(Date.now() - startedAt).toBeLessThanOrEqual(30_000);
+  });
+  it("reads the settled state of an exited runner through a plugin RPC stall", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const settled = { lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+    const { target, execute } = fixture(settled);
+    const original = execute.getMockImplementation()!;
+    let exited = false;
+    let stalls = 0;
+    execute.mockImplementation(async request => {
+      if (request.args[2] === "paperclip-runner-recovery-check") {
+        exited = true;
+        return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+      }
+      if (exited && request.args[1].includes("base64") && stalls === 0) {
+        stalls++;
+        await new Promise(resolveWait => setTimeout(resolveWait, 40_000));
+        throw pluginStall();
+      }
+      return original(request);
+    });
+    const outcome = verifyRemoteRunnerOrSettledExit({ claim, target: target as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await outcome).toBeUndefined();
+    expect(stalls).toBe(1);
+  });
   it("rejects a marker that cannot prove its process generation", async () => {
     const { target, execute } = fixture();
     const original = execute.getMockImplementation()!;
@@ -1020,6 +1114,26 @@ describe("remote controller restart adoption", () => {
   it.each([2, 3])("resumes scheduled attempt %i whose runner exited after its previous attempt suspended it", async providerAttempt => {
     await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension) as never, identity,
       runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
+  });
+  const exitedBeforeOpen = { lifecycle: "ready", outbox: [{ id: 127 }], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+  it("starts a new runner when the previous attempt's runner exited before answering session.open", async () => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(exitedBeforeOpen) as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "ready", runnerSettled: false });
+    await expect(verifyRemoteRunnerOrSettledExit({ claim: { ...claim, exitedBeforeSessionOpen: true },
+      target: exitedRunner(exitedBeforeOpen) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt: 2 }))
+      .resolves.toBeUndefined();
+  });
+  it.each([
+    ["a pending provider cleanup", { ...exitedBeforeOpen, pendingProviderCleanup: { pid: 7 } }, 2],
+    ["a pending terminal delivery", { ...exitedBeforeOpen, pendingTerminalDelivery: { eventId: "event" } }, 2],
+    ["a runner that stopped mid-turn", { ...exitedBeforeOpen, lifecycle: "turn_active" }, 2],
+    ["an exhausted attempt budget", exitedBeforeOpen, 4],
+  ] as const)("keeps a runner that exited before session.open fail-closed after %s", async (_case, state, providerAttempt) => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim: { ...claim, exitedBeforeSessionOpen: true },
+      target: exitedRunner(state) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
   });
   it.each([
     ["an unsettled suspension", { ...settledSuspension, outbox: [{ id: 1 }] }, 2],
@@ -1587,6 +1701,141 @@ fs.readFileSync = function(path, ...args) {
     } finally { vi.useRealTimers(); }
   });
 
+  it("keeps supervising a connected runner through plugin RPC timeouts until the probe answers", async () => {
+    vi.useFakeTimers();
+    let nonce = "";
+    let stalledProbes = 0;
+    let connected = true;
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") { nonce = input.args![4]!; return ok; }
+      if (label === "paperclip-runner-process-identity") return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+      if (label === "paperclip-runner-monitor" && stalledProbes < 3) {
+        stalledProbes++;
+        await new Promise(resolve => setTimeout(resolve, 40_000));
+        throw new Error('RPC call "environmentExecute" timed out after 40000ms');
+      }
+      if (label === "paperclip-runner-monitor") return { ...ok, exitCode: connected ? 0 : 45 };
+      return { ...ok, exitCode: 1 };
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {}, isRunnerConnected: () => connected });
+    let settled = false;
+    const outcome = handle.completion.then(() => { settled = true; }, error => { settled = true; return error as Error; });
+    try {
+      await vi.advanceTimersByTimeAsync(130_000);
+      expect(settled ? readRemoteRunnerRecoveryError(await outcome) : "supervising").toBe("supervising");
+      expect(stalledProbes).toBe(3);
+      expect(handle.isExitConfirmed?.()).toBe(false);
+      connected = false;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await outcome).toBeUndefined();
+      expect(handle.isExitConfirmed?.()).toBe(true);
+      expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("fails closed without exit proof when the runner is also disconnected through plugin RPC timeouts", async () => {
+    vi.useFakeTimers();
+    let nonce = "";
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") { nonce = input.args![4]!; return ok; }
+      if (label === "paperclip-runner-process-identity") return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+      await new Promise(resolve => setTimeout(resolve, 40_000));
+      throw new Error('RPC call "environmentExecute" timed out after 40000ms');
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {}, isRunnerConnected: () => false });
+    const failure = handle.completion.catch(readRemoteRunnerRecoveryError);
+    try {
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(await failure).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+      expect(handle.isExitConfirmed?.()).toBe(false);
+      expect(execute.mock.calls.some(([x]) => x.args?.[2] === "paperclip-runner-diagnostics")).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["launch", "identity"] as const)("supervises the one launched runner through a plugin RPC stall on the %s call", async stalled => {
+    vi.useFakeTimers();
+    let nonce = "";
+    let markerWritten = false;
+    let stalls = 0;
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const stall = async () => {
+      stalls++;
+      await new Promise(resolve => setTimeout(resolve, 40_000));
+      throw new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT, message: 'RPC call "environmentExecute" timed out after 40000ms' });
+    };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") {
+        nonce = input.args![4]!;
+        markerWritten = true;
+        if (stalled === "launch") return stall();
+        return ok;
+      }
+      if (label === "paperclip-runner-process-identity") {
+        if (stalled === "identity" && stalls === 0) return stall();
+        return markerWritten ? { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` } : { ...ok, exitCode: 1 };
+      }
+      if (label === "paperclip-runner-monitor") return { ...ok, exitCode: 45 };
+      return { ...ok, exitCode: 1 };
+    });
+    const onSpawn = vi.fn(async () => undefined);
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote", onSpawn,
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {} });
+    const outcome = handle.completion.catch(error => error as Error);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await outcome).toMatchObject({ code: null });
+      expect(stalls).toBe(1);
+      expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 4321, processGroupId: null, startedAt: "2026-09-06T00:00:00.000Z" });
+      expect(handle.isExitConfirmed?.()).toBe(true);
+      expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
+      expect(execute.mock.calls.some(([x]) => x.args?.[2] === "paperclip-runner-identity-failure-cleanup")).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds supervision without exit proof when a connected runner's probes never answer", async () => {
+    vi.useFakeTimers();
+    let nonce = "";
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { args?: string[] }) => {
+      const label = input.args?.[2];
+      if (label === "paperclip-runner-launch") { nonce = input.args![4]!; return ok; }
+      if (label === "paperclip-runner-process-identity") return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+      await new Promise(resolve => setTimeout(resolve, 40_000));
+      throw new Error('RPC call "environmentExecute" timed out after 40000ms');
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {}, isRunnerConnected: () => true });
+    let settled = false;
+    const failure = handle.completion.catch(error => { settled = true; return readRemoteRunnerRecoveryError(error); });
+    try {
+      await vi.advanceTimersByTimeAsync(REMOTE_RUNNER_RECONNECT_GRACE_MS - 60_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(true);
+      expect(await failure).toEqual({ stage: "process_verification", reason: "probe_transport_failed" });
+      expect(handle.isExitConfirmed?.()).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["delivered", "sandbox_missing", "logging_failed"] as const)(
     "detaches runnerd and contains asynchronous signal failures (%s)", async (signalOutcome) => {
     let launchNonce = "";
@@ -1693,7 +1942,8 @@ fs.readFileSync = function(path, ...args) {
     });
     await expect(handle.completion).resolves.toMatchObject({
       code: null,
-      stderr: "paperclip-runnerd: provider transport closed",
+      // The durable exit state comes first, then the sandbox-local exit evidence.
+      stderr: 'runner_remote_process_exited lifecycle=ready diagnostics=["last durable diagnostic"]\npaperclip-runnerd: provider transport closed',
     });
 
     const launch = execute.mock.calls.find(
@@ -11183,7 +11433,7 @@ describe("native warm session supervision", () => {
     expect(collectStopped).not.toHaveBeenCalled();
     expect(readNativeSessionIdleWork()).toBe("present");
     close.mockResolvedValue(undefined);
-    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
     expect(collectStopped).toHaveBeenCalledOnce();
   });
 
@@ -11209,7 +11459,7 @@ describe("native warm session supervision", () => {
     expect(close).toHaveBeenCalledOnce();
     expect(collectStopped).toHaveBeenCalledOnce();
     expect(close.mock.invocationCallOrder[0]).toBeLessThan(collectStopped.mock.invocationCallOrder[0]!);
-    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0 });
+    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
   });
 
   it.each(["failed", "cancelled"] as const)("collects edits written during %s provider shutdown after the warm checkpoint", async (runTerminalState) => {
@@ -11466,7 +11716,7 @@ describe("native warm session supervision", () => {
       releaseClose();
       close.mockResolvedValue(undefined);
       expect(await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }))
-        .toEqual({ closed: changed && !closeFails ? 0 : 1, busy: 0, failed: 0 });
+        .toEqual({ closed: changed && !closeFails ? 0 : 1, busy: 0, failed: 0, failures: [] });
       expect(collectStopped).toHaveBeenCalledOnce();
     }
   });
@@ -12042,6 +12292,122 @@ describe("native warm session supervision", () => {
       },
     );
 
+    it.each(["contained", "handoff-unconfirmed"] as const)(
+      "stops an idle warm owner whose close cannot settle when its environment is deleted (%s)", async mode => {
+        const { base } = fixture(`idle-unsettled-${mode}`);
+        const environmentId = `idle-unsettled-env-${mode}`;
+        const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: base.binding.runId,
+          normalizedSessionId: base.session.normalizedSessionId!, turnId: "turn", itemId: "item" };
+        let stopped = false;
+        const task = vi.fn(async (operation: any) => {
+          if (operation.kind === "describe") return { kind: "description", taskId: "parked-task", launchPreparationVersion: 1,
+            projectAuthCheckVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+          if (operation.kind === "stop") stopped = true;
+          if (operation.kind === "status") return { kind: "status", taskId: "parked-task", phase: stopped ? "cancelled" : "running", executionStopped: stopped };
+          if (operation.kind === "complete" && mode === "handoff-unconfirmed") throw new Error("handoff unconfirmed");
+          return { kind: "accepted", taskId: "parked-task" };
+        });
+        const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+        let owner!: ReturnType<typeof createOwner>;
+        const ownerFactory = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockImplementation(input => {
+          owner = createOwner({ ...input, adoptIdentity: identity });
+          return owner;
+        });
+        onTestFinished(() => ownerFactory.mockRestore());
+        const backend = await createRunnerdBackend({ db: leaseDb(base),
+          execution: { ...base, session: { ...base.session, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } },
+          runnerInstanceId: "runner", runnerIngressAuthorized: true,
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task } });
+        const registration = await owner.registration({} as never, base.binding.runId);
+        const failure = new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, providerDrained: true,
+          semanticTools: { pending: [{ callId: "question-call" }] } }, false);
+        let closePromise: Promise<void> | undefined;
+        const close = vi.fn(() => closePromise ??= (async () => {
+          await registration.release();
+          await registration.checkpoint("unsettled").catch(() => undefined);
+          throw failure;
+        })());
+        const session = { close };
+        backend.bindManagedSession(session as never);
+        const collectStopped = vi.fn(async () => { expect(owner.isRetired()).toBe(true); });
+        const retirementFailed = vi.fn(async () => {});
+        state.execute.mockReset().mockImplementationOnce(async options => {
+          await options.onSession?.(session); return result;
+        });
+        try {
+          await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner",
+            instructionWorkingCopy: { hasChanges: async () => false, collectStopped, retirementFailed },
+            runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, remoteCwd: `/tmp/${environmentId}`,
+              sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "parked-sandbox" } } });
+          const graceful = await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "idle sweep" });
+          expect(graceful).toMatchObject({ closed: 0, failed: 1, failures: [{ runId: base.binding.runId,
+            providerLeaseId: "parked-sandbox", environmentId }] });
+          expect(graceful.failures[0]!.reason).toContain("native_session_close_unrecoverable: provider_transport_failed: runner did not durably suspend before checkpoint");
+          expect(graceful.failures[0]!.reason).toContain("question-call");
+          expect(collectStopped).not.toHaveBeenCalled();
+          const deleted = await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true });
+          expect(task.mock.calls.filter(([operation]) => operation.kind === "stop")).toHaveLength(1);
+          expect(task.mock.calls.some(([operation]) => operation.kind === "read_state")).toBe(false);
+          if (mode === "contained") {
+            expect(deleted).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+            expect(collectStopped).toHaveBeenCalledOnce();
+            expect(await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true }))
+              .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
+          } else {
+            expect(deleted).toMatchObject({ closed: 0, failed: 1, failures: [{ runId: base.binding.runId }] });
+            expect(deleted.failures[0]!.reason).toContain("runner did not durably suspend before checkpoint");
+            expect(deleted.failures[0]!.reason).toContain("forced Runner stop failed: handoff unconfirmed");
+            expect(collectStopped).not.toHaveBeenCalled();
+          }
+        } finally {
+          close.mockResolvedValue(undefined);
+          collectStopped.mockResolvedValue(undefined);
+          expect(await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "test cleanup" })).toMatchObject({ failed: 0 });
+          ownerFactory.mockRestore();
+        }
+      },
+    );
+
+    it.each(["destroyed", "stopped", "unproven"] as const)(
+      "releases an idle warm owner whose sandbox lease is gone when its environment is deleted (%s)", async receipt => {
+        const { base } = fixture(`idle-gone-${receipt}`);
+        const environmentId = `idle-gone-env-${receipt}`;
+        const inactive = new Error("Daytona sandbox lease gone-sandbox is no longer active.");
+        const close = vi.fn(async (): Promise<void> => { throw inactive; });
+        const retirementFailed = vi.fn(async () => {});
+        state.execute.mockReset().mockImplementationOnce(async options => {
+          await options.onSession?.({ close }); return result;
+        });
+        const lease = { id: "lease-gone", companyId: base.binding.companyId, environmentId, heartbeatRunId: "pending-cleanup-run",
+          provider: "daytona", providerLeaseId: "gone-sandbox", status: "released", releasedAt: new Date(), cleanupStatus: "success",
+          leasePolicy: "reuse_by_environment",
+          metadata: receipt === "unproven" ? {} : { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+            companyId: base.binding.companyId, runId: "pending-cleanup-run", leaseId: "lease-gone", provider: "daytona",
+            providerLeaseId: "gone-sandbox", state: receipt, confirmedAt: new Date().toISOString() } } };
+        const where = vi.fn(async () => [lease]);
+        const db = { select: () => ({ from: () => ({ where }) }) } as never;
+        try {
+          await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner",
+            instructionWorkingCopy: { hasChanges: async () => false, collectStopped: async () => {}, retirementFailed },
+            runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, remoteCwd: `/tmp/${environmentId}`,
+              sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "gone-sandbox" } } });
+          const deleted = await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true, db });
+          expect(where).toHaveBeenCalledOnce();
+          if (receipt === "destroyed") {
+            expect(deleted).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+            expect(await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true, db }))
+              .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
+          } else {
+            expect(deleted).toMatchObject({ closed: 0, failed: 1, failures: [{ runId: base.binding.runId, providerLeaseId: "gone-sandbox",
+              reason: "close failed: Daytona sandbox lease gone-sandbox is no longer active." }] });
+          }
+        } finally {
+          close.mockResolvedValue(undefined);
+          await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "test cleanup" });
+        }
+      },
+    );
+
     it("retains failed retirement for retry and never launches over an uncontained owner", async () => {
       const { base, next, run } = fixture("identity-close-failure");
       const close = vi.fn().mockRejectedValueOnce(new Error("containment unavailable")).mockResolvedValue(undefined);
@@ -12224,7 +12590,7 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: "runner" });
       expect(readNativeSessionIdleWork()).toBe("present");
       if (retirement === "controller restart") {
-        expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 1 });
+        expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed: 0, busy: 0, failed: 1 });
       } else {
         await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
       }
@@ -12236,7 +12602,7 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledOnce();
       expect(readNativeSessionIdleWork()).toBe("present");
       close.mockResolvedValue(undefined);
-      expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+      expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
       expect(close).toHaveBeenCalledTimes(3);
       expect(readNativeSessionIdleWork()).toBe("none");
     } finally {
@@ -12271,18 +12637,18 @@ describe("native warm session supervision", () => {
     it("does no work when no warm owner exists", async () => {
       await closeIdleWarmNativeSessionsForRestart();
       expect(await prepareSleep({ canRetire: () => true }))
-        .toEqual({ closed: 0, busy: 0, failed: 0 });
+        .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
       expect(readNativeSessionIdleWork()).toBe("none");
     });
 
     it("leaves an idle owner intact without current drain authority", async () => {
       const f = await start("sleep-stale-hold");
       expect(await prepareSleep({ canRetire: () => false }))
-        .toEqual({ closed: 0, busy: 0, failed: 0 });
+        .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
       expect(f.close).not.toHaveBeenCalled();
       expect(readNativeSessionIdleWork()).toBe("present");
       expect(await prepareSleep({ canRetire: () => true }))
-        .toEqual({ closed: 1, busy: 0, failed: 0 });
+        .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
       expect(f.close).toHaveBeenCalledExactlyOnceWith({ reason: "tenant idle sleep" });
       expect(readNativeSessionIdleWork()).toBe("none");
     });
@@ -12297,7 +12663,7 @@ describe("native warm session supervision", () => {
       heartbeat.getTaskDrainStatus();
       expect(f.close).not.toHaveBeenCalled();
       expect(await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true }))
-        .toEqual({ closed: 1, busy: 0, failed: 0 });
+        .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
       expect(readNativeSessionIdleWork()).toBe("none");
     });
 
@@ -12313,11 +12679,11 @@ describe("native warm session supervision", () => {
         expect(readNativeSessionIdleWork()).toBe("present");
         current = false;
         finish();
-        expect(await preparation).toEqual({ closed: 1, busy: 0, failed: 0 });
+        expect(await preparation).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
         expect(second.close).not.toHaveBeenCalled();
         expect(readNativeSessionIdleWork()).toBe("present");
         expect(await prepareSleep({ canRetire: () => true }))
-          .toEqual({ closed: 1, busy: 0, failed: 0 });
+          .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
         expect(readNativeSessionIdleWork()).toBe("none");
       } finally { finish(); await preparation; }
     });
@@ -12326,13 +12692,13 @@ describe("native warm session supervision", () => {
       const close = vi.fn(async () => undefined);
       await start("sleep-busy-turn", close, async () => {
         expect(await prepareSleep({ canRetire: () => true }))
-          .toEqual({ closed: 0, busy: 1, failed: 0 });
+          .toEqual({ closed: 0, busy: 1, failed: 0, failures: [] });
         expect(close).not.toHaveBeenCalled();
       });
       expect(close).not.toHaveBeenCalled();
       expect(readNativeSessionIdleWork()).toBe("present");
       expect(await prepareSleep({ canRetire: () => true }))
-        .toEqual({ closed: 1, busy: 0, failed: 0 });
+        .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
     });
 
     it("collects managed edits after the provider checkpoint before clearing the owner", async () => {
@@ -12354,7 +12720,7 @@ describe("native warm session supervision", () => {
           runId: "sleep-files", root, preparationKey: "sleep-files", hasChanges: async () => false, collectStopped,
         });
         expect(await prepareSleep({ canRetire: () => true }))
-          .toEqual({ closed: 1, busy: 0, failed: 0 });
+          .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
         expect(await readFile(saved, "utf8")).toBe("Edits collected from stopped provider");
         expect(JSON.parse(await readFile(providerCheckpoint, "utf8"))).toEqual({ session: "sleep-files", resume: "retained" });
         expect(collectStopped).toHaveBeenCalledOnce();
@@ -12370,10 +12736,10 @@ describe("native warm session supervision", () => {
       const close = vi.fn(async () => undefined).mockRejectedValueOnce(failure);
       const f = await start("sleep-retry", close);
       expect(await prepareSleep({ canRetire: () => true }))
-        .toEqual({ closed: 0, busy: 0, failed: 1 });
+        .toMatchObject({ closed: 0, busy: 0, failed: 1 });
       expect(readNativeSessionIdleWork()).toBe("present");
       expect(await prepareSleep({ canRetire: () => true }))
-        .toEqual({ closed: 1, busy: 0, failed: 0 });
+        .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
       const next = { ...f.current, binding: { ...f.current.binding, runId: "sleep-retry-next" } };
       state.execute.mockImplementationOnce(async options => {
         expect(options.existingSession).toBeUndefined();
@@ -12440,7 +12806,7 @@ describe("native warm session supervision", () => {
         environmentId: "other-environment",
         reason: "environment deleted",
       }),
-    ).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
+    ).resolves.toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
     const closeResult = shutdownKind === "controller restart"
       ? closeIdleWarmNativeSessionsForRestart()
       : closeWarmNativeSessionsForEnvironment({
@@ -12668,9 +13034,9 @@ describe("native warm session supervision", () => {
     if (checkpointFails) {
       expect(readNativeSessionIdleWork()).toBe("present");
       close.mockResolvedValue(undefined);
-      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 1, busy: 0, failed: 0 });
+      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
     } else {
-      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
+      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
     }
   });
 
@@ -13503,7 +13869,7 @@ describe("native warm session supervision", () => {
           await writeFile(join(durableRoot, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(durableIdentity)));
           await mkdir(join(durableRoot, "runner"), { recursive: true });
           await writeFile(join(durableRoot, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(durableIdentity, "ready")));
-          if (path === "adoption") expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+          if (path === "adoption") expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
           const continuation = executePaperclipNativeSession({
             db: { ...leaseDb(second), select: () => ({ from: () => ({ where: () => ({ limit: () =>
               Promise.resolve([{ status: "succeeded", runnerProfileJson: { nativeExecutionInput: first } }]) }) }) }) } as unknown as Db,
@@ -14238,6 +14604,22 @@ describe("native session bounded recovery", () => {
       expect(nativeSessionFailureDisposition(3, new Date(), "provider_session_open_rejected")).toEqual({
         phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
       });
+    });
+
+    it("rests a run whose Runner refused its commands as out of sequence with a precise code and a Retry", () => {
+      const refused = new Error(`PRP command session.open rejected: {"commandId":"c","controllerSeq":11,"commandType":"session.open","status":"rejected","result":{"code":"controller_sequence_mismatch","message":"controller sequence must be contiguous: expected 13, received 11","expectedControllerSeq":13,"receivedControllerSeq":11}}`);
+      expect(nativeSessionFailureSourceCode(refused)).toBe(NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER);
+      expect(nativeSessionFailureSourceCode(new Error(`native_session_recovery_failed: ${refused}`))).toBe(NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER);
+      expect(nativeSessionFailureDisposition(1, new Date(), NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER)).toMatchObject({
+        phase: "terminal_failure", failureCode: NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER });
+    });
+
+    it("records a runner proven to have exited before answering session.open as a failed fresh start", () => {
+      const proven = (message: string) => Object.defineProperty(new Error(message), "runnerExitConfirmed", { value: true });
+      expect(nativeRunnerExitedBeforeSessionOpen(new Error("native_session_recovery_failed", {
+        cause: proven("runnerd exited while waiting for session.open") }))).toBe(true);
+      expect(nativeRunnerExitedBeforeSessionOpen(new Error("runnerd exited while waiting for session.open"))).toBe(false);
+      expect(nativeRunnerExitedBeforeSessionOpen(proven("PRP command session.open rejected: {}"))).toBe(false);
     });
 
     it("stops a remote startup rejection at once because a remote same-run bootstrap cannot be verified", () => {
@@ -15654,7 +16036,7 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "suspension-receipt", "suspension-active-owner", "changed", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
+  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "suspension-receipt", "suspension-active-owner", "changed", "changed-external-checkpoint", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
     const plugin = scenario === "plugin-replaced" || scenario === "plugin-managed-github";
     const suspensionReceipt = scenario.startsWith("suspension-");
     const reusable = suspensionReceipt || ["unchanged", "external-checkpoint", "plugin-managed-github"].includes(scenario);
@@ -15703,13 +16085,16 @@ describe("runnerd provider runtime wiring", () => {
     // Use the real control plane and persistence callback, not a handwritten marker.
     const saved = new Map<string, import("../../vendor/paperclip-runner/index.js").DurablePrpCheckpoint>();
     let persistedController: DurablePrpControlPlane | undefined;
-    const restore = scenario === "external-checkpoint"
+    const restore = scenario === "external-checkpoint" || scenario === "changed-external-checkpoint"
       ? vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockImplementation(async (_db, binding, directory) => {
           const checkpoint = saved.get(binding.runId);
           if (!checkpoint) throw new Error("missing test checkpoint");
           checkpoint.restoreSessionDirectory(directory);
           return checkpoint;
         }) : undefined;
+    const loadSaved = scenario === "changed-external-checkpoint"
+      ? vi.spyOn(runnerCheckpoint, "loadNativeRunnerCheckpoint").mockImplementation(async (_db, binding) => saved.get(binding.runId) ?? null)
+      : undefined;
     if (restore) {
       const completeIdentity = { ...identity, turnId: "turn-first", itemId: "item-first" };
       // The authority must begin from a complete real state envelope.
@@ -15722,8 +16107,16 @@ describe("runnerd provider runtime wiring", () => {
     const firstSession = { close: vi.fn(async () => {
       order.push("retire");
       if (failRetirement) throw new Error("retirement unconfirmed");
+      if (scenario === "changed-external-checkpoint") {
+        persistedController!.queueCommand("runner.drain", {}, "command_close_drain_fixture");
+        persistedController!.queueCommand("runner.suspend", {}, "command_close_suspend_fixture");
+        await persistedController!.flushCheckpoint();
+        await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(identity, "suspended")));
+        return;
+      }
       await writeRunnerAuthority(root, identity, "suspended");
     }) };
+    let launchedJournal: string[] | undefined;
     const nextSession = { close: vi.fn(async () => undefined) };
     const validated = validatePrpStructuredRunResult({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
       summary: "done", completionClaim: { contractRevision: first.completionContract.contract.revision, objectiveSatisfied: true,
@@ -15748,7 +16141,10 @@ describe("runnerd provider runtime wiring", () => {
       return result;
     }).mockImplementationOnce(async options => {
       order.push("execute-next");
-      if (persistedController) {
+      if (scenario === "changed-external-checkpoint") {
+        launchedJournal = (JSON.parse(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).commands as
+          Array<{ type: string }>).map(command => command.type);
+      } else if (persistedController) {
         persistedController.rotateRunIdentity({ ...identity, runId: next.binding.runId, turnId: "turn-next", itemId: "item-next" });
         await persistedController.flushCheckpoint();
         await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(
@@ -15816,6 +16212,9 @@ describe("runnerd provider runtime wiring", () => {
         }
         if (scenario === "plugin-managed-github") expect(rebind).toHaveBeenCalledOnce();
         expect(order).toEqual(reusable ? ["execute-next"] : ["retire", "execute-next"]);
+        if (scenario === "changed-external-checkpoint") {
+          expect(launchedJournal?.slice(-2)).toEqual(["runner.drain", "runner.suspend"]);
+        }
         if (["unchanged", "external-checkpoint", "suspension-receipt"].includes(scenario)) {
           if (!persistedController) await writeRunnerAuthority(root, { ...identity, runId: next.binding.runId }, "ready");
           if (suspensionReceipt) await rm(join(root, "runner/runner-state.json"));
@@ -15849,6 +16248,7 @@ describe("runnerd provider runtime wiring", () => {
       }
     } finally {
       restore?.mockRestore();
+      loadSaved?.mockRestore();
       await persistedController?.stop();
       failRetirement = false;
       resume?.mockRestore();owners?.mockRestore();feedback.mockRestore();
@@ -16070,6 +16470,22 @@ describe("runnerd provider runtime wiring", () => {
       expect.objectContaining({ hostAuthPath: join(managedHome, "auth.json") }),
     );
     await expect(access(authPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("binds attachment staging to the remote lease before provider startup", async () => {
+    const stagedExecution = scopedNativeExecution("remote-attachment-staging");
+    const execute = vi.fn();
+    state.stageNativeRunnerWakeAttachments.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = args[0] as { stageRemoteAttachment?: unknown; binding: { executionTargetKind: string } };
+      expect(input.binding.executionTargetKind).toBe("remote");
+      expect(input.stageRemoteAttachment).toBeTypeOf("function");
+      throw new Error("fixture_staging_boundary");
+    });
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(stagedExecution), execution: stagedExecution, runnerInstanceId: "remote-attachment-staging", useRunnerd: true,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/lease/workspace", runner: { execute } },
+    })).rejects.toThrow("fixture_staging_boundary");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("stages from the authenticated run snapshot and cleans up after the provider turn", async () => {
@@ -17537,7 +17953,7 @@ describe("runnerd provider runtime wiring", () => {
         }
         if (retirement === "environment deletion") {
           expect(await closeWarmNativeSessionsForEnvironment({ environmentId: target.environmentId, reason: "environment deleted" }))
-            .toEqual({ closed: 1, busy: 0, failed: 0 });
+            .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
           expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "environment deleted" });
           expect(detachControllerForRestart).not.toHaveBeenCalled();
           return;
@@ -17545,7 +17961,7 @@ describe("runnerd provider runtime wiring", () => {
         if (retirement === "detach failure") {
           detachControllerForRestart.mockRejectedValue(new Error("fixture journal drain failed"));
           for (let attempt = 0; attempt < 2; attempt++) {
-            expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 1 });
+            expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed: 0, busy: 0, failed: 1 });
             expect(close).not.toHaveBeenCalled();
             expect(readNativeSessionIdleWork()).toBe("present");
             expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
@@ -17553,8 +17969,8 @@ describe("runnerd provider runtime wiring", () => {
           detachControllerForRestart.mockResolvedValue(undefined);
         }
         if (retirement !== "idle timeout") {
-          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
-          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0 });
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
         } else await vi.waitFor(() => expect(detachControllerForRestart).toHaveBeenCalledOnce());
         expect(readNativeSessionIdleWork()).toBe("none");
         expect(close).not.toHaveBeenCalled();

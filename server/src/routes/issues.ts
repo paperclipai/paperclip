@@ -22,7 +22,8 @@ import { activityService } from "../services/activity.js";
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
-import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
+import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -46,6 +47,7 @@ import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { enqueueOwnQuestionDismissalWake } from "../services/native-runtime/own-question-wait.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
@@ -5882,7 +5884,7 @@ export function issueRoutes(
     if (req.actor.source === "agent_jwt" && req.actor.runId &&
         issue.assigneeAgentId === null && issue.assigneeUserId) {
       const run = await heartbeat.getRun(req.actor.runId);
-      if (run?.agentId === actorAgentId) assertLegacyRunTaskOwnership(run, issue);
+      if (run?.agentId === actorAgentId) assertHandedOffRunTaskOwnership(run, issue);
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
     // watched subtree. This must be evaluated before the base assignee-ownership
@@ -15689,17 +15691,35 @@ export function issueRoutes(
           agentId: existing.assigneeAgentId,
         });
         const runToStopForReassignment = await resolveActiveIssueRun(existing);
+        // The run handing its own task to a person finishes its turn instead of
+        // cancelling itself. Native and legacy alike: the reassignment clears
+        // the execution lock, the native tool binding and finalizer stop acting
+        // for a task the run no longer owns, and later REST mutations from the
+        // outgoing run are rejected (assertHandedOffRunTaskOwnership).
         const isHumanSelfHandoff =
           req.actor.type === "agent" &&
           req.actor.source === "agent_jwt" &&
           nextAssigneeAgentId === null &&
           typeof nextAssigneeUserId === "string" &&
           req.actor.agentId === existing.assigneeAgentId &&
-          runToStopForReassignment?.runtimeMode === "legacy" &&
+          (runToStopForReassignment?.runtimeMode === "legacy" || runToStopForReassignment?.runtimeMode === "native") &&
           runToStopForReassignment.id === req.actor.runId &&
           runToStopForReassignment.agentId === req.actor.agentId &&
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
+        // Record the native hand-off on the run before the task changes, so the
+        // run's terminal fence accepts the task it gave away. A failed update
+        // leaves the record unused: the fence also requires the person to own it.
+        if (isHumanSelfHandoff && runToStopForReassignment.runtimeMode === "native" &&
+            !await recordNativeHumanSelfHandoff(db, { companyId: existing.companyId, runId: runToStopForReassignment.id,
+              agentId: runToStopForReassignment.agentId, issueId: existing.id, assigneeUserId: nextAssigneeUserId as string })) {
+          // The run is no longer the running native run of this task: do not
+          // save an assignment its own terminal fence would then refuse.
+          throw conflict("The run handing off this task is no longer running it. Read the task again and retry.", {
+            code: "native_self_handoff_run_changed",
+            runId: runToStopForReassignment.id,
+          });
+        }
         if (runToStopForReassignment && !isHumanSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {
@@ -19235,6 +19255,11 @@ export function issueRoutes(
       const interaction = await issueThreadInteractionService(db).dismissInteraction(
         issue, req.params.interactionId as string,
         { userId: actor.actorType === "user" ? actor.actorId : null },
+        async (tx) => {
+          await enqueueOwnQuestionDismissalWake(tx, {
+            companyId: issue.companyId, issueId: issue.id, interactionId: req.params.interactionId as string,
+          });
+        },
       );
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,

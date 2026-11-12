@@ -242,11 +242,10 @@ async function handleRequest(
   },
 ): Promise<void> {
   setSecurityHeaders(response);
-  // Never let the MCP client reuse a pooled socket for a later request. A
-  // native OpenCode run (Bun fetch) once lost a written tools/call result on
-  // a parallel call and waited about five minutes for Bun's fetch timeout.
-  // A loopback connect per request costs far less than that failure mode.
-  response.setHeader("Connection", "close");
+  // Keep the default keep-alive. Forcing `Connection: close` here left
+  // OpenCode (Bun fetch) without the Paperclip MCP tools in many native runs:
+  // first model requests dropped from ~35k to ~15k input tokens (no tool
+  // schemas) and the agents reported that Paperclip tools were missing.
   if (!authorized(request.headers.authorization, context.secret)) {
     response.statusCode = 401;
     response.end();

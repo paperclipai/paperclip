@@ -64,6 +64,7 @@ import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js"
 import { registerScheduledWork } from "./services/scheduled-work.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
 import { assertEphemeralServerConfig, assertEphemeralServerData } from "./services/ephemeral-server-contract.js";
+import { claimVolumeFreeControllerState } from "./services/native-runtime/volume-free-controller-state.js";
 import { deploymentNotifications } from "./services/deployment-notifications.js";
 import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
 import { isIdleTaskDrainActive, readTaskDrain, beginIdleTrackedWork, trackIdleWork, registerTaskDrainExpiryWork } from "./services/task-admission.js";
@@ -754,6 +755,10 @@ async function startServerWithDatabaseTeardown(
   await initializeCloudRuntimeConfig(db as any);
   let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
   const deploymentListenUrl = assertEphemeralServerConfig(config);
+  const runnerStateClaim = await claimVolumeFreeControllerState(deploymentListenUrl !== null);
+  if (runnerStateClaim === "unclaimed") {
+    logger.warn("Volume-free server found runner controller state it did not write; the data eligibility gate decides whether it blocks startup");
+  }
   // Cloud storage depends on the canonical DB snapshot. Validate it before
   // signing keys or other configuration consumers can mutate local state.
   if (isCloudManagedInstance()) ensureDecisionSigningSecret();

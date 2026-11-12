@@ -41,6 +41,8 @@ import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
+import { ephemeralServerEnvironment } from "./ephemeral-server.js";
+import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -53,7 +55,10 @@ const STOP_TIMEOUT_MS = 30_000;
 export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL", K14: "SIGTERM", K15: "SIGTERM",
   TM1: "SIGSTOP", TM2: "SIGSTOP", TM3: "SIGKILL", RR1: "SIGKILL", RR2: "SIGKILL", RR3: "SIGKILL",
   // MS1 leaves the primary alone; MS2 freezes it; MS3 stops it gracefully (multi-server.ts).
-  MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM" };
+  MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM",
+  // CR1 stops the server like K15; CR2 signals only the sandbox's provider (SIGTERM to the server with a hold);
+  // CR3 stops the Daytona plugin worker, not the server (class-r.ts).
+  CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP" };
 
 /** The checkout's commit, for the K14 receipt. */
 function checkoutSha(root: string): string | null {
@@ -169,6 +174,7 @@ export class ChaosSupervisor {
   redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
   /** K15 deploy shape (redeploy.ts `parseK15DeployShape`); main.ts sets it before `start`. */
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
+  ephemeralServer = false;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -177,6 +183,8 @@ export class ChaosSupervisor {
   /** `--fail-recovery-step`: "<point>:<nth>", armed in fail mode when the first restart fault starts its replacement. */
   private pendingRecoveryStep: string | null = null;
   private recoveryStepWatch: NodeJS.Timeout | null = null;
+  /** CR1–CR3 waves: sandbox captures and the provider kill (class-r.ts). */
+  classR: ClassRHooks | null = null;
   /** Wave secrets, kept across a K14 switch as an in-place upgrade keeps its configuration. */
   private readonly secrets = { PAPERCLIP_AGENT_JWT_SECRET: secret(), PAPERCLIP_DECISION_SIGNING_SECRET: secret(),
     PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: secret(), BETTER_AUTH_SECRET: secret() };
@@ -280,10 +288,12 @@ export class ChaosSupervisor {
       // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
       ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, this.deployShape.freshHome ? null : home) : {}),
     };
-    const environment = buildPaperclipServerEnvironment(source, overrides);
+    const ephemeral = this.ephemeralServer ? await ephemeralServerEnvironment({ configPath: this.paths.configPath, temporaryRoot: this.paths.temporaryRoot, extraEnvironment }) : null;
+    const environment = buildPaperclipServerEnvironment(source, { ...overrides, ...ephemeral });
     const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
       ? Object.fromEntries(Object.entries(extraEnvironment).filter(([key]) => key.startsWith("PAPERCLIP_STORAGE_"))) : undefined;
-    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}) });
+    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}),
+      ...(ephemeral ? { generatedSecretsMasterKey: ephemeral.PAPERCLIP_SECRETS_MASTER_KEY } : {}) });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
     await prepareSourceServerDependencies(root, this.environment, false);
   }
@@ -493,13 +503,38 @@ export class ChaosSupervisor {
     this.serverReady = false;
     this.timeline.add("fault_started", { faultId: receipt.faultId, fault: kind, signal: receipt.signal, loadAvg1m: receipt.loadAvg1m, holdMs, requestedBy, previousPid: previous?.pid });
     this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} ${receipt.signal} hold=${holdMs}ms requestedBy=${requestedBy} at ${new Date().toISOString()}\n`);
+    // CR1 and CR2 with a hold replace the controller as a K15 deploy does (class-r.ts).
+    const redeploys = kind === "K15" || classRRedeploys(kind, holdMs);
     try {
       if (!previous?.pid || this.exited(previous)) throw new Error("No live Paperclip server to fault");
       let outage: ControllerOutageReceipt | undefined;
+      if (isClassRFault(kind)) {
+        if (!this.classR) throw new Error(`${kind} needs the class R hooks of a Daytona wave (main.ts)`);
+        receipt.classR = { kind, redeploy: redeploys, captures: [] };
+        if (kind === "CR2" && holdMs > 0) receipt.signal = "SIGTERM";
+        // The sandbox just before the fault, while the controller still holds it; the fault starts after it.
+        receipt.classR.captures.push(await this.classR.capture(`${receipt.faultId}-before`, CLASS_R_PRE_FAULT_DEADLINE_MS));
+        receipt.startedAt = Date.now();
+      }
       if (kind === "TM1" || kind === "TM2") await this.freeze(kind, previous, holdMs, receipt);
       else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
       // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
       else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
+      else if (kind === "CR3") {
+        // The server keeps running; its Daytona plugin worker is stopped for the hold (class-r.ts).
+        const stall = await runPluginStall({ serverPid: previous.pid, holdMs, cancelled: () => this.shuttingDown,
+          record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
+        receipt.classR!.pluginStall = stall;
+        receipt.stoppedAt = stall.frozenAt;
+        receipt.restartedAt = stall.thawedAt;
+        if (stall.error) throw new Error(stall.error);
+        receipt.healthyAt = await this.waitForHealth(previous, receipt.phases);
+      }
+      else if (kind === "CR2" && !redeploys) {
+        // The controller stays up: only the provider inside the task's sandbox dies.
+        receipt.classR!.providerKill = await this.classR!.killProvider(requestedBy);
+        receipt.healthyAt = Date.now();
+      }
       else outage = await replaceController({
         requestId: `chaos-${receipt.faultId}-${requestedBy}`,
         previousPid: previous.pid,
@@ -518,6 +553,11 @@ export class ChaosSupervisor {
         discardCache: async () => {},
         // K15: capture the sandbox side as soon as the controller is gone (redeployEvidence).
         ...(kind === "K15" && this.redeployEvidence ? { afterStopped: async () => { await this.redeployEvidence?.(receipt.faultId, "stopped"); } } : {}),
+        // CR1/CR2: the sandbox as the controller left it; CR2 then kills the provider while the controller is away.
+        ...(receipt.classR ? { afterStopped: async () => {
+          receipt.classR!.captures.push(await this.classR!.capture(`${receipt.faultId}-stopped`));
+          if (kind === "CR2") receipt.classR!.providerKill = await this.classR!.killProvider(requestedBy);
+        } } : {}),
         // TM3: the server is down; every database timestamp moves back by the age before the replacement starts.
         ...(kind === "TM3" ? { afterStopped: async () => {
           const timeFault: TimeFaultRecord = { kind };
@@ -529,9 +569,10 @@ export class ChaosSupervisor {
           // K14: the replacement is the current build, on the same database and instance directory.
           if (kind === "K14") receipt.upgrade = await this.switchToCurrentBuild(receipt.faultId);
           // K15: the replacement is the next deploy: a new process space and deployment id on the same volume.
-          if (kind === "K15") {
+          if (redeploys) {
             // After the hold, before the next deploy starts: what its recovery will find in the sandboxes.
-            await this.redeployEvidence?.(receipt.faultId, "before_start");
+            if (receipt.classR) receipt.classR.captures.push(await this.classR!.capture(`${receipt.faultId}-before_start`));
+            else await this.redeployEvidence?.(receipt.faultId, "before_start");
             receipt.redeploy = await this.advanceDeploy(receipt.faultId);
           }
           this.timeline.add("fault_restarting", { faultId: receipt.faultId });
@@ -560,6 +601,8 @@ export class ChaosSupervisor {
       receipt.serverLogOffsetAtReady = this.serverLogOffset();
       this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: this.child?.pid ?? outage?.replacementPid,
         downMs: (receipt.restartedAt ?? 0) - (receipt.stoppedAt ?? 0), readyAfterMs: receipt.readyAt - receipt.startedAt, phases: receipt.phases });
+      // Class R: staging failed about 40 s after adoption; watch the sandbox through that window (not awaited).
+      if (receipt.classR) this.classR?.watchAfterReady(receipt);
     } catch (error) {
       receipt.error = error instanceof Error ? error.message : String(error);
       this.timeline.add("fault_failed", { faultId: receipt.faultId, error: receipt.error });

@@ -26,7 +26,7 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 `--faults K0` plans cells with no fault, for workloads whose shape is the fault (W2, below). `--fail-recovery-step`,
-`--long-turn-minutes`, `--k15-overlap-seconds` and `--k15-fresh-home` are described in their own sections.
+`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home` and `--ephemeral-server` are described in their own sections.
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 `--matrix` crosses every selected workload with every fault kind (below), and `--server-from <dir>`
@@ -354,6 +354,12 @@ minutes. In staging class R, recovery then found the remote Runner gone
   outage. The server stops with SIGTERM and stays down for the hold. Then the
   next deploy generation starts. Without the option, a K15 restarts at once.
   The range is drawn only for K15 cells, so other seeds keep their plans.
+- **H2** (opt-in workload, staging class H) has the agent save `brief`, then hand
+  the task to the person who created it with status `in_review` as its last
+  step. The task must rest `in_review` with that person, no run of the task may
+  end `issue_reassigned`, and the task must have no execution blocker or active
+  recovery action. Run it with a native adapter, for example
+  `--adapters claude --workloads H2`.
 - **T1** (opt-in workload) has the agent run one shell command in the
   foreground for about 100 s (50 ticks of 2 s). The command prints the loop's
   own clock window. The agent then saves `brief`, whose first line is
@@ -419,6 +425,98 @@ for a while after the new one was up. Plain K15 restarts on the same instance ho
 Pass is the usual grade: no Retry (R3), no stuck record (R6), and the oracle. Staging's terminal errors here
 were `ENOENT` on a runtime asset, `Agent directory operation is already active` after a 9.5-minute
 `controller_lease_held` wait.
+### Staging class R cells (CR1–CR3, `class-r.ts`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters opencode,claude --workloads T1 --faults CR1 --concurrency 1 --tasks 2 --seed 9501
+```
+
+Staging failed with `runner_remote_process_identity_unavailable` in 9 runs. In 8 of them:
+
+1. A deploy kept the controller away for 5–7 minutes.
+2. The Runner in the Daytona sandbox survived, and the new controller adopted it.
+3. About 40 s later, `session.snapshot` failed because the provider process was dead or unresponsive.
+
+The ninth run had no deploy. A plugin `environmentExecute` RPC stalled for more than 40 s. These cells
+reproduce each part. The class is named R on staging. The cells are named CR1–CR3 because the R1 workload
+and the R1–R6 grading rules already exist.
+
+| Fault | What it does | Option |
+| --- | --- | --- |
+| CR1 | The K15 redeploy: SIGTERM, then a held outage, then the next deploy generation. | `--cr1-hold-seconds <n>` or `<min>-<max>`, 0–600. Default 360. |
+| CR2 | SIGKILL of the provider process only, inside the task's sandbox. The Runner stays alive. | `--cr2-hold-seconds <n>`, 0–600. Default 0: the controller stays up. With a hold, a K15 redeploy holds the controller down, and the kill happens right after the stop. |
+| CR3 | SIGSTOP of the server's Daytona plugin worker and its children. Every plugin RPC, including `environmentExecute`, stalls. There is no deploy. | `--cr3-stall-seconds <n>`, 41–600. Default 45. |
+
+- CR2 kills only the processes under the run's `paperclip-runnerd` whose arguments match the adapter's
+  provider command. For Claude (ACPX) that is `--output-format stream-json`. For OpenCode it is
+  `serve --hostname 127.0.0.1 --port`. The Runner is found by the run id in its listen path.
+- CR2 is the only class R action that changes anything in a sandbox. It runs one fixed script, only in
+  sandboxes that carry the wave's company and environment labels.
+- The run id comes from the task's last sample before the fault. Each kill's output is saved to
+  `daytona-runner/provider-kill-<task>-<ms>.json`.
+- Each CR task must pass `class_r_fault_applied`. The fault must not have failed, CR2 must have killed a
+  provider process, and CR3's stall must have ended. A cell whose fault never applied tested nothing.
+- Use T1, so that the fault lands while a tool runs, as it did on staging. Use `--concurrency 1` for CR3,
+  because the stall hits every task's plugin RPCs.
+
+**Sandbox capture.** Every Daytona wave, not only a CR wave, runs the class R probe (`CLASS_R_PROBE`) in
+every started wave sandbox. Staging's Runner loss also reproduces with no fault at all (W2 re-wake). Its
+output goes to `results/<wave>/daytona-runner/<label>/<sandbox>.txt`. The probe reads:
+
+- every process with its start time (`lstart`), elapsed time and kernel wait (`wchan`);
+- TCP sockets with their owners;
+- the runtime directory listing, with the size and last write of each file;
+- the tail of every log, state or transcript file the Runner or provider keeps. This includes
+  `runner-state.json`, the ACPX state files, OpenCode `opencode/log`, and Claude `debug` and `projects`
+  transcripts.
+
+The probe runs at these times:
+
+| Label | When |
+| --- | --- |
+| `<fault>-before` | Just before the fault, with a 20 s deadline. The fault's `startedAt` is taken after it. |
+| `<fault>-stopped`, `<fault>-before_start` | CR1 and CR2 with a hold: right after the stop, and just before the next deploy starts. |
+| `<fault>-ready+<n>s` | Every 15 s for 180 s after the controller is ready again. It stops after 60 s if the task has rested. Staging failed about 40 s after adoption, so this window covers it. |
+| `<task>-rest` | When any task rests, pass or fail, before the product releases the sandbox. |
+| `watch+<n>s` | With `--sandbox-watch-seconds <n>` (10–600), on that clock for the whole wave. This catches a Runner exit that no fault announces. |
+| `wave-end` | Before the sweep. |
+
+Before PR #20907, a remote Runner wrote its stdout and stderr to `/dev/null`. Only a panic or a graceful
+error exit reached `diagnostics/runnerd.stderr.log`. Since #20907, its stderr goes to the bounded
+`diagnostics/runnerd.process-stderr.log`, and the probe reads both files. The probe never stops, starts or
+deletes a sandbox. An archived or stopped sandbox is recorded by its state alone.
+
+**Results on master `6154b9485e` with #20907** (image `paperclip-daytona-runner@sha256:39df7406…`):
+
+| Wave | Cell | Result |
+| --- | --- | --- |
+| `w-20261111T192658-s5201` | W2 re-wake, `--faults K0 --daytona-warm`, Codex, 10 tasks | `runner_remote_process_identity_unavailable` twice, with no fault. The follow-up run launched a new runnerd on the warm session state. That runnerd stopped itself: `paperclip-runnerd: controller sequence must be contiguous: expected 13, received 11`. The new controller's journal ended before the predecessor's `runner.drain` and `runner.suspend` (seq 11 and 12). |
+| `w-20261111T202055-s9502` | CR1 75 s and CR2, OpenCode and Claude | No refusal. The Runner survived every outage. A killed provider failed the turn with a clear code: Claude `ACP agent reported a terminal connection failure`, OpenCode `opencode_server_exited`. |
+| `w-20261111T204144-s9503` | CR1 360 s twice, OpenCode and Claude | No refusal. The Runner and the provider survived both outages. |
+| `w-20261111T210055-s9504` | CR3 45 s, OpenCode and Claude | Not the staging code, a separate failure. `runnerd process supervision failed: RPC call "environmentExecute" timed out after 40000ms` failed the run as `notification_transport_failed`. The close path suspended a healthy Runner (`lifecycle: suspended`, no stderr). Retry worked. |
+
+### Volume-free servers (`--ephemeral-server`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --storage s3 --ephemeral-server \
+  --adapters codex --workloads W2 --faults K1,K2,K15 --k15-fresh-home --k15-overlap-seconds 30-90 --concurrency 3 --tasks 3 --seed 5501
+```
+
+Cloud servers run volume-free (`ephemeral-server-contract.ts`): agent files, run logs and UI assets live in object
+storage, secrets use one stable master key, and remote agent directories are disposable copies whose collection and
+cleanup take the per-agent Postgres operation lock. Every other wave runs the volume-backed mode, so those paths,
+including the `directory-lock` recovery step, are never reached there. `--ephemeral-server` gives every server of the
+wave `PAPERCLIP_EPHEMERAL_SERVER`, `PAPERCLIP_DURABLE_AGENT_FILES` and `PAPERCLIP_SHARED_UI_ASSETS`, the wave's
+Postgres as `PAPERCLIP_DATABASE_LISTEN_URL`, a stable `PAPERCLIP_SECRETS_MASTER_KEY` (also written to the config's
+key file inside the wave's temporary root; `assertIsolatedServerEnvironment` admits that one generated key and still
+refuses an inherited key or `PAPERCLIP_SECRETS_MASTER_KEY_FILE`) and `RUN_LOG_S3_*` in the wave's object store. It needs
+`--storage s3` and `--env daytona` (a local workspace blocks a volume-free server) and does not combine with K14. Workloads with the fixture repository (B1, B5,
+F1, R1) are a `local_path` project source, which a volume-free server refuses: they are dropped from the default
+workloads and refused when listed.
+`--k15-fresh-home` implies it (and defaults `--storage` to `s3`): a new instance home without the volume-free mode
+loses the agents' instruction bundles, which staging keeps in Postgres and object storage. Every restart replays the server's startup
+eligibility check, so a replacement that refuses to start fails the wave.
 
 ## Absolute symlink in the workspace (F1)
 
@@ -766,6 +864,14 @@ pending is retried for the same settle window; if it is still blocked then, the
 wave fails (not as a harness error) and the instance is kept, because its
 database owns the cleanup work. The result is in `<wave>/sandbox-sweep.json`.
 
+**Clean warm shutdown.** Every warm wave (`--daytona-warm` or `--lifecycle warm`)
+also grades "no leaked sandboxes / clean warm shutdown" (`warm-shutdown.ts`). It fails
+the wave when the environment delete stayed blocked, when a wave sandbox is still
+running after cleanup, or when the server log shows a warm session that did not close
+on environment delete or controller shutdown. Idle closes that needed a forced Runner
+stop, or whose sandbox was already destroyed, are counted but do not fail. The result
+is in `<wave>/warm-shutdown.json` and in the wave's `SUMMARY.md`.
+
 ## Provider message faults (PV1–PV3) and the saved question (Q1)
 
 ```sh
@@ -1008,7 +1114,12 @@ timed out`, `runner did not durably suspend before checkpoint` (class C+), or
 
 The workload is the fault, so these cells usually run with `--faults K0` (no fault). Every task of an
 adapter runs on that adapter's one agent: `--adapters codex --tasks 10 --concurrency 10` is ten tasks on one
-agent. Phase 1 ends with the task left `in_progress` (`in_review` would gate completion on a review). Then the harness, as the board, wakes the same task the
+agent. Phase 1 ends with the task left `in_progress` (`in_review` would gate completion on a review): the W2 and W2C
+brief asks the agent to report phase 1 with `paperclip_finish` disposition `yielded` and a `response_wake`
+continuation, because an agent that reports `done` closes the task and the wake is never sent (on 2026-11-11 four of
+eight Claude cells tested nothing). A passive board wait needs a run that a board comment started, so W2 and W2C
+create the task in `backlog` and start phase 1 with a board comment; without it the yield queues an immediate
+continuation and phase 1 wakes itself. Then the harness, as the board, wakes the same task the
 seeded 0–60 s after that run settled (`rewake.ts`):
 
 - **W2**: a board comment, or, by the task's nonce, a board-scheduled issue monitor due now, so the
@@ -1062,6 +1173,14 @@ belong to any of them: run one task per wave to aim at one task's nth attempt. A
 only once is never reached with `nth` 2 or more, and the task fails `recovery_step_failed_once`. On
 2026-11-11 an A1 task with K2 on Daytona never reached `directory-lock`: pick a workload whose recovery
 collects remote agent files.
+
+`runnerd-start:1` with K1 (seed 5303) found the recovery-chain gap on 2026-11-11: the first recovery
+attempt (`resume_dead_runner`) failed its spawn, which persisted a scheduled same-run resume. The second
+attempt then refused to continue the interrupted turn (`local_stop_unverified`: the newest launch request
+had no process identity and no stop receipt), so the restored session reported
+`provider_turn_lost_on_restore` and the run ended `native_provider_terminal_failed`. A scheduled resume now
+proves on this host that the failed launch left no runner and no runner state, records that stop, and
+continues the turn. The cell passes only when the task finishes with no failed attempt.
 
 Every task the armed fault crossed gets two more checks: `recovery_step_failed_once` (the receipt in
 `recovery-step-receipts.jsonl`; a step never reached tested nothing) and `no_failed_attempt`. The fault's
@@ -1142,9 +1261,9 @@ that lock the run row still fail under the same contention on master. The conten
 (`contention_produced`) fired only on tasks whose runs failed before any usage was reported; a run
 that finished produced 208 log events and 20 receipts, well above the 40 and 6 thresholds.
 
-## Universal checks (U1–U4)
+## Universal checks (U1–U5)
 
-Every task of every wave is also graded on four scenario-independent rules (`universal.ts`), whatever
+Every task of every wave is also graded on five scenario-independent rules (`universal.ts`), whatever
 its workload. They catch a stuck or misleading task that no scenario anticipated.
 
 | Rule | Fails when | Bound (env override) |
@@ -1153,8 +1272,9 @@ its workload. They catch a stuck or misleading task that no scenario anticipated
 | U2 retry loop | more than N consecutive failed runs with the same status and code while the issue status stays the same | 3 (`RESTART_CHAOS_U2_SAME_FAILURE_RUNS`) |
 | U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...) and no recorded `failureCause` (a bounded code such as `40001`, `exit_code_137` or `provider_http_429`; a bare `Error` or `unknown_error` does not count), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
 | U4 stale notice | a Retry or failed notice stays on a task after its latest run succeeded, longer than the bound or at rest | 60 s (`RESTART_CHAOS_U4_STALE_SECONDS`) |
+| U5 run budget | one task created more runs than the bound | 10 (`RESTART_CHAOS_U5_MAX_RUNS`) |
 
-U1, U2 and U4 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
+U1, U2, U4 and U5 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
 (`grade.universal`), the ledger (`universal`, `universalWarnings`) and the wave's `SUMMARY.md`, and
 never fails a task. U3 reads run error text and recovery-action causes from the wave database at
 wave end, because the board's run list hides most error text.
@@ -1172,6 +1292,13 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts <r
 | U2 | 1 | 0 | 0 |
 | U3 | 30 | 3 | 0 |
 | U4 | 0 | 0 | 0 |
+
+U5 came later, from the 2026-11-11 `response_wake` self-wake loop: a yielded run with
+`continuation.kind: "response_wake"` and no admitted response source enqueued an immediate
+`issue_status_changed` wake to the same agent, so W2/W2C tasks ran 30 to 66 times ~12 s apart.
+Over the saved waves, passing tasks outside that loop created at most 5 runs, and some looping
+tasks still passed every other rule. A task with more than 10 runs now fails as
+`U5:run_budget_exceeded`.
 
 On passing tasks the longest ownerless stretch was 19 s, the longest queue wait 136 s (p99 40 s),
 the longest accepted-Retry wait 278 s, and no failure repeated more than twice; with the 3-minute
@@ -1433,7 +1560,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `grader.ts` | Pure R1–R6 grading over the samples, plus the universal checks. |
 | `universal.ts`, `universal-audit.ts` | U1–U4 on every task, and their audit over saved waves. |
 | `contention.ts` | L1 workload, its accounting oracle and the `--db-pressure` writers. |
-| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, T1 long shell tool, with their T-oracles. |
+| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, T1 long shell tool, H2 hand-off to a person, with their T-oracles. |
 | `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
