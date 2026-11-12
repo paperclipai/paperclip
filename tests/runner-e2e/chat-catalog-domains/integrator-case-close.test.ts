@@ -54,6 +54,7 @@ describe("explicit case terminal completion with normal review gates", () => {
     const silent = valid(); silent.state.resultTurn.commentIds = []; expect(gradeIntegratorCaseClose(silent).passed).toBe(false);
     const foreign = valid(); foreign.state.resultTurn.replies[0]!.authorAgentId = "morgan"; expect(gradeIntegratorCaseClose(foreign).passed).toBe(false);
     const unlinked = valid(); unlinked.renderedLinkEvidence[0]!.href = "/COM/issues/COM-1"; expect(gradeIntegratorCaseClose(unlinked).passed).toBe(false);
+    const lowercase = valid(); lowercase.renderedLinkEvidence[0]!.href = "/com/cases/COM-C1"; expect(gradeIntegratorCaseClose(lowercase).passed).toBe(true);
     const wrongPrefix = valid(); wrongPrefix.renderedLinkEvidence[0]!.href = "/TYPO/cases/COM-C1"; expect(gradeIntegratorCaseClose(wrongPrefix).passed).toBe(false);
     const otherCase = valid(); otherCase.renderedLinkEvidence[0]!.href = "/COM/cases/COM-C2"; expect(gradeIntegratorCaseClose(otherCase).passed).toBe(false);
     const firstTurnLink = valid(); firstTurnLink.renderedLinkEvidence[0]!.commentId = "first-reply"; expect(gradeIntegratorCaseClose(firstTurnLink).passed).toBe(false);

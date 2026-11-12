@@ -43,7 +43,7 @@ export function closeResultTurnGrounded(o: Pick<CloseObservation, "origin" | "re
       if (!link.commentId || !turn.commentIds.includes(link.commentId)) return false;
       try {
         const url = new URL(link.href, o.origin), parts = url.pathname.split("/").filter(Boolean);
-        return url.origin === new URL(o.origin).origin && parts.length === 3 && !!turn.companyPrefix && parts[0] === turn.companyPrefix
+        return url.origin === new URL(o.origin).origin && parts.length === 3 && !!turn.companyPrefix && parts[0].toUpperCase() === turn.companyPrefix.toUpperCase()
           && parts[1] === "cases" && [row.id, row.identifier].includes(parts[2]!);
       } catch { return false; }
     });
