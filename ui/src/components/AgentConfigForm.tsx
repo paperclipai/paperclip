@@ -488,6 +488,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
+  const harnessDrafts = useRef(new Map<string, Pick<AgentConfigOverlay, "adapterType" | "runner" | "adapterConfig"> & { aiConnection: unknown }>());
   const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
   const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
   const [runnerUpgrade, setRunnerUpgrade] = useState<{
@@ -529,6 +530,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         !backgroundSaveInFlightRef.current
       ) {
         const persisted = backgroundSaveOverlayRef.current;
+        harnessDrafts.current.clear();
         backgroundSaveOverlayRef.current = null;
         setOverlay((prev) =>
           persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
@@ -595,6 +597,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
+    harnessDrafts.current.clear();
     setOverlay({ ...emptyOverlay });
     setEnvironmentDraftDirty(false);
     setEnvironmentEditorKey(key => key + 1);
@@ -1838,6 +1841,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
+                  if (!isCreate) {
+                    const currentChoice = isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType;
+                    if (choice === currentChoice) return;
+                    const selectedRuntime = (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig;
+                    harnessDrafts.current.set(currentChoice, { adapterType: overlay.adapterType, runner: overlay.runner,
+                      adapterConfig: overlay.adapterConfig, aiConnection: selectedRuntime.aiConnection });
+                    const cached = harnessDrafts.current.get(choice);
+                    if (cached) {
+                      setOverlay(prev => {
+                        const restoredRuntime = { ...selectedRuntime, aiConnection: cached.aiConnection };
+                        const runtime = { ...prev.runtime };
+                        if (overlayValuesEqual(omitUndefinedEntries(restoredRuntime), omitUndefinedEntries(runtimeConfig))) delete runtime.runtimeConfig;
+                        else runtime.runtimeConfig = restoredRuntime;
+                        return { ...prev, adapterType: cached.adapterType, runner: cached.runner, adapterConfig: cached.adapterConfig, runtime };
+                      });
+                      return;
+                    }
+                  }
                   const dot = choice === "openai_dot";
                   const muse = choice === "muse";
                   const external = dot || muse;
@@ -1871,7 +1892,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
+                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? runner : undefined,
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1905,6 +1926,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
+          {isRunnerHarness && <Field label="Runner" hint="Runtime settings depend on the selected runner."><p className="text-sm text-muted-foreground">{fieldsAdapterType === "paperclip_runner" ? "Paperclip Runner" : "Legacy"}</p></Field>}
           {isRunnerHarness && runnerDiscoveryView.kind === "error" && (
             <QueryErrorState size="inline" error={runnerDiscoveryView.error}
               action="load agent setup data" retrying={runnerDiscoveryView.isFetching}
