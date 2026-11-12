@@ -3522,6 +3522,20 @@ An upgrade readiness report contains preliminary native evidence, not permission
 to remove a deployment volume. Keep the checkpoint pool bounded and measure all
 pools when qualifying database cost; the current size of two is a default.
 
+Cloud repeats the upgrade readiness probe, so the probe does not read or decrypt
+a checkpoint header that has not changed. The statement that reads each run also
+reads its header's row revision (`xmin`, `ctid`, `updated_at` and stored size)
+and returns the encrypted material only for a revision the process has not
+inspected. The memo in `native-runner-checkpoint.ts` keeps four identifiers per
+header, is bounded in entries and bytes, and forgets a header that the latest
+probe did not inspect. It reuses an answer only under the same secrets key, and
+never remembers a header that failed to decrypt. Measure a probe with
+`pnpm --filter @paperclipai/server exec tsx scripts/benchmark-upgrade-readiness.ts --baseline-ref=<pre-fix-commit>`.
+The harness runs both revisions over the same PostgreSQL rows, reports bytes
+from the database, decryptions, CPU and sampled allocation per probe, and fails
+unless both give the same answer after a header changes, stops decrypting or is
+deleted.
+
 Committed native Agent Chat turns recover their unanswered final reply through
 the existing response presentation worker. Recovery verifies the accepted result
 and final turn, agent, responsible user, native session and conversation generation.

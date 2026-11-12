@@ -1,8 +1,8 @@
 import type { Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
-import { inspectNativeRunnerUpgradeHeader, NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES,
-  NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES } from "../native-runtime/native-runner-checkpoint.js";
+import { createNativeRunnerUpgradeHeaderMemo, nativeRunnerCheckpointRevisionSql, nativeRunnerUpgradeHeaderSql, NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES,
+  NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES, type NativeRunnerUpgradeHeaderRead } from "../native-runtime/native-runner-checkpoint.js";
 import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../native-runtime/native-runner-recovery-contract.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
@@ -19,6 +19,9 @@ type Counters = { activeRuns: number; pendingWakes: number; unsavedWakes?: numbe
 /** `restartable`: the row and its events show no launched agent work, so a replacement
  * server starts the same work again. It is weaker than `recoverable` and never implies it. */
 type Candidate = { id: string; recoverable: boolean; restartable?: boolean; retainedUnowned?: boolean };
+/** Cloud repeats this probe, so an unchanged header is not read or decrypted again.
+ * A row revision means something in one database only: each handle has its own memo. */
+const upgradeHeaders = new WeakMap<Db, ReturnType<typeof createNativeRunnerUpgradeHeaderMemo>>();
 
 /** An observation for Cloud's optional rollout policy, never execution authority.
  * Only explicit upgrade probes read the database; ordinary drain reads stay local.
@@ -27,15 +30,24 @@ type Candidate = { id: string; recoverable: boolean; restartable?: boolean; reta
 export async function readUpgradeReadiness(db: Db, input: {
   activeRunIds: ReadonlySet<string>;
   counters: () => Counters;
+  /** Defaults to the header answers remembered for this database handle. */
+  headers?: NativeRunnerUpgradeHeaderRead;
 }) {
+  if (!input.headers && !upgradeHeaders.has(db)) upgradeHeaders.set(db, createNativeRunnerUpgradeHeaderMemo());
+  const headers = input.headers ?? upgradeHeaders.get(db)!.read();
+  const header = nativeRunnerUpgradeHeaderSql(headers, { companyId: sql`q."companyId"`, issueId: sql`q."issueId"`,
+    runId: sql`q.id`, revision: sql`q."headerRevision"`, material: sql`case when q.recoverable or q."hasResult" then q.material end` });
   const inspectionDeadline = performance.now() + POST_RESULT_INSPECTION_BUDGET_MS;
   const before = input.counters();
   const beforeIds = [...input.activeRunIds];
   const owner = await currentNativeControllerIdentity();
   const rows = await db.transaction(async tx => {
     await tx.execute(sql`set local statement_timeout = '2s'`);
-    return tx.execute<Candidate & { companyId: string; issueId: string; runnerId: string; sessionId: string; workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; hasResult: boolean; pluginLeaseId: string | null; material: Record<string, unknown> | null }>(sql`
-    select r.id, r.company_id as "companyId", r.native_issue_id as "issueId",
+    return tx.execute<Candidate & { companyId: string; issueId: string; runnerId: string; sessionId: string; workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; hasResult: boolean; pluginLeaseId: string | null; headerRevision: string | null; material: Record<string, unknown> | null }>(sql`
+    select q.id, q."companyId", q."issueId", q."runnerId", q."sessionId", q.workspace, q."remoteWorkspace",
+      q."hasRemoteWorkspace", q."pluginLeaseId", q."hasResult", q."retainedUnowned", q.recoverable, q.restartable,
+      ${header.revision} as "headerRevision", ${header.material} as material
+    from (select r.id, r.company_id as "companyId", r.native_issue_id as "issueId",
       r.runner_instance_id as "runnerId", r.native_session_id as "sessionId",
       r.runner_profile_json->'nativeWorkspaceSync' as workspace,
       r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",
@@ -49,7 +61,8 @@ export async function readUpgradeReadiness(db: Db, input: {
         and r.process_pid is null and r.process_started_at is null and c.run_id is null
       ) is true as "retainedUnowned",
       case when pg_column_size(c.material) <= ${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES}
-        and sum(pg_column_size(c.material)) over () <= ${NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES} then c.material else null end as material, (
+        and sum(pg_column_size(c.material)) over () <= ${NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES} then c.material else null end as material,
+      ${nativeRunnerCheckpointRevisionSql(sql`c`)} as "headerRevision", (
       r.runtime_mode = 'native' and a.adapter_type = 'paperclip_runner'
       and r.runner_instance_id is not null and r.native_session_id is not null
       and r.process_pid is not null and r.process_started_at is not null
@@ -89,7 +102,7 @@ export async function readUpgradeReadiness(db: Db, input: {
         and coalesce(l.metadata->>'runnerTaskRetiring', 'false') != 'true'
       order by l.created_at desc limit 1) p on true
     where r.status = 'running'
-    limit ${MAX_UPGRADE_RUNS + 1}`);
+    limit ${MAX_UPGRADE_RUNS + 1}) q ${header.join}`);
   }, { accessMode: "read only" });
   const candidates: Candidate[] = [];
   for (const row of rows) {
@@ -99,8 +112,9 @@ export async function readUpgradeReadiness(db: Db, input: {
     const workspaceId = row.hasRemoteWorkspace
       ? remote.success && !row.pluginLeaseId ? remote.data.workspaceId : null
       : row.pluginLeaseId ?? readNativeWorkspaceSyncReference(row.workspace)?.workspaceId;
-    const identity = (row.recoverable || row.hasResult) && row.material
-      ? inspectNativeRunnerUpgradeHeader({ companyId: row.companyId, issueId: row.issueId, runId: row.id }, row.material) : null;
+    // A revision is present exactly when the header is within bounds and the run is recoverable or has a result.
+    const identity = row.headerRevision
+      ? headers.inspect({ companyId: row.companyId, issueId: row.issueId, runId: row.id }, row.headerRevision, row.material) : null;
     const bound = Boolean(workspaceId && identity && identity.runId === row.id
       && identity.runnerInstanceId === row.runnerId && identity.normalizedSessionId === row.sessionId
       && identity.environmentLeaseId === workspaceId);
@@ -112,10 +126,11 @@ export async function readUpgradeReadiness(db: Db, input: {
       restartable: row.restartable === true, retainedUnowned: row.retainedUnowned });
   }
   // Additive evidence does not strengthen or redefine the existing ready flag.
-  const retained = await readNativeControllerRecoveryInventory(db).catch(() => ({
+  const retained = await readNativeControllerRecoveryInventory(db, { headers }).catch(() => ({
     version: 1 as const, observedAt: new Date().toISOString(), coverage: "unknown" as const,
     reasons: { inventory_unavailable: 1 }, fullPayloadsValidated: false as const,
   }));
+  headers.finish();
   const summary = summarizeUpgradeReadiness({ rows: candidates, before, after: input.counters(),
     activeRunIds: [...new Set([...beforeIds, ...input.activeRunIds])], controllerBootId: owner.bootId });
   return { ...summary, nativeControllerRecovery: { activeExecutionAdoption: {

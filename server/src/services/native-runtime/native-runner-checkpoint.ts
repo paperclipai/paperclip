@@ -1,10 +1,11 @@
 import { readNativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
 import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
-import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql, type SQL } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import { inspectDurablePrpCheckpointHeader, inspectUnauthenticatedBootstrapCheckpoint, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
-import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
+import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
@@ -396,10 +397,128 @@ export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runI
   return rows.map(row => row.runId);
 }
 
+/** Only a header that decrypted has a repeatable answer: a key or material failure may not recur. */
+function inspectUpgradeHeaderMaterial(binding: Binding, material: Record<string, unknown>) {
+  let contents: string;
+  try { contents = decryptPart(createLocalEncryptedCipher("read"), binding, "header", material); }
+  catch { return { decrypted: false as const, identity: null }; }
+  return { decrypted: true as const, identity: inspectDurablePrpCheckpointHeader(contents) };
+}
+
 /** Inspect only the bounded encrypted header. Protocol interpretation stays in Runner. */
 export function inspectNativeRunnerUpgradeHeader(binding: Binding, material: Record<string, unknown>) {
+  return inspectUpgradeHeaderMaterial(binding, material).identity;
+}
+
+/** The only header fields that rollout evidence compares, and that a memo keeps. */
+export type NativeRunnerUpgradeHeaderIdentity = Pick<DurableRecoveryIdentity,
+  "runId" | "runnerInstanceId" | "normalizedSessionId" | "environmentLeaseId">;
+const upgradeHeaderIdentity = (identity: DurableRecoveryIdentity | null): NativeRunnerUpgradeHeaderIdentity | null => identity && {
+  runId: identity.runId, runnerInstanceId: identity.runnerInstanceId,
+  normalizedSessionId: identity.normalizedSessionId, environmentLeaseId: identity.environmentLeaseId };
+
+/** One read of header evidence. `known` is a JSON object from binding to the row
+ * revision this read answers without the material. Call `finish` after a completed read. */
+export type NativeRunnerUpgradeHeaderRead = {
+  readonly known: string;
+  inspect(binding: Binding, revision: string, material: Record<string, unknown> | null): NativeRunnerUpgradeHeaderIdentity | null;
+  finish(): void;
+};
+
+/** PostgreSQL writes a new row version, with a new xmin or ctid, for every change to
+ * a row, so an unchanged revision means unchanged material. The write time and stored
+ * size are included so that no single field carries that guarantee. */
+export function nativeRunnerCheckpointRevisionSql(checkpoint: SQL) {
+  return sql`${checkpoint}.xmin::text || ':' || ${checkpoint}.ctid::text
+    || ':' || (extract(epoch from ${checkpoint}.updated_at) * 1000000)::bigint::text
+    || ':' || pg_column_size(${checkpoint}.material)::text`;
+}
+
+/** `material` must already be null for a row the reader will not inspect. The statement
+ * that reads a run sends its header's material only for a revision the read does not know. */
+export function nativeRunnerUpgradeHeaderSql(read: Pick<NativeRunnerUpgradeHeaderRead, "known">,
+  row: { companyId: SQL; issueId: SQL; runId: SQL; revision: SQL; material: SQL }) {
+  return {
+    join: sql`left join jsonb_each_text(${read.known}::jsonb) as known_header(binding, revision)
+      on known_header.binding = ${row.companyId}::text || '/' || ${row.issueId}::text || '/' || ${row.runId}::text`,
+    revision: sql`case when ${row.material} is not null then ${row.revision} end`,
+    material: sql`case when ${row.revision} is distinct from known_header.revision then ${row.material} end`,
+  };
+}
+
+/** A read that remembers nothing: every inspected header is sent and decrypted. */
+export function directNativeRunnerUpgradeHeaderRead(): NativeRunnerUpgradeHeaderRead {
+  return { known: "{}", finish() {},
+    inspect: (binding, _revision, material) => material ? upgradeHeaderIdentity(inspectNativeRunnerUpgradeHeader(binding, material)) : null };
+}
+
+/** A digest of a value derived from the secrets key for this purpose alone. It opens nothing. */
+function upgradeHeaderKeyIdentity(): string | null {
   try {
-    const contents = decryptPart(createLocalEncryptedCipher("read"), binding, "header", material);
-    return inspectDurablePrpCheckpointHeader(contents);
+    return createHash("sha256").update(deriveLocalEncryptedInstanceSecret("native-runner-upgrade-header-memo",
+      process.env, { allowCreate: false })).digest("hex");
   } catch { return null; }
+}
+
+/** Remembers the answer for a header that decrypted, so an unchanged header is not
+ * sent or decrypted again. An answer is reused only for the same binding, row revision
+ * and secrets key; a header that did not decrypt is read and tried on every read.
+ * An entry holds four identifiers, entries are bounded in number and bytes, and a
+ * read forgets every header it did not inspect, such as that of a run that ended. */
+export function createNativeRunnerUpgradeHeaderMemo(limits: { maxEntries?: number; maxBytes?: number } = {}) {
+  const maxEntries = limits.maxEntries ?? 1_200, maxBytes = limits.maxBytes ?? 1024 * 1024;
+  type Answer = { revision: string; identity: NativeRunnerUpgradeHeaderIdentity | null };
+  const entries = new Map<string, Answer & { keyIdentity: string; bytes: number }>();
+  let bytes = 0;
+  const forget = (key: string) => {
+    const entry = entries.get(key);
+    if (entry && entries.delete(key)) bytes -= entry.bytes;
+  };
+  return {
+    get size() { return entries.size; },
+    get bytes() { return bytes; },
+    read(): NativeRunnerUpgradeHeaderRead {
+      // Only a read that can load the key reuses an answer.
+      let keyIdentity = entries.size ? upgradeHeaderKeyIdentity() : undefined;
+      const usable = new Map([...entries].filter(([, entry]) => entry.keyIdentity === keyIdentity));
+      const reused = new Set<string>(), decrypted = new Map<string, Answer>();
+      return {
+        known: JSON.stringify(Object.fromEntries([...usable].map(([key, entry]) => [key, entry.revision]))),
+        inspect(binding, revision, material) {
+          const key = `${binding.companyId}/${binding.issueId}/${binding.runId}`;
+          if (!material) {
+            // The query withholds material only for a revision this read offered.
+            const entry = usable.get(key);
+            if (entry?.revision !== revision) return null;
+            reused.add(key);
+            return entry.identity;
+          }
+          if (keyIdentity === undefined) keyIdentity = upgradeHeaderKeyIdentity();
+          const result = inspectUpgradeHeaderMaterial(binding, material);
+          const identity = upgradeHeaderIdentity(result.identity);
+          if (result.decrypted) decrypted.set(key, { revision, identity });
+          else decrypted.delete(key);
+          return identity;
+        },
+        finish() {
+          // Every decryption of this read ran under one key, or none of them is remembered.
+          const current = keyIdentity && (!decrypted.size || upgradeHeaderKeyIdentity() === keyIdentity) ? keyIdentity : null;
+          for (const [key, entry] of entries) {
+            if (!reused.has(key) || (current && entry.keyIdentity !== current)) forget(key);
+          }
+          for (const [key, answer] of current ? decrypted : []) {
+            const size = 2 * (key.length + answer.revision.length + current!.length
+              + Object.values(answer.identity ?? {}).reduce((sum, value) => sum + value.length, 0));
+            forget(key);
+            entries.set(key, { ...answer, keyIdentity: current!, bytes: size });
+            bytes += size;
+          }
+          for (const key of entries.keys()) {
+            if (entries.size <= maxEntries && bytes <= maxBytes) break;
+            forget(key);
+          }
+        },
+      };
+    },
+  };
 }
