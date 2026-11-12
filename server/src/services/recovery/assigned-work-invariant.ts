@@ -51,6 +51,10 @@ export type WaitingReason = (typeof WAITING_REASONS)[number];
 export const VIOLATION_REASONS = [
   /** A run row says running but its owning server is proven gone. */
   "run_owner_gone",
+  /** A native run still says running, waiting for evidence or a reattach
+   * that no live owner will deliver: no renewal for NATIVE_STALL_MS. It holds
+   * its agent's slot. Reported; its ending belongs to native recovery. */
+  "native_run_stalled",
   /** Open, assigned, nothing running, nothing pending, no one else's move. */
   "no_pending_path",
   /** The visible state offers a Retry that only the system can act on. */
@@ -63,7 +67,11 @@ export const VIOLATION_REASONS = [
 export type ViolationReason = (typeof VIOLATION_REASONS)[number];
 
 /** A run's owner, judged by the shared owner proof (owner-proof.ts). */
-export type RunOwnerVerdict = "alive" | "gone" | "unprovable";
+export type RunOwnerVerdict = "alive" | "gone" | "unprovable" | "stalled";
+
+/** How long a native restart-recovery claim may go without renewal before
+ * its run no longer counts as live. */
+export const NATIVE_STALL_MS = 5 * 60_000;
 
 /** Interruption presentation `userAction`s that are a person's move. */
 const PERSON_ACTIONS: Readonly<Record<string, WaitingReason>> = {
@@ -176,13 +184,16 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
 
   // 1. A live run with an owner that is not proven gone. An unprovable owner
   // fails closed: during a deploy overlap another server may still own it.
-  const live = facts.activeRuns.find(run => (run.status === "queued" || run.status === "running") && run.owner !== "gone");
+  const live = facts.activeRuns.find(run => (run.status === "queued" || run.status === "running")
+    && run.owner !== "gone" && run.owner !== "stalled");
   if (live) return { kind: "ok", clause: "live_run", runId: live.id };
 
   // A run row still says running but its server is proven gone. It holds the
   // task's execution lock, so nothing pending can start until it is settled.
   const ownerGone = facts.activeRuns.find(run => run.status === "running" && run.owner === "gone");
   if (ownerGone) return { kind: "violation", reason: "run_owner_gone", runId: ownerGone.id, stale: false };
+  const stalled = facts.activeRuns.find(run => run.status === "running" && run.owner === "stalled");
+  if (stalled) return { kind: "violation", reason: "native_run_stalled", runId: stalled.id, stale: false };
 
   // 2. A durable intent that starts a run without anyone acting.
   const intent = pendingIntent(facts, now);
@@ -315,6 +326,7 @@ export const CONTINUATION_REFUSED_MESSAGE =
 /** Plain-language activity text for an admitted continuation. No codes, no ids. */
 export function continuationActivityMessage(reason: ViolationReason): string {
   switch (reason) {
+    case "native_run_stalled":
     case "run_owner_gone":
       return "Continued automatically: the server running this task stopped, so Paperclip queued it again.";
     case "recovery_block":

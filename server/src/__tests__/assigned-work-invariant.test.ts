@@ -490,6 +490,36 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(clock.getTime() - started).toBeLessThan(5 * 60_000);
   }, 60_000);
 
+  it("does not count a native run left running in awaiting evidence with no renewal as live, and reports it with its agent's held slot", async () => {
+    // The graceful hand-off repro: the new server's startup recovery parked
+    // the run in awaiting evidence; nothing renews or settles it.
+    const f = await seedCompany();
+    const stuck = await f.issue();
+    const stuckRun = await f.run(stuck, { runtimeMode: "native", status: "running", errorCode: null, finishedAt: null, nativeIssueId: stuck });
+    const old = new Date(Date.now() - 10 * 60_000);
+    await db.insert(nativeRunFinalizations).values({ runId: stuckRun.id, companyId: f.companyId, issueId: stuck, phase: "observed",
+      recoveryState: "awaiting_evidence", leaseExpiresAt: old, updatedAt: old });
+    // A recent claim is still a live path.
+    const fresh = await f.issue();
+    const freshRun = await f.run(fresh, { runtimeMode: "native", status: "running", errorCode: null, finishedAt: null, nativeIssueId: fresh });
+    await db.insert(nativeRunFinalizations).values({ runId: freshRun.id, companyId: f.companyId, issueId: fresh, phase: "observed",
+      recoveryState: "awaiting_evidence", leaseExpiresAt: new Date(Date.now() + 60_000) });
+    // Queued work for the same agent that cannot dispatch behind the held slot.
+    const waiting = await f.issue({ status: "todo" });
+    await f.run(waiting, { status: "queued", errorCode: null, finishedAt: null, startedAt: null });
+    const queue = wakeQueue();
+    const settle = vi.fn(async () => undefined);
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, settleLostRunProcess: settle });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: stuck }))
+      .toMatchObject({ outcome: "left_to_native_recovery", verdict: { kind: "violation", reason: "native_run_stalled", runId: stuckRun.id } });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: fresh })).toMatchObject({ verdict: { clause: "live_run" } });
+    expect(queue.calls).toHaveLength(0);
+    expect(settle).not.toHaveBeenCalled();
+    const report = await sweep.report(f.companyId);
+    expect(report.violations).toMatchObject({ native_run_stalled: 1 });
+    expect(report.agentsWithStalledSlots).toEqual([{ agentName: "Builder", stalledRuns: 1, queuedRuns: 1 }]);
+  }, 60_000);
+
   it("stops scheduling a task once it leaves eligibility", async () => {
     const f = await seedCompany();
     const done = await f.issue();

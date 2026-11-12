@@ -55,6 +55,11 @@ describe("assigned-work invariant", () => {
         .toMatchObject({ kind: "ok", clause: "live_run" });
     });
 
+    it("does not count a native run whose restart-recovery claim nobody renews", () => {
+      expect(evaluateAssignedWork(facts({ activeRuns: [{ id: "n", status: "running", scheduledRetryAt: null, owner: "stalled" }] }), now))
+        .toEqual({ kind: "violation", reason: "native_run_stalled", runId: "n", stale: false });
+    });
+
     it("does not count a running run whose owner is proven gone", () => {
       expect(evaluateAssignedWork(facts({ activeRuns: [{ id: "r", status: "running", scheduledRetryAt: null, owner: "gone" }] }), now))
         .toEqual({ kind: "violation", reason: "run_owner_gone", runId: "r", stale: false });

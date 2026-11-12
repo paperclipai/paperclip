@@ -151,7 +151,8 @@ The response contains:
 - `openTasks`: the number of open agent-assigned tasks the caller may read. When it exceeds 2,000, `truncated` and `violationCountIsLowerBound` are `true`: the counts cover only the 2,000 newest tasks, so the real violation count can be higher, never lower.
 - Only tasks the caller may read are counted; private tasks the caller cannot read are left out of every count and sample. On an instance with a worktree execution cutoff, the sweep skips tasks created before the cutoff, but the report still counts them.
 - `ok`: counts by clause, for example `live_run`, `pending:queued_wake`, `waiting:question`.
-- `violations` and `violationCount`: counts by reason (`no_pending_path`, `retry_offered`, `recovery_block`, `unknown_block`, `run_owner_gone`).
+- `violations` and `violationCount`: counts by reason (`no_pending_path`, `retry_offered`, `recovery_block`, `unknown_block`, `run_owner_gone`, `native_run_stalled`). `native_run_stalled` is a native run still marked running whose restart-recovery claim nobody renewed for 5 minutes; native recovery ends it, and it stays counted until then.
+- `agentsWithStalledSlots`: up to 20 agents whose run slots are held by such stalled runs, with the number of stalled runs and of queued runs waiting behind them.
 - `heldByRecoveryOwner`: violations that are blocked under an active recovery hold, which the hold's owner continues.
 - `staleBlocked`: tasks blocked by recovery more than 7 days ago. They are reported, not continued.
 - `settling`: tasks whose last run ended moments ago and are checked again shortly.

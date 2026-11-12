@@ -37,6 +37,7 @@ import {
   evaluateAssignedWork,
   CONTINUATION_CAP_WINDOW_MS,
   STALE_BLOCK_MS,
+  NATIVE_STALL_MS,
   type AssignedWorkFacts,
   type AssignedWorkVerdict,
   type RunOwnerVerdict,
@@ -84,7 +85,7 @@ export type AssignedWorkDeps = {
 
 export type AssignedWorkCheck = {
   verdict: AssignedWorkVerdict;
-  outcome: "ok" | "settling" | "repaired" | "settled_lost_run" | "deferred_rate_limit" | "deferred_cap" | "stale_reported" | "left_to_hold_owner" | "changed" | "enqueue_refused";
+  outcome: "ok" | "settling" | "repaired" | "settled_lost_run" | "deferred_rate_limit" | "deferred_cap" | "stale_reported" | "left_to_hold_owner" | "left_to_native_recovery" | "changed" | "enqueue_refused";
   retryAt: Date | null;
 };
 
@@ -197,7 +198,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         .groupBy(sql`${agentWakeupRequests.payload}->>'issueId'`),
       database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
         unadmittedChatWakeupCondition(issues.id, issues.companyId))),
-      database.selectDistinct({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations).where(and(
+      database.select({ issueId: nativeRunFinalizations.issueId, runId: nativeRunFinalizations.runId,
+        recoveryState: nativeRunFinalizations.recoveryState, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
+        updatedAt: nativeRunFinalizations.updatedAt }).from(nativeRunFinalizations).where(and(
         eq(nativeRunFinalizations.companyId, companyId), inArray(nativeRunFinalizations.issueId, ids),
         isNull(nativeRunFinalizations.resultId),
         // Same native paths as the stranded sweep's active-path check: a
@@ -275,7 +278,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       new Map(rows.filter(row => row.issueId).map(row => [row.issueId!, Number(row.count)]));
     const wakeCounts = counts(wakes);
     const chatWakeIds = new Set(chatWakes.map(row => row.id));
-    const nativeIds = new Set(nativePending.map(row => row.issueId));
+    // A native restart-recovery claim that nobody renewed for NATIVE_STALL_MS
+    // is not a pending path, and its still-running run is not live.
+    const stalledRunIds = new Set(nativePending.filter(row => row.recoveryState
+      && !deps.liveRunExecutions?.has(row.runId)
+      && (!row.leaseExpiresAt || row.leaseExpiresAt.getTime() < at.getTime() - NATIVE_STALL_MS)
+      && row.updatedAt.getTime() < at.getTime() - NATIVE_STALL_MS).map(row => row.runId));
+    const nativeIds = new Set(nativePending.filter(row => !stalledRunIds.has(row.runId)).map(row => row.issueId));
     const handoffIds = new Set(handoffs.map(row => row.issueId));
     const interactionCounts = counts(interactions);
     const approvalCounts = counts(approvalRows);
@@ -292,7 +301,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const runs = activeRuns.filter(run => run.issueId === issue.id) as RunRow[];
       const ownedRuns = [];
       for (const run of runs) {
-        ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt, owner: await runOwner(run, at, proveOwners) });
+        ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt, owner: stalledRunIds.has(run.id) && run.status === "running" ? "stalled" : await runOwner(run, at, proveOwners) });
       }
       const latest = latestByIssue.get(issue.id) ?? null;
       const latestFinishedAt = latest?.finishedAt ? new Date(latest.finishedAt) : null;
@@ -454,6 +463,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // sweep reports it and repairs only blocks that have no hold at all, so
     // the two never continue one task twice.
     if (issue.status === "blocked" && facts.activeRecoveryAction) return { verdict, outcome: "left_to_hold_owner", retryAt: null };
+    // A stalled native run is ended by native recovery, not here: the sweep
+    // builds no second ender. It stays a counted violation in the report.
+    if (verdict.reason === "native_run_stalled") return { verdict, outcome: "left_to_native_recovery", retryAt: null };
     if (verdict.reason === "run_owner_gone") {
       // Hand the run to heartbeat's lost-process settle path; its own failure
       // policy schedules the continuation. Re-check after the grace.
@@ -521,7 +533,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         || current.assigneeAgentId !== issue.assigneeAgentId || current.assigneeUserId || current.hiddenAt) return { kind: "changed" as const };
       const fresh = (await loadFacts(issue.companyId, [current], { database: tx as unknown as Db, proveOwners: false })).get(current.id)!;
       const verdict = evaluateAssignedWork(fresh, at);
-      if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone"
+      if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone" || verdict.reason === "native_run_stalled"
         || (current.status === "blocked" && fresh.activeRecoveryAction)) return { kind: "changed" as const };
       const recent = await tx.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
         eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
@@ -632,7 +644,21 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         }
       }
     }
-    return summary;
+    // Agents whose slots are held by native runs no live owner renews: their
+    // queued work never dispatches, the same failure seen from the agent.
+    const stalledSlots = await db.execute<{ agentName: string; stalledRuns: number; queuedRuns: number }>(sql`
+      select a.name as "agentName", count(distinct r.id)::int as "stalledRuns",
+        (select count(*)::int from heartbeat_runs q where q.company_id = a.company_id and q.agent_id = a.id and q.status = 'queued') as "queuedRuns"
+      from heartbeat_runs r
+      inner join native_run_finalizations f on f.run_id = r.id
+      inner join agents a on a.id = r.agent_id
+      where r.company_id = ${companyId} and r.status = 'running' and r.runtime_mode = 'native'
+        and f.result_id is null and f.recovery_state is not null
+        and (f.lease_expires_at is null or f.lease_expires_at < ${new Date(at.getTime() - NATIVE_STALL_MS).toISOString()}::timestamptz)
+        and f.updated_at < ${new Date(at.getTime() - NATIVE_STALL_MS).toISOString()}::timestamptz
+      group by a.id, a.name, a.company_id order by count(distinct r.id) desc limit 20`);
+    const slotRows = Array.isArray(stalledSlots) ? stalledSlots : (stalledSlots as { rows?: unknown[] }).rows ?? [];
+    return { ...summary, agentsWithStalledSlots: slotRows as Array<{ agentName: string; stalledRuns: number; queuedRuns: number }> };
   }
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };
