@@ -1333,7 +1333,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await treatment.snapshot()).issues[0].billingCode).toBeNull();
     const originalTools = (await baseline.authority.definitions()).map(tool => tool.name);
     const treatmentTools = (await treatment.authority.definitions()).map(tool => tool.name);
-    const apiTools = ["hire_agent", "search_api", "call_api", "get_task", "comment_on_task", "list_task_documents", "read_task_document", "write_task_document"];
+    const apiTools = ["hire_agent", "search_api", "call_api", "get_task", "comment_on_task", "list_task_documents", "read_task_document", "write_task_document", "save_api_response"];
     expect(treatmentTools.filter(name => !originalTools.includes(name))).toEqual(apiTools);
     expect(treatmentTools.filter(name => !apiTools.includes(String(name)))).toEqual(originalTools);
   });

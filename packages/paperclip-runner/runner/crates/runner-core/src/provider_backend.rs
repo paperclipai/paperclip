@@ -2307,12 +2307,22 @@ impl CodexCommandExecutor {
         trigger: ProviderStartupTrigger,
         generation: u64,
     ) -> Result<CodexProvider, DurableRunnerError> {
-        let state = self
+        let mut state = self
             .state
             .clone()
             .ok_or_else(|| DurableRunnerError::invalid("provider startup state missing"))?;
         let profile = self.opencode_launch_profile.clone();
         let cursor_cloud_profile = self.cursor_cloud_launch_profile.clone();
+        if state.config.provider == "codex" {
+            let args = &mut state.config.args;
+            let attachment_args =
+                crate::attachment_download::codex_attachment_read_args(args, &self.state_dir);
+            let position = args
+                .iter()
+                .position(|arg| arg == "app-server")
+                .unwrap_or(args.len());
+            args.splice(position..position, attachment_args);
+        }
         self.begin_startup(trigger, generation)?;
         CodexProvider::start_with_tools_observed(
             &state.config,
@@ -6679,7 +6689,10 @@ mod tests {
             use std::io::{BufRead, BufReader};
             use std::os::unix::process::CommandExt;
             // The leader starts a child in its own process group, reports the
-            // child pid, and is then killed and reaped. The child keeps the group.
+            // child pid, and is then killed and reaped. The child keeps the group
+            // as an orphan, which is held apart from a reap that must verify.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let orphans = crate::process_lineage::host_orphans::may_orphan();
             let mut leader = std::process::Command::new("sh")
                 .args(["-c", "sleep 30 & echo $!; wait"])
                 .process_group(0)
@@ -6706,6 +6719,13 @@ mod tests {
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", &child.to_string()])
                 .status();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                crate::process_lineage::host_orphans::wait_until_group_gone(
+                    i32::try_from(group).unwrap(),
+                );
+                drop(orphans);
+            }
             fs::remove_dir_all(directory).unwrap();
         }
     }
@@ -9100,11 +9120,24 @@ done
         recovered.validate().unwrap();
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    type ReceiptLimitOrphans = crate::process_lineage::host_orphans::MayOrphan;
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    type ReceiptLimitOrphans = ();
+
+    /// The provider's `sleep` can be orphaned for a moment when its group is
+    /// killed, so the fixture holds it apart from a reap that must verify.
+    /// Bind the guard first, so it is released after the executor stops the
+    /// provider.
     #[cfg(unix)]
     fn disconnected_receipt_limit_fixture(
         mode: &str,
         deadline: u64,
-    ) -> (CodexCommandExecutor, PathBuf, u64) {
+    ) -> (ReceiptLimitOrphans, CodexCommandExecutor, PathBuf, u64) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let orphans = crate::process_lineage::host_orphans::may_orphan();
+        #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+        let orphans = ();
         let directory = std::env::temp_dir().join(format!(
             "paperclip-offline-receipt-limit-{}",
             uuid::Uuid::new_v4()
@@ -9191,13 +9224,13 @@ done
         executor.state = Some(state);
         executor.provider = Some(provider);
         executor.save_state().unwrap();
-        (executor, directory, deadline)
+        (orphans, executor, directory, deadline)
     }
 
     #[cfg(unix)]
     #[test]
     fn disconnected_receipt_limit_preserves_a_future_deadline_without_rpc_or_facade_claims() {
-        let (mut executor, directory, deadline) =
+        let (_orphans, mut executor, directory, deadline) =
             disconnected_receipt_limit_fixture("silent", current_unix_ms().unwrap() + 60_000);
         for _ in 0..2 {
             assert!(
@@ -9263,7 +9296,7 @@ done
     #[test]
     fn disconnected_receipt_limit_stops_a_hanging_provider_at_its_original_deadline() {
         for accepted in [false, true] {
-            let (mut executor, directory, deadline) =
+            let (_orphans, mut executor, directory, deadline) =
                 disconnected_receipt_limit_fixture("silent", 1);
             executor
                 .state
@@ -9312,7 +9345,8 @@ done
     #[test]
     fn disconnected_receipt_limit_preserves_terminal_and_its_fifo_prefix_for_reconnect() {
         for mode in ["terminal", "prefix_terminal", "prefix_only"] {
-            let (mut executor, directory, deadline) = disconnected_receipt_limit_fixture(mode, 1);
+            let (_orphans, mut executor, directory, deadline) =
+                disconnected_receipt_limit_fixture(mode, 1);
             let retained = executor.state.as_ref().unwrap().pending_events.clone();
             assert!(executor.maintain_disconnected_provider().unwrap().is_none());
             assert!(executor
@@ -9371,7 +9405,7 @@ done
     #[cfg(unix)]
     #[test]
     fn fenced_receipt_limit_replays_child_and_unavailable_requests_before_root_terminal() {
-        let (mut executor, directory, _) =
+        let (_orphans, mut executor, directory, _) =
             disconnected_receipt_limit_fixture("requests_terminal", 1);
         executor.restore_checked = true;
         let mut observed = Vec::new();
@@ -9429,7 +9463,7 @@ done
 
     #[cfg(unix)]
     fn assert_disconnected_receipt_limit_drains_batches(mode: &str, has_terminal: bool) {
-        let (mut executor, directory, _) = disconnected_receipt_limit_fixture(mode, 1);
+        let (_orphans, mut executor, directory, _) = disconnected_receipt_limit_fixture(mode, 1);
         executor.maintain_disconnected_provider().unwrap();
         assert!(executor
             .provider

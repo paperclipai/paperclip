@@ -187,6 +187,12 @@ async function resolveSummaryScopeRecord(db: Db, companyId: string, scopeType: B
   return scope;
 }
 
+/** The display name of a budget scope, as budget incidents show it. */
+export async function budgetScopeName(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<string> {
+  const scope = await resolveScopeRecord(db, scopeType, scopeId);
+  return normalizeScopeName(scopeType, scope.name);
+}
+
 // Keep a large dashboard from filling the database pool with queued reads.
 async function mapBudgetReads<T, R>(rows: T[], read: (row: T) => Promise<R>): Promise<R[]> {
   const result: R[] = [];
@@ -1012,6 +1018,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       actorUserId: string,
       /** The resolving actor's session source, kept for the continuation Retry. */
       actorSource?: string | null,
+      options: { activityDetails?: Record<string, unknown> } = {},
     ): Promise<BudgetIncident> => {
       const incident = await db
         .select()
@@ -1123,6 +1130,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           amount: input.amount ?? null,
           scopeType: incident.scopeType,
           scopeId: incident.scopeId,
+          ...options.activityDetails,
         },
       });
 
@@ -1379,11 +1387,11 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
       withBudgetSpan("budget.admission.inspect", () => withAccountingReadSnapshot(db, companyId,
         tx => budgetServiceInTransaction(tx).getInvocationBlock(companyId, agentId, context))),
     resolveIncident: async (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string,
-      actorSource?: string | null) => {
+      actorSource?: string | null, options: { activityDetails?: Record<string, unknown> } = {}) => {
       const [scope] = await db.select({ scopeType: budgetIncidents.scopeType, scopeId: budgetIncidents.scopeId }).from(budgetIncidents)
         .where(and(eq(budgetIncidents.id, incidentId), eq(budgetIncidents.companyId, companyId)));
       if (!scope) throw notFound("Budget incident not found");
-      return mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId, actorSource), scope);
+      return mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId, actorSource, options), scope);
     },
   };
 }

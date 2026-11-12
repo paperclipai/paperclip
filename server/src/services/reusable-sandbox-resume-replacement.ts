@@ -17,6 +17,8 @@ import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
  */
 export const REUSABLE_SANDBOX_RESUME_BUDGET_MS = 90_000;
 
+export const REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS = 330_000;
+
 /** Failure reason recorded on a preserved lease retired in favor of a replacement. */
 export const REUSABLE_SANDBOX_RESUME_REPLACED_REASON = "resume_failed";
 
@@ -28,9 +30,26 @@ export const REUSABLE_SANDBOX_RESUME_REPLACED_REASON = "resume_failed";
 export function sandboxStateTransitionFailure(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
     const message = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "";
-    if (/state change in progress|\bis still [a-z_]+ at its start deadline\b/i.test(message)) return true;
+    if (/state change in progress|\bis still [a-z_]+ at its start deadline\b|\bis still settling cancelled work\b/i.test(message)) return true;
   }
   return false;
+}
+
+export async function reusableSandboxLeaseIsIdle(input: {
+  db: Db;
+  lease: EnvironmentLease;
+  companyId: string;
+  heartbeatRunId: string | null;
+}): Promise<boolean> {
+  const { db, lease } = input;
+  if (!input.heartbeatRunId || !lease.providerLeaseId || lease.companyId !== input.companyId) return false;
+  if (lease.status !== "released" && lease.status !== "retained") return false;
+  if (lease.heartbeatRunId && lease.heartbeatRunId !== input.heartbeatRunId) {
+    const [owner] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId)));
+    if (owner && ["queued", "scheduled_retry", "running"].includes(owner.status)) return false;
+  }
+  return true;
 }
 
 /**
@@ -59,8 +78,7 @@ export async function reusableSandboxReplacementIsSafe(input: {
   cause: unknown;
 }): Promise<boolean> {
   const { db, lease } = input;
-  if (!input.heartbeatRunId || !lease.providerLeaseId || lease.companyId !== input.companyId) return false;
-  if (lease.status !== "released" && lease.status !== "retained") return false;
+  if (!lease.providerLeaseId || !await reusableSandboxLeaseIsIdle(input)) return false;
   if (!input.executionWorkspaceId || lease.executionWorkspaceId !== input.executionWorkspaceId) return false;
   // A replacement cannot succeed where the resume was refused for access, and
   // an unavailable worker cannot create one either.
@@ -69,12 +87,6 @@ export async function reusableSandboxReplacementIsSafe(input: {
   const status = failure.status ?? readEnvironmentResumeErrorDiagnostic(input.cause)?.httpStatus ?? null;
   if (failure.label === "provider_access_denied" || failure.label === "permission_denied"
     || status === 401 || status === 403) return false;
-  // A run that still holds the sandbox may have work on it.
-  if (lease.heartbeatRunId && lease.heartbeatRunId !== input.heartbeatRunId) {
-    const [owner] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId)));
-    if (owner && ["queued", "scheduled_retry", "running"].includes(owner.status)) return false;
-  }
 
   const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
     .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.executionWorkspaceId)));

@@ -53,8 +53,9 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   });
 
   const dismissMutation = useMutation({
-    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.dismiss(companyId!, itemKey),
-    onMutate: async ({ itemKey }) => {
+    mutationFn: ({ itemKey, fingerprint }: { itemKey: string; fingerprint?: string }) =>
+      inboxDismissalsApi.dismiss(companyId!, itemKey, fingerprint),
+    onMutate: async ({ itemKey, fingerprint }) => {
       if (!companyId) return { previous: [] as typeof dismissals };
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData<typeof dismissals>(queryKey) ?? [];
@@ -66,6 +67,7 @@ export function useInboxDismissals(companyId: string | null | undefined) {
           userId: "me",
           itemKey,
           dismissedAt: now,
+          fingerprint: fingerprint ?? null,
           createdAt: now,
           updatedAt: now,
         },
@@ -93,8 +95,8 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   }
 
   const snoozeMutation = useMutation({
-    mutationFn: ({ itemKey, snoozedUntil }: { itemKey: string; snoozedUntil: string }) =>
-      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil),
+    mutationFn: ({ itemKey, snoozedUntil, fingerprint }: { itemKey: string; snoozedUntil: string; fingerprint?: string }) =>
+      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil, fingerprint),
     onSettled: invalidateDismissalConsumers,
   });
 
@@ -113,9 +115,13 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   const dismissMutate = dismissMutation.mutate;
   const snoozeMutate = snoozeMutation.mutate;
   const restoreMutate = restoreMutation.mutate;
-  const dismiss = useCallback((itemKey: string) => dismissMutate({ itemKey }), [dismissMutate]);
+  const dismiss = useCallback(
+    (itemKey: string, fingerprint?: string) => dismissMutate({ itemKey, fingerprint }),
+    [dismissMutate],
+  );
   const snooze = useCallback(
-    (itemKey: string, snoozedUntil: string) => snoozeMutate({ itemKey, snoozedUntil }),
+    (itemKey: string, snoozedUntil: string, fingerprint?: string) =>
+      snoozeMutate({ itemKey, snoozedUntil, fingerprint }),
     [snoozeMutate],
   );
   const restore = useCallback((itemKey: string) => restoreMutate({ itemKey }), [restoreMutate]);

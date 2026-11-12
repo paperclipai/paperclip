@@ -56,7 +56,7 @@ describe("authorized read artifacts through real routes and storage", () => {
     });
     let receipt: any;
     try {
-      receipt = await execute("call_api", { operationId: "GET /api/issues/{id}/documents/{key}", pathParams: { id: fixture.issueId, key: "evidence" }, saveResponse: true });
+      receipt = await execute("save_api_response", { operationId: "GET /api/issues/{id}/documents/{key}", pathParams: { id: fixture.issueId, key: "evidence" } });
     } finally { spy.mockRestore(); }
     expect(requests).toBe(1);
     expect(receipt).toMatchObject({ ok: true, artifact: { byteSize: source!.length, sha256: createHash("sha256").update(source!).digest("hex") } });
@@ -80,8 +80,13 @@ describe("authorized read artifacts through real routes and storage", () => {
       await expect(execute("download_artifact", input)).rejects.toThrow();
     }
     const foreign = await server.fixture();
-    const denied = await execute("call_api", { operationId: "GET /api/issues/{id}", pathParams: { id: foreign.issueId }, saveResponse: true });
+    const denied = await execute("save_api_response", { operationId: "GET /api/issues/{id}", pathParams: { id: foreign.issueId } });
     expect(denied.ok).toBe(false);
     expect(denied).not.toHaveProperty("artifact");
+    // The save tool is read-only: a write operation or a body never reaches the API.
+    for (const args of [
+      { operationId: "PUT /api/issues/{id}/documents/{key}", pathParams: { id: fixture.issueId, key: "evidence" } },
+      { operationId: "GET /api/issues/{id}", pathParams: { id: fixture.issueId }, body: { title: "x" } },
+    ]) expect(await execute("save_api_response", args)).toMatchObject({ outcome: "failed", code: "runner_bridge_invalid_arguments" });
   });
 });

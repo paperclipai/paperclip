@@ -58,6 +58,16 @@ export interface OpenHarnessSessionInput {
   signal?: AbortSignal;
 }
 
+export interface RunnerAttachmentDownloadGrant {
+  url: string;
+  token: string;
+  byteSize: number;
+  sha256: string;
+  contentType: string;
+}
+
+export type DownloadRunnerAttachment = (grant: (turnId: string) => RunnerAttachmentDownloadGrant) => Promise<string | null>;
+
 export interface HarnessSessionRecoveryOptions {
   normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   /** Abort provider recovery and release any not-yet-returned provider state. */
@@ -561,6 +571,7 @@ export interface HarnessSessionRecoveryResult {
    * saved state for this session (NativeRunnerResumeStateUnavailableError) and
    * the checkpoint had no turn or runtime request in flight. */
   resumeStateUnavailable?: true;
+  runnerExitConfirmed?: true;
 }
 
 /** Reads the closed class of an authenticated runner command failure, or of a
@@ -588,6 +599,7 @@ export interface CancelledTurnSettlement {
 
 export interface HarnessSession {
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: DownloadRunnerAttachment;
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   ids(): {
     driverSessionId: string;
@@ -660,7 +672,7 @@ export interface HarnessSession {
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
-  close(input: { reason: string; force?: boolean }): Promise<void>;
+  close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void>;
 }
 
 /** A local harness implementation hidden behind the runner daemon boundary. */

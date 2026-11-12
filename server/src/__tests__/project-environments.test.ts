@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { agents, authUsers, companyMemberships, builtInManagedResources, companies, createDb, environments, instanceSettings, plugins, userCompanyPreferences } from "@paperclipai/db";
 import { projectEnvironmentOptions, withDefaultProjectStorage } from "../services/project-environments.js";
 import { assertProjectStorageEnvironment, projectStorageForEnvironment } from "../services/project-workspace-provider.js";
@@ -110,6 +110,7 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     const core = await svc.create(f.companyId, { name: "Core project" }, { environmentId: f.ssh.id, expectedStorageProviderPluginId: null });
     const managed = await svc.create(f.companyId, { name: "Managed project" }, { environmentId: f.computer.id });
     expect(core).not.toHaveProperty("environmentId");
+    expect(core).not.toHaveProperty("legacyEnvironmentId");
     expect(core.workspaceProvider?.pluginId).toBeNull();
     expect(managed.workspaceProvider?.pluginId).toBe(f.pluginId);
     await expect(svc.update(core.id, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId: f.pluginId } }))
@@ -171,14 +172,38 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     }
   });
 
-  it("keeps a cold worker's storage identity, but refuses an archived default", async () => {
+  it("keeps a cold worker's storage identity, and uses the only storage left after its default is archived", async () => {
     const f = await fixture();
     await db.update(instanceSettings).set({ defaultEnvironmentId: f.computer.id });
     await db.update(plugins).set({ status: "error" }).where(eq(plugins.id, f.pluginId));
     expect(await withDefaultProjectStorage(db, f.companyId, null)).toMatchObject({ storageProviderPluginId: f.pluginId });
     await db.update(environments).set({ status: "archived" }).where(eq(environments.id, f.computer.id));
-    expect((await projectEnvironmentOptions(db, f.companyId)).error).toBeTruthy();
+    expect(await projectEnvironmentOptions(db, f.companyId)).toMatchObject({ defaultEnvironmentId: f.ssh.id, error: null });
+    expect(await withDefaultProjectStorage(db, f.companyId, null)).toBeNull();
+  });
+
+  it("refuses to guess storage when the default is unavailable and several storage options remain", async () => {
+    const f = await fixture();
+    const [fake] = await db.insert(environments).values({ name: "Fake", driver: "sandbox", config: { provider: "fake" } }).returning();
+    await db.update(instanceSettings).set({ defaultEnvironmentId: fake.id });
+    const options = await projectEnvironmentOptions(db, f.companyId);
+    expect(options.groups).toHaveLength(2);
+    expect(options.defaultEnvironmentId).toBeNull();
+    expect(options.error).toBeTruthy();
     await expect(withDefaultProjectStorage(db, f.companyId, null)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("uses agent computer storage without a choice when managed-only leaves no other environment", async () => {
+    const f = await fixture();
+    await db.update(environments).set({ status: "archived" }).where(inArray(environments.id, [f.sandbox.id, f.ssh.id]));
+    await db.update(instanceSettings).set({ experimental: { enableManagedSandboxOnly: true } });
+    const options = await projectEnvironmentOptions(db, f.companyId);
+    expect(options).toEqual({
+      groups: [{ storageProviderPluginId: f.pluginId, environments: [{ id: f.computer.id, name: f.computer.name }] }],
+      defaultEnvironmentId: f.computer.id,
+      error: null,
+    });
+    expect(await withDefaultProjectStorage(db, f.companyId, null)).toMatchObject({ storageProviderPluginId: f.pluginId });
   });
 
   it.each(["instance", "primary"] as const)("creates repository-free private tasks despite an archived %s default", async source => {

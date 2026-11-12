@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, restoreRemoteSuspendedRunnerCheckpoint,
   verifyRemoteRunnerReattachment } from "./native-session-executor.js";
 import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
+import { RunnerIngressConnectionError } from "../../realtime/runner-prp-outbound.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -15,9 +16,12 @@ import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
-import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, deferNativeRunForBusyAgentDirectory, NATIVE_AGENT_DIRECTORY_BUSY_WAIT, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
-import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "../heartbeat/agent-directory-busy.js";
+import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
 import { inspectRemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
 
@@ -247,6 +251,55 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
   });
 
+  it("retries a fresh remote start whose launched runner never authenticated through provider ingress", async () => {
+    const issueId = randomUUID(), runId = randomUUID(), runnerInstanceId = randomUUID();
+    const normalizedSessionId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Slow sandbox start", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: issueId, nativeSessionId: normalizedSessionId, runnerInstanceId,
+      runnerProfileJson: { nativePreparationFencingVersion: 1 } });
+    const identity = { runnerInstanceId, environmentLeaseId: randomUUID(), runId, normalizedSessionId,
+      turnId: `turn-${runId}`, itemId: `item-${runId}` };
+    const owner = { companyId, issueId, runId, authorityRunId: runId, bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed", controllerBootId: owner.bootId,
+      controllerGeneration: 1, leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, runId), identity,
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
+    const failure = new RunnerIngressConnectionError("runner_ingress_auth_failed",
+      "Runner ingress did not complete PRP authentication before the deadline.");
+    const bootstrap = { binding: { companyId, issueId, runId }, identity, transientIngressFailure: false };
+    const evidence = () => nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: "remote",
+      sourceFailureCode: nativeSessionFailureSourceCode(failure), bootstrap });
+    try {
+      const template = { provider: { provider: "codex", command: "fixture" }, authorizedTools: {} };
+      core.persistRunAttachTemplate(template);
+      core.queueCommand("run.prepare", template);
+      core.queueCommand("session.open", { reuse: "same_session" });
+      core.issueBootstrapTicket(60_000);
+      core.issueBootstrapTicket(60_000);
+      await core.flushCheckpoint();
+      expect(nativeSessionFailureSourceCode(failure)).toBe("runner_ingress_startup_failed");
+      expect(nativeSessionFailureSourceCode(new Error("runner_ingress_unavailable: runnerd exited unexpectedly with code 1")))
+        .toBe("native_runner_process_exited");
+      expect(await evidence()).toMatchObject({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
+        providerEventsExist: false, checkpointExists: false });
+      expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_connection_lease_expired",
+        "The runner's connection lease expired before it was renewed.", { cause: failure }))).toBe("native_session_interrupted");
+      expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_ingress_auth_failed",
+        "Runner ingress connection failed."))).toBe("runner_ingress_startup_failed");
+      expect(await nativeProviderRecoveryEvidence({ db, runId, metadataOnly: true,
+        sourceFailureCode: "runner_ingress_startup_failed" })).toMatchObject({ recoveryMode: "bootstrap_retry",
+        providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false });
+      await db.update(heartbeatRuns).set({ runnerInstanceId: randomUUID() }).where(eq(heartbeatRuns.id, runId));
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await db.update(heartbeatRuns).set({ runnerInstanceId }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
+        eventType: "session.resumed" });
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+    } finally { await core.stop(); }
+  });
+
   it("uses the database clock when an import finds an expired owner", async () => {
     const fixture = await seed();
     const now = Date.now();
@@ -270,6 +323,83 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       expect(await resolveNativeControllerRecovery(db, { ...fixture.scope, currentRunId }))
         .toMatchObject({ kind: "missing_evidence", reason: "snapshot_digest_or_checkpoint_binding" });
     }
+  });
+
+  async function seedBusyDirectoryRun(input: { checkpoint?: boolean; resultJson?: Record<string, unknown> } = {}) {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Busy agent directory", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "running", runtimeMode: "native",
+      resultJson: input.resultJson ?? null,
+      runnerProfileJson: { nativeExecutionInput: { binding: { companyId, agentId, issueId, runId } },
+        ...(input.checkpoint ? { sessionCheckpoint: { backendKind: "mock", sessionId: randomUUID(), providerSessionId: "provider-session",
+          identity: { companyId, agentId, issueId, runId } } } : {}) } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "retryable_failure", attempt: 3,
+      failureDetail: { recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true, providerEventsExist: true } });
+    const read = async () => (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]!;
+    const readRun = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
+    return { issueId, runId, read, readRun };
+  }
+
+  it("defers a resumed run whose agent directory is busy across repeated claims and stops at the bound", async () => {
+    const { runId, read, readRun } = await seedBusyDirectoryRun({ checkpoint: true });
+    let now = new Date();
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now });
+      expect(claim).toBeDefined();
+      expect((await read()).failureDetail?.agentDirectoryBusyDeferrals).toBeUndefined();
+      const retryAt = new Date(now.getTime() + 10_000);
+      expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId, leaseOwner: claim!.leaseOwner, retryAt, maxDeferrals: 3 })).toBe("deferred");
+      expect(await read()).toMatchObject({ phase: "retryable_failure", attempt: 3, leaseOwner: null, nextAttemptAt: retryAt,
+        failureCode: NATIVE_AGENT_DIRECTORY_BUSY_WAIT, failureDetail: { recoveryMode: "same_session_resume" } });
+      expect(await readRun()).toMatchObject({ status: "running", errorCode: null, contextSnapshot: { agentDirectoryBusyDeferrals: cycle } });
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now })).toEqual([]);
+      now = retryAt;
+    }
+    const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now });
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId, leaseOwner: claim!.leaseOwner,
+      retryAt: new Date(now.getTime() + 10_000), maxDeferrals: 3 })).toBe("refused");
+    expect(await read()).toMatchObject({ phase: "observed", leaseOwner: claim!.leaseOwner });
+  });
+
+  it("leaves a busy-directory run to normal settlement after Stop, a lost lease or a moved task", async () => {
+    const retryAt = new Date(Date.now() + 10_000);
+    const stopped = await seedBusyDirectoryRun({ checkpoint: true });
+    const [stoppedClaim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [stopped.runId] });
+    await db.update(heartbeatRuns).set({ resultJson: { cancellation: { source: "operator", expected: true, initiator: { type: "user", userId: "board" },
+      reason: "Stopped", recordedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, stopped.runId));
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: stopped.runId, leaseOwner: stoppedClaim!.leaseOwner, retryAt, maxDeferrals: 30 })).toBe("refused");
+    expect((await stopped.read()).nextAttemptAt).toBeNull();
+    const foreign = await seedBusyDirectoryRun({ checkpoint: true });
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [foreign.runId] });
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: foreign.runId, leaseOwner: "another-controller", retryAt, maxDeferrals: 30 })).toBe("refused");
+    const moved = await seedBusyDirectoryRun({ checkpoint: true });
+    const [movedClaim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [moved.runId] });
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, moved.issueId));
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: moved.runId, leaseOwner: movedClaim!.leaseOwner, retryAt, maxDeferrals: 30 })).toBe("refused");
+    const fresh = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: fresh, companyId, agentId, status: "running", runtimeMode: "native" });
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: fresh, retryAt, maxDeferrals: 30 })).toBe("pre_admission");
+  });
+
+  it("defers only a busy agent directory met during preparation, never a busy collection after a turn", async () => {
+    const { runId, read } = await seedBusyDirectoryRun({ checkpoint: true });
+    const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] });
+    const schedule = vi.fn(), record = vi.fn(async () => undefined);
+    const run = { id: runId, companyId };
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: new AgentDirectoryOperationBusyError(), leaseOwner: claim!.leaseOwner, schedule, record })).toBe("not_applicable");
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: new Error("unrelated"), leaseOwner: claim!.leaseOwner, schedule, record })).toBe("not_applicable");
+    expect(schedule).not.toHaveBeenCalled();
+    expect((await read()).phase).toBe("observed");
+    const deferral = await prepareWithAgentDirectoryDeferral(async () => { throw new AgentDirectoryOperationBusyError(); }).catch(error => error);
+    expect(deferral).toBeInstanceOf(AgentDirectoryPreparationDeferral);
+    expect(deferral.message).toBe("Another run of this agent is still using its files");
+    const started = Date.now();
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: deferral, leaseOwner: claim!.leaseOwner, schedule, record, random: () => 0.5 })).toBe("deferred");
+    const [, retryAt] = schedule.mock.calls[0]! as [string, Date];
+    expect(record).toHaveBeenCalledWith(retryAt);
+    expect(retryAt.getTime() - started).toBeGreaterThanOrEqual(10_000);
+    expect(retryAt.getTime() - started).toBeLessThan(11_000);
   });
 
   it("keeps an unstarted follow-up on the same run until the retained owner's deadline", async () => {
@@ -350,18 +480,23 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       loadCheckpoint: () => checkpoint, canReuseProcess: () => true, ...overrides,
     });
     const denied = "runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate";
-    await expect(inspect({ execution: { ...current, binding: { ...current.binding, companyId: randomUUID() } } }))
-      .rejects.toThrow(denied);
-    await expect(inspect({ matchesExecution: () => false })).rejects.toThrow(denied);
+    const ordinary = async (attempt: Promise<unknown>) => {
+      const error = await attempt.then(() => null, failure => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(denied);
+      expect(error).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    };
+    await ordinary(inspect({ execution: { ...current, binding: { ...current.binding, companyId: randomUUID() } } }));
+    await ordinary(inspect({ matchesExecution: () => false }));
     await expect(readSandbox({ remoteCwd: "/unrelated" })).rejects.toThrow("retained_sandbox_binding");
     for (const leaseExpiresAt of [null, new Date(Date.now() - 1_000)]) {
       await db.update(nativeRunFinalizations).set({ leaseExpiresAt }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
-      await expect(inspect()).rejects.toThrow(denied);
+      await ordinary(inspect());
       await expect(readSandbox()).rejects.toThrow("retained_sandbox_binding");
     }
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: deadline }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
-    await expect(inspect()).rejects.toThrow(denied);
+    await ordinary(inspect());
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
     await expect(readSandbox()).rejects.toMatchObject({ retryAt: deadline });
     const waiting = await inspect().catch(error => error);
@@ -375,7 +510,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     await expect(readSandbox()).resolves.toEqual({ remoteCwd: "/workspace" });
     await expect(inspect({ readControlState: () => ({ identity, commands: [{ status: "pending" }],
-      committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toThrow(denied);
+      committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
     // A created or replacement sandbox holds no Runner to adopt. Live adoption
     // steps aside so ordinary admission can retire the finished owner, instead
     // of denying with prior_owner_terminal_state_indeterminate (Nov 10 staging).
@@ -390,6 +525,92 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline });
     expect(claims).toHaveLength(1);
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "duplicate", runIds: [runId], now: deadline })).toEqual([]);
+  });
+
+  it("sends a re-wake after a crash restart to a fresh sandbox when the parked predecessor's warm Runner cannot be adopted", async () => {
+    const fixture = await seed(), runId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
+    const previous = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId: fixture.scope.runId, executionWorkspaceId: randomUUID() },
+      task: { identifier: "NCD-1", title: "Answer the parked question", description: null,
+        prompt: "Continue after the answer.", workMode: "standard" },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue after the answer.", criteria: [{ id: "objective", requirement: "Save the result." }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    const current = { ...previous, binding: { ...previous.binding, runId } };
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, driverKind: "codex_app_server",
+      providerSessionId: "parked-provider-session", activeTurnId: null, pendingRuntimeRequests: [] };
+    const metadata = createNativeControllerRecovery(checkpoint, compatibility, { runId: fixture.scope.runId,
+      runnerInstanceId: fixture.native.runnerInstanceId, normalizedSessionId: fixture.scope.normalizedSessionId });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...fixture.profile, nativeExecutionInput: previous,
+      sessionCheckpoint: checkpoint, nativeControllerRecovery: metadata } }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+    await db.update(nativeRunFinalizations).set({ controllerPid: 2_147_483_000, controllerProcessStartedAt: new Date(Date.now() - 120_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    const controller = await currentNativeControllerIdentity();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: current } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed",
+      leaseOwner: "replacement-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerBootId: controller.bootId, controllerPid: controller.pid });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, fixture.scope.issueId));
+    await db.insert(environments).values({ id: environmentId, name: `Parked ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values([
+      { companyId, environmentId, issueId: fixture.scope.issueId, heartbeatRunId: fixture.scope.runId, provider: "daytona",
+        providerLeaseId: "warm-sandbox", status: "released", metadata: { remoteCwd: "/workspace" } },
+      { id: leaseId, companyId, environmentId, issueId: fixture.scope.issueId, heartbeatRunId: runId, provider: "daytona",
+        providerLeaseId: "warm-sandbox", status: "active", metadata: { remoteCwd: "/workspace" } },
+    ]);
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const parked = { identity, commands: [{ type: "turn.start", status: "completed" }], committedEvents: [
+      { eventType: "semantic_tool.input", sourceEventId: "question", envelope: identity },
+      { eventType: "run.terminal", envelope: identity }] };
+    const inspect = (readControlState: () => Record<string, unknown> = () => parked) => inspectRemoteWarmSessionRecovery({
+      db, execution: current, identity, readControlState,
+      target: { kind: "remote", transport: "sandbox", environmentId, leaseId, providerKey: "daytona", remoteCwd: "/workspace",
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "warm-sandbox" } } as never,
+      matchesExecution: saved => saved.binding.runId === fixture.scope.runId,
+      loadCheckpoint: () => checkpoint, canReuseProcess: () => true,
+    });
+    const fallback = (error: unknown, reason: string) => {
+      expect(error).toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+      expect(error).toMatchObject({ predecessorRunId: fixture.scope.runId, providerLeaseId: "warm-sandbox" });
+      expect((error as Error).message).toContain(`warm_recovery_refused=${reason}`);
+    };
+
+    fallback(await inspect(() => ({ ...parked, commands: [...parked.commands, { type: "runner.suspend", status: "pending" }] }))
+      .catch(error => error), "journal_unsettled");
+
+    for (const status of ["failed", "running"] as const) {
+      await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      const unsettled = await inspect(() => ({ ...parked, commands: [...parked.commands, { type: "runner.suspend", status: "pending" }] }))
+        .catch(error => error);
+      expect(unsettled).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+      expect(unsettled.message).toBe("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=owner_unsettled");
+    }
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+
+    const recovered = (await inspect())!;
+    await expect(recovered.revalidate("replacement-controller")).resolves.toBeUndefined();
+    await db.update(nativeRunFinalizations).set({ leaseOwner: "native-finalizer:replacement", leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    fallback(await recovered.revalidate("replacement-controller").catch(error => error), "owner_changed");
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    await db.update(environmentLeases).set({ status: "pending_cleanup" }).where(eq(environmentLeases.id, leaseId));
+    fallback(await recovered.revalidate("replacement-controller").catch(error => error), "current_lease_changed");
+    await db.update(environmentLeases).set({ status: "active" }).where(eq(environmentLeases.id, leaseId));
+
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+    const stopped = await recovered.revalidate("replacement-controller").catch(error => error);
+    expect(stopped).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    expect(stopped.message).toBe("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=current_run_not_admitted");
   });
 
   // The Nov 10 staging shape: a preparation-only run's epoch was abandoned, so

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +16,9 @@ import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js"
 import type { UiRetryClick } from "./board-ui.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "./question-handoff.js";
+import { isSessionFault, rotateAgentSession } from "./session-faults.js";
+import { awaitingRewake, collectRewakeArtifacts, isRewakeWorkload, rewakeStep } from "./rewake.js";
+import { withLongTurn } from "./long-turn.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -27,6 +30,11 @@ const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modu
 const MAX_SNAPSHOT_FILES = 2_000;
 
 /** Relative paths of workspace files, excluding VCS and cache directories. */
+
+export function stableRequestId(key: string): string {
+  const hex = createHash("sha256").update(key).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${(8 + (Number.parseInt(hex[16]!, 16) & 3)).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 export async function listWorkspaceFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   const walk = async (relative: string) => {
@@ -232,7 +240,8 @@ export class TaskObserver {
   /** Q1–Q3: the board's side of the journey (journey-driver.ts). */
   readonly journey: JourneyDriver | null;
 
-  get definition() { return workloadDefinitions[this.plan.workload]; }
+  /** The workload, with `--long-turn-minutes` tool work in front of its first turn (long-turn.ts). */
+  get definition() { return withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes); }
 
   /**
    * Crash-point suite: create the issue without an assignee, so no wake is
@@ -251,6 +260,7 @@ export class TaskObserver {
     for (;;) {
       try {
         await this.api.patch(`/api/issues/${this.record.issueId}`, { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id });
+        await this.postStartComment();
         break;
       } catch (error) {
         const transient = error instanceof ChaosApiError && (error.status === null || error.status >= 500);
@@ -268,6 +278,14 @@ export class TaskObserver {
     this.timeline.add("task_released", { taskId: this.plan.taskId, issueId: this.record.issueId });
   }
 
+  private async postStartComment(): Promise<void> {
+    if (!this.definition.startComment || !this.record.issueId) return;
+    const body = this.definition.startComment(this.plan.nonce);
+    const existing = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/comments`);
+    if (existing.some(comment => comment.body === body)) return;
+    await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body, clientRequestId: stableRequestId(`start-${this.plan.taskId}-${this.plan.nonce}`) });
+  }
+
   async launch(options: { assign?: boolean } = {}): Promise<void> {
     const definition = this.definition;
     const assign = options.assign !== false;
@@ -278,13 +296,14 @@ export class TaskObserver {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
         description: definition.description(this.plan.nonce, this.workloadAgents()),
-        status: "todo",
+        status: definition.startComment ? "backlog" : "todo",
         priority: "medium",
         ...(assign ? { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id } : {}),
         ...(definition.usesRepository ? { projectId: this.lab.projectId } : {}),
       });
       this.record.issueId = String(issue.id);
       this.record.identifier = issue.identifier ?? null;
+      if (assign) await this.postStartComment();
       // K14: which build launched the task, so a replay starts it on the same one.
       if (this.supervisor.serverBuild) this.record.serverBuildAtLaunch = this.supervisor.serverBuild;
       this.record.createdAt = Date.now();
@@ -819,6 +838,7 @@ export class TaskObserver {
     if (this.plan.workload === "G1") return Boolean(governance?.approvalSeenAt) && !governance?.decision;
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
     if (this.plan.workload === "Q1" || this.plan.workload === "Q4") return awaitingQuestionAnswer(this.record);
+    if (isRewakeWorkload(this.plan.workload)) return awaitingRewake(this.record);
     return false;
   }
 
@@ -854,10 +874,16 @@ export class TaskObserver {
     if (this.plan.workload === "G1") await this.approvalStep(sample, now);
     if (this.plan.workload === "H1") await this.budgetStep(sample, now);
     if (this.plan.workload === "Q1" || this.plan.workload === "Q4") {
+      const sessionFault = isSessionFault(this.plan.fault) ? this.plan.fault : null;
       await questionStep({ api: this.api, issueId: this.record.issueId, nonce: this.plan.nonce, record: this.record, sample, now,
         // An `answered` fault waits for the answer, so the board may answer before it fires.
         boardMayAct: this.boardMayAct(sample, "answered"), sequence: this.plan.workload === "Q4",
-        note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
+        note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }),
+        ...(sessionFault ? { beforeAnswer: () => rotateAgentSession(this.api, this.lab.agents[this.plan.adapter].id, this.plan.index, now, sessionFault) } : {}) });
+    }
+    if (isRewakeWorkload(this.plan.workload)) {
+      await rewakeStep({ api: this.api, record: this.record, plan: this.plan, issueId: this.record.issueId, agentId: this.lab.agents[this.plan.adapter].id,
+        sample, now, boardMayAct: this.boardMayAct(sample), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
     }
   }
 
@@ -975,6 +1001,18 @@ export class TaskObserver {
     return children;
   }
 
+  /** H2: the owner at rest and every run's terminal state (an `issue_reassigned` cancel is the staging failure). */
+  private async collectHandoff(issueId: string, issue: Json | null | undefined): Promise<NonNullable<OracleArtifacts["handoff"]>> {
+    const runs = await this.api.get<Json[]>(`/api/issues/${issueId}/runs`).catch(() => null);
+    const text = (value: unknown) => typeof value === "string" ? value : null;
+    return {
+      assigneeAgentId: text(issue?.assigneeAgentId), assigneeUserId: text(issue?.assigneeUserId),
+      createdByUserId: text(issue?.createdByUserId),
+      executionBlocker: Boolean(issue?.executionBlocker), activeRecoveryAction: Boolean(issue?.activeRecoveryAction),
+      runs: Array.isArray(runs) ? runs.map(toRunSample).map(run => ({ id: run.id, status: run.status, errorCode: run.errorCode })) : null,
+    };
+  }
+
   async collectArtifacts(): Promise<OracleArtifacts> {
     const definition = this.definition;
     const issueId = this.record.issueId!;
@@ -1036,8 +1074,13 @@ export class TaskObserver {
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
-      ...(this.plan.workload === "Q1" || this.plan.workload === "Q4" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
+      ...(this.plan.workload === "Q1" || this.plan.workload === "Q4" || this.plan.workload === "W2Q" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
+      ...(isRewakeWorkload(this.plan.workload) ? { rewake: await collectRewakeArtifacts(this.api, issueId, this.record) } : {}),
+      // The task's runs, for the shape checks (`no_failed_attempt`, the long turn's own evidence).
+      runs: await this.api.get<Json[]>(`/api/issues/${issueId}/runs`, 10_000).then(rows => (rows ?? []).map(run => ({ id: String(run.runId ?? run.id),
+        status: String(run.status), errorCode: run.errorCode ?? null, createdAt: run.createdAt ?? null, finishedAt: run.finishedAt ?? null }))).catch(() => []),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
+      ...(this.plan.workload === "H2" ? { handoff: await this.collectHandoff(issueId, issue) } : {}),
     };
   }
 

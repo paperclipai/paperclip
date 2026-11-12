@@ -14,10 +14,12 @@ import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeR
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, recoveredWorkMessage, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
+import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
+import { NATIVE_HUMAN_SELF_HANDOFF_KEY } from "./native-runtime/native-human-self-handoff.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -253,7 +255,8 @@ export function interruptedPreparationBeforeProviderWorkCondition() {
  * unknown outcome, so its hold releases for the same agent too. The proof is
  * the durable completed-recovery receipt bound to this action, so later reuse
  * of the workspace by the current owner (new epoch, writer or snapshot) cannot
- * re-arm the hold.
+ * re-arm the hold. A person who received the task through the stopped run's
+ * own recorded hand-off is released the same way.
  */
 export function restoreHoldReleasedForCurrentOwnerPredicate() {
   const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
@@ -270,13 +273,20 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
         and stopped.id::text = ${sourceRunId}
         and stopped.status in ('failed', 'timed_out', 'interrupted', 'cancelled')
         and stopped.finished_at is not null
-        and task.assignee_agent_id is not null
-        and ((task.assignee_agent_id <> stopped.agent_id
-          and not coalesce(task.status = 'in_review'
-            and task.execution_state->>'status' = 'pending'
-            and task.execution_state->'currentParticipant'->>'type' = 'agent'
-            and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
-          or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}))`,
+        and ((task.assignee_agent_id is not null
+          and ((task.assignee_agent_id <> stopped.agent_id
+            and not coalesce(task.status = 'in_review'
+              and task.execution_state->>'status' = 'pending'
+              and task.execution_state->'currentParticipant'->>'type' = 'agent'
+              and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
+            or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}))
+          -- The stopped run handed this task to the person who owns it now
+          -- (its own recorded hand-off). Its remaining outcomes were never
+          -- that person's work; once its files are saved, the hold releases.
+          or (task.assignee_agent_id is null and task.assignee_user_id is not null
+            and jsonb_typeof(stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}') = 'object'
+            and stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}'->>'issueId' = task.id::text
+            and stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}'->>'assigneeUserId' = task.assignee_user_id)))`,
     completedWorkspaceRecoveryCondition(sourceRunId),
     // Copyback put the files back into the task workspace that the new owner
     // reuses. A snapshot-only save needs an explicit fresh-workspace request
@@ -359,7 +369,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).limit(1) : [];
   const withoutWorkspace = Boolean(run?.driverKind === "grok_bot_mcp" && nativeRunHasNoWorkspaceAccess(run));
   const workspaceRepairRequired = Boolean(restoreHold && !withoutWorkspace && (!run || !await hasVerifiedWorkspaceRepair(db, run)));
-  const workspaceRecovery = workspaceRecoveryDisplay(action.evidence, runId);
+  const workspaceRecoveryState = workspaceRecoveryDisplay(action.evidence, runId);
   const reconstructableExport = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(action.cause);
   const exportSource = reconstructableExport ? readNativeWorkspaceSyncReference(run?.runnerProfileJson?.nativeWorkspaceSync) : null;
   const [exportLease] = exportSource ? await db.select().from(environmentLeases).where(and(
@@ -401,8 +411,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   // hold to protect its files. Offer the same Retry that admission accepts, so
   // an infrastructure failure (such as a restart) is not left to a new message.
   // An intentional Stop keeps "send a new message" as its only continuation.
-  const recoveredFailure = Boolean(restoreHold && run?.status === "failed" && !workspaceRepairRequired &&
-    workspaceRecovery?.status === "recovered");
+  const recoveredFailure = Boolean(restoreHold && (run?.status === "failed" || run?.status === "timed_out") && !workspaceRepairRequired &&
+    workspaceRecoveryState?.status === "recovered");
   const canRetry = Boolean((!restoreHold || recoveredFailure) && run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
   const runError = run && canRetry && isPreDispatchReviewWait(run)
@@ -410,6 +420,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // Earlier releases saved operator-facing text for the cleanup gate. Show
     // the plain wording from the code instead of the stored message.
     : run?.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED ? NATIVE_CLEANUP_SETTLING_MESSAGE
+    : run?.errorCode === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE
     : cancellation?.reason ?? (run?.status === "cancelled"
       ? "Execution was cancelled; its source was not recorded."
       // Rows written before SQL text was kept out of run errors still carry it.
@@ -424,7 +435,11 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).where(and(
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
-  let nextAction = action.nextAction;
+  const retryOffered = canRetry && (!chatBinding || recoveredFailure);
+  const workspaceRecovery = workspaceRecoveryState?.status === "recovered"
+    ? { ...workspaceRecoveryState, message: recoveredWorkMessage(run?.status, retryOffered) } : workspaceRecoveryState;
+  let nextAction = action.status === "active" && action.cause === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED
+    ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE : action.nextAction;
   // Retry is a person's control on this task. Say so, so an agent reading this
   // record points the person to it instead of re-running the work itself.
   if (canRetry && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;
@@ -457,13 +472,12 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
-    nextAction: (workspaceRecovery?.status === "recovered" && canRetry && !chatBinding
-      ? "Saved work recovered. Retry or send a message to continue." : workspaceRecovery?.message) ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
+    nextAction: workspaceRecovery?.message ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
     ...(workspaceRecovery ? { workspaceRecovery } : {}),
     runStatus: run?.status ?? null,
     runError: runError?.slice(0, 1024) ?? null,
     canContinue: eligibleContinuation && !chatBinding,
-    canRetry: canRetry && !chatBinding,
+    canRetry: retryOffered,
     ...(restoreHold ? { workspaceRepairRequired, canRecordWorkspaceRepair: workspaceRepairRequired && hasRequiredWorkspaceRecovery(action.evidence) } : {}),
     savedMessageCount: saved.length,
     ...(canReconstructWorkspace ? { canReconstructWorkspace, workspaceRecoveryStatusVersion: conversation!.statusVersion } : {}),
