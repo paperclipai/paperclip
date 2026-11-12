@@ -1875,6 +1875,8 @@ export type IssueListPhase =
 export interface IssueListOptions {
   /** Wraps each internal read so callers can report per-phase timing. */
   timePhase?: <T>(phase: IssueListPhase, read: () => Promise<T>) => Promise<T>;
+  /** Internal to `listBlockerAttentionRoots`: return `IssueBlockerAttentionRoot` rows. */
+  rows?: "blocker_attention_roots";
 }
 
 const untimedIssueListPhase = <T>(_phase: IssueListPhase, read: () => Promise<T>) => read();
@@ -3507,6 +3509,24 @@ type IssueBlockerAttentionInputNode = Pick<
   | "assigneeUserId"
 > & { executionRunId?: string | null };
 
+const blockerAttentionRootSelect = {
+  id: issues.id,
+  companyId: issues.companyId,
+  parentId: issues.parentId,
+  identifier: issues.identifier,
+  title: issues.title,
+  status: issues.status,
+  priority: issues.priority,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  executionRunId: issues.executionRunId,
+  unblockDescriptor: issues.unblockDescriptor,
+  blockedTransitionAt: issues.blockedTransitionAt,
+  createdAt: issues.createdAt,
+  updatedAt: issues.updatedAt,
+};
+export type IssueBlockerAttentionRoot = Pick<IssueRow, keyof typeof blockerAttentionRootSelect>;
+
 type IssueBlockerAttentionEdge = {
   issueId: string;
   blockerIssueId: string;
@@ -4716,6 +4736,31 @@ function reviewAttentionNone(): IssueReviewAttention {
   return { state: "none", paths: [], reason: null };
 }
 
+// What the review classification reads of a task. It never reads the
+// description, so a request for many reviews does not load every task body.
+const reviewAttentionIssueSelect = {
+  id: issues.id,
+  companyId: issues.companyId,
+  identifier: issues.identifier,
+  title: issues.title,
+  status: issues.status,
+  projectId: issues.projectId,
+  goalId: issues.goalId,
+  parentId: issues.parentId,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  createdByAgentId: issues.createdByAgentId,
+  createdByUserId: issues.createdByUserId,
+  conversationAgentId: issues.conversationAgentId,
+  conversationUserId: issues.conversationUserId,
+  conversationState: issues.conversationState,
+  executionPolicy: issues.executionPolicy,
+  executionState: issues.executionState,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+  monitorAttemptCount: issues.monitorAttemptCount,
+  updatedAt: issues.updatedAt,
+};
+
 async function listIssueReviewAttentionMap(
   dbOrTx: any,
   companyId: string,
@@ -4730,14 +4775,14 @@ async function listIssueReviewAttentionMap(
     .map((row) => row.id);
   if (reviewIds.length === 0) return result;
 
-  const reviewIssues: IssueRow[] = [];
+  const reviewIssues: Array<Pick<IssueRow, keyof typeof reviewAttentionIssueSelect>> = [];
   for (const chunk of chunkList(
     reviewIds,
     ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
   )) {
     reviewIssues.push(
       ...(await dbOrTx
-        .select()
+        .select(reviewAttentionIssueSelect)
         .from(issues)
         .where(
           and(eq(issues.companyId, companyId), inArray(issues.id, chunk), nonIdleSlackIssueCondition()),
@@ -8679,6 +8724,13 @@ export function issueService(db: Db) {
         offset > 0
           ? limit === undefined ? query.offset(offset) : query.limit(limit).offset(offset)
           : limit === undefined ? query : query.limit(limit);
+      if (options?.rows === "blocker_attention_roots") {
+        // The tasks and the order of the full rows below. Only
+        // `listBlockerAttentionRoots` asks for this page, and it states the type.
+        return paginate(
+          db.select(blockerAttentionRootSelect).from(issues).where(and(...conditions)).orderBy(...orderBy).$dynamic(),
+        ) as never;
+      }
       // Phase 1 of the participation path: the page's ids in final order. The
       // select-list subqueries below then run only for these rows.
       const pageIds = participationCandidates
@@ -9728,6 +9780,21 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
     ) => {
       return listIssueBlockerAttentionMap(dbOrTx, companyId, issueRows);
+    },
+
+    /**
+     * The tasks that `list` returns for a status, in the order of `list`, as
+     * the rows that `listBlockerAttention` and the attention feed read. A
+     * count of blocked work uses it: it must classify the same tasks in the
+     * same order as the task list, and it has no use for their descriptions,
+     * labels, runs, activity or review attention.
+     */
+    listBlockerAttentionRoots: async (
+      companyId: string,
+      filters: { status: string; readCondition?: SQL<boolean> },
+    ): Promise<IssueBlockerAttentionRoot[]> => {
+      const roots: unknown = await service.list(companyId, filters, { rows: "blocker_attention_roots" });
+      return roots as IssueBlockerAttentionRoot[];
     },
 
     listReviewAttention: async (

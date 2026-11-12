@@ -1,3 +1,4 @@
+import { MCP_APPS_CLIENT_CAPABILITY } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { markMcpHttpResponseFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 // Helpers for talking to remote MCP servers over the Streamable HTTP transport.
@@ -67,7 +68,8 @@ export async function initializeMcpHttpSession(input: {
       method: "initialize",
       params: {
         protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: {},
+        // Paperclip hosts MCP Apps views in the task chat.
+        capabilities: { extensions: MCP_APPS_CLIENT_CAPABILITY },
         clientInfo: { name: "paperclip", version: "1" },
       },
     }),
