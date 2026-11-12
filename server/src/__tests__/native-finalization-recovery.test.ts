@@ -343,7 +343,9 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
     // terminal superseded coordinator, and the run still running.
     await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null })
       .where(eq(heartbeatRuns.id, staleRunId));
-    await db.update(nativeRunFinalizations).set({ failureDetail: { workspaceFinalizeAttempt: 1,
+    // Written here, so the case does not depend on the previous test's outcome.
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,
+      failureCode: "native_finalization_superseded", nextAttemptAt: null, failureDetail: { workspaceFinalizeAttempt: 1,
       originalFailureCode: "native_workspace_sync_out_failed", recoveryOwner: { kind: "none", reason: "newer_native_decision" } } })
       .where(eq(nativeRunFinalizations.runId, staleRunId));
     const [issueBefore] = await db.select().from(issues).where(eq(issues.id, staleIssueId));
