@@ -74,3 +74,22 @@ describe("Claude project trust consent", () => {
   });
 
 });
+
+
+it("offers agent identities independently of their current harness, without granting trust by default", async () => {
+  vi.mocked(projectsApi.getClaudeProjectTrust).mockResolvedValue({agentIds:[]});
+  vi.mocked(projectsApi.setClaudeProjectTrust).mockResolvedValue({agentIds:["pooled"]});
+  vi.mocked(agentsApi.list).mockResolvedValue([{id:"direct",name:"Direct Claude",adapterType:"claude_local"},{id:"pooled",name:"Pool agent",adapterType:"paperclip_runner"},{id:"other",name:"Other harness",adapterType:"codex_local"}] as never);
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const host=document.createElement("div");document.body.append(host);const root=createRoot(host);
+  const settle=()=>new Promise(resolve=>setTimeout(resolve,20));
+  try {
+    await act(async()=>{root.render(<QueryClientProvider client={client}><ClaudeProjectTrust companyId="company" projectId="project" workspace={workspace} disabled={false} onSaved={()=>{}} /></QueryClientProvider>);await settle();});await act(async()=>{await settle();});
+    expect(host.textContent).toContain("Pool agent");expect(host.textContent).toContain("Other harness");
+    expect(host.textContent).toContain("independently of its current harness or pool");
+    const checks=[...host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')];expect(checks).toHaveLength(3);
+    expect(checks.every(check=>check.getAttribute("aria-checked")==="false")).toBe(true);
+    await act(async()=>checks[1]!.click());
+    await act(async()=>{[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="Save Claude trust")!.click();await settle();});
+    expect(vi.mocked(projectsApi.setClaudeProjectTrust).mock.calls.at(-1)?.[2]).toEqual(["pooled"]);
+  }finally{await act(async()=>root.unmount());client.clear();host.remove();vi.clearAllMocks();}
+});

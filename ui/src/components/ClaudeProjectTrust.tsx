@@ -41,12 +41,13 @@ function ClaudeProjectTrustForm({ companyId, projectId, workspace, disabled, onS
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: key }); onSaved(); },
   });
   return <Card className="block space-y-3 p-5">
-    <h2 className="text-lg font-semibold">Claude project settings</h2>
+    <h2 className="text-lg font-semibold">Trust this workspace for Claude</h2>
     <p className="text-sm text-muted-foreground">Allow selected agents to load this workspace's Claude project settings, including skills, permissions, environment and hooks. Paperclip pins managed connection settings, but hooks can execute commands and access credentials available to the agent. Grant trust only when you trust the workspace contents and the agent. Changing the workspace source removes this trust.</p>
-    <p className="text-sm text-muted-foreground">Applies to managed Claude CLI and legacy ACP runs using this exact local workspace. Remote environments, Runner, and worktrees are not covered. Changes apply to subsequent runs.</p>
+    <p className="text-sm text-muted-foreground">Applies to managed Claude CLI and Legacy ACP runs using this exact local workspace. Native Runner execution, remote environments, and worktrees are not covered. Changes apply to subsequent runs.</p>
+    <p className="text-sm text-muted-foreground">Trust is granted to an agent identity independently of its current harness or pool. It is checked only for supported Claude runs. Profile import and session retention belong in the Claude execution configuration's Advanced settings.</p>
     {trustView.kind === "error" ? <QueryErrorState size="inline" error={trustView.error} onRetry={trustView.retry} /> : null}
     {agentsView.kind === "error" ? <QueryErrorState size="inline" error={agentsView.error} onRetry={agentsView.retry} /> : null}
-    {agents.data?.filter((agent) => agent.adapterType === "claude_local").map((agent) =>
+    {agents.data?.map((agent) =>
       <label className="flex items-center gap-2 text-sm" key={agent.id}>
         <Checkbox disabled={disabled} checked={selected.includes(agent.id)} onCheckedChange={(checked) => setSelected((current) =>
           checked === true ? [...new Set([...current, agent.id])] : current.filter((id) => id !== agent.id))} />

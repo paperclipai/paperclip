@@ -988,3 +988,17 @@ uses its existing conditional transition to `stored`; a rejected transition
 rolls back the credentials and connection binding. Already-bound sessions return
 the existing connection without repeating the callback. Local and device login
 services continue to own their final states.
+
+
+### Claude behavior versus workspace consent
+
+Profile import and session retention are Claude execution-configuration settings
+(PR #18150), reused per Legacy Claude member by Pools (PR #19481). They do not
+create a workspace trust grant. The workspace Configuration page owns the
+**Trust this workspace for Claude** panel: its grant binds an agent identity to
+the exact reviewed source. The selector therefore includes company agents
+independently of their current adapter, including agents configured with pools.
+Only an explicit checkbox selection followed by Save grants consent. The existing
+company, board-operator, source revision, supported execution-target, and exact
+workspace checks remain in force; a native Runner or Codex run gains no new
+permission from appearing in the selector.
