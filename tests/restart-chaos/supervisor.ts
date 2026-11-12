@@ -831,6 +831,12 @@ export class ChaosSupervisor {
     const killAfterMs = overlapKillAfterMs(process.env.RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS, overlapMs);
     for (const until = Date.now() + (killAfterMs ?? overlapMs); Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
     await swap("stopping", next);
+    const freezeMs = overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000);
+    const frozenAt = freezeMs !== null && next.pid ? Date.now() : null;
+    if (frozenAt !== null) {
+      process.kill(next.pid!, "SIGSTOP");
+      this.timeline.add("k15_new_server_frozen", { faultId: receipt.faultId, pid: next.pid, forMs: freezeMs });
+    }
     if (killAfterMs === null) await this.stopper(previous, "SIGTERM");
     else {
       this.timeline.add("k15_old_server_killed", { faultId: receipt.faultId, previousPid: previous.pid, afterMs: killAfterMs });
@@ -838,6 +844,11 @@ export class ChaosSupervisor {
     }
     receipt.stoppedAt = Date.now();
     this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    if (frozenAt !== null) {
+      await delay(Math.max(0, frozenAt + freezeMs! - Date.now()));
+      process.kill(next.pid!, "SIGCONT");
+      this.timeline.add("k15_new_server_thawed", { faultId: receipt.faultId, pid: next.pid, frozenMs: Date.now() - frozenAt, afterOldExitMs: Date.now() - receipt.stoppedAt });
+    }
     await swap("stopped", next);
     await this.redeployEvidence?.(receipt.faultId, "stopped");
   }
