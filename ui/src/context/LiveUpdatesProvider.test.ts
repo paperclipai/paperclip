@@ -262,15 +262,19 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     client.setQueryData(queryKeys.agentChats.detail("company-1", "user-1", "agent-1"), chat);
     client.setQueryData(queryKeys.issues.detail("chat-1"), chat);
     const invalidate = vi.spyOn(client, "invalidateQueries");
+    // The settle update is a system actor's, which defers detail and activity refetches for the visible task.
     const deliver = (path: string, entityId: string, action: string) => __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1",
-      { entityType: "issue", entityId, action }, { userId: "user-1", agentId: null }, { pathname: path, isForegrounded: true });
-    const commentInvalidations = (ref: string) => invalidate.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKeys.issues.comments(ref))).length;
+      { entityType: "issue", entityId, action, actorType: "system", actorId: "system" }, { userId: "user-1", agentId: null }, { pathname: path, isForegrounded: true });
+    const commentCalls = (ref: string) => invalidate.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKeys.issues.comments(ref)));
+    const commentInvalidations = (ref: string) => commentCalls(ref).length;
     deliver("/PAP/chats/agent-1", "other-task", "issue.updated");
     expect(commentInvalidations("other-task")).toBe(0);
     deliver("/PAP/issues/PAP-9", "chat-1", "issue.updated");
     expect(commentInvalidations("chat-1")).toBe(0);
     deliver("/PAP/chats/agent-1", "chat-1", "issue.updated");
     expect(commentInvalidations("chat-1")).toBe(1);
+    // The open chat's comments query refetches now, not only when it next becomes active.
+    expect((commentCalls("chat-1")[0]![0] as { refetchType?: string }).refetchType).toBeUndefined();
     client.clear();
   });
   it.each(["ai_connection.default_changed", "ai_connection.reconnected", "connection_grant.revoked"])(
