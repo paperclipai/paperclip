@@ -1368,8 +1368,11 @@ const SSH_RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 // environment. If they were in the script text, every subshell of this script
 // would carry the run directory in its command line and match itself.
 // A process belongs to the run when its environment has PAPERCLIP_RUN_ID=<id>,
-// or when its command line or its working directory is inside the run
-// directory. The script can signal only processes of the SSH user. A process
+// or when its working directory is inside the run directory (also after the
+// directory was deleted: Linux then adds " (deleted)" to the link). A path in
+// a command-line argument is no proof: another process can mention the run
+// directory, for example to read a log file there. The script can signal only
+// processes of the SSH user. A process
 // that it cannot stop keeps the result "running".
 const SSH_RUN_PROCESS_STOP_SCRIPT = [
   'if [ ! -d /proc/self ]; then echo unsupported; exit 0; fi',
@@ -1387,7 +1390,6 @@ const SSH_RUN_PROCESS_STOP_SCRIPT = [
   '    case "$own" in *" $pid "*) continue ;; esac',
   '    [ "$(parent_of "$pid")" = "$self" ] && continue',
   '    if tr "\\000" "\\n" < "$proc_dir/environ" 2>/dev/null | grep -qxF "$run_env"; then echo "$pid"; continue; fi',
-  '    if tr "\\000" " " < "$proc_dir/cmdline" 2>/dev/null | grep -qF "$run_dir"; then echo "$pid"; continue; fi',
   '    cwd=$(readlink "$proc_dir/cwd" 2>/dev/null) || continue',
   '    case "$cwd/" in "$run_dir"*) echo "$pid" ;; esac',
   '  done',
@@ -1420,7 +1422,8 @@ export async function stopSshRunProcesses(
   if (!SSH_RUN_ID_PATTERN.test(input.runId)) {
     throw new Error("Invalid run id for an SSH process stop.");
   }
-  const remoteCwd = input.remoteCwd.trim().replace(/\/+$/, "");
+  // Keep "/" when removing trailing slashes: it is a valid workspace root.
+  const remoteCwd = input.remoteCwd.trim().replace(/(.)\/+$/, "$1");
   if (!remoteCwd.startsWith("/")) {
     throw new Error("An SSH process stop requires an absolute remote working directory.");
   }

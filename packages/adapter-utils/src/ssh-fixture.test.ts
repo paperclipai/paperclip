@@ -554,8 +554,11 @@ describe("ssh env-lab fixture", () => {
       `(cd ${JSON.stringify(runDir)} && exec nohup sleep 300 >/dev/null 2>&1) & echo $!`,
       `(cd / && exec env PAPERCLIP_RUN_ID=${runId} nohup sleep 301 >/dev/null 2>&1) & echo $!`,
       `(cd ${JSON.stringify(otherRunDir)} && exec env PAPERCLIP_RUN_ID=${otherRunId} nohup sleep 302 >/dev/null 2>&1) & echo $!`,
+      // Another process that only reads a file in the run directory is not part of the run.
+      `touch ${JSON.stringify(path.posix.join(runDir, "out.log"))}`,
+      `(cd / && exec nohup tail -f ${JSON.stringify(path.posix.join(runDir, "out.log"))} >/dev/null 2>&1) & echo $!`,
     ].join("\n"));
-    const [inRunDir, withRunEnv, otherRun] = pidsOutput.stdout.trim().split("\n").map((pid) => pid.trim());
+    const [inRunDir, withRunEnv, otherRun, reader] = pidsOutput.stdout.trim().split("\n").map((pid) => pid.trim());
     const alive = async (pid: string) =>
       (await runSshCommand(config, `kill -0 ${pid} 2>/dev/null && echo alive || echo gone`)).stdout.trim();
     expect(await alive(inRunDir!)).toBe("alive");
@@ -566,10 +569,11 @@ describe("ssh env-lab fixture", () => {
       expect(await alive(inRunDir!)).toBe("gone");
       expect(await alive(withRunEnv!)).toBe("gone");
       expect(await alive(otherRun!)).toBe("alive");
+      expect(await alive(reader!)).toBe("alive");
       // A second check finds nothing more to stop.
       await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
     } finally {
-      await runSshCommand(config, `kill -KILL ${otherRun} 2>/dev/null; true`);
+      await runSshCommand(config, `kill -KILL ${otherRun} ${reader} 2>/dev/null; true`);
     }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
@@ -579,6 +583,9 @@ describe("ssh env-lab fixture", () => {
       .rejects.toThrow("Invalid run id");
     await expect(stopSshRunProcesses(config, { runId: "run-1", remoteCwd: "relative/path" }))
       .rejects.toThrow("absolute remote working directory");
+    // "/" is a valid workspace root: validation passes, and only the unreachable host fails.
+    await expect(stopSshRunProcesses(config, { runId: "run-1", remoteCwd: "/" }))
+      .rejects.not.toThrow("absolute remote working directory");
   });
 
   it("builds a remote script that sources login profiles but no nvm", async () => {
