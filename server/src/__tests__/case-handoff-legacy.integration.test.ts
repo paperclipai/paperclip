@@ -22,6 +22,17 @@ import { hasStoppedLocalProcessTree } from "../services/heartbeat/process-settle
 import type { StorageService } from "../storage/types.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+// This suite proves that a handoff waits while the source run's process tree
+// is still alive. On Linux the run teardown now stops a run's leftover
+// processes, so the background writer below would be stopped before the guard
+// is reached. Disable that teardown here to keep a surviving tree, as on a
+// platform without it; run-descendants tests cover the teardown itself.
+vi.mock("../services/heartbeat/run-descendant-reaper.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/heartbeat/run-descendant-reaper.js")>()),
+  trackRunDescendants: () => {},
+  reapRunDescendants: async () => null,
+}));
+
 const childScript = String.raw`
 const base = process.env.CASE_TEST_API_URL;
 const headers = { authorization: 'Bearer ' + process.env.PAPERCLIP_API_KEY, 'content-type': 'application/json', 'x-paperclip-run-id': process.env.PAPERCLIP_RUN_ID };
