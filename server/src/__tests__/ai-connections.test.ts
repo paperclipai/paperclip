@@ -6,6 +6,16 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 // Background plan observations have their own provider-fixture coverage. Runtime
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
+// Lets a test act between a directory listing and the work that follows it.
+const readdirHook = vi.hoisted(() => ({ current: undefined as undefined | ((target: string) => Promise<void>) }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const readdir = (async (target: Parameters<typeof actual.readdir>[0], options?: Parameters<typeof actual.readdir>[1]) => {
+    await readdirHook.current?.(String(target));
+    return actual.readdir(target, options);
+  }) as typeof actual.readdir;
+  return { ...actual, default: { ...actual, readdir }, readdir };
+});
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -407,6 +417,41 @@ describe("managed AI connections", () => {
       await restoreOwnerAccess(runtime.home!);
       await runtime.cleanup().catch(() => {});
       await fs.chmod(outside, 0o700);
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the read-only repair inside the run home when a directory is swapped for a symlink mid-walk", async () => {
+    const owner = "read-only-swapped-home";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "anthropic", method: "api_key", ownership: "personal", name: owner, apiKey: "fixture", agentIds: [], allAgents: true }, `fixture-${owner}`);
+    await service.setDefault(companyId, owner, account.grantId);
+    const outside = await mkdtemp(path.join(home, "read-only-swap-outside-"));
+    await fs.mkdir(path.join(outside, "child"));
+    await fs.chmod(path.join(outside, "child"), 0o555);
+    const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: {} });
+    const go = path.join(runtime.home!, "go");
+    let swapped = false;
+    try {
+      await writeReadOnlyModuleCache(runtime.home!);
+      const goTarget = await realpath(go);
+      // Once the walk has inspected `go` and lists it, replace it with a link
+      // to a read-only directory outside the home.
+      readdirHook.current = async (target) => {
+        if (swapped || await realpath(target).catch(() => "") !== goTarget) return;
+        swapped = true;
+        await fs.rename(go, path.join(runtime.home!, "parked"));
+        await fs.symlink(outside, go);
+      };
+      await runtime.cleanup();
+      expect(swapped).toBe(true);
+      await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await stat(path.join(outside, "child"))).mode & 0o777).toBe(0o555);
+    } finally {
+      readdirHook.current = undefined;
+      await restoreOwnerAccess(runtime.home!);
+      await runtime.cleanup().catch(() => {});
+      await fs.chmod(path.join(outside, "child"), 0o700);
       await rm(outside, { recursive: true, force: true });
     }
   });
