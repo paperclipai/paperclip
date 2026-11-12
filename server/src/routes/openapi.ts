@@ -2819,6 +2819,45 @@ registry.registerPath({
 
 registry.registerPath({
   "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/discord/channels/refresh",
+  tags: ["chat-channels"],
+  summary: "Refresh Discord channels available to the bot",
+  description:
+    "Fetches the guild channels the bot can currently use from Discord and reconciles destinations. New channels are added disabled, existing enablement is preserved, and channels the bot can no longer use become unavailable. A failed Discord inventory returns 422 and leaves saved destinations unchanged. Paused and archived bots return 409.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatEndpointResourceResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "delete",
+  path: "/api/chat-endpoints/{endpointId}/discord/channels/{resourceId}",
+  tags: ["chat-channels"],
+  summary: "Remove a Discord channel that no longer exists",
+  description:
+    "Deletes a disabled channel destination that Discord no longer reports. Conversations that started in the channel keep their tasks and history but lose the channel link. Available or enabled channels return 409.",
+  request: { params: z.object({ endpointId: z.string().uuid(), resourceId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatEndpointResourceResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
   method: "get",
   path: "/api/chat-endpoints/{endpointId}/principals",

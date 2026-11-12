@@ -259,6 +259,10 @@ export const chatEndpointsApi = {
     api.put<ChatEndpointResource[]>(`/chat-endpoints/${endpointId}/resources`, {
       resources,
     }),
+  refreshDiscordChannels: (endpointId: string) =>
+    api.post<ChatEndpointResource[]>(`/chat-endpoints/${endpointId}/discord/channels/refresh`, {}),
+  removeDiscordChannel: (endpointId: string, resourceId: string) =>
+    api.delete<ChatEndpointResource[]>(`/chat-endpoints/${endpointId}/discord/channels/${resourceId}`),
   listPrincipals: async (endpointId: string) =>
     rows(
       await api.get<ListResponse<ChatIdentityLink>>(

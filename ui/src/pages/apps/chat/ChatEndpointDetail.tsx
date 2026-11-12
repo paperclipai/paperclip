@@ -503,6 +503,34 @@ function Settings({
         tone: "error",
       }),
   });
+  const refreshChannels = useMutation({
+    mutationFn: () => chatEndpointsApi.refreshDiscordChannels(endpointId),
+    onSuccess: (resources) => {
+      queryClient.setQueryData(queryKeys.chatEndpoints.resources(endpointId), resources);
+      pushToast({ title: "Channels refreshed. New channels stay disabled.", tone: "success" });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't refresh channels",
+        body: describeError(error).body,
+        tone: "error",
+      }),
+  });
+  const [channelToRemove, setChannelToRemove] = useState<ChatEndpointResource | null>(null);
+  const removeChannel = useMutation({
+    mutationFn: (resource: ChatEndpointResource) => chatEndpointsApi.removeDiscordChannel(endpointId, resource.id),
+    onSuccess: (resources) => {
+      queryClient.setQueryData(queryKeys.chatEndpoints.resources(endpointId), resources);
+      setChannelToRemove(null);
+      pushToast({ title: "Channel removed", tone: "success" });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't remove channel",
+        body: describeError(error).body,
+        tone: "error",
+      }),
+  });
   const updateEndpoint = useMutation({
     mutationFn: chatEndpointsApi.update.bind(null, endpointId),
     onSuccess: (next) =>
@@ -546,7 +574,14 @@ function Settings({
         </div>
       )}
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
+          {endpoint.provider === "discord" && ["active", "attention"].includes(endpoint.status) && (
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Refresh channels" title="Refresh channels" disabled={refreshChannels.isPending} onClick={() => refreshChannels.mutate()}>
+              <RefreshCw className={refreshChannels.isPending ? "animate-spin" : undefined} />
+            </Button>
+          )}
+        </div>
         {resourcesView.kind === "error" ? <QueryErrorState size="inline" error={resourcesQuery.error} action={endpoint.provider === "slack" ? "load the channels" : "load the destinations"} onRetry={resourcesView.retry} retrying={resourcesView.isFetching} /> : resourcesQuery.isLoading || resourcesView.kind === "reconnecting" ? (
           <p className="text-sm text-muted-foreground">Loading destinations…</p>
         ) : destinationResources.length === 0 && endpoint.provider !== "slack" ? (
@@ -574,13 +609,19 @@ function Settings({
                   checked={resource.enabled}
                   disabled={
                     endpoint.photonAllocation === "shared" ||
-                    resource.availability !== "available" ||
+                    // A destination gone at the provider can still be turned off.
+                    (resource.availability !== "available" && !resource.enabled) ||
                     saveResources.isPending
                   }
                   onCheckedChange={(enabled) =>
                     toggleResource(resource, enabled)
                   }
                 />
+                {endpoint.provider === "discord" && resource.availability !== "available" && !resource.enabled && (
+                  <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${resource.label}`} title="Remove channel" disabled={removeChannel.isPending} onClick={() => setChannelToRemove(resource)}>
+                    <Trash2 />
+                  </Button>
+                )}
               </div>
               <details className="text-sm">
                 <summary className="cursor-pointer text-muted-foreground">Task defaults</summary>
@@ -603,6 +644,31 @@ function Settings({
             )}
           </div>
         )}
+        <AlertDialog open={channelToRemove !== null} onOpenChange={(open) => { if (!open && !removeChannel.isPending) setChannelToRemove(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove {channelToRemove?.label}?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Discord no longer reports this channel, so it was most likely deleted. Paperclip removes it from this list.
+                Tasks and messages that started in this channel stay, but they lose their link to it. This can't be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={removeChannel.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={removeChannel.isPending}
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (channelToRemove) removeChannel.mutate(channelToRemove);
+                }}
+              >
+                {removeChannel.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                Remove channel
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
       {endpoint.provider !== "github" && (
         <div className="space-y-3">
@@ -1013,6 +1079,8 @@ function Activity({
         return;
       }
       if (endpoint.provider !== "agentmail") queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpointId), next);
+      // Resume re-reads the provider inventory, so destinations may have changed.
+      if (action === "resume") await queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.resources(endpointId) });
       pushToast({
         title: action === "pause" ? "Connection paused" : "Connection resumed",
         tone: "success",

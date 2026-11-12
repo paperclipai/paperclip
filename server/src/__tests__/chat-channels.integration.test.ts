@@ -8640,6 +8640,155 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   }
 
+  describe("Discord channel refresh", () => {
+    const guildId = "1457808928258658549";
+    const labLabel = "#agent-lab";
+    const releasesId = "444444444444444444";
+
+    async function refreshFixture() {
+      const fixture = await seedCompany();
+      const applicationId = uniqueDiscordApplicationId();
+      const baseFetch = fakeDiscordFetch(applicationId, guildId);
+      let channels: Array<Record<string, unknown>> | null = null;
+      let failChannels = false;
+      const context = createService(new FakeChatSdkRuntime(), (async (input: string | URL | Request) => {
+        if (new URL(String(input)).pathname === `/api/v10/guilds/${guildId}/channels`) {
+          if (failChannels) throw new Error("channel fixture outage");
+          if (channels) return Response.json(channels);
+        }
+        return baseFetch(input);
+      }) as typeof fetch);
+      const endpoint = await context.service.create(fixture.companyId, {
+        provider: "discord", assignedAgentId: fixture.assignedAgentId, name: "Maya in Discord",
+      }, "owner-user");
+      await context.service.configure(endpoint.id, {
+        action: "configure",
+        credentials: { applicationId, botToken: "discord-secret", guildId },
+      }, "owner-user");
+      const [lab] = await context.service.listResources(endpoint.id);
+      await context.service.replaceResources(endpoint.id, [{ id: lab!.id, enabled: true }], "owner-user");
+      return {
+        ...context, fixture, endpoint,
+        setChannels: (next: Array<Record<string, unknown>>) => { channels = next; },
+        failChannels: () => { failChannels = true; },
+      };
+    }
+
+    it("adds new channels disabled and keeps existing channel choices", async () => {
+      const f = await refreshFixture();
+      try {
+        f.setChannels([
+          { id: "333333333333333333", name: "agent-lab", position: 1, type: 0 },
+          { id: releasesId, name: "releases", position: 2, type: 0 },
+        ]);
+        const response = await request(routesApp(db, f.fixture.companyId, f.service))
+          .post(`/api/chat-endpoints/${f.endpoint.id}/discord/channels/refresh`)
+          .send({});
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body).toEqual(expect.arrayContaining([
+          expect.objectContaining({ label: labLabel, availability: "available", enabled: true }),
+          expect.objectContaining({ label: "#releases", providerResourceId: releasesId, availability: "available", enabled: false }),
+        ]));
+        const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, f.fixture.companyId));
+        expect(activities).toEqual(expect.arrayContaining([
+          expect.objectContaining({ action: "chat_discord.channels_refreshed", entityId: f.endpoint.connectionId }),
+        ]));
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+
+    it("marks channels the bot can no longer use unavailable", async () => {
+      const f = await refreshFixture();
+      try {
+        f.setChannels([{ id: releasesId, name: "releases", position: 2, type: 0 }]);
+        const resources = await f.service.refreshDiscordChannels(f.endpoint.id, "owner-user");
+        expect(resources).toEqual(expect.arrayContaining([
+          expect.objectContaining({ label: labLabel, availability: "unavailable" }),
+          expect.objectContaining({ label: "#releases", availability: "available", enabled: false }),
+        ]));
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+
+    it("leaves the saved channel list unchanged when Discord inventory fails", async () => {
+      const f = await refreshFixture();
+      try {
+        const before = await f.service.listResources(f.endpoint.id);
+        f.failChannels();
+        const response = await request(routesApp(db, f.fixture.companyId, f.service))
+          .post(`/api/chat-endpoints/${f.endpoint.id}/discord/channels/refresh`)
+          .send({});
+        expect(response.status).toBe(422);
+        expect(response.body).toMatchObject({ details: { code: "chat_provider_inventory_failed" } });
+        expect(await f.service.listResources(f.endpoint.id)).toEqual(before);
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+
+    it("removes a disabled unavailable channel and detaches its conversations", async () => {
+      const f = await refreshFixture();
+      try {
+        const [lab] = await f.service.listResources(f.endpoint.id);
+        const [issue] = await db.insert(issues).values({ companyId: f.fixture.companyId, title: "Lab thread", status: "todo" }).returning();
+        const [conversation] = await db.insert(chatConversations).values({
+          companyId: f.fixture.companyId, endpointId: f.endpoint.id, resourceId: lab!.id, issueId: issue!.id,
+          externalConversationId: `discord:${guildId}:333333333333333333`, externalLabel: labLabel, state: "active",
+        }).returning();
+        f.setChannels([{ id: releasesId, name: "releases", position: 2, type: 0 }]);
+        await f.service.refreshDiscordChannels(f.endpoint.id, "owner-user");
+        const app = routesApp(db, f.fixture.companyId, f.service);
+        const enabledRefusal = await request(app).delete(`/api/chat-endpoints/${f.endpoint.id}/discord/channels/${lab!.id}`);
+        expect(enabledRefusal.status).toBe(409);
+        await f.service.replaceResources(f.endpoint.id, [{ id: lab!.id, enabled: false }], "owner-user");
+        const response = await request(app).delete(`/api/chat-endpoints/${f.endpoint.id}/discord/channels/${lab!.id}`);
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body.map((row: { id: string }) => row.id)).not.toContain(lab!.id);
+        expect((await readChatConversationsById(conversation!.id))[0]).toMatchObject({ resourceId: null, state: "unavailable", issueId: issue!.id });
+        const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, f.fixture.companyId));
+        expect(activities).toEqual(expect.arrayContaining([
+          expect.objectContaining({ action: "chat_discord.channel_removed", details: expect.objectContaining({ resourceId: lab!.id, detachedConversationCount: 1 }) }),
+        ]));
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+
+    it("refuses to remove a channel Discord still reports", async () => {
+      const f = await refreshFixture();
+      try {
+        const [lab] = await f.service.listResources(f.endpoint.id);
+        await f.service.replaceResources(f.endpoint.id, [{ id: lab!.id, enabled: false }], "owner-user");
+        await expect(f.service.removeUnavailableDiscordChannel(f.endpoint.id, lab!.id, "owner-user"))
+          .rejects.toMatchObject({ status: 409 });
+        const missing = await request(routesApp(db, f.fixture.companyId, f.service))
+          .delete(`/api/chat-endpoints/${f.endpoint.id}/discord/channels/${randomUUID()}`);
+        expect(missing.status).toBe(404);
+        expect(await f.service.listResources(f.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({ id: lab!.id })]));
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+
+    it("refuses paused and non-Discord connections", async () => {
+      const f = await refreshFixture();
+      try {
+        await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.endpoint.id));
+        await expect(f.service.refreshDiscordChannels(f.endpoint.id, "owner-user"))
+          .rejects.toMatchObject({ status: 409 });
+        const telegram = await f.service.create(f.fixture.companyId, {
+          provider: "telegram", assignedAgentId: f.fixture.assignedAgentId,
+        }, "owner-user");
+        await expect(f.service.refreshDiscordChannels(telegram.id, "owner-user"))
+          .rejects.toMatchObject({ status: 404 });
+      } finally {
+        await f.service.shutdown();
+      }
+    });
+  });
+
   describe("Discord automatic command registration", () => {
     async function retireRegistrationFixture(
       service: ChatChannelService,

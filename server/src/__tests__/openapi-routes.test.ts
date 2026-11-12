@@ -849,6 +849,8 @@ describe("openapi routes", () => {
       ["post", "/api/chat-endpoints/{endpointId}/github/registration"],
       ["post", "/api/chat-endpoints/{endpointId}/github/app"],
       ["post", "/api/chat-endpoints/{endpointId}/github/repositories/refresh"],
+      ["post", "/api/chat-endpoints/{endpointId}/discord/channels/refresh"],
+      ["delete", "/api/chat-endpoints/{endpointId}/discord/channels/{resourceId}"],
       ["patch", "/api/chat-endpoints/{endpointId}"],
       ["post", "/api/chat-endpoints/{endpointId}/setup"],
       ["post", "/api/chat-endpoints/{endpointId}/setup-secret"],
