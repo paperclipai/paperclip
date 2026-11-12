@@ -12,11 +12,11 @@ const ids = ["member-a", "member-b", "member-c"];
 function limit(usedPercent: number | null, extra: Partial<Limit> = {}): Limit {
   return { id: "window", label: "Window", scope: null, windowDurationSeconds: 18_000, resetsAt: null, usedPercent, remainingPercent: null, used: null, limit: null, remaining: null, unit: null, limitReached: null, allowed: null, ...extra };
 }
-function candidate(id: string, limits?: Limit[], model = "claude-sonnet-5"): Candidate {
+function candidate(id: string, limits?: Limit[], model = "claude-sonnet-5", runtimeModel?: string): Candidate {
   const binding = { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId: `conn-${id}`, grantId: `grant-${id}` };
   return {
     member: { id, binding, profile: { provider: "acpx", acpxAgent: "claude", model } } as Candidate["member"],
-    runtimeConfig: {}, notes: [],
+    runtimeConfig: runtimeModel ? { model: runtimeModel } : {}, notes: [],
     ...(limits ? { usage: { connectionId: binding.connectionId, grantId: binding.grantId, provider: "anthropic", method: "subscription", status: "ok", checkedAt: NOW, source: null, planType: null, limits, overage: null } } : {}),
   };
 }
@@ -103,6 +103,19 @@ describe("routeAiConnection", () => {
     expect(result).toMatchObject(expected);
   });
 
+  const opusLimit = (used: number) => [limit(used, { scope: "model:opus", resetsAt: at(30) })];
+  it.each([
+    { name: "a Sonnet profile overridden to Opus meets an Opus hard limit", profile: "claude-sonnet-5", runtime: "claude-opus-5-5", used: 100, pinned: false, expected: { kind: "exhausted", retryAt: at(30) } },
+    { name: "an Opus profile overridden to Sonnet ignores an Opus hard limit", profile: "claude-opus-5-5", runtime: "claude-sonnet-5", used: 100, pinned: false, expected: { kind: "selected", memberId: "member-a" } },
+    { name: "a Sonnet profile overridden to Opus meets an Opus threshold", profile: "claude-sonnet-5", runtime: "claude-opus-5-5", used: 95, pinned: false, expected: { kind: "exhausted", retryAt: at(30) } },
+    { name: "an Opus profile overridden to Sonnet ignores an Opus threshold", profile: "claude-opus-5-5", runtime: "claude-sonnet-5", used: 95, pinned: false, expected: { kind: "selected", memberId: "member-a" } },
+    { name: "a pin overridden to Opus waits at an Opus hard limit", profile: "claude-sonnet-5", runtime: "claude-opus-5-5", used: 100, pinned: true, expected: { kind: "exhausted", retryAt: at(30) } },
+    { name: "a pin overridden to Sonnet is kept despite an Opus hard limit", profile: "claude-opus-5-5", runtime: "claude-sonnet-5", used: 100, pinned: true, expected: { kind: "selected", memberId: "member-a" } },
+  ])("assesses the effective model: $name", ({ profile, runtime, used, pinned, expected }) => {
+    const result = routeAiConnection(request([candidate("member-a", opusLimit(used), profile, runtime)], { memberOrder: ["member-a"], ...(pinned ? { pinnedMemberId: "member-a" } : {}) }), new Map());
+    expect(result).toMatchObject(expected);
+  });
+
   it("reports an unoffered pin as unavailable instead of moving it", () => {
     expect(routeAiConnection(request([candidate("member-b")], { pinnedMemberId: "member-a" }), new Map())).toMatchObject({ kind: "unavailable" });
   });
@@ -124,6 +137,10 @@ describe("cool-downs", () => {
     const first = nextCooldown(null, "run-1", now, Date.parse(at(17)));
     expect(first).toEqual({ until: at(17), strikes: 1, lastRunId: "run-1" });
     expect(nextCooldown(first, "run-1", now, null)).toBe(first);
+  });
+  it("keeps a named reset beyond seven days; only the fallback backoff is capped", () => {
+    const tenDays = Date.parse("2026-01-11T00:00:00.000Z");
+    expect(nextCooldown(null, "run-1", now, tenDays)).toEqual({ until: "2026-01-11T00:00:00.000Z", strikes: 1, lastRunId: "run-1" });
   });
   it("reads a named reset from structured fields or ISO-8601 error text, never from the past", () => {
     expect(namedReset({ retryNotBefore: at(5) }, now)).toBe(Date.parse(at(5)));

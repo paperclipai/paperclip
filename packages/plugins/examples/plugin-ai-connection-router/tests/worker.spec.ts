@@ -5,6 +5,7 @@ import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
+const hour = (hours: number) => new Date(Date.parse(NOW) + hours * 3_600_000).toISOString();
 const companyId = "company-1";
 const members = ["member-a", "member-b"].map(id => ({
   id,
@@ -22,8 +23,8 @@ async function setup() {
   const harness = createTestHarness({ manifest });
   await plugin.definition.setup(harness.ctx);
   const route = (input: AiConnectionRouterRequest) => plugin.definition.onRouteAiConnection!(input);
-  const run = (type: "agent.run.failed" | "agent.run.finished", runId: string, payload: Record<string, unknown> = {}) =>
-    harness.emit(type, { runId, agentId: "agent-1", issueId: "issue-1", errorCode: type === "agent.run.failed" ? "provider_quota" : null, ...payload }, { companyId, occurredAt: NOW, entityId: runId });
+  const run = (type: "agent.run.failed" | "agent.run.finished", runId: string, payload: Record<string, unknown> = {}, occurredAt = NOW) =>
+    harness.emit(type, { runId, agentId: "agent-1", issueId: "issue-1", errorCode: type === "agent.run.failed" ? "provider_quota" : null, finishedAt: occurredAt, ...payload }, { companyId, occurredAt, entityId: runId });
   return { harness, route, run };
 }
 
@@ -40,22 +41,38 @@ describe("reference router worker", () => {
     expect(harness.getState(cooldownKey)).toMatchObject({ until: "2026-01-01T01:00:00.000Z", strikes: 1 });
     expect(await route(request("issue-2"))).toMatchObject({ kind: "selected", memberId: "member-b" });
     expect(await route(request("issue-1", { pinnedMemberId: "member-a" }))).toMatchObject({ kind: "exhausted", retryAt: "2026-01-01T01:00:00.000Z" });
-    await route(request("issue-1", { now: "2026-01-01T02:00:00.000Z", pinnedMemberId: "member-a" }));
-    await run("agent.run.finished", "run-2");
+    await route(request("issue-1", { now: hour(2), pinnedMemberId: "member-a" }));
+    await run("agent.run.finished", "run-2", {}, hour(2.5));
     expect(harness.getState(cooldownKey)).toBeUndefined();
   });
 
-  it("adds one strike per failed run, even when an event is redelivered", async () => {
+  it("adds one strike per failed run; a redelivered event never consumes a later run's selection", async () => {
     const { harness, route, run } = await setup();
     await route(request("issue-1"));
     await run("agent.run.failed", "run-1");
     await run("agent.run.failed", "run-1");
-    await route(request("issue-1", { pinnedMemberId: "member-a", now: "2026-01-01T03:00:00.000Z" }));
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1, until: hour(1) });
+    await route(request("issue-1", { pinnedMemberId: "member-a", now: hour(2) }));
     await run("agent.run.failed", "run-1");
-    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1 });
-    await route(request("issue-1", { pinnedMemberId: "member-a", now: "2026-01-01T03:00:00.000Z" }));
-    await run("agent.run.failed", "run-2");
-    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 2, until: "2026-01-01T02:00:00.000Z" });
+    await run("agent.run.failed", "run-2", {}, hour(3));
+    expect(harness.getState(cooldownKey)).toEqual({ strikes: 2, until: hour(5), lastRunId: "run-2" });
+  });
+
+  it("ignores an older event that arrives after a later terminal outcome", async () => {
+    const { harness, route, run } = await setup();
+    await route(request("issue-1"));
+    await run("agent.run.finished", "run-1");
+    await route(request("issue-1", { now: hour(1) }));
+    await run("agent.run.failed", "run-2", {}, hour(2));
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1, until: hour(3) });
+    await route(request("issue-1", { pinnedMemberId: "member-a", now: hour(4) }));
+    await run("agent.run.finished", "run-1");
+    await run("agent.run.failed", "run-2", {}, hour(2));
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1, until: hour(3), lastRunId: "run-2" });
+    await run("agent.run.finished", "run-3", {}, hour(5));
+    expect(harness.getState(cooldownKey)).toBeUndefined();
+    await run("agent.run.failed", "run-2", {}, hour(2));
+    expect(harness.getState(cooldownKey)).toBeUndefined();
   });
 
   it("ignores other failures and runs it did not route", async () => {

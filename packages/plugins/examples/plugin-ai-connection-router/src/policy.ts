@@ -61,6 +61,12 @@ export function rotation(memberOrder: string[], lastMemberId: string | null): st
   return [...memberOrder.slice(start), ...memberOrder.slice(0, start)];
 }
 
+/** The model the run will execute: the host-resolved runtime model (it includes compatible overrides), else the member profile. */
+export function effectiveModel(candidate: Candidate): string {
+  const model = candidate.runtimeConfig?.model;
+  return typeof model === "string" && model.trim().length > 0 ? model : candidate.member.profile.model;
+}
+
 function exhausted(skipped: Record<string, string>, readyTimes: Array<number | null>, now: number): AiConnectionRouterResult {
   const known = readyTimes.filter((at): at is number => at !== null && at > now);
   return { kind: "exhausted", retryAt: new Date(known.length ? Math.min(...known) : now + DEFAULT_RETRY_MS).toISOString(), skipped };
@@ -78,7 +84,7 @@ export function routeAiConnection(request: AiConnectionRouterRequest, cooldowns:
   const readyTimes: Array<number | null> = [];
 
   const evaluate = (candidate: Candidate, applyThreshold: boolean): Assessment | null => {
-    const usage = assessUsage(candidate.usage, candidate.member.profile.model, applyThreshold ? threshold : null);
+    const usage = assessUsage(candidate.usage, effectiveModel(candidate), applyThreshold ? threshold : null);
     const cooldown = cooldowns.get(accountKey(candidate.member.binding));
     const coolingUntil = cooldown ? Date.parse(cooldown.until) : NaN;
     const cooling = Number.isFinite(coolingUntil) && coolingUntil > now;
@@ -114,12 +120,11 @@ export function routeAiConnection(request: AiConnectionRouterRequest, cooldowns:
   return exhausted(skipped, readyTimes, now);
 }
 
-/** The next cool-down after a quota failure: the named reset when known, else 1 h doubling per strike up to 7 days. */
+/** The next cool-down after a quota failure: the named reset when known (never shortened), else 1 h doubling per strike up to 7 days. */
 export function nextCooldown(previous: Cooldown | null, runId: string, now: number, namedReset: number | null): Cooldown {
   if (previous?.lastRunId === runId) return previous;
   const strikes = (previous?.strikes ?? 0) + 1;
-  const backoff = Math.min(BASE_COOLDOWN_MS * 2 ** (strikes - 1), MAX_COOLDOWN_MS);
-  const until = namedReset !== null && namedReset > now ? Math.min(namedReset, now + MAX_COOLDOWN_MS) : now + backoff;
+  const until = namedReset !== null && namedReset > now ? namedReset : now + Math.min(BASE_COOLDOWN_MS * 2 ** (strikes - 1), MAX_COOLDOWN_MS);
   return { until: new Date(until).toISOString(), strikes, lastRunId: runId };
 }
 

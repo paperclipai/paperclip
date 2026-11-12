@@ -20,7 +20,9 @@ authorized and offered. It never sees credentials and cannot widen access.
   never treated as 0 % or as exhausted.
 - **Hard limits, in either mode:** skip a member at a hard limit
   (`limitReached`, `allowed: false` or 100 % used). Only account-wide limits and
-  limits scoped to the member's model count. Limits for other models or
+  limits scoped to the model the run executes count (the host-resolved
+  `runtimeConfig.model`, which includes compatible model overrides, else the
+  member profile model). Limits for other models or
   features are ignored.
 - **Pinned task:** keep `pinnedMemberId`. Return `exhausted` only at a hard
   limit or during a learned cool-down, so the host waits on that account. The
@@ -34,10 +36,13 @@ authorized and offered. It never sees credentials and cannot widen access.
     (connection plus grant), which covers every pool that holds it. The
     cool-down lasts until a named reset when the event carries one (a
     `retryNotBefore`/`resetsAt` field or an ISO-8601 time in the error text).
-    Otherwise it starts at 1 hour and doubles per strike, capped at 7 days.
+    A named reset is kept as given, even beyond 7 days. Otherwise the cool-down
+    starts at 1 hour and doubles per strike, capped at 7 days.
   - `agent.run.finished` for that account clears the cool-down.
   - Each terminal event consumes its selection, and a cool-down records the
-    run that caused it, so a redelivered event adds no second strike.
+    run that caused it, so a redelivered event adds no second strike. A
+    selection made after a run finished belongs to a later run, so a late or
+    redelivered event never consumes or changes it.
 - **Fail open:** if plugin state cannot be read, the router routes without
   cool-downs instead of stalling the pool.
 

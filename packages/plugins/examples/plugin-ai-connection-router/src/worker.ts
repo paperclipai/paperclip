@@ -30,12 +30,20 @@ async function readCooldowns(ctx: PluginContext | null, request: AiConnectionRou
   }
 }
 
-/** Finds the selection this run used. Task keys follow the host: issue, else timer heartbeat, else run ID. */
+/**
+ * Finds the selection this run used. Task keys follow the host: issue, else timer heartbeat, else run ID.
+ * The host routes before a run ends, so a selection made after this run finished belongs to a later run:
+ * a redelivered or late event must not consume or learn from it.
+ */
 async function takeSelection(ctx: PluginContext, event: PluginEvent, agentId: string, runId: string) {
-  const issueId = text((event.payload as Record<string, unknown>).issueId);
+  const payload = event.payload as Record<string, unknown>;
+  const issueId = text(payload.issueId);
+  const endedAt = Date.parse(text(payload.finishedAt) ?? event.occurredAt);
   for (const taskKey of issueId ? [issueId, runId] : [runId, HEARTBEAT_TASK_KEY]) {
     const value = await ctx.state.get(selectionKey(agentId, taskKey));
-    if (isSelection(value) && value.companyId === event.companyId) return { key: selectionKey(agentId, taskKey), selection: value };
+    if (!isSelection(value) || value.companyId !== event.companyId) continue;
+    if (Number.isFinite(endedAt) && Date.parse(value.at) > endedAt) return null;
+    return { key: selectionKey(agentId, taskKey), selection: value };
   }
   return null;
 }
