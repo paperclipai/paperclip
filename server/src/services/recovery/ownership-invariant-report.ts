@@ -2,10 +2,14 @@ import { and, asc, eq, inArray, isNotNull, isNull, lt, notExists, or, sql, type 
 import {
   agentWakeupRequests,
   heartbeatRuns,
+  issueComments,
   issueRecoveryActions,
   issues,
+  nativeRunFinalizations,
+  statusDecisions,
   type Db,
 } from "@paperclipai/db";
+import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "../native-runtime/status-arbiter.js";
 import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
@@ -576,6 +580,23 @@ async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now:
   return violations;
 }
 
+function parkedResponseWakeWait(db: Db) {
+  return db.select({ one: sql`1` }).from(statusDecisions)
+    .innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, statusDecisions.runId),
+      eq(nativeRunFinalizations.companyId, statusDecisions.companyId), eq(nativeRunFinalizations.issueId, statusDecisions.issueId),
+      eq(nativeRunFinalizations.decisionId, statusDecisions.id), eq(nativeRunFinalizations.phase, "committed")))
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, statusDecisions.runId), eq(heartbeatRuns.companyId, statusDecisions.companyId),
+      eq(heartbeatRuns.nativeIssueId, statusDecisions.issueId), eq(heartbeatRuns.agentId, issues.assigneeAgentId),
+      eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "succeeded"), isNotNull(heartbeatRuns.startedAt)))
+    .where(and(eq(statusDecisions.id, issues.lastStatusDecisionId), eq(statusDecisions.companyId, issues.companyId),
+      eq(statusDecisions.issueId, issues.id), eq(statusDecisions.applicationState, "applied"),
+      eq(statusDecisions.reasonCode, NATIVE_RESPONSE_WAKE_WAITING_REASON), isNull(issues.assigneeUserId), isNull(issues.hiddenAt),
+      notExists(db.select({ one: sql`1` }).from(issueComments).where(and(
+        eq(issueComments.companyId, issues.companyId), eq(issueComments.issueId, issues.id),
+        eq(issueComments.authorType, "user"), isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+        sql`${issueComments.createdAt} > ${heartbeatRuns.startedAt}`)))));
+}
+
 /** An agent-assigned in-progress issue with no live run, no pending wake and
  * no open recovery action has no next action (invariant 7). Issues still in
  * their grace window return the time they become checkable. */
@@ -597,6 +618,7 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
       notExists(db.select({ one: sql`1` }).from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
         isNull(issueRecoveryActions.resolvedAt)))),
+      notExists(parkedResponseWakeWait(db)),
     )).orderBy(asc(issues.updatedAt), asc(issues.id)).limit(limit).offset(offset);
     rows.push(...page);
     if (page.length < limit) break;
