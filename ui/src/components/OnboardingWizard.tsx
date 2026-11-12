@@ -1308,9 +1308,16 @@ function OnboardingWizardInner({
       )
       .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
 
+    // The recommended row is the first-onboarding pair, full stop — not
+    // whatever the display metadata marks recommended. A deployment can mark
+    // another harness recommended and first onboarding still offers only
+    // Claude and Codex up front; the rest live under "More harnesses" — and a
+    // harness the deployment marks recommended is not offered there either,
+    // so a server-side recommendation cannot widen first onboarding past
+    // the pair.
     return {
-      recommendedAdapters: all.filter((a) => a.recommended),
-      moreAdapters: all.filter((a) => !a.recommended),
+      recommendedAdapters: all.filter((a) => ONBOARDING_ADAPTER_TYPES.has(a.type)),
+      moreAdapters: all.filter((a) => !ONBOARDING_ADAPTER_TYPES.has(a.type) && !a.recommended),
     };
   }, [disabledTypes]);
 
@@ -1771,7 +1778,11 @@ function OnboardingWizardInner({
       return;
     }
     if (visible.some((a) => a.type === adapterType)) return;
-    const next = visible[0].type;
+    // The snap lands on the recommended row — the one on screen. A "More"
+    // harness sits behind a collapsed toggle, so snapping to it would hold a
+    // selection the customer cannot see. When the pair itself is unavailable,
+    // fall back to Claude, matching the empty-grid branch above.
+    const next = recommendedAdapters[0]?.type ?? "claude_local";
     setAdapterType(next);
     // The snap is not a choice. It replaces a name the customer can no longer
     // see with the first one they can, which is the right thing to hold — but
@@ -1780,26 +1791,8 @@ function OnboardingWizardInner({
     // preselection this step was changed to stop doing. The saved answer was
     // unofferable, so the question is open again.
     setSourcePicked(false);
-    if (next === "opencode_local") {
-      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-      return;
-    }
-    if (next === "agy_local") {
-      setModel(DEFAULT_AGY_LOCAL_MODEL);
-      return;
-    }
-    if (next === "gemini_local") {
-      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
-      return;
-    }
-    if (next === "kimi_local") {
-      setModel(DEFAULT_KIMI_LOCAL_MODEL);
-      return;
-    }
-    if (next === "cursor") {
-      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-      return;
-    }
+    // The snap only ever lands on the pair now, and neither member carries a
+    // default model — the saved model belonged to the unofferable draft.
     setModel("");
   }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
 
