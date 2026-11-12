@@ -5312,6 +5312,17 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    if (req.body.renameTo !== undefined) {
+      await assertCanManageInstructionsPath(req, existing);
+      assertExternalInstructionsAdmin(req, existing);
+      if (req.body.baseHash === undefined) throw unprocessable("Read the file and supply baseHash before renaming it");
+      await agentFiles.rename({ companyId: existing.companyId, agentId: existing.id,
+        path: req.body.path, renameTo: req.body.renameTo, bytes: Buffer.from(req.body.content, "utf8"), baseHash: req.body.baseHash }, req.actor);
+      const updated = await svc.getById(existing.id);
+      if (!updated) throw notFound("Agent not found");
+      res.json(await instructions.readFile(updated, req.body.renameTo));
+      return;
+    }
     const entryFile = deriveBundleState(existing).entryFile;
     if (instructionPath(req.body.path) === entryFile) {
       assertExternalInstructionsAdmin(req, existing);

@@ -163,7 +163,8 @@ export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailur
     ? executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts
     : run.errorCode === STORAGE_UNAVAILABLE_CODE
       ? executionRetryAttemptCount(run, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) >= STORAGE_UNAVAILABLE_RETRY.maxAttempts
-      : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+      : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS
+        || executionRetryAttemptCount(run, INTERRUPTED_PREPARATION_RETRY_REASON) >= INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS;
 }
 
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;

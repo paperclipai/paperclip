@@ -1,3 +1,4 @@
+import type { RunnerAttachmentDownloadGrant } from "../contracts/harness-driver.js";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
 import { confirmAntigravityProbeNativeRetirement } from "../drivers/acpx/antigravity-probe-retirement.js";
 import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../drivers/acpx/grok-web-search.js";
@@ -3984,6 +3985,51 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #providerIdentity: Record<string, unknown> | null = null;
   #openingCommandId: string | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
+
+  #attachmentDownloadSupport?: Promise<boolean>;
+  #attachmentDownloadTail = Promise.resolve();
+
+  downloadAttachment(grant: (turnId: string) => RunnerAttachmentDownloadGrant) {
+    const turnId = this.#durableTurnId;
+    const download = this.#attachmentDownloadTail.then(() => this.#downloadAttachment(turnId, grant));
+    this.#attachmentDownloadTail = download.then(() => undefined, () => undefined);
+    return download;
+  }
+
+  async #downloadAttachment(turnId: string, grant: (turnId: string) => RunnerAttachmentDownloadGrant) {
+    const core = this.#core;
+    if (!turnId || this.#durableTurnId !== turnId || !core || (core.activeRunnerProtocolVersion() ?? 0) < 3) return null;
+    this.#attachmentDownloadSupport ??= this.#commandResult("session.snapshot", {}, this.#waitNow() + 5_000, true)
+      .then(result => result.attachmentDownloadVersion === 1);
+    if (!await this.#attachmentDownloadSupport || this.#durableTurnId !== turnId) return null;
+    const deadline = this.#waitNow() + 18_000;
+    const started = await this.#commandResult("runner.attachment.download", {
+      ...grant(turnId), turnId,
+    }, deadline, true);
+    const downloadId = started.downloadId;
+    if (started.status !== "pending" || typeof downloadId !== "string") {
+      throw new Error("runner_attachment_download_invalid_receipt");
+    }
+    let result: Record<string, unknown> = {};
+    while (!this.#closed && this.#core === core && this.#durableTurnId === turnId && this.#waitNow() < deadline) {
+      this.#throwIfFailed();
+      this.#assertRunWorkAdmission("runner.attachment.download");
+      const event = core.store.state.committedEvents.find(event => event.eventType === "runner.attachment.settled"
+        && record(record(event.envelope.payload).payload).downloadId === downloadId);
+      if (event) {
+        result = record(record(event.envelope.payload).payload);
+        break;
+      }
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+    }
+    const path = result.path;
+    if (result.status !== "ready" || this.#durableTurnId !== turnId
+      || typeof path !== "string" || path.length > 4096
+      || !path.startsWith("/") || /[\x00-\x1f\x7f]/u.test(path)) {
+      throw new Error("runner_attachment_download_invalid_path");
+    }
+    return path;
+  }
 
   supportsTurnReasoning(): boolean {
     if (this.options.provider !== "opencode") return false;
@@ -8037,6 +8083,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // full, new events replace its prefix without increasing its length.
       if (fromDeferredQueue) this.#deferredTurnStartEvents.shift();
       else this.#eventSourceSeq = event.sourceSeq;
+      if (event.eventType === "runner.attachment.settled") continue;
       if (event.eventType === "auth.credentials.updated" && this.options.onCredentialsUpdated) continue;
       if (event.eventType === "runtime.activity.recorded") {
         this.#queue.push({ method: "paperclip/runtimeActivityRecorded", params: {
@@ -8605,11 +8652,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     >,
   ): void {
     let checking = false;
+    let unverifiedSince: number | null = null;
     this.#adoptedRunnerMonitor = setInterval(() => {
       if (checking || this.#closed || (this.#releaseEpisode && !this.#releaseEpisode.claimed)) return;
       checking = true;
       void Promise.resolve(adoptedRunner.isAlive())
         .then((alive) => {
+          unverifiedSince = null;
           if (alive || this.#closed || (this.#releaseEpisode && !this.#releaseEpisode.claimed)) return;
           this.#evidence.runnerExited = true;
           this.#publish();
@@ -8620,6 +8669,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           );
         })
         .catch(() => {
+          const now = Date.now();
+          unverifiedSince ??= now;
+          if ((this.#core?.activeRunnerConnectionCount() ?? 0) > 0
+            && now - unverifiedSince < (this.options.runnerReconnectGraceMs ?? 0)) return;
           if (!this.#closed && !(this.#releaseEpisode && !this.#releaseEpisode.claimed)) {
             this.#failTransport(
               new Error(

@@ -41,7 +41,8 @@ import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type MultiServerRecord, type ServerProcessWindow } from "./multi-server.js";
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
-import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, type ClassRHooks } from "./class-r.js";
+import { ephemeralServerEnvironment } from "./ephemeral-server.js";
+import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, stallAfterPluginActivation, type ClassRHooks } from "./class-r.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
 const HEALTH_TIMEOUT_MS = (() => {
@@ -56,8 +57,8 @@ export const FAULT_SIGNAL: Record<FaultKind, FaultReceipt["signal"]> = { K1: "SI
   // MS1 leaves the primary alone; MS2 freezes it; MS3 stops it gracefully (multi-server.ts).
   MS1: "none", MS2: "SIGSTOP", MS3: "SIGTERM",
   // CR1 stops the server like K15; CR2 signals only the sandbox's provider (SIGTERM to the server with a hold);
-  // CR3 stops the Daytona plugin worker, not the server (class-r.ts).
-  CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP" };
+  // CR3 and CR5 stop the Daytona plugin worker; CR4 kills the server, then stops the replacement's (class-r.ts).
+  CR1: "SIGTERM", CR2: "none", CR3: "SIGSTOP", CR4: "SIGKILL", CR5: "SIGSTOP" };
 
 /** The checkout's commit, for the K14 receipt. */
 function checkoutSha(root: string): string | null {
@@ -173,6 +174,7 @@ export class ChaosSupervisor {
   redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
   /** K15 deploy shape (redeploy.ts `parseK15DeployShape`); main.ts sets it before `start`. */
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
+  ephemeralServer = false;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -286,10 +288,12 @@ export class ChaosSupervisor {
       // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
       ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, this.deployShape.freshHome ? null : home) : {}),
     };
-    const environment = buildPaperclipServerEnvironment(source, overrides);
+    const ephemeral = this.ephemeralServer ? await ephemeralServerEnvironment({ configPath: this.paths.configPath, temporaryRoot: this.paths.temporaryRoot, extraEnvironment }) : null;
+    const environment = buildPaperclipServerEnvironment(source, { ...overrides, ...ephemeral });
     const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
       ? Object.fromEntries(Object.entries(extraEnvironment).filter(([key]) => key.startsWith("PAPERCLIP_STORAGE_"))) : undefined;
-    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}) });
+    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}),
+      ...(ephemeral ? { generatedSecretsMasterKey: ephemeral.PAPERCLIP_SECRETS_MASTER_KEY } : {}) });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
     await prepareSourceServerDependencies(root, this.environment, false);
   }
@@ -516,13 +520,11 @@ export class ChaosSupervisor {
       else if (isMultiServerFault(kind)) await this.multiServer(kind, previous, holdMs, receipt);
       // `--k15-overlap-seconds`: the next deploy boots beside the old server; its hold is the overlap.
       else if (kind === "K15" && this.deployShape.overlap) await this.rollingRedeploy(previous, holdMs, receipt);
-      else if (kind === "CR3") {
-        // The server keeps running; its Daytona plugin worker is stopped for the hold (class-r.ts).
+      else if (kind === "CR3" || kind === "CR5") {
         const stall = await runPluginStall({ serverPid: previous.pid, holdMs, cancelled: () => this.shuttingDown,
           record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
+        Object.assign(receipt, { stoppedAt: stall.frozenAt, restartedAt: stall.thawedAt });
         receipt.classR!.pluginStall = stall;
-        receipt.stoppedAt = stall.frozenAt;
-        receipt.restartedAt = stall.thawedAt;
         if (stall.error) throw new Error(stall.error);
         receipt.healthyAt = await this.waitForHealth(previous, receipt.phases);
       }
@@ -534,7 +536,7 @@ export class ChaosSupervisor {
       else outage = await replaceController({
         requestId: `chaos-${receipt.faultId}-${requestedBy}`,
         previousPid: previous.pid,
-        outage: { signal: receipt.signal === "SIGTERM" ? "SIGTERM" : "SIGKILL", holdMs },
+        outage: { signal: receipt.signal === "SIGTERM" ? "SIGTERM" : "SIGKILL", holdMs: kind === "CR4" ? 0 : holdMs },
         // A K4 hold may outlast the Runner's 7-minute reconnect grace on
         // purpose (--k4-hold-max-seconds); the replacement still gets the
         // normal startup allowance after the hold.
@@ -584,6 +586,8 @@ export class ChaosSupervisor {
             return;
           }
           receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases);
+          if (kind === "CR4") await stallAfterPluginActivation({ into: receipt.classR!, serverPid: replacement.pid!, holdMs, cancelled: () => this.shuttingDown,
+            logPath: this.paths.serverLogPath, logOffset: receipt.serverLogOffsetAtStart, record: (event, data) => this.timeline.add(event, { faultId: receipt.faultId, ...data }) });
         },
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },

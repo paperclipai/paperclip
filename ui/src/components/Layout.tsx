@@ -13,7 +13,7 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
-import { AppsSidebar } from "./AppsSidebar";
+import { AppsSidebar, AppsMobileNav } from "./AppsSidebar";
 import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { AgentContextualSidebar } from "./AgentContextualSidebar";
 import { RoutineContextualSidebar } from "./RoutineContextualSidebar";
@@ -752,6 +752,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
+              {isMobile && isAppsRoute && (!companyPathSegments[1] || companyPathSegments[1] === "review") ? <AppsMobileNav /> : null}
               {hasUnknownCompanyPrefix ? (
                 <NotFoundPage
                   scope="invalid_company_prefix"

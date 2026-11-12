@@ -8,7 +8,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -52,7 +52,8 @@ import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
-import { sessionFaultServerEnvironment } from "./session-faults.js";
+import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
+import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -248,6 +249,7 @@ async function main(): Promise<number> {
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
   // `--k15-overlap-seconds`, `--k15-fresh-home`: the staging deploy shape (redeploy.ts).
   supervisor.deployShape = { overlap: plan.options.k15Overlap === true, freshHome: plan.options.k15FreshHome === true };
+  supervisor.ephemeralServer = plan.options.ephemeralServer === true;
   // `--fail-recovery-step`: fail the nth hit of one recovery step once, after the wave's first restart fault.
   const recoveryStepReceipts = path.join(waveDir, "recovery-step-receipts.jsonl");
   if (plan.options.failRecoveryStep) {
@@ -302,6 +304,8 @@ async function main(): Promise<number> {
   let diskFullSeam: DiskFullFaultSeam | null = null;
   let speedSection: string | null = null;
   let storageSection: string | null = null;
+  let warmShutdownSection: string | null = null;
+  let daytonaCleanup: WarmShutdownCleanup | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -423,6 +427,7 @@ async function main(): Promise<number> {
     if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
     if (plan.options.rrStopOn) supervisor.rrStopOn = plan.options.rrStopOn;
     Object.assign(serverEnvironment, sessionFaultServerEnvironment(plan.options.sessionFaults));
+    Object.assign(serverEnvironment, runnerBindFaultServerEnvironment(plan.options.runnerBindFault));
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
@@ -883,6 +888,7 @@ async function main(): Promise<number> {
       sandboxSweep ??= await owned.sweep(0);
       // Cleanup only through Paperclip; the harness never changes a sandbox.
       const cleanup = await owned.cleanUp();
+      daytonaCleanup = cleanup;
       timeline.add("daytona_cleanup", cleanup);
       console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
@@ -914,6 +920,17 @@ async function main(): Promise<number> {
         timeline.add("supervisor_stop_failed", { error: String(error) });
       }
     }
+    if (isWarmWave(plan.options)) {
+      const logDir = path.dirname(supervisor.paths.serverLogPath);
+      const controllerLogs = controllerLogNames(await readdir(logDir).catch(() => [] as string[]));
+      const serverLog = (await Promise.all(controllerLogs.map(name => readFile(path.join(logDir, name), "utf8").catch(() => "")))).join("\n");
+      const warmShutdown = gradeWarmShutdown({ cleanup: daytonaCleanup, serverLog });
+      timeline.add("warm_shutdown", { ...warmShutdown });
+      if (warmShutdown.verdict === "fail") anyFailure = true;
+      warmShutdownSection = warmShutdownMarkdown(warmShutdown);
+      await writeFile(path.join(waveDir, "warm-shutdown.json"), `${JSON.stringify(warmShutdown, null, 2)}\n`, { mode: 0o600 })
+        .catch(error => timeline.add("warm_shutdown_write_failed", { error: String(error) }));
+    }
     storageChaos?.stop();
     await credentialRotation?.settled();
     if (credentialRotation?.failures.length) harnessError ??= new Error(`ST5R credential rotation failed: ${credentialRotation.failures.join("; ")}`);
@@ -940,7 +957,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, warmShutdownSection, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }

@@ -3246,7 +3246,7 @@ registry.registerPath({
   path: "/api/agent-avatars/{version}/{palette}/{file}",
   tags: ["agents"],
   summary: "Render or retrieve a public preset agent portrait",
-  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. Background defaults to transparent; paperclip-dark supplies the opaque Paperclip dark-mode background for Slack exports. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
+  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. View defaults to front; portrait tilts the character upward and slightly to the side for larger card artwork. Background defaults to transparent; paperclip-dark supplies the opaque Paperclip dark-mode background for Slack exports. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
   request: {
     params: z.object({
       version: z.literal("cap-v1"),
@@ -3257,6 +3257,7 @@ registry.registerPath({
       size: z.enum(AGENT_AVATAR_SIZES.map(String)).optional().default("512"),
       scale: z.enum(["1", "2"]).optional().default("1"),
       background: z.enum(["transparent", "paperclip-dark"]).optional().default("transparent"),
+      view: z.enum(["front", "portrait"]).optional().default("front"),
     }).strict(),
   },
   responses: {
@@ -3964,7 +3965,7 @@ registry.registerPath({
   method: "put",
   path: "/api/agents/{id}/instructions-bundle/file",
   tags: ["agents"],
-  summary: "Upsert agent instructions file",
+  summary: "Save or rename a managed agent instructions file with a source hash guard",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(upsertAgentInstructionsFileSchema),
