@@ -116,7 +116,7 @@ function assertUnifiedHunkBodyCounts(patch, label) {
     const body = [];
     while (index + 1 < lines.length) {
       const line = lines[index + 1];
-      if (/^(?:@@ |diff --git |--- |\+\+\+ )/.test(line)) break;
+      if (/^(?:@@ |diff --git )/.test(line)) break;
       if (line === "" && index + 1 === lines.length - 1 && patch.endsWith("\n")) break;
       index += 1;
       if (line === "\\ No newline at end of file") continue;
@@ -186,6 +186,26 @@ test("unified hunk validation accepts bare empty context and rejects surplus bod
       "surplus body fixture",
     ),
     /surplus body fixture: old-line count/,
+  );
+
+  const prefixedBodyPatch = [
+    "diff --git a/example.txt b/example.txt",
+    "--- a/example.txt",
+    "+++ b/example.txt",
+    "@@ -1,2 +1,2 @@",
+    " before",
+    "--- removed prefix",
+    "+++ added prefix",
+    "",
+  ].join("\n");
+  assertUnifiedHunkBodyCounts(prefixedBodyPatch, "prefixed hunk body fixture");
+
+  assert.throws(
+    () => assertUnifiedHunkBodyCounts(
+      prefixedBodyPatch.replace("+++ added prefix", "+++ added prefix\n+surplus"),
+      "prefixed surplus fixture",
+    ),
+    /prefixed surplus fixture: new-line count/,
   );
 });
 
