@@ -31,12 +31,18 @@ const stagingRefusal = (reason: "process_not_running" | "process_identity_change
 describe("a remote Runner that died in the middle of a provider turn", () => {
   useWorkspaceRecoveryFixture(targets);
 
-  async function runnerLostMidTurn(input: { wake: "user" | "system_retry" | "system_monitor";
-    refusal?: "process_not_running" | "process_identity_changed" | null }) {
+  async function runnerLostMidTurn(input: { wake: "user" | "user_retry" | "system_retry" | "system_monitor";
+    refusal?: "process_not_running" | "process_identity_changed" | null;
+    events?: string[]; refusalPayload?: Record<string, unknown> }) {
     const f = await seed("native");
     const original = await run(f.runId);
-    const system = input.wake !== "user";
-    const reason = input.wake === "user" ? "issue_assigned" : input.wake === "system_retry" ? "transient_failure_retry" : "issue_monitor_due";
+    const system = input.wake !== "user" && input.wake !== "user_retry";
+    const reason = input.wake === "user" ? "issue_assigned" : input.wake === "user_retry" ? "task_retry"
+      : input.wake === "system_retry" ? "transient_failure_retry" : "issue_monitor_due";
+    const [retryIntent] = input.wake === "user_retry" ? await db.insert(agentWakeupRequests).values({ companyId: f.companyId,
+      agentId: original.agentId, source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "completed",
+      idempotencyKey: `task-retry:${randomUUID()}`, requestedByActorType: "user", requestedByActorId: "local-board",
+      payload: { issueId: f.issueId } }).returning() : [];
     const [predecessor] = input.wake === "system_retry" ? await db.insert(heartbeatRuns).values({ companyId: f.companyId,
       agentId: original.agentId, issueId: f.issueId, status: "failed", createdAt: new Date(Date.now() - 60 * 60_000),
       finishedAt: new Date(Date.now() - 50 * 60_000),
@@ -48,23 +54,24 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
     await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation",
       error: "runner_remote_process_identity_unavailable", wakeupRequestId: wake.id, responsibleUserId: "local-board",
       retryOfRunId: predecessor?.id ?? null, startedAt: new Date(Date.now() - 45 * 60_000),
-      contextSnapshot: { issueId: f.issueId, wakeReason: reason, ...(predecessor ? { retryOfRunId: predecessor.id,
+      contextSnapshot: { issueId: f.issueId, wakeReason: reason, ...(retryIntent ? { taskRetryRequestId: retryIntent.id,
+        forceFreshSession: true } : {}), ...(predecessor ? { retryOfRunId: predecessor.id,
         retryReason: "transient_failure", scheduledRetryAttempt: 1 } : {}) },
     }).where(eq(heartbeatRuns.id, f.runId));
-    for (const eventType of ["turn.submitted", "turn.started", "tool.execution.started", "turn.accepted", "tool.execution.completed"])
+    for (const eventType of input.events ?? ["turn.submitted", "turn.started", "tool.execution.started", "turn.accepted", "tool.execution.completed"])
       await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: original.agentId,
         eventType, stream: "system", level: "info", message: eventType,
         payload: { prpEvent: { eventType, turnId: TURN_ID, payload: {} } } });
     if (input.refusal !== null) await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId,
       agentId: original.agentId, eventType: "native.remote_runner_recovery_failed", stream: "system", level: "error",
-      message: "Could not verify the existing remote runner.", payload: stagingRefusal(input.refusal) });
+      message: "Could not verify the existing remote runner.", payload: input.refusalPayload ?? stagingRefusal(input.refusal) });
     const claim = { kind: "reattach_remote_runner" as const, runId: f.runId, leaseOwner: `boot:2:${randomUUID()}`,
       controllerGeneration: 2, providerAttempt: 1, restartKind: "hard" as const, recoveryRequestId: null,
       remote: { providerLeaseId: f.providerLeaseId, remoteCwd: f.remote } };
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
     // Keep the agent's only slot busy so a successor stays observable as queued.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: original.agentId, status: "running" });
-    return { ...f, agentId: original.agentId, claim, service };
+    return { ...f, agentId: original.agentId, claim, service, retryIntent };
   }
   const queued = async (companyId: string) => db.select().from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
@@ -99,6 +106,28 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
       eq(agentWakeupRequests.reason, "task_retry")));
     expect(retries.filter(retry => retry.idempotencyKey?.startsWith("task-retry:"))).toEqual([expect.objectContaining({
       idempotencyKey: `task-retry:restart-interrupted-turn:${f.runId}`, requestedByActorType: "user", requestedByActorId: "local-board" })]);
+  }, 30_000);
+
+  it("continues a person's Retry whose turn start timed out and whose Runner was gone at the same-run reattachment", async () => {
+    const f = await runnerLostMidTurn({ wake: "user_retry", events: ["turn.submitted"], refusalPayload: {
+      remoteRunnerRecovery: { stage: "process_verification", reason: "process_not_running", runnerSettled: false,
+        runnerLifecycle: "ready", runnerDiagnostics: ["WebSocket peer closed the connection"], providerTurnIssued: false,
+        runnerExitEvidence: "== runnerd.process-stderr.log" } } });
+    expect(await requestInterruptedNativeTurnRetry(db, f.runId)).toEqual({ requested: true, requestId: expect.any(String) });
+    expect(await requestInterruptedNativeTurnRetry(db, f.runId)).toMatchObject({ requested: true });
+    expect(await unknownOutcomeEvents(f.runId)).toEqual([expect.objectContaining({ payload: expect.objectContaining({
+      lastTurnEvent: "turn.submitted", replayed: false }) })]);
+    await vi.waitFor(async () => {
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, current => f.service.resumeRemoteStopComments(current)) ?? []);
+      expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    }, { timeout: 10_000, interval: 10 });
+    await vi.waitFor(async () => expect(await queued(f.companyId)).toHaveLength(1), { timeout: 10_000, interval: 50 });
+    const [successor] = await queued(f.companyId);
+    expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.runId, wakeReason: "task_retry", forceFreshSession: true });
+    const retries = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      eq(agentWakeupRequests.reason, "task_retry")));
+    expect(retries.filter(retry => retry.id !== f.retryIntent!.id && retry.idempotencyKey?.startsWith("task-retry:"))).toEqual([
+      expect.objectContaining({ idempotencyKey: `task-retry:restart-interrupted-turn:${f.runId}`, requestedByActorId: "local-board" })]);
   }, 30_000);
 
   it.each([
