@@ -36,7 +36,7 @@ export type JourneyTrigger = (typeof JOURNEY_TRIGGERS)[number];
 export const WORKLOAD_TRIGGERS: Record<WorkloadId, readonly TriggerId[]> = {
   A1: ["time"], B1: ["time"], B5: ["tool"], C1: ["comment", "result"], M1: ["time"], G1: ["approval"],
   H1: ["paused"], R1: ["time"], S1: ["stop"], L1: ["time"], F1: ["time"], T1: ["time"], H2: ["time"], Q1: JOURNEY_TRIGGERS, Q2: JOURNEY_TRIGGERS, Q3: JOURNEY_TRIGGERS, Q4: ["time"],
-  W2: ["time"], W2Q: ["time"], W2C: ["time"],
+  W2: ["time"], W2Q: ["time"], W2C: ["time"], SM: ["time"],
 };
 
 /** Q3 reviews must survive a delay longer than the implicit deadline #20340 removed. */

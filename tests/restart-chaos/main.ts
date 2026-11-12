@@ -47,6 +47,8 @@ import { isClassRFault, killedPidsFromOutput, providerKillCommand, watchLabels, 
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
+import { planStagingMixWave } from "./staging-mix.js";
+import { StagingMixRun, stagingMixSeedOptions } from "./staging-mix-run.js";
 import { TimeShiftedApi } from "./time-faults.js";
 import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
@@ -95,7 +97,8 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     return { plan, keep: command.keep };
   }
   const waveId = waveIdFor(command.options.seed);
-  return { plan: command.options.matrix ? planMatrixWave(waveId, command.options) : planWave(waveId, command.options), keep: command.keep };
+  return { plan: command.options.stagingMix ? planStagingMixWave(waveId, command.options) : command.options.matrix ? planMatrixWave(waveId, command.options)
+    : planWave(waveId, command.options), keep: command.keep };
 }
 
 function run(command: string, args: string[], cwd: string, label: string) {
@@ -382,6 +385,7 @@ async function main(): Promise<number> {
   };
   let faultFailures = 0;
   let faultsQueued = 0;
+  let mix: StagingMixRun | null = null;
   try {
     if (plan.options.storage === "s3") {
       const binary = minioBinary();
@@ -441,7 +445,7 @@ async function main(): Promise<number> {
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), workspaceRepo: plan.options.workspaceRepo,
       workspaceCommit: plan.options.workspaceCommit, workspaceGitUrl: plan.options.workspaceGitUrl, waveId: plan.waveId, timeline,
-      adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
+      adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle), ...stagingMixSeedOptions(plan.options),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
         // K15 on Daytona: the remote Runner's logs, identity and state while the controller is down (daytona-runner-logs.ts).
@@ -483,6 +487,10 @@ async function main(): Promise<number> {
       storageChaos = new StorageChaos(windows, Date.now(), credentialRotation?.wrap(storageProxy) ?? storageProxy, (kind, data) => timeline.add(kind, data));
       if (!plan.options.storageWindows) storageChaos.start();
       timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
+    }
+    if (plan.options.stagingMix && !plan.replayOf) {
+      mix = new StagingMixRun(plan.options.stagingMix, Date.now(), (kind, data) => timeline.add(kind, data), waveDir).start();
+      mix.inFlight = () => active.length;
     }
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
     // Faults are serialized; each one hits every task in flight when it starts.
@@ -631,6 +639,7 @@ async function main(): Promise<number> {
         timeline.add("storm_ended", { faultsFired: storm.state.fired, inFlight: active.length, unlaunched: pending.length });
         pending.length = 0;
       }
+      if (mix?.endIfDue(now)) pending.length = 0;
       // A failed fault or an unexpected exit leaves the server not ready.
       // Recover within a bound, or fail the wave instead of waiting forever.
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
@@ -643,7 +652,7 @@ async function main(): Promise<number> {
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
       while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress && !storageTrigger?.busy && !nativeTrigger?.busy
-        && (!storm || storm.mayLaunch(Date.now()))
+        && (!storm || storm.mayLaunch(Date.now())) && (!mix || mix.mayLaunch(Date.now(), pending[0]!.plan))
         // `--matrix`: no-fault baselines never share the server with a fault cell.
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
@@ -712,6 +721,7 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     sandboxWatchStopped = true;
+    await mix?.stop();
     await Promise.all(faultWork);
     if (storageTrigger) {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
@@ -876,6 +886,7 @@ async function main(): Promise<number> {
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
   } finally {
     sandboxWatchStopped = true;
+    await mix?.stop().catch(() => undefined);
     await stopPressure().catch(error => timeline.add("db_pressure_stop_failed", { error: String(error) }));
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);

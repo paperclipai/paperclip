@@ -9,6 +9,7 @@ import { parseK15DeployShape, parseK15HoldSeconds } from "./redeploy.js";
 import { validateRecoveryStep } from "./recovery-step-faults.js";
 import { parseLongTurnMinutes } from "./long-turn.js";
 import { isRewakeWorkload } from "./rewake.js";
+import { applyStagingMix, STAGING_MIX_ARG_OPTIONS } from "./staging-mix.js";
 import { workloadDefinitions } from "./workloads.js";
 import { parseClassROptions } from "./class-r.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
@@ -153,6 +154,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "cr1-hold-seconds": { type: "string" },
       "cr2-hold-seconds": { type: "string" },
       "cr3-stall-seconds": { type: "string" },
+      ...STAGING_MIX_ARG_OPTIONS,
     },
   });
   const keep = values.keep === true;
@@ -213,7 +215,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q4) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => !(volumeFree && workloadDefinitions[id].usesRepository) && id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4" && id !== "H2"
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => !(volumeFree && workloadDefinitions[id].usesRepository) && id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4" && id !== "H2" && id !== "SM"
       && !takesJourneyTriggers(id) && !isRewakeWorkload(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault) && !isSessionFault(fault) && fault !== "K0"),
@@ -415,7 +417,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["storage-trigger"] !== undefined) options.storageTrigger = parseStorageTrigger(values["storage-trigger"], options);
   if (values["native-trigger"] !== undefined) options.nativeTrigger = parseNativeTrigger(values["native-trigger"], options);
   if (values["native-trigger-outage"] !== undefined) options.nativeTrigger = { ...options.nativeTrigger!, outageMs: parseNativeTriggerOutage(values["native-trigger-outage"], options) };
-  return { mode: "wave", options, keep };
+  return { mode: "wave", options: applyStagingMix(options, values), keep };
 }
 
 export function publicGitHubUrl(remote: string): string {

@@ -19,6 +19,7 @@ import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "
 import { isSessionFault, rotateAgentSession } from "./session-faults.js";
 import { awaitingRewake, collectRewakeArtifacts, isRewakeWorkload, rewakeStep } from "./rewake.js";
 import { withLongTurn } from "./long-turn.js";
+import { holdsRetry, stagingMixArtifacts, stagingMixDefinition, stagingMixStep } from "./staging-mix.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -241,7 +242,9 @@ export class TaskObserver {
   readonly journey: JourneyDriver | null;
 
   /** The workload, with `--long-turn-minutes` tool work in front of its first turn (long-turn.ts). */
-  get definition() { return withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes); }
+  get definition() {
+    return this.plan.stagingMix ? stagingMixDefinition(this.plan.stagingMix) : withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes);
+  }
 
   /**
    * Crash-point suite: create the issue without an assignee, so no wake is
@@ -685,10 +688,8 @@ export class TaskObserver {
     }
     if (!await this.clearDiskFullAtRest(now)) { this.restCandidateSince = null; return; }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
-      if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
-      this.record.retry = await this.retry(sample, now);
-      this.restCandidateSince = null;
-      if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);
+      if (this.plan.stagingMix && holdsRetry(this.record, this.plan.stagingMix.holdMs, now)) { this.restCandidateSince = null; return; }
+      await this.boardRetry(sample, now);
       return;
     }
     this.record.restAt = this.restCandidateSince ?? now;
@@ -696,6 +697,13 @@ export class TaskObserver {
     this.done = true;
     this.timeline.add("task_rested", { taskId: this.plan.taskId, status, interruption: sample.interruption?.state ?? null,
       canRetry: sample.interruption?.canRetry ?? false, retried: Boolean(this.record.retry) });
+  }
+
+  private async boardRetry(sample: TaskSample, now: number): Promise<void> {
+    if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
+    this.record.retry = await this.retry(sample, now);
+    this.restCandidateSince = null;
+    if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);
   }
 
   /** Exactly one click, with the same body ui/src/hooks/useTaskRetry.ts sends. */
@@ -880,6 +888,11 @@ export class TaskObserver {
         boardMayAct: this.boardMayAct(sample, "answered"), sequence: this.plan.workload === "Q4",
         note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }),
         ...(sessionFault ? { beforeAnswer: () => rotateAgentSession(this.api, this.lab.agents[this.plan.adapter].id, this.plan.index, now, sessionFault) } : {}) });
+    }
+    if (this.plan.stagingMix) {
+      await stagingMixStep({ api: this.api, record: this.record, task: this.plan.stagingMix, nonce: this.plan.nonce, sample, now,
+        faultInProgress: this.supervisor.faultInProgress, retry: (current, at) => this.boardRetry(current, at),
+        note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
     }
     if (isRewakeWorkload(this.plan.workload)) {
       await rewakeStep({ api: this.api, record: this.record, plan: this.plan, issueId: this.record.issueId, agentId: this.lab.agents[this.plan.adapter].id,
@@ -1081,6 +1094,7 @@ export class TaskObserver {
         status: String(run.status), errorCode: run.errorCode ?? null, createdAt: run.createdAt ?? null, finishedAt: run.finishedAt ?? null }))).catch(() => []),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
       ...(this.plan.workload === "H2" ? { handoff: await this.collectHandoff(issueId, issue) } : {}),
+      ...(this.plan.stagingMix ? { stagingMix: stagingMixArtifacts(this.record) } : {}),
     };
   }
 
