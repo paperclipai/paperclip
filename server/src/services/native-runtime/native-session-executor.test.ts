@@ -1442,6 +1442,25 @@ describe("remote runner process supervision", () => {
     expect(blockedLog).toHaveBeenCalledWith("stderr", `[paperclip-runner] test bind fault failed on port ${port}\n`);
   });
 
+  it("launches runnerd with a bootstrap ticket issued after remote staging", async () => {
+    const order: string[] = [];
+    const execute = vi.fn(async (request: { args: string[]; env?: Record<string, string> }) => {
+      order.push(`execute:${request.env?.PAPERCLIP_RUNNER_BOOTSTRAP_TICKET ?? "none"}`);
+      return { exitCode: 1, timedOut: false, stdout: "", stderr: "" };
+    });
+    const handle = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: "/workspace" },
+      runner: { execute } as never,
+      remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+      ensureArtifact: async () => { order.push("stage"); },
+    })({ command: "/controller/runnerd", args: [], cwd: "/controller",
+      environment: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "issued-before-staging" },
+      refreshBootstrapTicket: async () => { order.push("refresh"); return "issued-at-dispatch"; } });
+    await expect(handle.completion).rejects.toThrow("runner_remote_process_launch_failed");
+    expect(order).toEqual(["stage", "refresh", "execute:issued-at-dispatch"]);
+  });
+
   it("confirms no replacement process exists when staging fails before the launch RPC", async () => {
     // A full sandbox disk rejects the runtime-context upload before dispatch.
     const stagingError = new Error(

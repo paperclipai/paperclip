@@ -1583,7 +1583,8 @@ export async function claimNativeRestartRecoveries(input: {
         // controller's close then proved it settled and exited. A failure
         // saved without that proof (older releases) stays held.
         && (settledFailure?.originalFailureCode === "native_runner_process_exited"
-          || (settledFailure?.originalFailureCode === "provider_session_open_rejected"
+          || ((settledFailure?.originalFailureCode === "provider_session_open_rejected"
+            || settledFailure?.originalFailureCode === "runner_ingress_startup_failed")
             && settledFailure?.runnerExitConfirmed === true))
         && settledFailure?.providerSessionEstablished === false && settledFailure?.providerEventsExist === false
         && settledFailure?.checkpointExists === false && !settledFailure?.successorRunId

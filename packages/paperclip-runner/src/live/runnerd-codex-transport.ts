@@ -1729,9 +1729,9 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   }) => void | Promise<void>;
 }
 
-/** One measured local startup sub-step, named for the run-log span it becomes. */
+/** One measured startup sub-step, named for the run-log span it becomes. */
 export interface RunnerdStartupStep {
-  name: "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
+  name: "runner.control_plane.open" | "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
   mode: "bootstrap" | "resume";
   startedAtMs: number;
   endedAtMs: number;
@@ -5504,6 +5504,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return operation;
   }
 
+  async #refreshBootstrapTicket(core: DurablePrpControlPlane): Promise<string> {
+    this.#assertStartupOpen();
+    const ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
+    await core.flushCheckpoint();
+    this.#assertStartupOpen();
+    return ticket;
+  }
+
   #assertStartupOpen(): void {
     if (this.#closed) throw new Error("runnerd transport closed during provider startup");
   }
@@ -6188,6 +6196,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#resume();
       return this.#openedThreadResponse(params);
     }
+    this.#startupSteps?.begin("runner.control_plane.open");
     const token = randomUUID().replaceAll("-", "");
     const identity = this.options.prpIdentity ?? {
       runnerInstanceId: `runner_lab_${token}`,
@@ -6305,6 +6314,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       diagnosticsDirectory: resolve(this.#root, "diagnostics"),
       processLauncher: this.options.runnerProcessLauncher,
       isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
+      refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core),
     });
     this.#handle = handle;
     this.#watchRunner(handle);
@@ -7180,6 +7190,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           diagnosticsDirectory: resolve(this.#root, "diagnostics"),
           processLauncher: this.options.runnerProcessLauncher,
           isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
+          ...(warmRecovery ? {} : { refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core) }),
         });
     if (handle) {
       this.#handle = handle;
