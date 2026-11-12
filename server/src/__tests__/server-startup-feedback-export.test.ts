@@ -8,7 +8,7 @@ import { joinRequestRetentionService } from "../services/join-request-retention.
 import { approvalRetentionService } from "../services/approval-retention.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { logger } from "../middleware/logger.js";
-import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import { getStartupRecoveryState, startupQueuedRunPassOutstanding } from "../startup-recovery-state.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import * as idleLocalWork from "../services/idle-local-work.js";
@@ -47,6 +47,33 @@ const cloudMigrationMocks = vi.hoisted(() => ({ migrate: vi.fn(async () => null)
 vi.mock("../services/cloud-configuration-migration.js", () => ({ migrateCloudConfiguration: cloudMigrationMocks.migrate }));
 vi.mock("../services/cloud-configuration-qualification.js", () => ({ qualifyCloudConfigurationForCurrentImage: cloudMigrationMocks.qualify }));
 vi.mock("../telemetry.js", () => ({ initTelemetry: cloudRuntimeStartupMocks.telemetry, getTelemetryClient: vi.fn(() => null) }));
+// A volume-free start (a deployment listen URL) with its data gate and the
+// cross-controller channels it opens. Off unless a test opts in.
+const volumeFreeMocks = vi.hoisted(() => ({
+  config: vi.fn((): string | null => null),
+  data: vi.fn(async (_db: unknown) => undefined),
+  claim: vi.fn(async (_volumeFree: boolean) => "claimed" as const),
+}));
+vi.mock("../services/ephemeral-server-contract.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/ephemeral-server-contract.js")>(),
+  assertEphemeralServerConfig: volumeFreeMocks.config,
+  assertEphemeralServerData: volumeFreeMocks.data,
+}));
+vi.mock("../services/native-runtime/volume-free-controller-state.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/native-runtime/volume-free-controller-state.js")>(),
+  claimVolumeFreeControllerState: volumeFreeMocks.claim,
+}));
+vi.mock("../services/deployment-notifications.js", () => ({
+  deploymentNotifications: vi.fn(() => ({ ready: async () => {}, markReady: vi.fn(), subscribeCompany: vi.fn(() => () => {}), stop: async () => {} })),
+}));
+vi.mock("../services/native-runtime/native-cancellation-delivery.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/native-runtime/native-cancellation-delivery.js")>(),
+  registerNativeCancellationDelivery: vi.fn(() => ({ ready: Promise.resolve(), stop: async () => {} })),
+}));
+vi.mock("../services/native-runtime/native-runtime-response-delivery.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/native-runtime/native-runtime-response-delivery.js")>(),
+  registerNativeRuntimeResponseDelivery: vi.fn(() => ({ ready: Promise.resolve(), stop: async () => {} })),
+}));
 
 // Producer transaction/notification behavior is covered by the real PostgreSQL
 // GitHub worker suite; this startup seam supplies a lightweight database mock.
@@ -690,6 +717,7 @@ beforeEach(() => {
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    volumeFreeMocks.config.mockReturnValue(null);
     deliveryWorkErrors.length = 0;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
@@ -1950,6 +1978,86 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.registerActiveRunSilenceWork).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(1);
     expect(fakeServer.close).not.toHaveBeenCalled();
+  });
+
+  // Staging, 2026-11-11: a busy volume-free server dispatched queued runs at
+  // 01:18:25 and ran its data eligibility gate at 01:21:20, 4.4 minutes after
+  // the container started. A refusal then abandoned work it had started.
+  it("refuses ineligible volume-free data before the app, the listener or any queued-run dispatch", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    volumeFreeMocks.config.mockReturnValue("postgres://paperclip@db.internal:5432/paperclip");
+    volumeFreeMocks.data.mockRejectedValueOnce(new Error("Volume-free server data is not eligible: agent_files_require_migration"));
+
+    await expect(startServer()).rejects.toThrow("agent_files_require_migration");
+
+    expect(volumeFreeMocks.claim).toHaveBeenCalledWith(true);
+    expect(volumeFreeMocks.claim.mock.invocationCallOrder[0]).toBeLessThan(volumeFreeMocks.data.mock.invocationCallOrder[0]!);
+    expect(createAppMock).not.toHaveBeenCalled();
+    expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+    expect(fakeServer.listen).not.toHaveBeenCalled();
+    expect(deliveryWorkRegisterMock).not.toHaveBeenCalled();
+  });
+
+  it("checks eligible volume-free data once, before the app is created, and then starts", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    volumeFreeMocks.config.mockReturnValue("postgres://paperclip@db.internal:5432/paperclip");
+    await expect(startServer()).resolves.toBeDefined();
+    expect(volumeFreeMocks.data).toHaveBeenCalledOnce();
+    expect(volumeFreeMocks.data.mock.invocationCallOrder[0]).toBeLessThan(createAppMock.mock.invocationCallOrder[0]!);
+    expect(getStartupRecoveryState().phase).toBe("ready");
+  });
+
+  // Staging, 2026-11-11: the first full queued-run dispatch pass of a busy
+  // workspace took 109 s, and the passes after it another 66 s, all before
+  // /api/ready answered. Those queues retry on their own; readiness no longer
+  // waits for their first pass.
+  it("reports ready while the first queued-run dispatch pass still runs, then finishes it and the passes after it", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true, heartbeatSchedulerIntervalMs: 30000 }));
+    let releaseDispatch!: () => void;
+    const dispatchPass = new Promise<void>(resolve => { releaseDispatch = resolve; });
+    heartbeatServiceMock.registerRunDispatchWork.mockImplementationOnce(() => ({ ready: dispatchPass,
+      retries: { reconciliationSnapshot: () => ({ revision: "startup-retries:1", reconciled: true }), stop: vi.fn(async () => {}) } }));
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
+    const starting = startServer();
+    try {
+      await vi.waitFor(() => expect(getStartupRecoveryState().phase).toBe("ready"), { timeout: 2_000 });
+      await starting;
+      // Native recovery, which adopts old runs, still finished before ready.
+      expect(heartbeatServiceMock.recoverNativeRunsAfterRestart).toHaveBeenCalledOnce();
+      // A queued turn still says it waits for this server's recovery.
+      expect(startupQueuedRunPassOutstanding()).toBe(true);
+      expect(heartbeatServiceMock.registerScheduledRetryCancellationWork).not.toHaveBeenCalled();
+      // Idle sleep stays blocked while the pass runs.
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+
+      releaseDispatch();
+      await vi.waitFor(() => expect(startupQueuedRunPassOutstanding()).toBe(false));
+      await vi.waitFor(() => expect(heartbeatServiceMock.registerStoppedInstructionCollectionWork).toHaveBeenCalledOnce());
+      expect(heartbeatServiceMock.registerScheduledRetryCancellationWork).toHaveBeenCalledOnce();
+    } finally { releaseDispatch(); await starting.catch(() => {}); timer.mockRestore(); }
+  });
+
+  // The same boot spent most of its 85 s before the listener publishing
+  // several hundred shared UI assets one at a time. Publication now runs
+  // alongside startup, and readiness still waits for it.
+  it("binds the listener while shared UI assets publish, and refuses readiness for a colliding build", async () => {
+    let finishPublication!: (outcome: { error: unknown } | null) => void;
+    const publication = new Promise<{ error: unknown } | null>(resolve => { finishPublication = resolve; });
+    const createApp = createAppMock.getMockImplementation()!;
+    createAppMock.mockImplementationOnce(async (database, options) => {
+      const app = await createApp(database, options) as unknown as { locals: Record<string, unknown> };
+      app.locals.retainedUiAssetsPublication = publication;
+      return app as never;
+    });
+    const starting = startServer();
+    try {
+      await vi.waitFor(() => expect(fakeServer.listening).toBe(true), { timeout: 2_000 });
+      await settleStartupHousekeeping();
+      expect(getStartupRecoveryState().phase).not.toBe("ready");
+      finishPublication({ error: new Error("Static build asset name collides with different published bytes") });
+      await expect(starting).rejects.toThrow("collides");
+      expect(getStartupRecoveryState().phase).not.toBe("ready");
+    } finally { finishPublication(null); await starting.catch(() => {}); }
   });
 
   it("closes the bound listener when native startup recovery fails", async () => {

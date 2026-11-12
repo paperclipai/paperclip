@@ -1107,8 +1107,16 @@ export async function createApp(
       );
       if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
         const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
-        await publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
-          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"));
+        // Old tabs need these chunks only once the old containers are gone,
+        // which follows this server's readiness, not its listener. Publish
+        // while the rest of startup proceeds; startup awaits the outcome
+        // before it reports ready. This build's own assets are served from
+        // disk above, and older builds' assets are already in storage.
+        // The promise settles to the failure instead of rejecting, so it is
+        // never an unhandled rejection before startup reads it.
+        app.locals.retainedUiAssetsPublication = trackIdleWork(publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
+          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"))
+          .then(() => null, (error: unknown) => ({ error })));
         staticUi.use("/assets", retained.serve);
       }
       // Serve root/index through the same runtime HTML transform as SPA routes.
