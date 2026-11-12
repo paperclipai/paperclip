@@ -36,7 +36,6 @@ for (const width of [640, 1200]) {
           expect(metrics.overflow).toBe("ellipsis");
           await expect(identity.locator(":scope > span").last()).toHaveText(name!);
         }
-        // The adjacent project column remains readable, and rows never grow taller.
         await expect(cells.nth(2)).toHaveText("Paperclip");
         expect((await row.boundingBox())!.height).toBeLessThanOrEqual((await page.getByTestId("short").boundingBox())!.height);
       }
